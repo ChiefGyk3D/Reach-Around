@@ -29,7 +29,8 @@ below is marked UNVERIFIED and is tied to #552 (live verification by the owner):
 * UNVERIFIED: the answer shape of ``follower_demographics`` (``total_value.
   breakdowns[].dimension_keys`` and ``results[].dimension_values``/``value``),
   the label spellings (age ``13-17`` ... ``65+``, gender ``F``/``M``/``U``,
-  ISO country code). The ``timeframe`` value is verified: this_month (see TIMEFRAME).
+  ISO country code). The ``timeframe`` value: see TIMEFRAME (documented, not yet
+  called live).
 * UNVERIFIED: the Instagram-Login route with a numeric account id (the note
   names ``<IG_ID>``; ``me`` is not used here for insights).
 * "Profile visits" is not in the note's metric table, so it is not collected.
@@ -90,11 +91,37 @@ ACTIVITY_METRICS = {
     "profile_links_taps": "link_taps_7d",
 }
 DEMOGRAPHICS_METRIC = "follower_demographics"
-# VERIFIED (developers.facebook.com instagram-user insights page, read 2026-11-24):
-# the demographic ``timeframe`` values this_month and this_week are supported;
-# last_14_days, last_30_days, last_90_days and prev_month are NOT supported from
-# API v20.0 (this code calls v27.0). The value is vendor-defined: the current
-# calendar month so far, not a rolling 30 days.
+# Vendor facts (developers.facebook.com, all read 2026-11-24):
+# * instagram-user/insights: the metric table lists timeframe values last_14_days,
+#   last_30_days, last_90_days, prev_month, this_month, this_week for
+#   follower_demographics and engaged_audience_demographics, and "n/a" for every
+#   other metric this collector requests (reach, views, total_interactions,
+#   accounts_engaged, profile_links_taps). It says "this_month returns the data in
+#   the last 30 days and this_week returns data in the last 7 days"; it does not say
+#   whether the window is calendar-aligned or rolling.
+# * graph-api/changelog/version20.0 (Instagram User Insights): last_14_days,
+#   last_30_days, last_90_days and prev_month are no longer supported "for the
+#   reached_audience_demographics and engaged_audience_demographics metrics"
+#   (v20.0+, all versions from 2024-08-19). It does not name follower_demographics.
+# So this_month is the one value that is on the follower_demographics table and on
+# no deprecation list; last_30_days is not proven rejected for follower_demographics
+# but is the value the changelog removes for its sibling metrics. NOT called live:
+# #552 settles acceptance and the real window.
+TIMEFRAME_ALLOWED = {
+    "follower_demographics": frozenset(
+        {
+            "last_14_days",
+            "last_30_days",
+            "last_90_days",
+            "prev_month",
+            "this_month",
+            "this_week",
+        }
+    ),
+}
+TIMEFRAME_DEPRECATED_V20 = frozenset(
+    {"last_14_days", "last_30_days", "last_90_days", "prev_month"}
+)
 TIMEFRAME = "this_month"
 # UNVERIFIED: label spellings of the breakdown answers.
 AGE_LABELS = {
@@ -336,8 +363,9 @@ def _demographic(reader: _Reader, dim: str, first: date, last: date) -> Report:
     if folded > MAX_VALUE:  # refused, never clamped: a clamped total is wrong
         raise InstagramInsightsError("bad_aggregate")
     note = (
-        f"followers by {dim} (timeframe {TIMEFRAME}, vendor-defined; UNVERIFIED, "
-        f"#552); cells under {FLOOR} are summed into fdemo_{dim}_other"
+        f"followers by {dim} (timeframe {TIMEFRAME}, vendor-defined; vendor text "
+        "says the last 30 days, calendar or rolling not stated; UNVERIFIED, #552); "
+        f"cells under {FLOOR} are summed into fdemo_{dim}_other"
     )
     out = [Measure(f"fdemo_{dim}_{key}", count, note) for key, count in sorted(ranked)]
     if folded:

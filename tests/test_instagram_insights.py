@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 import reach_around.commands.counts as counts_cmd
+import reach_around.counts.instagram_insights as ins
 from fakenet import FakeTransport, reply
 from reach_around.cli import main
 from reach_around.config.numbers_sources import InstagramSource, NumbersConfig
@@ -208,8 +209,15 @@ def test_requests_are_gets_to_one_host_with_the_documented_parameters() -> None:
     demos = [q for q in queries if q["metric"] == ["follower_demographics"]]
     assert sorted(q["breakdown"][0] for q in demos) == ["age", "country", "gender"]
     assert all(q["metric_type"] == ["total_value"] for q in demos)
-    # the vendor page lists last_30_days as unsupported from v20.0; this_month is valid
+    # request construction only: the vendor acceptance is not proven here (#552)
     assert all(q["timeframe"] == ["this_month"] for q in demos)
+    # per-metric table: only demographics carry timeframe; the activity metrics do not
+    for q in queries:
+        metric = q["metric"][0]
+        if metric in ins.TIMEFRAME_ALLOWED:
+            assert q["timeframe"][0] in ins.TIMEFRAME_ALLOWED[metric]
+        else:
+            assert "timeframe" not in q
 
 
 def test_no_request_follows_a_redirect_and_none_is_a_mutation() -> None:
@@ -1247,3 +1255,28 @@ def test_the_refresh_window_edge_matches_the_follower_read() -> None:
     with pytest.raises(InstagramInsightsError, match="refresh_pending"):
         run_source(source(date(2026, 11, 29)))  # exactly 10 days left
     assert run_source(source(date(2026, 11, 30)))[1] == []  # 11 days left
+
+
+def test_timeframe_table_matches_the_vendor_pages_read_2026_11_24() -> None:
+    # Fixture of the documented facts, not a vendor call (live check: #552).
+    assert ins.TIMEFRAME_ALLOWED == {
+        "follower_demographics": {
+            "last_14_days",
+            "last_30_days",
+            "last_90_days",
+            "prev_month",
+            "this_month",
+            "this_week",
+        }
+    }
+    assert ins.TIMEFRAME_DEPRECATED_V20 == {
+        "last_14_days",
+        "last_30_days",
+        "last_90_days",
+        "prev_month",
+    }
+    # the chosen value is allowed for its metric and on no deprecation list
+    assert ins.TIMEFRAME in ins.TIMEFRAME_ALLOWED[ins.DEMOGRAPHICS_METRIC]
+    assert ins.TIMEFRAME not in ins.TIMEFRAME_DEPRECATED_V20
+    # no collector metric other than demographics is allowed a timeframe
+    assert set(ins.ACTIVITY_METRICS).isdisjoint(ins.TIMEFRAME_ALLOWED)
