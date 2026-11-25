@@ -494,14 +494,22 @@ before relying on it), and how long a given browser keeps a 301 with no
    IPv4 spellings are rejected. An optional decimal port is from 1 through
    65535 without a leading zero; userinfo, slashes and spaces are rejected.
    Nothing is defaulted. Every request is a direct GET made by a validated,
-   absolute curl executable owned by root or the current user and not group or
-   world writable. Curl runs in a clean environment containing only a fixed
-   safe `PATH`, `LC_ALL=C`, and an empty private temporary `HOME`. Caller proxy,
-   curl, certificate, TLS key logging, and other environment settings cannot
-   affect the request. Response headers are captured in that private directory
-   with a 64 KiB file-size limit. The body is discarded and redirects are never
-   followed. It is never HEAD, because
-   browsers navigate with GET and a rule or origin can treat HEAD differently.
+   absolute curl executable owned by root and not group or world writable.
+   Its resolved target and every parent directory through `/` must also be
+   root-owned and not group or world writable. Symlinks are resolved before
+   validation and the resolved target is executed. The remaining theoretical
+   race in which root replaces a validated root-owned executable is accepted.
+   The verifier targets Linux and uses the absolute `/usr/bin/bash` interpreter.
+   Its first executable statement replaces the caller's `PATH` with
+   `/usr/bin:/bin`, exports it, and its security-sensitive utilities are invoked
+   by absolute path so later `PATH` changes cannot select substitutes. Curl runs
+   in a clean environment containing only that fixed safe `PATH`, `LC_ALL=C`,
+   and an empty private temporary `HOME`. Caller proxy, curl, certificate, TLS
+   key logging, and other environment settings cannot affect the request.
+   Response headers are captured in that private directory with a 64 KiB
+   file-size limit. The body is discarded and redirects are never followed. It
+   is never HEAD, because browsers navigate with GET and a rule or origin can
+   treat HEAD differently.
    It exits `0` only after every
    check ran and passed: two probe requests (`?probe=a%2Fb&probe=two` and
    `?q=x%20y&utm_source=mail&empty=`) each return status `302` and exactly one

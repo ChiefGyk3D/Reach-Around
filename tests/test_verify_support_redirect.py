@@ -325,7 +325,7 @@ def fake_curl_dir(tmp_path: Path, raw_headers: str) -> Path:
     return d
 
 
-def script_with_curl(tmp_path: Path, curl: Path) -> Path:
+def script_with_curl(tmp_path: Path, curl: Path, *, stub_meta: bool = True) -> Path:
     """Copy the verifier and replace only its trusted curl candidates."""
     script = tmp_path / "verify-support-redirect.sh"
     source = SCRIPT.read_text()
@@ -333,6 +333,11 @@ def script_with_curl(tmp_path: Path, curl: Path) -> Path:
         "readonly CURL_PRIMARY=/usr/bin/curl\nreadonly CURL_FALLBACK=/bin/curl\n",
         f"readonly CURL_PRIMARY={curl!s}\nreadonly CURL_FALLBACK={curl!s}\n",
     )
+    if stub_meta:
+        source = source.replace(
+            'path_meta() { "$STAT_BIN" -Lc \'%u %a\' -- "$1" 2>/dev/null; }',
+            "path_meta() { printf '0 755\\n'; }",
+        )
     assert source != SCRIPT.read_text()
     script.write_text(source)
     script.chmod(0o755)
@@ -739,7 +744,7 @@ def test_curl_receives_only_the_controlled_environment(tmp_path: Path) -> None:
     names = {entry.partition("=")[0] for entry in passed_environment}
     assert names == {"HOME", "LC_ALL", "PATH"}
     values = dict(entry.split("=", 1) for entry in passed_environment)
-    assert values["PATH"] == "/usr/local/bin:/usr/bin:/bin"
+    assert values["PATH"] == "/usr/bin:/bin"
     assert values["LC_ALL"] == "C"
     curl_home = Path(values["HOME"])
     assert curl_home.name.startswith("tmp.")
@@ -775,7 +780,7 @@ def test_untrusted_curl_path_is_a_usage_error(tmp_path: Path, mode: str) -> None
     if mode == "world-writable":
         curl.write_text("#!/usr/bin/bash\nexit 0\n")
         curl.chmod(0o777)
-    script = script_with_curl(tmp_path, curl)
+    script = script_with_curl(tmp_path, curl, stub_meta=False)
 
     r = run_hosts(
         "127.0.0.1:1",
@@ -786,7 +791,7 @@ def test_untrusted_curl_path_is_a_usage_error(tmp_path: Path, mode: str) -> None
     assert r.returncode == 2
     assert "trusted curl" in r.stderr
     if mode == "world-writable":
-        assert "group or world writable" in r.stderr
+        assert "owned by root" in r.stderr or "group or world writable" in r.stderr
     else:
         assert "not available" in r.stderr
 
@@ -869,3 +874,177 @@ def test_oversized_response_headers_fail_within_timeout(sites: list[Site]) -> No
     r = run(src, dst)
     assert r.returncode == 1
     assert "request did not complete" in r.stderr
+
+
+def test_caller_path_cannot_bypass_script_or_utilities(tmp_path: Path) -> None:
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    markers = tmp_path / "markers"
+    markers.mkdir()
+    for name in ("bash", "env", "tr", "awk", "mktemp", "chmod", "rm"):
+        fake = fakebin / name
+        fake.write_text(
+            "#!/usr/bin/bash\n"
+            f"printf called > {markers / name!s}\n"
+            "printf 'all checks passed\\n'\n"
+            "exit 0\n"
+        )
+        fake.chmod(0o755)
+
+    environment = {
+        "PATH": f"{fakebin}:{os.environ['PATH']}",
+        "SRC_HOST": "",
+        "EXP_HOST": "",
+    }
+    direct = subprocess.run(  # noqa: S603 - fixed argv, synthetic input
+        [str(SCRIPT)],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    explicit = subprocess.run(  # noqa: S603 - fixed argv, synthetic input
+        ["/usr/bin/bash", str(SCRIPT)],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    for result in (direct, explicit):
+        assert result.returncode == 2
+        assert "SRC_HOST is required" in result.stderr
+        assert "all checks passed" not in result.stdout
+    assert list(markers.iterdir()) == []
+
+
+def test_user_owned_curl_is_refused(tmp_path: Path) -> None:
+    curl = tmp_path / "curl"
+    curl.write_text("#!/usr/bin/bash\nexit 0\n")
+    curl.chmod(0o755)
+    script = script_with_curl(tmp_path, curl, stub_meta=False)
+
+    result = run_hosts(
+        "127.0.0.1:1",
+        "127.0.0.1:2",
+        script=script,
+    )
+
+    assert result.returncode == 2
+    assert "owned by root" in result.stderr
+
+
+def test_root_owned_curl_in_world_writable_parent_is_refused(
+    tmp_path: Path,
+) -> None:
+    curl_dir = tmp_path / "curl-parent"
+    curl_dir.mkdir()
+    curl = curl_dir / "curl"
+    curl.write_text("#!/usr/bin/bash\nexit 0\n")
+    curl.chmod(0o755)
+    script = script_with_curl(tmp_path, curl)
+    source = script.read_text()
+    source = source.replace(
+        "path_meta() { printf '0 755\\n'; }",
+        (
+            "path_meta() {\n"
+            f'  if [ "$1" = "{curl_dir!s}" ]; then\n'
+            "    printf '0 777\\n'\n"
+            "  else\n"
+            "    printf '0 755\\n'\n"
+            "  fi\n"
+            "}"
+        ),
+    )
+    script.write_text(source)
+
+    result = run_hosts(
+        "127.0.0.1:1",
+        "127.0.0.1:2",
+        script=script,
+    )
+
+    assert result.returncode == 2
+    assert "group or world writable" in result.stderr
+
+
+def _script_with_sized_header_writer(
+    tmp_path: Path,
+    *,
+    above_limit: bool,
+) -> tuple[Path, Path]:
+    fake = tmp_path / "curl"
+    limit_marker = tmp_path / "limit-hit"
+    if above_limit:
+        writer = (
+            "trap '' XFSZ\n"
+            'while printf "%01024d" 0 >> "$hdr"; do :; done\n'
+            f"printf hit > {limit_marker!s}\n"
+            "exit 73\n"
+        )
+    else:
+        writer = (
+            'url="${!#}"\n'
+            'case "$url" in\n'
+            "  *127.0.0.1:1/\\?*)\n"
+            '    query="${url#*127.0.0.1:1/}"\n'
+            '    printf "HTTP/1.1 302 Found\\r\\n" > "$hdr"\n'
+            '    printf "X-Padding: " >> "$hdr"\n'
+            '    printf "%061440d" 0 >> "$hdr"\n'
+            '    printf "\\r\\nLocation: http://127.0.0.1:2/support/%s\\r\\n\\r\\n" '
+            '"$query" >> "$hdr"\n'
+            "    ;;\n"
+            "  *)\n"
+            '    printf "HTTP/1.1 200 OK\\r\\n\\r\\n" > "$hdr"\n'
+            "    ;;\n"
+            "esac\n"
+        )
+    fake.write_text(
+        "#!/usr/bin/bash\n"
+        'hdr=""; prev=""; for arg in "$@"; do\n'
+        '  if [ "$prev" = "-D" ]; then hdr="$arg"; fi\n'
+        '  prev="$arg"\n'
+        "done\n" + writer
+    )
+    fake.chmod(0o755)
+    return script_with_curl(tmp_path, fake), limit_marker
+
+
+def test_header_slightly_below_64_kib_is_parsed_and_passes(
+    tmp_path: Path,
+) -> None:
+    script, limit_marker = _script_with_sized_header_writer(
+        tmp_path,
+        above_limit=False,
+    )
+
+    result = run_hosts(
+        "127.0.0.1:1",
+        "127.0.0.1:2",
+        script=script,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "all checks passed" in result.stdout
+    assert not limit_marker.exists()
+
+
+def test_header_slightly_above_64_kib_hits_file_limit_promptly(
+    tmp_path: Path,
+) -> None:
+    script, limit_marker = _script_with_sized_header_writer(
+        tmp_path,
+        above_limit=True,
+    )
+
+    result = run_hosts(
+        "127.0.0.1:1",
+        "127.0.0.1:2",
+        script=script,
+    )
+
+    assert result.returncode == 1
+    assert "request did not complete" in result.stderr
+    assert limit_marker.read_text() == "hit"
