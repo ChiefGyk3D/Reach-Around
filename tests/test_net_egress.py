@@ -7,7 +7,7 @@ import socket
 import ssl
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import cast
 
@@ -17,6 +17,8 @@ import reach_around
 import reach_around.net.egress as egress
 from fakenet import FakeSock, http_answer
 from reach_around.net.egress import (
+    MAX_CONNECT_ADDRESSES,
+    MAX_DNS_ANSWERS,
     EgressBlocked,
     HttpsTransport,
     TransportRequest,
@@ -737,3 +739,96 @@ def test_a_socket_added_after_the_deadline_is_shut_down_at_once() -> None:
     assert sock.events == ["shutdown_start", "shutdown_end"]
     watchdog.stop()
     assert sock.events[-1] == "close"
+
+
+def test_a_dead_first_address_falls_through_to_the_next_checked_one() -> None:
+    other = "93.184.216.35"
+    sock = FakeSock(http_answer(b"{}"))
+    tried: list[str] = []
+
+    def connector(address: str, port: int, timeout: float) -> socket.socket:
+        tried.append(address)
+        if address == PUBLIC:
+            raise ConnectionRefusedError("down")
+        return cast(socket.socket, sock)
+
+    transport = HttpsTransport(
+        resolver=lambda h, p: [PUBLIC, PUBLIC, other],
+        connector=connector,
+        wrapper=lambda s, n: s,
+    )
+    assert transport(_request()).status == 200
+    assert tried == [PUBLIC, other]
+
+
+def test_system_lookup_keeps_only_the_first_answers_it_is_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # getaddrinfo builds its whole list before we see it (that allocation is
+    # not bounded here); what is bounded is everything done with the answers
+    infos = [
+        (
+            socket.AF_INET,
+            socket.SOCK_STREAM,
+            6,
+            "",
+            (f"93.184.{i // 250}.{i % 250 + 1}", 443),
+        )
+        for i in range(5000)
+    ]
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: infos)
+    answers = system_resolver("lookup-cap.example.org", 443, timeout=5.0)
+    assert len(answers) == MAX_DNS_ANSWERS
+    assert answers[0] == "93.184.0.1"
+
+
+def test_a_huge_answer_set_is_capped_at_a_few_connection_attempts() -> None:
+    answers = [f"93.184.{i // 250}.{i % 250 + 1}" for i in range(2000)]
+    tried: list[str] = []
+
+    def connector(address: str, port: int, timeout: float) -> socket.socket:
+        tried.append(address)
+        raise ConnectionRefusedError("down")
+
+    transport = HttpsTransport(resolver=lambda h, p: answers, connector=connector)
+    with pytest.raises(EgressBlocked) as caught:
+        transport(_request())
+    assert caught.value.reason == "connect_failed"
+    assert tried == answers[:MAX_CONNECT_ADDRESSES]
+    assert len(tried) == 4
+
+
+def test_dns_answer_processing_stops_at_a_fixed_number_of_answers() -> None:
+    consumed = 0
+
+    def endless() -> Iterator[str]:
+        nonlocal consumed
+        for i in range(1_000_000):
+            consumed += 1
+            yield f"93.184.{i // 250 % 250}.{i % 250 + 1}"
+
+    def connector(address: str, port: int, timeout: float) -> socket.socket:
+        raise ConnectionRefusedError("down")
+
+    transport = HttpsTransport(
+        resolver=lambda h, p: cast(list[str], endless()), connector=connector
+    )
+    with pytest.raises(EgressBlocked):
+        transport(_request())
+    assert consumed <= MAX_DNS_ANSWERS
+
+
+def test_every_dead_address_is_a_typed_error_and_never_an_unchecked_one() -> None:
+    tried: list[str] = []
+
+    def connector(address: str, port: int, timeout: float) -> socket.socket:
+        tried.append(address)
+        raise ConnectionRefusedError("down")
+
+    transport = HttpsTransport(
+        resolver=lambda h, p: [PUBLIC, "93.184.216.35"], connector=connector
+    )
+    with pytest.raises(EgressBlocked) as caught:
+        transport(_request())
+    assert caught.value.reason == "connect_failed"
+    assert tried == [PUBLIC, "93.184.216.35"]

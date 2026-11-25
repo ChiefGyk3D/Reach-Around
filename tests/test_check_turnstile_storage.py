@@ -101,6 +101,62 @@ def test_storage_found_sees_each_kind_and_bites() -> None:
     assert mod.storage_found(report(local_storage={"x": []})) is False
 
 
+REFUSED = {
+    "parent_dom_read": False,
+    "parent_dom_write": False,
+    "parent_storage_write": False,
+    "own_storage_write": False,
+    "own_cookie_read": False,
+    "parent_attr_set": False,
+    "parent_storage_set": False,
+    "forged_result_accepted": False,
+    "forged_no_nonce": True,
+    "forged_wrong_nonce": True,
+}
+
+
+def test_strict_passes_the_documented_success_state_of_each_mode() -> None:
+    mod = load()
+    assert mod.strict_failures(report(mode="stub", state="verified")) == []
+    assert (
+        mod.strict_failures(
+            report(mode="stub-attack", state="unverified", attack=dict(REFUSED))
+        )
+        == []
+    )
+
+
+def test_strict_is_mode_specific_and_bites() -> None:
+    mod = load()
+    # a plain run that never verified fails
+    assert mod.strict_failures(report(mode="stub", state="unverified"))
+    # an attack run that verified (a forged result got through) fails
+    assert mod.strict_failures(
+        report(mode="stub-attack", state="verified", attack=dict(REFUSED))
+    )
+    # an attack that worked fails, and so does a missing entry
+    worked = {**REFUSED, "parent_dom_write": True}
+    assert mod.strict_failures(
+        report(mode="stub-attack", state="unverified", attack=worked)
+    )
+    missing = {k: v for k, v in REFUSED.items() if k != "own_cookie_read"}
+    assert mod.strict_failures(
+        report(mode="stub-attack", state="unverified", attack=missing)
+    )
+    # storage and a foreign host fail every mode
+    assert mod.strict_failures(
+        report(
+            mode="stub-attack",
+            state="unverified",
+            attack=dict(REFUSED),
+            cookies=[{"name": "a"}],
+        )
+    )
+    assert mod.strict_failures(
+        report(mode="stub", state="verified", foreign=["evil.example"])
+    )
+
+
 def test_render_prints_names_never_values() -> None:
     mod = load()
     text = mod.render(
@@ -201,7 +257,15 @@ def test_hostile_vendor_code_in_the_frame_is_contained() -> None:
         "RA_CHROMIUM": os.environ.get("RA_CHROMIUM", ""),
     }
     done = subprocess.run(  # noqa: S603 - fixed argv
-        [sys.executable, str(SCRIPT), "--stub-attack", "--json", "--wait", "30"],
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--stub-attack",
+            "--strict",
+            "--json",
+            "--wait",
+            "30",
+        ],
         capture_output=True,
         text=True,
         timeout=120,

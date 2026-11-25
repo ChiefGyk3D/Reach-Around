@@ -7,6 +7,7 @@ the Worker's write-only routes under /e/ (an empty 204 for everything).
 
 from __future__ import annotations
 
+import os
 import subprocess
 import threading
 from collections.abc import Iterator
@@ -199,3 +200,19 @@ def test_url_globbing_is_off() -> None:
         run(url + "/[1-2]")
     assert not any(p in ("/1", "/2", "/1/", "/2/") for p in SEEN), SEEN
     assert any("[1-2]" in p or "%5B1-2%5D" in p for p in SEEN), SEEN
+
+
+def test_a_curlrc_in_the_home_directory_is_ignored(tmp_path: Path) -> None:
+    # A proxy in ~/.curlrc would send every probe nowhere; curl -q must skip it.
+    (tmp_path / ".curlrc").write_text('proxy = "http://127.0.0.1:9"\n')
+    env = {**os.environ, "HOME": str(tmp_path), "CURL_HOME": str(tmp_path)}
+    with serve("good") as url:
+        r = subprocess.run(  # noqa: S603 - fixed argv
+            ["bash", str(SCRIPT), url],  # noqa: S607 - bash on PATH
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+            env=env,
+        )
+    assert r.returncode == 0, r.stdout + r.stderr

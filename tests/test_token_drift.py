@@ -191,3 +191,25 @@ def test_source_fields_must_be_strings(
     code, out = run(root, capsys)
     assert code == 1
     assert "lock: source" in out
+
+
+def test_a_changed_generator_is_not_run_and_fails(
+    root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Edit the generator and the output together: the pair agrees, so only the
+    # generator pin can catch it.
+    (root / GEN).write_text((root / GEN).read_text() + "\n# edited\n")
+    code, out = run(root, capsys)
+    assert code == 1
+    assert "generator hash mismatch" in out
+
+
+def test_an_unpinned_generator_fails(
+    root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lock = json.loads((root / LOCK).read_text())
+    del lock["outputs"][0]["generator_sha256"]
+    (root / LOCK).write_text(json.dumps(lock))
+    code, out = run(root, capsys)
+    assert code == 1
+    assert "generator_sha256" in out

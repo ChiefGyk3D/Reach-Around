@@ -15,12 +15,15 @@ Failures are fixed words; no token, URL or response text reaches a log.
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from itertools import islice
 from typing import Any
 
 from reach_around.config.numbers_sources import (
+    MAX_SOURCES,
     InstagramSource,
     ThreadsSource,
     TiktokSource,
@@ -41,9 +44,15 @@ from reach_around.counts.youtube_analytics import (
     YoutubeAnalyticsError,
     collect_youtube,
 )
+from reach_around.net.fetch import TIMEOUT as FETCH_TIMEOUT
 from reach_around.net.fetch import FetchError
 
 Fetch = Callable[..., dict[str, object]]
+
+# Per-run caps, checked where the work happens (a source built without model
+# validation must not widen them): sources looked at, requests sent, seconds.
+MAX_REQUESTS = 300
+DEADLINE_SECONDS = 600.0
 
 # metric -> (what it adds up, window); the text goes into the history note
 METRICS: dict[tuple[str, str], str] = {
@@ -105,6 +114,7 @@ _WORDS = frozenset(
         "bad_report",
         "bad_row",
         "refresh_pending",
+        "budget_exhausted",
     }
 )
 
@@ -205,49 +215,143 @@ def _instagram(
     )
 
 
+class _BudgetSpent(BaseException):  # noqa: N818
+    """The run's request count or time is used up; fixed word, no detail.
+
+    A BaseException on purpose: the collectors turn every ``Exception`` into a
+    fixed failure word (to keep tokens out of messages), which would report a
+    spent budget as ``fetch_failed``. ``collect`` is the only place that catches
+    this and reports it once.
+    """
+
+    kind = "budget_exhausted"
+
+
+class _Budget:
+    """Caps for one run, checked at use time (a built model may skip validation)."""
+
+    def __init__(
+        self, requests: int, seconds: float, clock: Callable[[], float]
+    ) -> None:
+        self.left = requests
+        self.clock = clock
+        self.deadline = clock() + seconds
+        self.spent = False
+
+    def take(self) -> float:
+        """Spend one request; the time left, measured once, just before it."""
+        remaining = self.deadline - self.clock()
+        if self.left <= 0 or remaining <= 0:
+            self.spent = True
+            raise _BudgetSpent
+        self.left -= 1
+        return remaining
+
+    def wrap(self, fetch: Fetch) -> Fetch:
+        def counted(*args: Any, **kwargs: Any) -> dict[str, object]:
+            # A request may not run past the run's deadline: its own time limit
+            # is cut to what is left (the fetch layer enforces it as one total
+            # limit over connect, send and read). The remainder is read once,
+            # right before the request, and a spent one sends nothing.
+            remaining = self.take()
+            own = kwargs.get("timeout", FETCH_TIMEOUT)
+            kwargs["timeout"] = min(own, remaining)
+            return fetch(*args, **kwargs)
+
+        return counted
+
+
 def collect(
     sources: list[Any],
     ok_platforms: frozenset[str],
     env: Mapping[str, str],
     fetch: Fetch,
     now: datetime,
+    *,
+    max_sources: int = MAX_SOURCES,
+    max_requests: int = MAX_REQUESTS,
+    deadline_seconds: float = DEADLINE_SECONDS,
+    clock: Callable[[], float] = time.monotonic,
 ) -> tuple[list[Figure], list[InsightFailure]]:
-    """Figures for each opted-in source whose follower read succeeded."""
+    """Figures for each opted-in source whose follower read succeeded.
+
+    At most ``max_sources`` sources are looked at, at most ``max_requests``
+    requests are sent and the run stops at the deadline; whatever is left out is
+    reported as ``budget_exhausted``, and the figures already gathered are kept.
+    """
     figures: list[Figure] = []
     failures: list[InsightFailure] = []
     stamp = now.astimezone(UTC)
-    for source in sources:
-        if isinstance(source, YoutubeSource):
-            _youtube(source, ok_platforms, env, fetch, stamp, figures, failures)
+    budget = _Budget(max_requests, deadline_seconds, clock)
+    fetch = budget.wrap(fetch)
+    # Walk the list lazily and look at no more than a bounded window of it, so a
+    # list built without model validation (which limits it to MAX_SOURCES) costs
+    # a bounded amount of work and memory; entries past the window are neither
+    # looked at nor named.
+    done = 0
+    for source in islice(sources, max_sources + MAX_SOURCES):
+        # A source with no opt-in, or whose follower read did not succeed, costs
+        # nothing and takes no place in the cap, so it cannot starve a valid one
+        # later in the list; the window above still bounds the walk.
+        if not _opted_in(source) or source.platform not in ok_platforms:
             continue
-        if isinstance(source, InstagramSource):
-            _instagram(source, ok_platforms, env, fetch, stamp, figures, failures)
+        if done >= max_sources or budget.spent or clock() >= budget.deadline:
+            failures.append(InsightFailure(source.platform, "budget_exhausted"))
             continue
-        if not isinstance(source, TiktokSource | ThreadsSource):
-            continue
-        if getattr(source, "insights", False) is not True:
-            continue
-        if source.platform not in ok_platforms:
-            continue
+        done += 1
         try:
-            if isinstance(source, TiktokSource):
-                numbers = video_stats(source, env, fetch, int(stamp.timestamp()))
-            else:
-                numbers = threads_insights(source, env, fetch, stamp.date())
-        except (FetchError, TiktokError, MetaError) as exc:
-            failures.append(InsightFailure(source.platform, _word(exc)))
-            continue
-        except Exception:
-            failures.append(InsightFailure(source.platform, "fetch_failed"))
-            continue
-        for metric, value in sorted(numbers.items()):
-            if type(value) is not int or not 0 <= value <= MAX_VALUE:
-                failures.append(InsightFailure(source.platform, "bad_aggregate"))
-                continue
-            note = METRICS.get((source.kind, metric))
-            if note is not None:
-                figures.append(Figure(source.platform, metric, value, note))
+            _collect_one(source, ok_platforms, env, fetch, stamp, figures, failures)
+        except _BudgetSpent:
+            budget.spent = True  # reported once just below
+        if budget.spent:
+            failures.append(InsightFailure(source.platform, "budget_exhausted"))
     return figures, failures
+
+
+def _opted_in(source: Any) -> bool:
+    """True for a source type this layer collects for, with its opt-in set."""
+    if isinstance(source, YoutubeSource | InstagramSource):
+        return getattr(source, "analytics", False) is True
+    if isinstance(source, TiktokSource | ThreadsSource):
+        return getattr(source, "insights", False) is True
+    return False
+
+
+def _collect_one(
+    source: Any,
+    ok_platforms: frozenset[str],
+    env: Mapping[str, str],
+    fetch: Fetch,
+    stamp: datetime,
+    figures: list[Figure],
+    failures: list[InsightFailure],
+) -> None:
+    if isinstance(source, YoutubeSource):
+        _youtube(source, ok_platforms, env, fetch, stamp, figures, failures)
+        return
+    if isinstance(source, InstagramSource):
+        _instagram(source, ok_platforms, env, fetch, stamp, figures, failures)
+        return
+    if not _opted_in(source) or source.platform not in ok_platforms:
+        return
+    try:
+        if isinstance(source, TiktokSource):
+            numbers = video_stats(source, env, fetch, int(stamp.timestamp()))
+        else:
+            numbers = threads_insights(source, env, fetch, stamp.date())
+    except (FetchError, TiktokError, MetaError) as exc:
+        failures.append(InsightFailure(source.platform, _word(exc)))
+        return
+    except Exception:
+        failures.append(InsightFailure(source.platform, "fetch_failed"))
+        return
+    for metric, value in sorted(numbers.items()):
+        if type(value) is not int or not 0 <= value <= MAX_VALUE:
+            failures.append(InsightFailure(source.platform, "bad_aggregate"))
+            continue
+        note = METRICS.get((source.kind, metric))
+        if note is not None:
+            figures.append(Figure(source.platform, metric, value, note))
 
 
 __all__ = ["OWNER_REPORT_ONLY", "Figure", "InsightFailure", "collect"]

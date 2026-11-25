@@ -706,6 +706,265 @@ def test_threads_views_series_one_missing_edge_point_is_tolerated() -> None:
     assert threads_insights(TH, TH_ENV, fetch, date(2026, 11, 9)) == {"views_7d": 6}
 
 
+@pytest.mark.parametrize(
+    "days",
+    [(3, 4, 5, 7, 8, 9), (2, 3, 4, 6, 7, 8, 9), (3, 5, 6, 7, 8, 9)],
+    ids=["six_with_a_hole", "seven_with_a_hole", "hole_next_to_an_edge"],
+)
+def test_threads_views_series_with_an_interior_gap_is_not_verified(
+    days: tuple[int, ...],
+) -> None:
+    points = [(1, f"2026-11-{d:02d}T08:00:00+0000") for d in days]
+    fetch, _ = th_fetch(_views("day", points))
+    with pytest.raises(MetaError) as err:
+        threads_insights(TH, TH_ENV, fetch, date(2026, 11, 9))
+    assert err.value.kind == "window_mismatch"
+
+
+def _threads_sources(count: int) -> list[ThreadsSource]:
+    return [
+        ThreadsSource.model_validate(
+            {
+                "platform": f"threads{i}",
+                "kind": "threads",
+                "user_id": "42",
+                "insights": True,
+            }
+        )
+        for i in range(count)
+    ]
+
+
+def test_collect_stops_at_the_request_budget_and_names_what_was_left() -> None:
+    calls: list[int] = []
+
+    def fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append(1)
+        return {"data": []}
+
+    sources = _threads_sources(6)
+    ok = frozenset(s.platform for s in sources)
+    _, failures = collect(sources, ok, TH_ENV, fetch, NOW, max_requests=2)
+    assert len(calls) == 2
+    words = [f.word for f in failures]
+    assert words.count("budget_exhausted") >= 1
+    assert {f.platform for f in failures if f.word == "budget_exhausted"} >= {
+        "threads3",
+        "threads5",
+    }
+
+
+def test_a_spent_budget_is_reported_once_and_never_as_a_fetch_failure() -> None:
+    def fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("no request may be sent")
+
+    sources = _threads_sources(3)
+    ok = frozenset(s.platform for s in sources)
+    _, failures = collect(sources, ok, TH_ENV, fetch, NOW, max_requests=0)
+    assert [(f.platform, f.word) for f in failures] == [
+        ("threads0", "budget_exhausted"),
+        ("threads1", "budget_exhausted"),
+        ("threads2", "budget_exhausted"),
+    ]
+
+
+def test_a_budget_spent_inside_a_collector_passes_every_generic_handler() -> None:
+    """The budget signal is raised from inside the collector's own fetch calls,
+    where broad ``except Exception`` handlers turn failures into fixed words.
+    It must get through them, run cleanup, and be reported once."""
+    from reach_around.counts.insights import _BudgetSpent
+
+    cleaned: list[int] = []
+
+    def fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        try:
+            raise _BudgetSpent
+        finally:
+            cleaned.append(1)  # unwinding ran the cleanup
+
+    sources = _threads_sources(3)
+    ok = frozenset(s.platform for s in sources)
+    _, failures = collect(sources, ok, TH_ENV, fetch, NOW)
+    assert cleaned == [1]
+    assert [(f.platform, f.word) for f in failures] == [
+        ("threads0", "budget_exhausted"),
+        ("threads1", "budget_exhausted"),
+        ("threads2", "budget_exhausted"),
+    ]
+    assert not issubclass(_BudgetSpent, Exception)
+
+
+def test_every_request_is_given_no_more_time_than_the_run_has_left() -> None:
+    now = [0.0]
+    seen: list[float] = []
+
+    def fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        seen.append(kwargs["timeout"])
+        now[0] += 3.0
+        return {"data": []}
+
+    sources = _threads_sources(3)
+    ok = frozenset(s.platform for s in sources)
+    collect(
+        sources,
+        ok,
+        TH_ENV,
+        fetch,
+        NOW,
+        deadline_seconds=8.0,
+        clock=lambda: now[0],
+    )
+    assert seen == [8.0, 5.0, 2.0]  # the remaining time, never the full 10 s
+
+
+def test_collect_looks_at_no_more_sources_than_the_cap() -> None:
+    calls: list[int] = []
+
+    def fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append(1)
+        return {"data": []}
+
+    sources = _threads_sources(5)
+    ok = frozenset(s.platform for s in sources)
+    _, failures = collect(sources, ok, TH_ENV, fetch, NOW, max_sources=2)
+    assert len(calls) == 2
+    assert [f.platform for f in failures if f.word == "budget_exhausted"] == [
+        "threads2",
+        "threads3",
+        "threads4",
+    ]
+
+
+def test_ineligible_sources_do_not_use_up_the_cap() -> None:
+    """Sources whose follower read did not succeed take no place in the cap, so
+    a valid source after them still gets its insights (and costs no request)."""
+    calls: list[str] = []
+
+    def fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append("x")
+        return {"data": []}
+
+    sources = _threads_sources(4)
+    ok = frozenset({sources[3].platform})  # the first three failed their read
+    _, failures = collect(sources, ok, TH_ENV, fetch, NOW, max_sources=1)
+    assert len(calls) >= 1  # the valid source was collected, not starved
+    assert {f.platform for f in failures} <= {sources[3].platform}
+    assert "budget_exhausted" not in [f.word for f in failures]
+
+
+def test_failed_reads_ahead_of_a_valid_source_still_leave_it_collected() -> None:
+    sources = _threads_sources(6)
+    ok = frozenset({sources[5].platform})
+    seen: list[Any] = []
+
+    def fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        seen.append(args)
+        return {"data": []}
+
+    _, failures = collect(sources, ok, TH_ENV, fetch, NOW, max_sources=2)
+    assert seen  # reached the sixth source despite max_sources=2
+    assert "budget_exhausted" not in [f.word for f in failures]
+
+
+def test_total_work_stays_bounded_when_every_source_is_ineligible() -> None:
+    touched = [0]
+    template = _threads_sources(1)[0]
+
+    class Many:
+        def __iter__(self) -> Any:
+            while touched[0] < 5_000_000:
+                touched[0] += 1
+                yield template
+
+        def __len__(self) -> int:
+            return 5_000_000
+
+    calls: list[int] = []
+
+    def fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append(1)
+        return {"data": []}
+
+    _, failures = collect(Many(), frozenset(), TH_ENV, fetch, NOW, max_sources=1)  # type: ignore[arg-type]
+    assert calls == []
+    assert failures == []
+    assert touched[0] <= 1 + 50 + 50
+
+
+def test_collect_does_not_walk_an_unbounded_source_list() -> None:
+    """A list built without model validation costs bounded work: only a
+    window of it is touched and the report stays bounded."""
+    touched = [0]
+    template = _threads_sources(1)[0]
+
+    class Many:
+        def __iter__(self) -> Any:
+            while touched[0] < 5_000_000:
+                touched[0] += 1
+                yield template
+
+        def __len__(self) -> int:
+            return 5_000_000
+
+    fetch_calls: list[int] = []
+
+    def fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        fetch_calls.append(1)
+        return {"data": []}
+
+    ok = frozenset({template.platform})
+    _, failures = collect(Many(), ok, TH_ENV, fetch, NOW, max_sources=1)  # type: ignore[arg-type]
+    assert len(fetch_calls) == 1
+    assert touched[0] <= 1 + 50 + 50
+    assert len(failures) <= 100
+
+
+def test_a_request_is_never_sent_with_time_the_run_does_not_have() -> None:
+    """The time left is read once, right before the request: a clock that moves
+    between two reads must not turn a spent deadline into one more request."""
+    from reach_around.counts.insights import _Budget, _BudgetSpent
+
+    reads = [0.0]
+
+    def clock() -> float:
+        value = reads[0]
+        reads[0] += 0.6  # every read finds the clock further on
+        return value
+
+    sent: list[float] = []
+
+    def fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        sent.append(kwargs["timeout"])
+        return {}
+
+    budget = _Budget(5, 1.0, clock)
+    counted = budget.wrap(fetch)
+    counted()
+    assert sent == [pytest.approx(0.4)]  # one read: 0.6 into a 1.0 s run
+    with pytest.raises(_BudgetSpent):
+        counted()  # read at 1.2 s: spent, nothing is sent
+    assert len(sent) == 1
+    assert budget.spent
+
+
+def test_collect_stops_at_the_deadline() -> None:
+    now = [0.0]
+    calls: list[int] = []
+
+    def fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append(1)
+        now[0] += 100.0  # every request takes a long time
+        return {"data": []}
+
+    sources = _threads_sources(5)
+    ok = frozenset(s.platform for s in sources)
+    _, failures = collect(
+        sources, ok, TH_ENV, fetch, NOW, deadline_seconds=150.0, clock=lambda: now[0]
+    )
+    assert len(calls) == 2
+    assert any(f.word == "budget_exhausted" for f in failures)
+
+
 @pytest.mark.parametrize("cursor", [2**100, 2**63, 0, -5, True, 1.5, "7"], ids=repr)
 def test_tiktok_cursor_must_be_a_positive_int64(cursor: Any) -> None:
     first = page([video(1)], more=True, cursor=cursor)

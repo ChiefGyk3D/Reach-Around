@@ -98,14 +98,36 @@ class AlertsMatrix(BaseModel):
 class Alerts(BaseModel):
     """Which channels receive which owner alerts. Everything off by default."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # The validator below refuses a one-sided setup; the schema says so too:
+    # both lists empty (or absent), or both non-empty.
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={
+            "anyOf": [
+                {
+                    "properties": {
+                        "channels": {"maxItems": 0},
+                        "events": {"maxItems": 0},
+                    }
+                },
+                {
+                    "properties": {
+                        "channels": {"minItems": 1},
+                        "events": {"minItems": 1},
+                    },
+                    "required": ["channels", "events"],
+                },
+            ]
+        },
+    )
 
     channels: list[AlertChannel] = []
     events: list[AlertEventName] = []
     # Whether the visitor's address appears in the alert: the whole address, a
     # masked form (p***@example.com) or not at all. Alerts go only to channels
     # the owner chose, but a chat room is not a secret store.
-    visitor_email: VisitorEmail = "full"
+    visitor_email: VisitorEmail = "masked"
     max_per_minute: int = Field(
         default=DEFAULT_MAX_PER_MINUTE,
         ge=1,
@@ -116,6 +138,16 @@ class Alerts(BaseModel):
     # The homeserver the Matrix token may go to. The name authorizes the token to
     # be sent there, so it is listed here and matched exactly (docs/alerts.md).
     matrix: AlertsMatrix = AlertsMatrix()
+
+    @model_validator(mode="after")
+    def _both_lists_or_neither(self) -> Alerts:
+        # One list without the other silently turns alerts off; refuse it.
+        if bool(self.channels) != bool(self.events):
+            raise ValueError(
+                "set both channels and events, or neither: one without the other "
+                "sends nothing"
+            )
+        return self
 
     @model_validator(mode="after")
     def _matrix_needs_a_host(self) -> Alerts:
