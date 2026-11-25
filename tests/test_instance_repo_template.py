@@ -3412,3 +3412,286 @@ def test_the_engine_call_comment_is_the_release_tag_of_the_lock() -> None:
     calls = re.findall(rf"uses: {re.escape(CALLEE_PATH)}@[0-9a-f]{{40}} # (\S+)", text)
     assert len(calls) == 2
     assert set(calls) == {found.group(1)}
+
+
+# --- Daybreak round 3 findings (issue #694) -----------------------------------
+# Exact per-job binding of every validated value, read from the parsed YAML.
+
+OUTPUT_REF = re.compile(r"^\$\{\{ needs\.validate\.outputs\.([a-z0-9_]+) \}\}$")
+Binding = tuple[str, str | None]
+Key = tuple[str, str, str]
+
+# (job, where, input) -> ("output", name) or ("literal", value). The staging
+# Pages job reads the production Pages project only to refuse it.
+STEP_LABELS = (
+    "Fetch the Worker source",
+    "Check configuration",
+    "Fetch Cloudflare credentials",
+    "Publish the site",
+)
+
+
+def expected_bindings() -> dict[Key, Binding]:
+    out: dict[Key, Binding] = {}
+    for tier, config in (("staging", "dev"), ("production", "prd")):
+        w = f"worker-{tier}"
+        for key, value in (
+            ("environment", ("literal", tier)),
+            ("engine_repo", ("literal", UPSTREAM_REPO)),
+            ("engine_ref", ("output", "engine_ref")),
+            ("manifest_artifact", ("literal", "site-manifest")),
+            ("manifest_file", ("literal", "manifest.json")),
+            ("site_artifact", ("literal", "site-out")),
+            ("doppler_project", ("output", "doppler_project")),
+            ("doppler_config", ("literal", config)),
+            ("cloudflare_account_id", ("output", "cloudflare_account_id")),
+            ("worker_name", ("output", f"{tier}_worker_name")),
+            ("d1_database_id", ("output", f"{tier}_d1_database_id")),
+            ("ratelimit_namespace_id", ("output", f"{tier}_ratelimit_namespace_id")),
+            ("site_host", ("output", f"{tier}_site_host")),
+            ("zone_name", ("output", f"{tier}_zone_name")),
+            ("doppler_identity_id", ("output", f"doppler_identity_id_{tier}")),
+        ):
+            out[(w, "with", key)] = value
+        p = f"pages-{tier}"
+        for label, where, value in (
+            ("Fetch the Worker source", "with.ref", ("output", "engine_ref")),
+            ("Fetch the Worker source", "with.repository", ("literal", UPSTREAM_REPO)),
+            ("Fetch the Worker source", "with.path", ("literal", "engine")),
+            ("Fetch the Worker source", "with.sparse-checkout", ("literal", "worker")),
+            (
+                "Fetch the Worker source",
+                "with.persist-credentials",
+                ("literal", "False"),
+            ),
+            (
+                "Publish the site",
+                "env.CLOUDFLARE_API_TOKEN",
+                (
+                    "literal",
+                    "${{ fromJSON(steps.cf_doppler.outputs.secrets)"
+                    ".CLOUDFLARE_KEY_VALUE }}",
+                ),
+            ),
+            (
+                "Check configuration",
+                "env.CLOUDFLARE_ACCOUNT_ID",
+                ("output", "cloudflare_account_id"),
+            ),
+            (
+                "Check configuration",
+                "env.PAGES_PROJECT",
+                ("output", f"{tier}_pages_project"),
+            ),
+            (
+                "Fetch Cloudflare credentials",
+                "with.project",
+                ("output", "doppler_project"),
+            ),
+            ("Fetch Cloudflare credentials", "with.config", ("literal", config)),
+            ("Fetch Cloudflare credentials", "with.export", ("literal", "outputs")),
+            (
+                "Fetch Cloudflare credentials",
+                "with.names",
+                ("literal", "CLOUDFLARE_KEY_VALUE"),
+            ),
+            ("Fetch Cloudflare credentials", "with.required", ("literal", "true")),
+            (
+                "Fetch Cloudflare credentials",
+                "with.identity-id",
+                ("output", f"doppler_identity_id_{tier}"),
+            ),
+            (
+                "Publish the site",
+                "env.CLOUDFLARE_ACCOUNT_ID",
+                ("output", "cloudflare_account_id"),
+            ),
+            (
+                "Publish the site",
+                "env.PAGES_PROJECT",
+                ("output", f"{tier}_pages_project"),
+            ),
+        ):
+            out[(p, label, where)] = value
+    out[("pages-staging", "Check configuration", "env.PRODUCTION_PAGES_PROJECT")] = (
+        "output",
+        "production_pages_project",
+    )
+    return out
+
+
+def actual_bindings(text: str) -> dict[Key, Binding]:
+    """Every input of the four deploy jobs, read from the parsed workflow.
+
+    Worker jobs: every key of `with`. Pages jobs: every `with` or `env` key of
+    the four named steps (a step that is not one of them is its own finding).
+    """
+    jobs = yaml.safe_load(text)["jobs"]
+    found: dict[Key, Binding] = {}
+
+    def classify(value: Any) -> Binding:
+        match = OUTPUT_REF.match(str(value))
+        return ("output", match.group(1)) if match else ("literal", str(value))
+
+    for tier in ("staging", "production"):
+        for key, value in jobs[f"worker-{tier}"]["with"].items():
+            found[(f"worker-{tier}", "with", key)] = classify(value)
+        for step in jobs[f"pages-{tier}"]["steps"]:
+            name = str(step.get("name", ""))
+            label = next((n for n in STEP_LABELS if name.startswith(n)), None)
+            for where in ("with", "env"):
+                for key, value in (step.get(where) or {}).items():
+                    if label is None:
+                        if "needs.validate" in str(value):
+                            found[(f"pages-{tier}", name, f"{where}.{key}")] = classify(
+                                value
+                            )
+                        continue
+                    if where == "env" and key == "WRANGLER_SEND_METRICS":
+                        continue
+                    found[(f"pages-{tier}", label, f"{where}.{key}")] = classify(value)
+    return found
+
+
+def binding_map_problems(text: str) -> list[str]:
+    expected = expected_bindings()
+    actual = actual_bindings(text)
+    found: list[str] = []
+    for key in sorted(set(actual) - set(expected)):
+        found.append(f"{key}: an input that is not mapped (add it to the map)")
+    for key in sorted(set(expected) - set(actual)):
+        found.append(f"{key}: a mapped input that is missing")
+    for key in sorted(set(expected) & set(actual)):
+        if expected[key] != actual[key]:
+            found.append(f"{key}: reads {actual[key]}, must read {expected[key]}")
+    # the tier rule over every output a job reads, apart from the explicit map
+    jobs = yaml.safe_load(text)["jobs"]
+    for tier, other in (("staging", "production"), ("production", "staging")):
+        for job in (f"worker-{tier}", f"pages-{tier}"):
+            for ref in re.findall(
+                r"needs\.validate\.outputs\.([a-z0-9_]+)", yaml.safe_dump(jobs[job])
+            ):
+                if re.search(rf"(^{other}_|_{other}$)", ref) and not (
+                    job == "pages-staging" and ref == "production_pages_project"
+                ):
+                    found.append(f"{job}: reads the {other} output {ref}")
+    return found
+
+
+def test_each_deploy_input_reads_only_its_own_tiers_output() -> None:
+    assert binding_map_problems(deploy_text()) == []
+    # every validate output is either mapped or one of the two switches
+    outputs = set(yaml.safe_load(deploy_text())["jobs"]["validate"]["outputs"])
+    used = {v[1] for v in expected_bindings().values() if v[0] == "output"}
+    for name in outputs - used:
+        assert name.startswith("allow_"), f"validate output {name} is never used"
+
+
+def test_the_per_tier_binding_guard_bites() -> None:
+    good = deploy_text()
+    swaps = {
+        "worker_name": ("production_worker_name", "staging_worker_name"),
+        "d1_database_id": ("production_d1_database_id", "staging_d1_database_id"),
+        "ratelimit_namespace_id": (
+            "production_ratelimit_namespace_id",
+            "staging_ratelimit_namespace_id",
+        ),
+        "site_host": ("production_site_host", "staging_site_host"),
+        "zone_name": ("production_zone_name", "staging_zone_name"),
+        "doppler_identity_id": (
+            "doppler_identity_id_production",
+            "doppler_identity_id_staging",
+        ),
+    }
+    for key, (production, staging) in swaps.items():
+        # each job reads the other tier's output, in both directions
+        for want, wrong in ((production, staging), (staging, production)):
+            line = f"      {key}: ${{{{ needs.validate.outputs.{want} }}}}"
+            assert good.count(line) == 1, line
+            bad = good.replace(
+                line, f"      {key}: ${{{{ needs.validate.outputs.{wrong} }}}}"
+            )
+            assert binding_map_problems(bad), (key, want, wrong)
+    # the Pages project, in the check step and in the publish step
+    for tier, other in (("production", "staging"), ("staging", "production")):
+        line = f"PAGES_PROJECT: ${{{{ needs.validate.outputs.{tier}_pages_project }}}}"
+        assert good.count(line) >= 2
+        bad = good.replace(
+            line,
+            f"PAGES_PROJECT: ${{{{ needs.validate.outputs.{other}_pages_project }}}}",
+        )
+        assert binding_map_problems(bad), tier
+    # the secret-manager step of a Pages job
+    for tier, other in (("production", "staging"), ("staging", "production")):
+        line = (
+            f"identity-id: ${{{{ needs.validate.outputs.doppler_identity_id_{tier} }}}}"
+        )
+        assert line in good
+        assert binding_map_problems(good.replace(line, line.replace(tier, other)))
+    # a literal that names the tier is bound too
+    assert binding_map_problems(
+        good.replace("environment: production", "environment: staging")
+    )
+    assert binding_map_problems(
+        good.replace("doppler_config: prd", "doppler_config: dev")
+    )
+
+
+def test_a_new_deploy_input_fails_until_it_is_mapped() -> None:
+    good = deploy_text()
+    anchor = "      zone_name: ${{ needs.validate.outputs.production_zone_name }}\n"
+    assert anchor in good
+    extra = anchor + "      new_input: literal\n"
+    problems = binding_map_problems(good.replace(anchor, extra))
+    assert any("not mapped" in p and "new_input" in p for p in problems), problems
+    # a new validated value in a Pages step
+    env = (
+        '          WRANGLER_SEND_METRICS: "false"\n'
+        "        run: >-\n"
+        "          npx --no-install wrangler pages deploy ../../site-out\n"
+        '          --project-name "$PAGES_PROJECT"\n'
+        "          --branch main"
+    )
+    assert env in good
+    new_env = (
+        "          NEW_VALUE: ${{ needs.validate.outputs.production_site_host }}\n"
+    )
+    added = env.replace(
+        "          WRANGLER_SEND_METRICS",
+        new_env + "          WRANGLER_SEND_METRICS",
+        1,
+    )
+    problems = binding_map_problems(good.replace(env, added))
+    assert any("not mapped" in p and "NEW_VALUE" in p for p in problems), problems
+    # a new step that reads a validated value
+    step = (
+        "      - name: Publish the site to Pages\n"
+        "        working-directory: engine/worker\n"
+        "        env:\n"
+        "          CLOUDFLARE_API_TOKEN"
+    )
+    assert good.count(step) == 2
+    sneaky = (
+        "      - name: Extra\n        run: echo\n        env:\n"
+        "          X: ${{ needs.validate.outputs.staging_site_host }}\n" + step
+    )
+    assert any(
+        "Extra" in p for p in binding_map_problems(good.replace(step, sneaky, 1))
+    )
+
+
+def test_the_docs_say_exactly_when_staging_runs() -> None:
+    root = ROOT
+    for path in (
+        root / "docs" / "deploy.md",
+        root / "docs" / "instance-repos.md",
+        TEMPLATE / "README.md",
+        TEMPLATE / ".github" / "workflows" / "deploy.yml",
+    ):
+        text = path.read_text(encoding="utf-8")
+        assert "on every push to `main`" not in text, path
+        assert "every push to `main`, and" not in text, path
+        assert "runs on every push" not in text, path
+    deploy_doc = (root / "docs" / "deploy.md").read_text(encoding="utf-8")
+    start = deploy_doc.index("Staging runs")
+    assert "ALLOW_STAGING_DEPLOY" in deploy_doc[start : start + 400]

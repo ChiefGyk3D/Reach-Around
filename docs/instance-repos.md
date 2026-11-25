@@ -158,7 +158,7 @@ Doppler config:
 
 | Tier | Environment | Doppler config | Runs |
 |---|---|---|---|
-| staging | `staging` | `dev` | every push to `main`, and a manual run with target `staging`, only while the repository variable `ALLOW_STAGING_DEPLOY` is exactly `true` |
+| staging | `staging` | `dev` | a push to `main`, or a manual run on `main` with target `staging`, and only while the repository variable `ALLOW_STAGING_DEPLOY` is exactly `true` |
 | production | `production` | `prd` | only a manual run on `main` with target `production`, and only while the repository variable `ALLOW_PRODUCTION_DEPLOY` is exactly `true` |
 
 Production is off until you turn it on: the variable is not set by default, so a

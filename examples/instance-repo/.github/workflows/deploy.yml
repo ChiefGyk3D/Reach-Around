@@ -1,14 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Deploy this instance to Cloudflare: the click counter Worker (with its D1
-# migrations) and the static site on Pages. Runs on a push to main and by hand.
+# migrations) and the static site on Pages. Runs on a push to main and by hand; the
+# validate job always runs, and each deploy tier has its own condition (below).
 # The one-time Cloudflare, Doppler and GitHub setup is in README.md and the
 # engine's docs/deploy.md ("Deploying the Worker from an instance repo").
 #
 # Two tiers, each its own GitHub environment and its own secret-manager
 # identity:
-#   staging     runs on every push to main, and by hand with target staging,
-#               but only while the repository variable ALLOW_STAGING_DEPLOY is
+#   staging     runs on a push to main, and by hand with target staging, and
+#               only while the repository variable ALLOW_STAGING_DEPLOY is
 #               exactly `true`. Set it LAST, after both environments exist and
 #               are protected: GitHub creates a missing environment with no
 #               protection on first use, and this variable is what keeps a first

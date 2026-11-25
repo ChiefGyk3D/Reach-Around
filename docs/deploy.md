@@ -647,7 +647,10 @@ pinned to the commit in the template's `engine.lock` (a test keeps the two
 equal), and a `pages-staging` and a `pages-production` job that publish the
 site. A repository copied from the template therefore deploys with the OIDC-only
 reusable deploy and holds no Cloudflare token as a GitHub secret. Staging runs
-on every push to `main`. Production runs only by hand on `main` with target
+on a push to `main`, or by hand on `main` with target `staging`, only while the
+repository variable `ALLOW_STAGING_DEPLOY` is exactly `true` (absent by default,
+set last, after both environments are protected); otherwise only `validate`
+runs. Production runs only by hand on `main` with target
 `production`, and only while the repository variable `ALLOW_PRODUCTION_DEPLOY` is
 exactly `true` (it is absent by default). The variables and the one-time setup
 are in the template's `README.md` and in `docs/instance-repos.md`.
