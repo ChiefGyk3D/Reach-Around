@@ -594,6 +594,10 @@ def platform_config(doc: dict[str, Any], count: dict[str, Any] | None) -> Any:
                 }
             ],
             "features": {"kit_gate": True},
+            "privacy": {
+                "controller_name": "Example Creator",
+                "contact": "example.com/contact",
+            },
             "kit": doc,
         }
     )
