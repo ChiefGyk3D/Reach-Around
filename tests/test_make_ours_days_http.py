@@ -64,7 +64,12 @@ class _TrackingServer(ThreadingHTTPServer):
             # drop finished handlers
             self._open = [(h, s) for h, s in self._open if h.is_alive()]
             self._open.append((t, request))
-        t.start()
+        try:
+            t.start()
+        except RuntimeError:  # cannot start a thread: drop this request only
+            with self._lock:
+                self._open.remove((t, request))
+            self.shutdown_request(request)
 
     def handlers(self) -> list[threading.Thread]:
         with self._lock:
@@ -84,13 +89,13 @@ class _TrackingServer(ThreadingHTTPServer):
 class Local:
     """A loopback server whose answer a test supplies; counts hits."""
 
-    def __init__(self, handler: Handler) -> None:
+    def __init__(self, handler: Handler, handler_timeout: float = 5) -> None:
         self.hits = 0
         self.auth: list[str | None] = []
         outer = self
 
         class H(BaseHTTPRequestHandler):
-            timeout = 5  # a client that stalls mid-request cannot hold a handler
+            timeout = handler_timeout  # a stalled client cannot hold a handler
 
             def do_POST(self) -> None:  # noqa: N802 - http.server API
                 outer.hits += 1

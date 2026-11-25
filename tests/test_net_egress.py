@@ -334,7 +334,11 @@ def test_the_guard_flags_a_module_that_opens_connections() -> None:
 
 
 class DripServer:
-    """Loopback server whose behavior function gets each accepted connection."""
+    """Loopback server whose behavior function gets each accepted connection.
+
+    Every accepted socket is closed exactly once (by its worker, or by close());
+    close() takes one global deadline; helper threads are named fake-*.
+    """
 
     def __init__(
         self,
@@ -368,7 +372,13 @@ class DripServer:
                 self._workers = [w for w in self._workers if w.is_alive()]
                 self._workers.append(worker)
                 self._conns.append(conn)
-            worker.start()
+            try:
+                worker.start()
+            except RuntimeError:  # cannot start a thread: drop this request only
+                with self._lock:
+                    self._workers.remove(worker)
+                    self._conns.remove(conn)
+                conn.close()
 
     def _run(self, conn: socket.socket) -> None:
         raw = conn
@@ -384,6 +394,8 @@ class DripServer:
         finally:
             with self._lock:  # a finished connection is not kept for teardown
                 self._conns = [c for c in self._conns if c is not conn and c is not raw]
+            conn.close()  # every accepted socket is closed exactly once, here or
+            raw.close()  # in close(); raw is already detached after a TLS wrap
 
     def close(self, join_timeout: float = 5.0) -> None:
         """Stop accepting, wake every blocked worker, and join all threads.
@@ -394,7 +406,8 @@ class DripServer:
         with contextlib.suppress(OSError):
             self.listener.shutdown(socket.SHUT_RDWR)
         self.listener.close()
-        self._thread.join(timeout=join_timeout)
+        deadline = time.monotonic() + join_timeout  # one deadline for every join
+        self._thread.join(max(0.0, deadline - time.monotonic()))
         with self._lock:
             conns, workers = list(self._conns), list(self._workers)
         for conn in conns:
@@ -402,7 +415,7 @@ class DripServer:
                 conn.shutdown(socket.SHUT_RDWR)
             conn.close()
         for worker in workers:
-            worker.join(timeout=join_timeout)
+            worker.join(max(0.0, deadline - time.monotonic()))
         stuck = [t.name for t in (self._thread, *workers) if t.is_alive()]
         if stuck:
             raise AssertionError(f"fake drip server threads did not stop: {stuck}")
