@@ -20,6 +20,14 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "verify-support-redirect.sh"
 
+# The verifier supports Linux systems that provide /usr/bin/bash and a
+# root-owned curl at /usr/bin or /bin (not NixOS-style layouts).
+if not Path("/usr/bin/bash").exists():
+    pytest.skip(
+        "verify-support-redirect.sh needs /usr/bin/bash (unsupported layout)",
+        allow_module_level=True,
+    )
+
 Headers = list[tuple[str, str]]
 # (method, path) -> (status, headers); a list so a header can repeat.
 SiteReply = Callable[[str, str], tuple[int, Headers]]
@@ -101,9 +109,11 @@ def run_hosts(
         "EXP_HOST": dst,
         "VERIFY_SCHEME": "http",
     }
+    if "TMPDIR" in os.environ:  # the verifier's mktemp -d must find a writable dir
+        e["TMPDIR"] = os.environ["TMPDIR"]
     e.update(env)
     return subprocess.run(  # noqa: S603 - fixed argv, loopback only
-        ["/usr/bin/bash", str(script)],
+        [str(script)],  # via the shebang, so bash -p applies
         env=e,
         capture_output=True,
         text=True,
@@ -911,7 +921,7 @@ def test_caller_path_cannot_bypass_script_or_utilities(tmp_path: Path) -> None:
         check=False,
     )
     explicit = subprocess.run(  # noqa: S603 - fixed argv, synthetic input
-        ["/usr/bin/bash", str(SCRIPT)],
+        ["/usr/bin/bash", "-p", str(SCRIPT)],
         env=environment,
         capture_output=True,
         text=True,
@@ -986,8 +996,9 @@ def _script_with_sized_header_writer(
     if above_limit:
         writer = (
             "trap '' XFSZ\n"
-            'while printf "%01024d" 0 >> "$hdr"; do :; done\n'
-            f"printf hit > {limit_marker!s}\n"
+            'if ! printf "%066000d" 0 >> "$hdr"; then\n'
+            f"  printf hit > {limit_marker!s}\n"
+            "fi\n"
             "exit 73\n"
         )
     else:
@@ -1054,3 +1065,192 @@ def test_header_slightly_above_64_kib_hits_file_limit_promptly(
     assert result.returncode == 1
     assert "request did not complete" in result.stderr
     assert limit_marker.read_text() == "hit"
+    assert "no parsable HTTP status" not in result.stderr
+
+
+# --- caller shell startup files (BASH_ENV, exported functions, SHELLOPTS) ----
+
+
+def _startup_payload(tmp_path: Path) -> tuple[Path, Path]:
+    marker = tmp_path / "payload-ran"
+    payload = tmp_path / "payload.sh"
+    payload.write_text(f"printf ran > {marker!s}\necho 'all checks passed'\nexit 0\n")
+    return payload, marker
+
+
+def _run_direct(script: Path, **env: str) -> subprocess.CompletedProcess[str]:
+    e = {"PATH": os.environ["PATH"], "SRC_HOST": "", "EXP_HOST": ""}
+    e.update(env)
+    return subprocess.run(  # noqa: S603 - fixed argv, synthetic input
+        [str(script)],
+        env=e,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+
+def _startup_env(tmp_path: Path, kind: str) -> tuple[dict[str, str], Path]:
+    payload, marker = _startup_payload(tmp_path)
+    if kind == "bash_env":
+        return {"BASH_ENV": str(payload)}, marker
+    if kind == "exported_function":
+        body = f"() {{ printf ran > {marker!s}; echo 'all checks passed'; exit 0\n}}"
+        return {"BASH_FUNC_export%%": body}, marker
+    # xtrace from SHELLOPTS expands PS4, and a command substitution in PS4 runs.
+    # ENV is added too (it only matters in posix mode).
+    return {
+        "SHELLOPTS": "xtrace",
+        "PS4": f"$(printf ran > {marker!s}) ",
+        "ENV": str(payload),
+    }, marker
+
+
+@pytest.mark.parametrize("kind", ["bash_env", "exported_function", "shellopts_ps4"])
+def test_caller_shell_startup_settings_cannot_run_code(
+    tmp_path: Path, kind: str
+) -> None:
+    env, marker = _startup_env(tmp_path, kind)
+
+    result = _run_direct(SCRIPT, **env)
+
+    assert not marker.exists()
+    assert result.returncode == 2
+    assert "SRC_HOST is required" in result.stderr
+    assert "all checks passed" not in result.stdout
+
+
+@pytest.mark.parametrize("kind", ["bash_env", "exported_function", "shellopts_ps4"])
+def test_explicit_privileged_bash_also_ignores_startup_settings(
+    tmp_path: Path, kind: str
+) -> None:
+    env, marker = _startup_env(tmp_path, kind)
+    e = {"PATH": os.environ["PATH"], "SRC_HOST": "", "EXP_HOST": "", **env}
+
+    result = subprocess.run(  # noqa: S603 - fixed argv, synthetic input
+        ["/usr/bin/bash", "-p", str(SCRIPT)],
+        env=e,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert not marker.exists()
+    assert result.returncode == 2
+    assert "SRC_HOST is required" in result.stderr
+
+
+def test_shebang_requests_privileged_mode() -> None:
+    assert SCRIPT.read_text().splitlines()[0] == "#!/usr/bin/bash -p"
+
+
+def test_plain_bash_invocation_is_refused() -> None:
+    result = subprocess.run(  # noqa: S603 - fixed argv, synthetic input
+        ["/usr/bin/bash", str(SCRIPT)],
+        env={
+            "PATH": os.environ["PATH"],
+            "SRC_HOST": "a.example",
+            "EXP_HOST": "b.example",
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "run this script as an executable" in result.stderr
+    assert "all checks passed" not in result.stdout
+
+
+# --- each PATH control proved on its own, by mutating a copy of the script ---
+
+PATH_RESET = "PATH=/usr/bin:/bin\nexport PATH\n"
+SECURITY_UTILITIES = {
+    "env": "ENV_BIN",
+    "mktemp": "MKTEMP_BIN",
+    "chmod": "CHMOD_BIN",
+    "rm": "RM_BIN",
+    "stat": "STAT_BIN",
+    "readlink": "READLINK_BIN",
+    "tr": "TR_BIN",
+    "awk": "AWK_BIN",
+}
+
+
+def _mutated_run(
+    tmp_path: Path, utility: str, mode: str
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    """Run a copy of the verifier, with a fake `utility` first in the caller PATH.
+
+    mode: real (no change), no_reset (early PATH reset removed), bare (this one
+    utility called by bare name), both (reset removed and the utility bare)."""
+    work = tmp_path / "work"
+    work.mkdir()
+    fake_curl = fake_curl_dir(work, "HTTP/1.1 200 OK\r\n\r\n")
+    script = script_with_curl(work, fake_curl / "curl", stub_meta=utility != "stat")
+    source = script.read_text()
+    if mode in ("no_reset", "both"):
+        assert PATH_RESET in source
+        source = source.replace(PATH_RESET, "", 1)
+    if mode in ("bare", "both"):
+        variable = f'"${SECURITY_UTILITIES[utility]}"'
+        assert variable in source
+        source = source.replace(variable, utility)
+    if mode != "real":
+        assert source != script.read_text()
+    script.write_text(source)
+
+    callerbin = tmp_path / "callerbin"
+    callerbin.mkdir()
+    private_tmp = tmp_path / "private-tmp"
+    private_tmp.mkdir()
+    marker = tmp_path / "fake-ran"
+    fake = callerbin / utility
+    fake.write_text(
+        f'#!/usr/bin/bash\nprintf ran > {marker!s}\nexec /usr/bin/{utility} "$@"\n'
+    )
+    fake.chmod(0o755)
+    result = run_hosts(
+        "127.0.0.1:1",
+        "127.0.0.1:2",
+        script=script,
+        PATH=f"{callerbin}:{os.environ['PATH']}",
+        TMPDIR=str(private_tmp),
+    )
+    return result, marker
+
+
+@pytest.mark.parametrize("utility", sorted(SECURITY_UTILITIES))
+def test_real_script_never_runs_a_caller_path_utility(
+    tmp_path: Path, utility: str
+) -> None:
+    _, marker = _mutated_run(tmp_path, utility, "real")
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("utility", sorted(SECURITY_UTILITIES))
+def test_absolute_utility_path_alone_resists_caller_path(
+    tmp_path: Path, utility: str
+) -> None:
+    _, marker = _mutated_run(tmp_path, utility, "no_reset")
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("utility", sorted(SECURITY_UTILITIES))
+def test_early_path_reset_alone_resists_a_bare_utility(
+    tmp_path: Path, utility: str
+) -> None:
+    _, marker = _mutated_run(tmp_path, utility, "bare")
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("utility", sorted(SECURITY_UTILITIES))
+def test_removing_both_path_controls_lets_the_fake_utility_run(
+    tmp_path: Path, utility: str
+) -> None:
+    """Mutation check: the fixture reaches each utility, so it would notice."""
+    _, marker = _mutated_run(tmp_path, utility, "both")
+    assert marker.read_text() == "ran"

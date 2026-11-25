@@ -499,7 +499,17 @@ before relying on it), and how long a given browser keeps a 301 with no
    root-owned and not group or world writable. Symlinks are resolved before
    validation and the resolved target is executed. The remaining theoretical
    race in which root replaces a validated root-owned executable is accepted.
-   The verifier targets Linux and uses the absolute `/usr/bin/bash` interpreter.
+   The verifier supports only Linux systems that provide `/usr/bin/bash` and a
+   root-owned curl at `/usr/bin/curl` or `/bin/curl` (that is an explicit
+   prerequisite; layouts such as NixOS are not supported, and the test suite
+   skips when `/usr/bin/bash` is missing). Its shebang is `#!/usr/bin/bash -p`,
+   so bash ignores `BASH_ENV`, `ENV`, `SHELLOPTS`, `BASHOPTS` and exported shell
+   functions instead of running caller-controlled code before the first
+   statement. Run it as the executable (`scripts/verify-support-redirect.sh`),
+   or as `/usr/bin/bash -p scripts/verify-support-redirect.sh`, never as plain
+   `bash scripts/verify-support-redirect.sh`: a shell script cannot secure
+   itself before bash has started, so the script refuses to run without
+   privileged mode, and that refusal is only an accident guard.
    Its first executable statement replaces the caller's `PATH` with
    `/usr/bin:/bin`, exports it, and its security-sensitive utilities are invoked
    by absolute path so later `PATH` changes cannot select substitutes. Curl runs
@@ -507,7 +517,7 @@ before relying on it), and how long a given browser keeps a 301 with no
    and an empty private temporary `HOME`. Caller proxy, curl, certificate, TLS
    key logging, and other environment settings cannot affect the request.
    Response headers are captured in that private directory with a 64 KiB
-   file-size limit. The body is discarded and redirects are never followed. It
+   file-size limit (`ulimit -f 64`, in 1024-byte units). The body is discarded and redirects are never followed. It
    is never HEAD, because browsers navigate with GET and a rule or origin can
    treat HEAD differently.
    It exits `0` only after every

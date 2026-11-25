@@ -1,6 +1,19 @@
-#!/usr/bin/bash
+#!/usr/bin/bash -p
 PATH=/usr/bin:/bin
 export PATH
+# Privileged mode (-p, set by the shebang) makes bash ignore BASH_ENV, ENV,
+# SHELLOPTS, BASHOPTS and imported shell functions, which otherwise run
+# caller-controlled code before the first line of this file. A script cannot
+# protect itself before bash has started, so this only holds when the verifier
+# is started as the executable (scripts/verify-support-redirect.sh) or as
+# `/usr/bin/bash -p scripts/verify-support-redirect.sh`. Plain `bash script` is
+# refused below. That refusal is a guard against accidents, not a defense: a
+# hostile BASH_ENV payload has already run by then.
+case "$-" in
+  *p*) ;;
+  *) echo "usage error: run this script as an executable, not through bash without -p" >&2
+     exit 2 ;;
+esac
 readonly ENV_BIN=/usr/bin/env
 readonly MKTEMP_BIN=/usr/bin/mktemp
 readonly CHMOD_BIN=/usr/bin/chmod
@@ -14,6 +27,10 @@ readonly CURL_PATH=/usr/bin:/bin
 
 # SPDX-License-Identifier: Apache-2.0
 # Read-only check of the old-support-host redirect (issue #888, runbook 3.5).
+#
+# Prerequisite: a Linux system that provides /usr/bin/bash and a root-owned
+# curl at /usr/bin/curl or /bin/curl. Other layouts (for example NixOS) are not
+# supported. Run the script as an executable so the shebang applies bash -p.
 #
 #   SRC_HOST=support-staging.example.com EXP_HOST=links-staging.example.com \
 #     scripts/verify-support-redirect.sh
@@ -174,9 +191,9 @@ fetch() {
   # Start curl with a fixed PATH, C locale and empty private HOME. The empty
   # environment excludes proxy, curl, certificate and TLS key-log settings.
   # Redirect following remains disabled: no -L is ever used. Limit the header
-  # file to 128 512-byte blocks, or 64 KiB.
+  # file to 64 KiB (ulimit -f counts 1024-byte units in bash).
   if ! (
-    ulimit -f 128
+    ulimit -f 64
     "$ENV_BIN" -i PATH="$CURL_PATH" HOME="$CURL_HOME" LC_ALL=C \
       "$CURL_BIN" -q --noproxy '*' --proto "=${SCHEME}" \
         --connect-timeout 5 --max-time 20 -sS \

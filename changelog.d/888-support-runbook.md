@@ -20,3 +20,10 @@
   characters, legacy numeric and hexadecimal IPv4 spellings, and noncanonical
   dotted quads. The remaining theoretical replacement race requiring root
   access is accepted.
+  The shebang is `#!/usr/bin/bash -p`, so bash ignores `BASH_ENV`, `ENV`,
+  `SHELLOPTS`, `BASHOPTS` and exported functions; run the verifier as the
+  executable, because a script cannot secure itself before bash starts, and
+  plain `bash script` is refused. The header cap is now truly 64 KiB
+  (`ulimit -f 64`, 1024-byte units) with a fixed above-limit test. Each PATH
+  control (early reset, each absolute utility) is proved on its own by mutation
+  tests. Support is narrowed to Linux with `/usr/bin/bash` and root-owned curl.
