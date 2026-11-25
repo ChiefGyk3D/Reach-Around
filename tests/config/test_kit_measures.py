@@ -4,6 +4,8 @@ Everything is synthetic."""
 
 from __future__ import annotations
 
+import ast
+import importlib
 import json
 import re
 from datetime import date
@@ -375,3 +377,308 @@ def test_a_private_source_field_reaches_neither_projection(
     assert mine and {m.visibility for m in mine} == {"private"}
     for projection in (public_projection(kit, None), gated_projection(kit, None)):
         assert not [m for m in projection["measures"] if m.block == blocks[field]]
+
+
+_POLICY_NAMES = ("KIT_FIELD_POLICY", "DISPLAY_POLICY")
+# The only functions allowed to read the policy tables (in measures.py).
+_POLICY_READERS = {"source_level", "is_source_field"}
+
+
+def _config_trees() -> dict[str, ast.Module]:
+    """The syntax tree of every module in reach_around.config, by module name."""
+    import pkgutil
+
+    import reach_around.config as config_package
+
+    trees: dict[str, ast.Module] = {}
+    for info in pkgutil.walk_packages(config_package.__path__):
+        parts = info.name.split(".")
+        path = Path(config_package.__path__[0], *parts[:-1], f"{parts[-1]}.py")
+        if path.is_file():
+            trees[info.name] = ast.parse(path.read_text(encoding="utf-8"))
+    return trees
+
+
+def _measure_aliases(tree: ast.Module) -> set[str]:
+    names = {"Measure"}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ImportFrom):
+            names |= {a.asname for a in n.names if a.name == "Measure" and a.asname}
+    return names
+
+
+def _constructor_scopes(name: str, tree: ast.Module) -> set[str]:
+    """The top-level function or class of every ``Measure(...)`` call in a
+    module: any scope (nested, async, method), through ``Measure``, an import
+    alias or a ``module.Measure`` attribute. Best effort: static discovery
+    cannot see a Measure built through ``getattr`` or ``type(...)``, which is why
+    the runtime parity test below, not this scan, is the guarantee."""
+    aliases = _measure_aliases(tree)
+    scopes: set[str] = set()
+    for top in tree.body:
+        for n in ast.walk(top):
+            if isinstance(n, ast.Assign) and (
+                (isinstance(n.value, ast.Name) and n.value.id in aliases)
+                or (isinstance(n.value, ast.Attribute) and n.value.attr == "Measure")
+            ):
+                scopes.add(f"{name}.{getattr(top, 'name', '<module>')}")  # an alias
+                continue
+            if not isinstance(n, ast.Call):
+                continue
+            f = n.func
+            hit = (isinstance(f, ast.Name) and f.id in aliases) or (
+                isinstance(f, ast.Attribute) and f.attr == "Measure"
+            )
+            if hit:
+                scopes.add(f"{name}.{getattr(top, 'name', '<module>')}")
+    return scopes
+
+
+def test_every_function_that_constructs_a_measure_is_in_the_registry() -> None:
+    """#875, best effort: a Measure-building function not listed in
+    MEASURE_BUILDERS fails here when it builds through ``Measure(...)``, an import
+    alias, ``module.Measure`` or an assigned alias. It cannot see a ``getattr`` or
+    ``type(...)`` construction. The real fix is that every builder derives
+    visibility through ``source_level``; this and the parity tests are regression
+    protection, not a proof of completeness."""
+    from reach_around.config.measures import MEASURE_BUILDERS
+
+    found: set[str] = set()
+    for name, tree in _config_trees().items():
+        found |= _constructor_scopes(name.rsplit(".", 1)[-1], tree)
+    registered = {f"{b.module}.{b.function}" for b in MEASURE_BUILDERS}
+    assert found == registered
+
+
+def test_the_discovery_scan_sees_these_ways_to_build_a_measure() -> None:
+    source = (
+        "from x import Measure as M\n"
+        "import m\n"
+        "def a(): return M()\n"
+        "async def b(): return m.Measure()\n"
+        "class C:\n"
+        "    def d(self): return Measure()\n"
+        "def e():\n"
+        "    def inner(): return Measure()\n"
+        "    return inner\n"
+        "def f():\n"
+        "    make = Measure\n"
+        "    return make()\n"
+    )
+    scopes = _constructor_scopes("t", ast.parse(source))
+    assert scopes == {"t.a", "t.b", "t.C", "t.e", "t.f"}
+
+
+def test_no_builder_module_can_name_a_policy_table() -> None:
+    """#875: visibility reaches builders through source_level only. Outside
+    kit.py (which defines the tables) and the two reader functions in
+    measures.py, no config module may name a policy table, import under an
+    alias or carry a string that names one (a getattr on a built-up string would
+    still hit the runtime parity test)."""
+    for name, tree in _config_trees().items():
+        if name == "kit":
+            continue
+        skip: set[int] = set()
+        for n in ast.walk(tree):
+            if (
+                name == "measures"
+                and isinstance(n, ast.FunctionDef)
+                and n.name in _POLICY_READERS
+            ):
+                skip |= {id(c) for c in ast.walk(n)}
+            if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant):
+                skip |= {id(n.value)}  # a docstring
+        for n in ast.walk(tree):
+            if id(n) in skip:
+                continue
+            text = ""
+            if isinstance(n, ast.Name):
+                text = n.id
+            elif isinstance(n, ast.Attribute):
+                text = n.attr
+            elif isinstance(n, ast.alias):
+                text = n.name
+            elif isinstance(n, ast.Constant) and isinstance(n.value, str):
+                text = n.value
+            assert not any(p in text for p in _POLICY_NAMES), (name, text)
+            if isinstance(n, ast.Constant):
+                assert "FIELD_POL" not in text and "DISPLAY_" not in text, (name, text)
+
+
+def _full_kit() -> KitConfig:
+    """A kit that makes every kit-driven builder emit every measure it can: every
+    live figure typed, fediverse followers, posts, interactions and the means, and
+    every channel platform with every field it takes. Driven from the builders' own
+    key lists, so a new live, fediverse or channel key is typed here without an
+    edit."""
+    from reach_around.config.channels import ALLOWED
+    from reach_around.config.measures import LIVE_KEYS
+
+    doc = kit_doc()
+    doc["live"] = [
+        {
+            "platform": "twitch",
+            "as_of": "2026-11-01",
+            "period_start": "2026-10-01",
+            "period_end": "2026-10-31",
+            **{key: 12 for key in LIVE_KEYS[1:]},
+        }
+    ]
+    doc["fediverse"] = [
+        {
+            "platform": "mastodon",
+            "profile_url": "https://example.com/@fake",
+            "as_of": "2026-11-01",
+            "followers": 10,
+            "posts": 20,
+            "interactions": [{"boosts": 1, "favorites": 2, "replies": 3}],
+            "show_mean": True,
+        }
+    ]
+    doc["channels"] = [
+        {
+            "platform": platform,
+            "as_of": "2026-11-01",
+            "url": "https://example.com/c",
+            **{name: 5 for name in names},
+        }
+        for platform, names in ALLOWED.items()
+    ]
+    return KitConfig.model_validate(doc)
+
+
+def _expected_keys(function: str) -> set[str]:
+    """Every registry key a builder can emit, from the builder's own key lists
+    where it has them. numbers, analytics and engagement name their keys in the
+    function body, so those three sets are written out here: a key added to one of
+    them makes the emitted set differ and fails the parity test below."""
+    from reach_around.config.channels import ALLOWED, FIELD_KEY
+    from reach_around.config.fediverse import STATED_KEYS
+    from reach_around.config.measures import LIVE_KEYS
+
+    return {
+        "numbers_measures": {"followers", "members"},
+        "analytics_measures": {"followers", "followers_change_30d", "analytics_stat"},
+        "live_measures": set(LIVE_KEYS[1:]),
+        "engagement_measures": {"avg_views_per_item", "engagement_rate"},
+        "fediverse_measures": set(STATED_KEYS),
+        "channel_measures": {FIELD_KEY[n] for names in ALLOWED.values() for n in names},
+    }[function]
+
+
+def _run_builder(function: str, field: str, *, export: str = "") -> list[Measure]:
+    """Run one registered builder on the full fixture for ``field``."""
+    from reach_around.config.handkept import HandKeptEntry
+    from reach_around.config.measures import MEASURE_BUILDERS
+
+    spec = next(b for b in MEASURE_BUILDERS if b.function == function)
+    module = importlib.import_module(f"reach_around.config.{spec.module}")
+    build = getattr(module, function)
+    kit = _full_kit()
+    if function == "numbers_measures":
+        from reach_around.config.kit import resolve_metrics
+
+        return build(resolve_metrics(kit, None), None)  # type: ignore[no-any-return]
+    if function == "to_measure":
+        entry = HandKeptEntry(
+            "twitch", "followers", 5, date(2026, 11, 1), field=field, export=export
+        )
+        return [build(entry)]
+    inputs = {
+        "analytics_measures": kit.analytics,
+        "live_measures": kit.live,
+        "engagement_measures": kit.engagement,
+        "fediverse_measures": kit.fediverse,
+        "channel_measures": kit.channels,
+    }
+    return build(inputs[function])  # type: ignore[no-any-return]
+
+
+def _parity_cases() -> list[tuple[str, str, str]]:
+    from reach_around.config.kit import DISPLAY_POLICY
+    from reach_around.config.measures import MEASURE_BUILDERS
+
+    cases = []
+    for b in MEASURE_BUILDERS:
+        # a field already private cannot narrow further: nothing to prove
+        for field in b.fields or tuple(
+            f for f, level in DISPLAY_POLICY.items() if level != "private"
+        ):
+            for table in ("DISPLAY_POLICY", "KIT_FIELD_POLICY"):
+                cases.append((b.function, field, table))
+    return cases
+
+
+def test_the_full_fixture_makes_every_builder_emit_every_measure_it_can() -> None:
+    """No allowlist: each builder's fixture reaches every branch, so the keys it
+    emits equal the keys it can emit. A measure added to a builder without
+    fixture coverage fails here."""
+    from reach_around.config.measures import MEASURE_BUILDERS
+
+    for b in MEASURE_BUILDERS:
+        if b.function == "to_measure":
+            continue  # one measure per entry; the key is the entry's own
+        emitted = {m.key for m in _run_builder(b.function, b.fields[0])}
+        assert emitted == _expected_keys(b.function), b.function
+
+
+@pytest.mark.parametrize(("function", "field", "table"), _parity_cases())
+def test_narrowing_either_policy_table_narrows_every_registered_builder(
+    function: str, field: str, table: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#875 runtime parity over the canonical registry: narrow one field in one
+    table and every measure the builder can emit becomes private."""
+    from dataclasses import replace
+
+    from reach_around.config import kit as kit_module
+
+    before = _run_builder(function, field)
+    assert before and {m.visibility for m in before} != {"private"}
+    current = getattr(kit_module, table)
+    patched = (
+        {**current, field: "private"}
+        if table == "DISPLAY_POLICY"
+        else {**current, field: replace(current[field], visibility="private")}
+    )
+    monkeypatch.setattr(kit_module, table, patched)
+    after = _run_builder(function, field)
+    if function != "to_measure":
+        assert {m.key for m in after} == _expected_keys(function)
+    assert after and {m.visibility for m in after} == {"private"}
+
+
+def test_an_export_entry_stays_private_whatever_its_field() -> None:
+    from reach_around.config.handkept import EXPORTS
+
+    for export, info in EXPORTS.items():
+        built = _run_builder("to_measure", info.field, export=export)
+        assert {m.visibility for m in built} == {info.floor}
+
+
+def test_is_source_field_requires_both_policy_tables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from reach_around.config import kit as kit_module
+    from reach_around.config.measures import is_source_field
+
+    assert is_source_field("live")
+    assert not is_source_field("not_a_field")
+    only_rich = {k: v for k, v in kit_module.DISPLAY_POLICY.items() if k != "live"}
+    monkeypatch.setattr(kit_module, "DISPLAY_POLICY", only_rich)
+    assert not is_source_field("live")
+    monkeypatch.undo()
+    only_display = {k: v for k, v in kit_module.KIT_FIELD_POLICY.items() if k != "live"}
+    monkeypatch.setattr(kit_module, "KIT_FIELD_POLICY", only_display)
+    assert not is_source_field("live")
+
+
+def test_the_registry_names_real_functions_and_covers_compile_measures() -> None:
+    from reach_around.config.measures import MEASURE_BUILDERS, source_level
+
+    for b in MEASURE_BUILDERS:
+        module = importlib.import_module(f"reach_around.config.{b.module}")
+        assert callable(getattr(module, b.function))
+        for field in b.fields:
+            assert source_level(field) in {"public", "gated", "private"}
+    covered = {m.block for m in compile_measures(_full_kit(), None)}
+    assert {"headline", "tile", "live", "derived", "fediverse", "channels"} <= covered

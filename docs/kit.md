@@ -1084,6 +1084,17 @@ than its limit (30 days) and closes it when everything is fresh again. It reads
 only `hand-kept.json`, uses no secret and sends nothing anywhere else. See
 [the instance repository README](../examples/instance-repo/README.md).
 
+## How measure visibility is guarded
+
+Every function that builds a measure from config takes its source visibility
+from `source_level`, the narrower of the two policy tables; none reads a table
+itself. That is the actual guarantee. The tests are regression protection: each
+registered builder is run with every measure it can emit under each narrowed
+table, and a static scan flags an unregistered builder where it can see one.
+Residual risk: a builder constructed through `getattr`, `type(...)` or code
+outside `reach_around.config` escapes the scan and the registry, so a reviewer
+of a new builder checks the `source_level` call by hand.
+
 ## Old numbers
 
 A number older than its stale limit (30 days by default; see
