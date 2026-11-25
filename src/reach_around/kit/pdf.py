@@ -813,15 +813,43 @@ def _with_legend(
     if labeled:
         sentences = LEGEND_SENTENCES if public else LEGEND_SENTENCES_GATED
         # The stylesheet prints the heading in capitals and the renderer puts
-        # the capitals in the text layer, so the heading is matched without
-        # case (a missing or altered heading still fails). The sentences keep
-        # their case (#890).
-        found.append(("the trust legend heading", LEGEND_HEADING))
-        lines = [("the trust legend", sentence) for sentence in sentences]
+        # the capitals in the text layer, so check_text accepts the heading as
+        # written or in its ASCII capitals, and nothing else (#890). The
+        # sentences keep their case.
+        found.append((LEGEND_HEADING_WHERE, LEGEND_HEADING))
+        lines = [(LEGEND_SENTENCES_WHERE, sentence) for sentence in sentences]
         found.extend(lines)
         if exact is not None:
             exact.extend(lines)
     return found
+
+
+LEGEND_HEADING_WHERE = "the trust legend heading"
+LEGEND_SENTENCES_WHERE = "the trust legend"
+
+
+def _legend_heading_precedes(text: str, sentences: Sequence[str]) -> bool:
+    """Is the heading present, as written or in ASCII capitals, before the
+    legend sentences it introduces (#890)?
+
+    Only those two spellings count: no case folding and no Unicode
+    normalization (a long s or a ligature is a different heading), and runs of
+    whitespace, including line breaks, collapse to one space, so a word cannot
+    be split or joined. The order is text order across the whole document. It
+    is not a page, card or visibility check: the text layer cannot show where a
+    line is drawn or whether it is seen."""
+    flat = " ".join(text.split())
+    heading = " ".join(LEGEND_HEADING.split())
+    spellings = (heading, heading.upper())
+    starts = [flat.find(one) for one in spellings if one in flat]
+    if not starts:
+        return False
+    first = min(starts)
+    for sentence in sentences:
+        at = flat.find(" ".join(sentence.split()))
+        if at != -1 and first >= at:
+            return False
+    return True
 
 
 def _flat(text: str) -> str:
@@ -981,7 +1009,16 @@ def check_text(
                 f"{where} is missing from the PDF text with its label as written; "
                 "the staged page may be out of date or the renderer lost it"
             )
+    legend = [value for where, value in exact if where == LEGEND_SENTENCES_WHERE]
     for where, value in expected:
+        if where == LEGEND_HEADING_WHERE:
+            if not _legend_heading_precedes(text, legend):
+                raise PdfError(
+                    f"{where} is missing from the PDF text, altered, or after "
+                    "the legend sentences; the staged page may be out of date "
+                    "or the renderer lost it"
+                )
+            continue
         if _flat(value) not in flat:
             raise PdfError(
                 f"{where} is missing from the PDF text; the staged page may be out "
