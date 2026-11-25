@@ -64,11 +64,13 @@ fail() {
     fails=$((fails + 1))
 }
 
+# curl -q (first argument) keeps ~/.curlrc and CURL_HOME out of the probe, so a
+# local proxy, header or output setting cannot change what is measured.
 # fetch NAME METHOD PATH: leaves $work/NAME.head, .body and sets status_NAME.
 # A transport error (no answer) is status 000.
 fetch() {
     local name="$1" method="$2" path="$3" status
-    status="$(curl -sS --globoff -o "$work/$name.body" -D "$work/$name.head" \
+    status="$(curl -q -sS --globoff -o "$work/$name.body" -D "$work/$name.head" \
         --max-time "$timeout" -X "$method" \
         -H "X-Smoke-Probe: $probe" -w '%{http_code}' \
         "$base$path" 2>"$work/$name.err")" || status="000"

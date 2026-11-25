@@ -39,6 +39,32 @@
     },
     "Alerts": {
       "additionalProperties": false,
+      "anyOf": [
+        {
+          "properties": {
+            "channels": {
+              "maxItems": 0
+            },
+            "events": {
+              "maxItems": 0
+            }
+          }
+        },
+        {
+          "properties": {
+            "channels": {
+              "minItems": 1
+            },
+            "events": {
+              "minItems": 1
+            }
+          },
+          "required": [
+            "channels",
+            "events"
+          ]
+        }
+      ],
       "description": "Which channels receive which owner alerts. Everything off by default.",
       "properties": {
         "channels": {
@@ -83,7 +109,7 @@
           "type": "integer"
         },
         "visitor_email": {
-          "default": "full",
+          "default": "masked",
           "enum": [
             "full",
             "masked",
@@ -4335,7 +4361,7 @@
           "allowed_hosts": []
         },
         "max_per_minute": 5,
-        "visitor_email": "full"
+        "visitor_email": "masked"
       }
     },
     "analytics": {
