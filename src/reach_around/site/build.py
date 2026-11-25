@@ -43,6 +43,7 @@ from reach_around.config.numbers import (
 from reach_around.config.page_title import DEFAULT_TEMPLATE, render_template
 from reach_around.config.profile_card import MEDIA_KIT_ID
 from reach_around.config.tablinks import is_tab_ref, parse_tab_ref
+from reach_around.kit.binding import binding_text, make_binding
 from reach_around.site.assets import collect_assets, collect_private_kit_assets
 from reach_around.site.beaconframe import (
     FRAME_PAGE as FRAME_PAGE_PATH,
@@ -67,6 +68,7 @@ from reach_around.site.frames import (
 from reach_around.site.inventory import InventoryEntry, build_inventory
 from reach_around.site.kit import (
     GATED_FILE,
+    KIT_PAGE,
     POLICY_FILE,
     check_gated_requests,
     check_no_gated_text,
@@ -175,6 +177,8 @@ _LIVE_SCRIPT = Path("static") / "live.js"
 _KIT_STYLE = Path("static") / "kit.css"
 _FRAME_STYLE = Path("static") / "frame.css"
 _SMART_STACK_STYLE = Path("static") / "smart-stack.css"
+# The compact tile grid (#873): published and linked only for page.density: compact.
+_SMART_COMPACT_STYLE = Path("static") / "smart-compact.css"
 _FRAME_ART_PREFIXES = ("frame-lite", "frame-fa-")
 
 
@@ -550,6 +554,11 @@ def _render_spoke_page(
     )
 
 
+def _tile(link: Link) -> Link:
+    """A link as a compact tile: no subtitle."""
+    return link.model_copy(update={"subtitle": None})
+
+
 def _render_smart_stack_page(
     env: Environment,
     config: SiteConfig,
@@ -567,11 +576,31 @@ def _render_smart_stack_page(
         for block in blocks
     ]
     links = {link.id: link for link in _links_in(every)}
+    compact = config.page.density == "compact"
+
+    def shape(blocks: list[Block]) -> list[Link]:
+        # Tiles carry a mark and a label only (#873); a subtitle would not fit.
+        return [_tile(link) if compact else link for link in _links_in(blocks)]
+
     groups = [
-        {"tab": tab, "links": [] if tab.spoke else _links_in(blocks)}
+        {"tab": tab, "links": [] if tab.spoke else shape(blocks)}
         for tab, blocks in zip(config.tabs, shown, strict=True)
         if tab.intent != "watch"
     ]
+    if compact:
+        # A group whose links are all outside their show_from / show_until window
+        # today has nothing to show: drop it, heading and all (#873).
+        groups = [item for item in groups if item["links"]]
+    watch_all = (
+        [
+            link
+            for tab, blocks in zip(config.tabs, shown, strict=True)
+            if tab.intent == "watch"
+            for link in shape(blocks)
+        ]
+        if compact
+        else []
+    )
     tab = config.tabs[0]
     pick = config.page.featured
     featured = None
@@ -583,6 +612,10 @@ def _render_smart_stack_page(
     ):
         featured = {"link": links[pick.link], "kicker": pick.kicker}
     return env.get_template("smart_stack.html").render(
+        compact=compact,
+        smart_compact=compact,
+        watch_all=watch_all,
+        watch_columns=next(t.columns for t in config.tabs if t.intent == "watch"),
         featured=featured,
         creator=config.creator,
         tab=tab,
@@ -1159,6 +1192,8 @@ def build_site(
         static.pop(Path("static") / "beacon-frame.js", None)
     if config.page.layout != "stack":
         static.pop(_SMART_STACK_STYLE, None)
+    if config.page.density != "compact":
+        static.pop(_SMART_COMPACT_STYLE, None)
     if not any(_has_crypto(blocks) for blocks in every_shown):
         for rel in _CRYPTO_FILES:
             static.pop(rel, None)
@@ -1345,7 +1380,19 @@ def build_site(
         # exist and compare the two roots again by identity now that both do.
         out.mkdir(parents=True, exist_ok=True)
         check_roots(out, gated_root)
-        staged = stage_gated(gated_root, kit_render.gated, kit_render.policy or None)
+        record = None
+        if kit_render.policy:
+            record = binding_text(
+                make_binding(
+                    kit_render.policy,
+                    kit_render.measures_digest,
+                    kit_render.gated,
+                    files[KIT_PAGE],
+                )
+            )
+        staged = stage_gated(
+            gated_root, kit_render.gated, kit_render.policy or None, record
+        )
     try:
         _empty(out)
         _write(out, files)

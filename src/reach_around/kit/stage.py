@@ -81,15 +81,15 @@ PRINT_CSS = (
     "animation:none!important;transition:none!important}"
     "main{max-width:none!important;margin:0!important;padding:0!important}"
     ".skip-link,.cookie-banner{display:none!important}"
-    "article,tr,li,.kit-numbers,.kit-engagement,.kit-imported,.kit-partners,.kit-services,.kit-rates,.kit-testimonials,.kit-demographics,.kit-disclosure"
+    "article,tr,li,.kit-legend,.kit-engagement,.kit-imported,.kit-partners,.kit-services,.kit-rates,.kit-testimonials,.kit-demographics,.kit-disclosure"
     "{break-inside:avoid}"
     # The audience section wraps the headline plate, the notes, the table and the
     # legend. Held whole it is taller than what is left of page 1, so Chromium
     # pushed all of it to page 2 and left page 1 mostly empty (#866). Its parts
-    # (the summary, each row, the legend) stay whole instead. The legend is also
-    # kept whole by #752; the repeat is harmless.
+    # (the summary, each row, the legend) stay whole instead. The legend is kept
+    # whole in the list above (#749); no selector appears in both avoid and auto.
     ".kit-numbers{break-inside:auto}"
-    ".kit-summary,.kit-legend{break-inside:avoid}"
+    ".kit-summary{break-inside:avoid}"
     "h1,h2,h3,h4{break-after:avoid}"
     "table{width:100%;border-collapse:collapse}"
     "th,td{border-bottom:1px solid var(--ra-brand-gray)!important}"

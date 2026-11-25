@@ -212,3 +212,163 @@ def test_full_gate_runs_plain_mypy_like_ci(repo: Path) -> None:
     )
     assert line.split("plan: mypy:", 1)[1].strip().endswith("mypy")
     assert " src" not in line
+
+
+def _workflow_repo(repo: Path) -> None:
+    wf = repo / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "ci.yml").write_text("name: ci\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "wf")
+    _git(repo, "branch", "-f", "base")
+    (wf / "ci.yml").write_text("name: ci2\n")
+
+
+def test_fast_workflow_change_plans_a_workflow_lint(repo: Path) -> None:
+    _workflow_repo(repo)
+    res = _gate(repo, "--fast", "--plan")
+    assert _names(res.stdout) == ["workflow lint"]
+    assert "nothing heavy" not in res.stdout
+
+
+def test_a_workflow_lint_failure_fails_the_gate(repo: Path) -> None:
+    _workflow_repo(repo)
+    bindir = repo.parent / "venv" / "bin"
+    for name in ("actionlint", "zizmor"):
+        (bindir / name).write_text(STUB)
+        (bindir / name).chmod(0o755)
+    ok = _gate(repo, "--fast")
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    # File names follow `--` so no operand can be read as an option.
+    assert "stub-actionlint -- .github/workflows/ci.yml" in ok.stdout
+    assert "stub-zizmor --offline -- .github/workflows/ci.yml" in ok.stdout
+    bad = _gate(repo, "--fast", fail_tool="zizmor")
+    assert bad.returncode == 1
+    assert "workflow lint" in bad.stdout.strip().splitlines()[-1]
+
+
+def _lint_names(repo: Path, names: str) -> subprocess.CompletedProcess[str]:
+    assert BASH is not None
+    bindir = repo.parent / "venv" / "bin"
+    for name in ("actionlint", "zizmor"):
+        (bindir / name).write_text(STUB)
+        (bindir / name).chmod(0o755)
+    env = {
+        **os.environ,
+        "GATE_ROOT": str(repo),
+        "GATE_VENV": str(repo.parent / "venv"),
+        "GATE_WORKFLOW_FILES": names,
+    }
+    return subprocess.run(  # noqa: S603 - fixed argv
+        [BASH, str(SCRIPT), "--internal", "workflow_lint"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        ".github/workflows/probe.yml\n--config-file=attacker",
+        "--config-file=attacker",
+        "-h",
+        ".github/workflows/--x.yml\n.github/workflows/a b.yml",
+        ".github/workflows/sub/dir.yml",
+        "../outside.yml",
+        ".github/workflows/é.yml",
+    ],
+)
+def test_an_unexpected_workflow_file_name_is_never_given_to_a_linter(
+    repo: Path, names: str
+) -> None:
+    res = _lint_names(repo, names)
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "stub-" not in res.stdout
+    assert "unexpected workflow file name" in res.stderr
+
+
+def test_ordinary_workflow_names_reach_both_linters_after_the_separator(
+    repo: Path,
+) -> None:
+    res = _lint_names(repo, ".github/workflows/a-b_c.1.yml\n.github/workflows/d.yaml")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert (
+        "stub-actionlint -- .github/workflows/a-b_c.1.yml .github/workflows/d.yaml"
+        in res.stdout
+    )
+
+
+def test_workflow_change_without_any_linter_fails_not_passes(
+    repo: Path, tmp_path: Path
+) -> None:
+    assert BASH is not None
+    _workflow_repo(repo)
+    # A PATH holding only the tools the script needs, none of them a linter.
+    tools = tmp_path / "plainbin"
+    tools.mkdir()
+    for name in ("bash", "git", "sort", "dirname", "cat", "cut", "mktemp", "rm"):
+        found = shutil.which(name)
+        assert found is not None
+        (tools / name).symlink_to(found)
+    env = {
+        "PATH": str(tools),
+        "GATE_ROOT": str(repo),
+        "GATE_VENV": str(repo.parent / "venv"),
+        "GATE_BASE": "base",
+    }
+    res = subprocess.run(  # noqa: S603 - fixed argv
+        [BASH, str(SCRIPT), "--fast"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "neither actionlint nor zizmor" in res.stderr
+
+
+NPM_STUB = """#!/usr/bin/env bash
+echo "npm $*" >> "$NPM_LOG"
+mkdir -p node_modules
+"""
+
+
+def _worker_install(repo: Path, tmp_path: Path) -> list[str]:
+    assert BASH is not None
+    bin_dir = tmp_path / "npmbin"
+    bin_dir.mkdir(exist_ok=True)
+    npm = bin_dir / "npm"
+    npm.write_text(NPM_STUB)
+    npm.chmod(0o755)
+    log = tmp_path / "npm.log"
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "NPM_LOG": str(log),
+        "GATE_ROOT": str(repo),
+        "GATE_VENV": str(repo.parent / "venv"),
+    }
+    done = subprocess.run(  # noqa: S603 - fixed argv
+        [BASH, str(SCRIPT), "--internal", "worker_install"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    return log.read_text().splitlines() if log.exists() else []
+
+
+def test_worker_install_reinstalls_when_the_lockfile_changed(
+    repo: Path, tmp_path: Path
+) -> None:
+    (repo / "worker" / "package-lock.json").write_text('{"v": 1}\n')
+    assert _worker_install(repo, tmp_path) == ["npm ci"]  # no node_modules yet
+    assert _worker_install(repo, tmp_path) == ["npm ci"]  # matching stamp: skipped
+    (repo / "worker" / "package-lock.json").write_text('{"v": 2}\n')
+    assert _worker_install(repo, tmp_path) == ["npm ci", "npm ci"]  # changed lock
+    # An old node_modules with no stamp (installed by hand) is not trusted.
+    (repo / "worker" / "node_modules" / ".gate-lock-sha256").unlink()
+    assert _worker_install(repo, tmp_path) == ["npm ci", "npm ci", "npm ci"]

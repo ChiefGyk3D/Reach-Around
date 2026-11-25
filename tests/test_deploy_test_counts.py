@@ -198,6 +198,32 @@ def test_the_build_uses_counts_artifacts_only_after_a_counts_success() -> None:
     assert jobs()["deploy"]["needs"] == "build"
 
 
+DEPLOY_IF = (
+    "${{ !cancelled() && needs.build.result == 'success'"
+    " && github.ref == 'refs/heads/main' }}"
+)
+
+
+def deploy_runs(cond: str, *, build: str, cancelled: bool = False) -> bool:
+    expr = cond.strip().removeprefix("${{").removesuffix("}}").strip()
+    expr = expr.replace("&&", " and ").replace("||", " or ")
+    expr = expr.replace("!cancelled()", str(not cancelled))
+    expr = expr.replace("github.ref", repr("refs/heads/main"))
+    expr = expr.replace("needs.build.result", repr(build))
+    return _truth(ast.parse(expr, mode="eval").body)
+
+
+def test_deploy_runs_when_build_succeeds_even_if_counts_were_skipped() -> None:
+    # Issue #860: a bare `if: github.ref == ...` has an implicit success(), so
+    # a skipped wheels or counts ancestor (skip_counts) skipped the deploy too.
+    cond = jobs()["deploy"]["if"]
+    assert " ".join(cond.split()) == " ".join(DEPLOY_IF.split())
+    assert deploy_runs(cond, build="success")
+    assert not deploy_runs(cond, build="failure")
+    assert not deploy_runs(cond, build="skipped")
+    assert not deploy_runs(cond, build="success", cancelled=True)
+
+
 NOTIFY_IF = (
     "${{ !cancelled() && github.event_name == 'schedule'"
     " && github.ref == 'refs/heads/main'"

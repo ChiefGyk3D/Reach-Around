@@ -76,6 +76,13 @@ from reach_around.config.trust import (
     demographic_trust,
 )
 from reach_around.funnel.floor import shown_count
+from reach_around.kit.binding import (
+    AnchoredReadError,
+    GatedLockError,
+    check_no_pending_commit,
+    gated_lock,
+    read_anchored,
+)
 from reach_around.kit.output import check_name, confine_out_dir, write_private
 from reach_around.kit.pdftext import PdfTextError, extract_pages
 from reach_around.kit.stage import stage_page, valid_as_of_text
@@ -494,16 +501,22 @@ def private_measure_strings(kit: KitConfig, numbers: Numbers | None) -> dict[str
     return found
 
 
-def check_policy_record(record: Path, what: str) -> None:
+def check_policy_record(record: Path, what: str, lock_fd: int | None = None) -> None:
     """Refuse a staged page whose policy record is missing or differs from the
     current policy: the page was built before the display policy changed, so it
     may still hold figures the policy now keeps out. Rebuild, then print."""
+    recorded: str | None
     try:
-        if record.is_symlink() or not record.is_file():
+        if lock_fd is not None:
+            # read through the held directory of the locked gated directory
+            recorded = read_anchored(record, 4096, lock_fd)[:256].decode(
+                "ascii", errors="replace"
+            )
+        elif record.is_symlink() or not record.is_file():
             recorded = None
         else:
             recorded = record.read_bytes()[:256].decode("ascii", errors="replace")
-    except OSError:
+    except (OSError, AnchoredReadError):
         recorded = None
     if recorded is None or recorded.strip() != policy_fingerprint():
         raise PdfError(
@@ -1008,7 +1021,19 @@ def build_kit_pdf(
     check_policy_record(gated_dir / GATED_POLICY_FILE, "gated page")
     check_name(name)
     target_dir = confine_out_dir(out_dir, [gated_dir, site_dir, *protect])
-    staged = stage_page(gated_dir, site_dir)
+    # a shared lock on the gated directory while the page and its policy record
+    # are read, so a build cannot replace them in between, and a directory a
+    # build left half replaced is refused
+    try:
+        with gated_lock(gated_dir, exclusive=False) as lock_fd:
+            try:
+                check_no_pending_commit(gated_dir, lock_fd)
+            except ValueError as exc:
+                raise PdfError(str(exc)) from exc
+            check_policy_record(gated_dir / GATED_POLICY_FILE, "gated page", lock_fd)
+            staged = stage_page(gated_dir, site_dir)
+    except GatedLockError as exc:
+        raise PdfError(str(exc)) from exc
     return _print(
         config,
         kit,
@@ -1021,6 +1046,7 @@ def build_kit_pdf(
         numbers=numbers,
         imported=imported,
         public=False,
+        forbidden=[gated_dir, site_dir, *protect],
     )
 
 
@@ -1062,6 +1088,7 @@ def build_public_kit_pdf(
         numbers=numbers,
         imported=imported,
         public=True,
+        forbidden=[site_dir, *protect],
     )
 
 
@@ -1090,6 +1117,7 @@ def _print(
     numbers: Numbers | None,
     imported: ImportedHistory | None,
     public: bool,
+    forbidden: Sequence[Path] = (),
 ) -> PdfResult:
     """Render, scrub, check and write one staged page. Shared by both kinds."""
     with private_workdir() as work:
@@ -1120,5 +1148,7 @@ def _print(
         config=config,
         check_days=(utc_today(), created),
     )
-    path = write_private(target_dir, name, final, overwrite=overwrite)
+    path = write_private(
+        target_dir, name, final, overwrite=overwrite, forbidden=forbidden
+    )
     return PdfResult(path=path, pages=len(pages), size=len(final))

@@ -136,9 +136,9 @@ def test_an_append_whose_file_was_replaced_before_the_write_is_refused(
 ) -> None:
     path = tmp_path / "h.jsonl"
     build(path)
-    # The 2nd parse is the check of the file plus the new lines, just before the
-    # last look at the name.
-    swapped = swap_on_call(monkeypatch, path, "_parse", 2)
+    # The check of the file (streamed) is the last step before the final look at
+    # the name.
+    swapped = swap_on_call(monkeypatch, path, "_chain_from_fd", 1)
     with pytest.raises(HistoryError, match="before the write"):
         append_records(path, [rec(as_of_utc="2026-10-09T09:00:00Z")], now=NOW)
     assert path.read_bytes() == swapped[0]
@@ -166,23 +166,22 @@ def test_a_rename_that_leaves_an_unknown_file_under_the_name_exits_5(
     build(path)
     plan = plan_for(path)
 
-    def rename_then_fail(*args: Any, **kwargs: Any) -> None:
+    def exchange_then_fail(*args: Any, **kwargs: Any) -> bool:
         swap_in_other_file(path)  # someone else's file is now under the name
         raise OSError("failed")
 
-    monkeypatch.setattr(hist, "_exchange", lambda *a: False)
-    monkeypatch.setattr(os, "rename", rename_then_fail)
+    monkeypatch.setattr(hist, "_exchange", exchange_then_fail)
     with pytest.raises(RedactDurabilityError, match="could not tell"):
         redact_records(path, plan, **KW)
     # The same through the command: exit 5.
     path2 = tmp_path / "g.jsonl"
     build(path2)
 
-    def rename_then_fail2(*args: Any, **kwargs: Any) -> None:
+    def exchange_then_fail2(*args: Any, **kwargs: Any) -> bool:
         swap_in_other_file(path2)
         raise OSError("failed")
 
-    monkeypatch.setattr(os, "rename", rename_then_fail2)
+    monkeypatch.setattr(hist, "_exchange", exchange_then_fail2)
     assert main(cli_args(path2, "--confirm")) == 5
     assert "could not tell" in capsys.readouterr().err
 

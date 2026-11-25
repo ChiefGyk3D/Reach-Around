@@ -75,6 +75,29 @@ export async function reserveQuota(
   return row === null ? null : row.count;
 }
 
+/** The housekeeping statements: expired dedup rows and quota rows past their keep time. */
+function pruneStatements(db: D1Database, now: number): D1PreparedStatement[] {
+  return [
+    db.prepare("DELETE FROM alert_dedup WHERE expires_at <= ?1").bind(now),
+    db
+      .prepare(
+        "DELETE FROM alert_quota WHERE (scope = 'minute' AND window_start < ?1) OR (scope = 'day' AND window_start < ?2)",
+      )
+      .bind(now - MINUTE_KEEP_MS, now - DAY_KEEP_MS),
+  ];
+}
+
+/**
+ * Housekeeping that does not depend on any optional setting: delete expired
+ * dedup rows and quota rows past their keep time. The dispatcher runs it on
+ * every admitted event, so the tables stay below their row caps whether or not
+ * dedup is configured.
+ */
+export async function pruneAlertState(db: D1Database, nowMs: number): Promise<void> {
+  checkTime(nowMs);
+  await db.batch(pruneStatements(db, Math.floor(nowMs)));
+}
+
 /**
  * Claim an event hash for `ttlMs`. Resolves true when this call claimed it
  * (new, or an expired claim), false when a live claim exists or the table is at
@@ -94,12 +117,7 @@ export async function claimDedup(
   if (!Number.isInteger(ttlMs) || ttlMs < 1 || ttlMs > DAY_MS) throw new RangeError("bad ttl");
   const now = Math.floor(nowMs);
   const res = await db.batch([
-    db.prepare("DELETE FROM alert_dedup WHERE expires_at <= ?1").bind(now),
-    db
-      .prepare(
-        "DELETE FROM alert_quota WHERE (scope = 'minute' AND window_start < ?1) OR (scope = 'day' AND window_start < ?2)",
-      )
-      .bind(now - MINUTE_KEEP_MS, now - DAY_KEEP_MS),
+    ...pruneStatements(db, now),
     db
       .prepare(
         `INSERT INTO alert_dedup (site, event_hash, expires_at)

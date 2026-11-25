@@ -16,7 +16,7 @@ In `site.yaml`:
 alerts:
   channels: [discord, matrix]          # discord, matrix, email
   events: [kit_unlocked, lead_captured]  # also: gate_failed_repeatedly
-  visitor_email: full                  # full, masked or none
+  visitor_email: masked                # masked (default), full or none
   max_per_minute: 5                    # per channel, 1 to 30
   matrix:
     allowed_hosts: [matrix.example.org]  # required for the matrix channel
@@ -101,9 +101,11 @@ nothing else; the formatter neutralizes each of them.
 
 ### Is the visitor's address in the alert?
 
-Yes by default (`visitor_email: full`), because "who looked" is the point of the
-alert. Choose `masked` (`p***@example.com`) or `none` ("a visitor") if your chat
-room is shared or not fully private. A chat room is not a secret store: Discord,
+Masked by default (`visitor_email: masked`, shown as `p***@example.com`). Choose
+`full` if you need the whole address in the alert, or `none` ("a visitor") to
+leave it out. Alert copies live in your chat or mail service, not in the
+Worker: set a retention rule there (for example, auto-delete messages after a
+set number of days). A chat room is not a secret store: Discord,
 Matrix and your mail provider keep what you send them under their own rules and
 your own retention. The address is not written to the Worker's logs or to the
 status counters in any mode.

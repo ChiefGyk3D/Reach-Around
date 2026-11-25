@@ -59,6 +59,7 @@ describe("migration 0007 invalidates old rollup state", () => {
 
     // Then the site migration, and the new code rolls the day from the raw rows that exist.
     for (const sql of migration("0008")) await DB.prepare(sql).run();
+    for (const sql of migration("0018")) await DB.prepare(sql).run(); // the re-roll closed column
     // The new code rolls the day from the raw rows that exist: all three, the late one included.
     await rollupClosedDays({ DB, MIN_CELL: "1" }, NOW);
     expect(await sum("view_daily")).toBe(3);

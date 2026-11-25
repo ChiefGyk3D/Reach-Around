@@ -128,10 +128,30 @@ _DEAD_LETTERS_ALL = (
     "resolution FROM click_dead_letters ORDER BY lo_id, hi_id"
 )
 _REASON_MAX = 500
+# Hard page caps: a read that would exceed one fails loudly (narrow the window)
+# instead of materializing an unbounded list or silently truncating.
+MAX_SERIES_ROWS = 100_000
+MAX_KEYS = 50_000
+MAX_REVISIONS = 10_000
+MAX_DEAD_LETTERS = 10_000
+MAX_CLICK_ROWS = 250_000
+# Largest click_daily count: exact in every consumer (a JavaScript number) and far
+# below the 64-bit integer limit where SQLite addition turns into a float.
+MAX_CLICK_COUNT = 9_007_199_254_740_991
 
 
 def _text(value: object) -> str:
     return str(value)
+
+
+def _capped(
+    db: Db, sql: str, params: Sequence[object], cap: int, what: str
+) -> list[tuple[object, ...]]:
+    """Run a literal ``SELECT ... ORDER BY`` with at most ``cap`` rows or refuse."""
+    rows = db.query(f"{sql} LIMIT {int(cap) + 1}", params)
+    if len(rows) > cap:
+        raise StoreError(f"{what} has more than {cap} rows; narrow the window")
+    return rows
 
 
 def _observation(row: tuple[object, ...]) -> Observation:
@@ -149,6 +169,19 @@ def _observation(row: tuple[object, ...]) -> Observation:
         expires_at=None if row[10] is None else date.fromisoformat(_text(row[10])),
         coverage=Coverage(_text(row[11])),
         coverage_note=None if row[12] is None else _text(row[12]),
+    )
+
+
+def _same_record(row: tuple[object, ...], obs: Observation) -> bool:
+    """True when the stored newest row carries every persisted field of ``obs``."""
+    return (
+        float(cast(float, row[0])) == float(obs.value)
+        and _text(row[1]) == obs.coverage.value
+        and _text(row[2]) == obs.day_tz
+        and _text(row[3]) == obs.access.value
+        and (None if row[4] is None else _text(row[4]))
+        == (None if obs.expires_at is None else obs.expires_at.isoformat())
+        and (None if row[5] is None else _text(row[5])) == obs.coverage_note
     )
 
 
@@ -212,7 +245,8 @@ class SqlStore:
                     continue
                 self._check_kind(obs)
                 current = self.db.query(
-                    "SELECT value, coverage FROM observations WHERE platform = ? "
+                    "SELECT value, coverage, day_tz, access, expires_at, "
+                    "coverage_note FROM observations WHERE platform = ? "
                     "AND account = ? AND metric = ? AND kind = ? AND day = ? "
                     "AND source = ? ORDER BY observed_at DESC LIMIT 1",
                     (
@@ -224,11 +258,7 @@ class SqlStore:
                         obs.source.value,
                     ),
                 )
-                if (
-                    current
-                    and float(cast(float, current[0][0])) == float(obs.value)
-                    and _text(current[0][1]) == obs.coverage.value
-                ):
+                if current and _same_record(current[0], obs):
                     unchanged += 1
                     continue
                 added = self.db.execute(
@@ -283,7 +313,8 @@ class SqlStore:
         else:
             sql = _WINNERS_SINCE + " ORDER BY day"
             params.append(since.isoformat())
-        return [_observation(r) for r in self.db.query(sql, params)]
+        rows = _capped(self.db, sql, params, MAX_SERIES_ROWS, "series")
+        return [_observation(r) for r in rows]
 
     def latest(self, key: SeriesKey) -> Observation | None:
         rows = self.db.query(
@@ -293,15 +324,23 @@ class SqlStore:
         return _observation(rows[0]) if rows else None
 
     def keys(self) -> list[SeriesKey]:
-        rows = self.db.query(
+        rows = _capped(
+            self.db,
             "SELECT DISTINCT platform, account, metric FROM observations "
-            "ORDER BY platform, account, metric"
+            "ORDER BY platform, account, metric",
+            (),
+            MAX_KEYS,
+            "keys",
         )
         return [SeriesKey(_text(r[0]), _text(r[1]), _text(r[2])) for r in rows]
 
     def revisions(self, key: SeriesKey, day: date) -> list[Observation]:
-        rows = self.db.query(
-            _REVISIONS, (key.platform, key.account, key.metric, day.isoformat())
+        rows = _capped(
+            self.db,
+            _REVISIONS,
+            (key.platform, key.account, key.metric, day.isoformat()),
+            MAX_REVISIONS,
+            "revisions",
         )
         return [_observation(r) for r in rows]
 
@@ -406,6 +445,7 @@ class SqlStore:
                 isinstance(row.count, bool)
                 or not isinstance(row.count, int)
                 or row.count < 0
+                or row.count > MAX_CLICK_COUNT
             ):
                 raise ValueError("click count must be a non-negative integer")
             if not row.link_id or not row.link_id.isprintable():
@@ -428,18 +468,24 @@ class SqlStore:
             if moved != 1:
                 return False
             for row in rows:
-                self.db.execute(
+                # the WHERE keeps the sum exact: it never reaches the 64-bit edge
+                # where SQLite addition turns into a float
+                applied = self.db.execute(
                     "INSERT INTO click_daily (day, day_tz, link_id, country, count) "
                     "VALUES (?, ?, ?, ?, ?) ON CONFLICT (day, day_tz, link_id, "
-                    "country) DO UPDATE SET count = click_daily.count + excluded.count",
+                    "country) DO UPDATE SET count = click_daily.count + excluded.count "
+                    "WHERE click_daily.count <= ? - excluded.count",
                     (
                         row.day.isoformat(),
                         row.day_tz,
                         row.link_id,
                         row.country,
                         row.count,
+                        MAX_CLICK_COUNT,
                     ),
                 )
+                if applied != 1:
+                    raise StoreError("click count would exceed the supported maximum")
             stamp = fmt_ts(datetime.now(tz=UTC))
             self.db.execute(
                 "INSERT INTO click_batches (lo_id, hi_id, applied_at, bucket_count, "
@@ -462,7 +508,13 @@ class SqlStore:
         )
 
     def dead_letters(self, *, open_only: bool = True) -> list[DeadLetter]:
-        rows = self.db.query(_DEAD_LETTERS_OPEN if open_only else _DEAD_LETTERS_ALL)
+        rows = _capped(
+            self.db,
+            _DEAD_LETTERS_OPEN if open_only else _DEAD_LETTERS_ALL,
+            (),
+            MAX_DEAD_LETTERS,
+            "dead letters",
+        )
         out: list[DeadLetter] = []
         for r in rows:
             out.append(
@@ -493,10 +545,13 @@ class SqlStore:
         )
 
     def clicks(self, since: date) -> list[ClickDay]:
-        rows = self.db.query(
+        rows = _capped(
+            self.db,
             "SELECT day, day_tz, link_id, country, count FROM click_daily "
             "WHERE day >= ? ORDER BY day, day_tz, link_id, country",
             (since.isoformat(),),
+            MAX_CLICK_ROWS,
+            "clicks",
         )
         return [
             ClickDay(

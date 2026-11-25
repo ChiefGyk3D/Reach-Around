@@ -130,9 +130,20 @@ a mutation, so nothing can be replayed after an ambiguous outcome.
 * That `reach` is a unique count over a window, not additive.
 * The `follower_demographics` request (`period=lifetime`, `timeframe=last_30_days`,
   one `breakdown` per call) and the answer shape (`total_value.breakdowns[]` with
-  `dimension_keys` and `results[]` of `dimension_values` and `value`). The note
-  says `timeframe` is required and that some timeframe values are deprecated, so
-  the value used is a guess.
+  `dimension_keys` and `results[]` of `dimension_values` and `value`). Vendor pages
+  read 2026-11-24: the Instagram Account Insights reference
+  (developers.facebook.com/docs/instagram-platform/api-reference/instagram-user/insights)
+  lists `this_month` and `last_30_days` (and four others) for `follower_demographics`
+  and says `this_month` "returns the data in the last 30 days"; it does not say
+  calendar or rolling. The Graph API v20.0 changelog
+  (developers.facebook.com/docs/graph-api/changelog/version20.0) removes
+  `last_14_days`, `last_30_days`, `last_90_days` and `prev_month` for
+  `reached_audience_demographics` and `engaged_audience_demographics` only. Whether
+  `last_30_days` still works for `follower_demographics` is not settled by the
+  docs.
+  The request keeps `last_30_days` (the working value); `this_month` is not adopted
+  until #552 shows it is accepted. Not called live; the window the figures cover is
+  vendor-defined and UNVERIFIED.
 * The label spellings: ages `13-17` ... `65+`, genders `F`/`M`/`U`, upper-case ISO
   country codes. An unrecognized label is a bad row, never folded.
 * The route `/v27.0/<IG_ID>/insights` for an Instagram-Login token and a numeric

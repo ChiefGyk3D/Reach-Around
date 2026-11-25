@@ -406,6 +406,9 @@ def _geography(session: _Session, first: date, last: date) -> Report:
         if len(page) < GEO_PAGE_SIZE:
             break
         start += GEO_PAGE_SIZE
+    else:
+        # Every allowed page was full, so more rows may exist: not a full report.
+        raise YoutubeAnalyticsError("window_incomplete")
     counts: dict[str, int] = {}
     folded = 0
     seen: set[object] = set()

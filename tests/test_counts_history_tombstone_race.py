@@ -156,35 +156,41 @@ def test_a_redaction_whose_file_is_swapped_after_the_last_check_changes_nothing(
     assert not tombstoned(read_history(path))
 
 
-def test_the_fallback_without_an_atomic_swap_still_refuses_a_swapped_file(
+def test_without_an_atomic_swap_the_redaction_is_refused_and_nothing_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A plain rename could overwrite a newer file put there after the last
+    check, so where no atomic exchange exists nothing is changed at all."""
     monkeypatch.setattr(hist, "_exchange", lambda *a: False)
     path = tmp_path / "h.jsonl"
     build(path)
     plan = plan_for(path)
-    swapped = swap_once(monkeypatch, path, "redact")
-    with pytest.raises(HistoryError, match="replaced"):
+    renames: list[object] = []
+    real_rename = os.rename
+
+    def spy(*args: Any, **kwargs: Any) -> None:
+        renames.append(args)
+        real_rename(*args, **kwargs)
+
+    monkeypatch.setattr(os, "rename", spy)
+    swapped = swap_once(monkeypatch, path, "redact")  # a newer file lands late
+    with pytest.raises(HistoryError, match="atomically") as err:
         redact_records(path, plan, **KW)
-    assert path.read_bytes() == swapped[0]
+    assert not isinstance(err.value, RedactDurabilityError)
+    assert renames == []
+    assert path.read_bytes() == swapped[0]  # the newer file is never overwritten
+    assert names(tmp_path) == [".h.jsonl.lock", "h.jsonl"]  # no temp, no marker
+    assert not tombstoned(read_history(path))
+
+
+def test_a_redaction_works_with_the_atomic_swap(tmp_path: Path) -> None:
+    path = tmp_path / "h.jsonl"
+    build(path)
+    assert redact_records(path, plan_for(path), **KW) == 2
+    assert len(tombstoned(read_history(path))) == 2
     assert names(tmp_path) == [".h.jsonl.lock", "h.jsonl"]
-
-
-def test_a_redaction_works_with_and_without_the_atomic_swap(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    for flavor in ("atomic", "fallback"):
-        folder = tmp_path / flavor
-        folder.mkdir()
-        if flavor == "fallback":
-            monkeypatch.setattr(hist, "_exchange", lambda *a: False)
-        path = folder / "h.jsonl"
-        build(path)
-        assert redact_records(path, plan_for(path), **KW) == 2
-        assert len(tombstoned(read_history(path))) == 2
-        assert names(folder) == [".h.jsonl.lock", "h.jsonl"], flavor
-        body = (folder / "h.jsonl").read_bytes()
-        assert b'"value":10' not in body and b'"value":11' not in body
+    body = path.read_bytes()
+    assert b'"value":10' not in body and b'"value":11' not in body
 
 
 def test_the_lock_file_is_stable_private_and_never_replaced(tmp_path: Path) -> None:
@@ -271,21 +277,6 @@ def real_then_raise(real: Any) -> Any:
         raise OSError("interrupted after the rename")
 
     return call
-
-
-def test_a_rename_that_happened_and_then_raised_is_reported_as_replaced(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    path = tmp_path / "h.jsonl"
-    build(path)
-    plan = plan_for(path)
-    monkeypatch.setattr(hist, "_exchange", lambda *a: False)
-    monkeypatch.setattr(os, "rename", real_then_raise(os.rename))
-    with pytest.raises(RedactDurabilityError, match="reported an error"):
-        redact_records(path, plan, **KW)
-    monkeypatch.undo()
-    assert len(tombstoned(read_history(path))) == 2
-    assert names(tmp_path) == [".h.jsonl.lock", "h.jsonl"]
 
 
 def test_an_exchange_that_happened_and_then_raised_is_reported_as_replaced(

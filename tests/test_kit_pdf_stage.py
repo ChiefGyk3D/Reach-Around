@@ -302,10 +302,33 @@ def test_print_does_not_hold_the_whole_audience_section_together() -> None:
 
     rules = re.findall(r"([^{}]*)\{break-inside:(avoid|auto)\}", PRINT_CSS)
     state: dict[str, str] = {}
+    seen: dict[str, set[str]] = {}
     for selectors, value in rules:  # later rules win, as in the cascade
         for selector in selectors.split(","):
             state[selector.strip()] = value
+            seen.setdefault(selector.strip(), set()).add(value)
+    assert all(len(v) == 1 for v in seen.values())  # no selector both ways
     assert state[".kit-numbers"] == "auto"
     assert state[".kit-summary"] == "avoid"
     assert state[".kit-legend"] == "avoid"
     assert state["tr"] == "avoid"
+
+
+def _no_split_selectors() -> list[str]:
+    """Selectors the print stylesheet keeps whole across a page break."""
+    from reach_around.kit.stage import PRINT_CSS
+
+    match = re.search(r"([^{}]*)\{break-inside:avoid\}", PRINT_CSS)
+    assert match is not None, "the print stylesheet has no break-inside rule"
+    return match.group(1).split(",")
+
+
+def test_print_keeps_the_trust_legend_whole() -> None:
+    """A legend split by a page break reads out of order in the PDF text (the
+    summary plate paints between its halves), so its sentences stop matching
+    (#749)."""
+    selectors = _no_split_selectors()
+    assert ".kit-legend" in selectors
+    assert "tr" in selectors  # the guard reads the right rule
+    assert ".kit-numbers" not in selectors  # the section may break (#866)
+    assert ".kit-not-a-section" not in selectors  # and it can say no
