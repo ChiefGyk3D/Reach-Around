@@ -152,14 +152,23 @@ the loaders (`load_site_config`, `reach-around check`) all call one function,
 `validate_site_config`. An existing `SiteConfig` is revalidated and refused, so a
 model made with `model_construct` cannot be passed back in. `model_construct`
 itself skips every validator by design; it is unsupported for external data.
-`model_validate_json` on either model refuses a document over the byte cap before
-pydantic parses it (the node and depth budget then runs on the parsed value), so
-the parse is bounded too. A source guard fails if code in `src` builds either model
-any other way: a direct call, an import rename, an alias, `getattr` with a raw
+`model_validate_json` on either model is the one supported way to parse JSON: it
+refuses a document over the byte cap (measured in encoded UTF-8 bytes, not
+characters) before pydantic parses it, and the node and depth budget then runs on
+the parsed value, so the parse is bounded too. `TypeAdapter(SiteConfig).validate_json`
+(or the same for `ImportedHistory`) does not go through that method and so skips the
+byte cap; it is unsupported for external data, and a source guard fails if code in
+`src` uses `TypeAdapter` or `validate_json` at all. The same guard fails if code in
+`src` builds either model any other way: a direct call (including a module-qualified
+one such as `models.SiteConfig(...)`), an import rename, an alias, `getattr` with a raw
 entry-point name or a computed name, a reference to `model_construct`, or a string
-import of the config modules. The guard is a syntactic lint, not a sandbox: `eval`,
-`exec`, and a class reached through `globals()` or `vars()` are an unsupported
-boundary, and a test pins that limit. The imported-history file is held to
+import of the config modules (a name joined from constant strings is resolved too).
+Each of the two modules may build only its own class. The guard is a syntactic lint,
+not a sandbox: `eval`, `exec`, a class reached through `globals()` or `vars()`, and a
+module name computed from something other than constants are an unsupported boundary,
+and a test pins that limit. A config problem list that is cut at 20 entries counts
+every omitted entry (each named setting is one); when a single message holds more named
+settings than are read, it says "and more problems" without a number. The imported-history file is held to
 the same kind of budget at its own entry (`ImportedHistory(...)` and
 `ImportedHistory.model_validate(...)`): 4,000 values, 6 levels, 256 characters per
 scalar, 32,768 in all, applied before any period is validated, on top of the

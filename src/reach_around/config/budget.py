@@ -42,10 +42,18 @@ def json_over_limit(json_data: str | bytes | bytearray, limit: int) -> bool:
 
     ``model_validate_json`` parses before any validator runs, so the models refuse
     an over-size document here, before pydantic reads it. A text is measured in
-    characters (a lower bound of its UTF-8 size), which keeps the check O(1); the
-    parse of what passes is bounded by ``limit`` times a small constant.
+    its encoded UTF-8 bytes, the same unit as a file. A text with more than
+    ``limit`` characters is over by itself, and one with at most a quarter of the
+    limit in characters is under it (a character is at most 4 bytes), so only the
+    band between is encoded, and never more than ``limit`` characters of it.
     """
-    return len(json_data) > limit
+    if not isinstance(json_data, str):
+        return len(json_data) > limit
+    if len(json_data) > limit:
+        return True
+    if len(json_data) * 4 <= limit:
+        return False
+    return len(json_data.encode("utf-8", errors="surrogatepass")) > limit
 
 
 def _refuse(message: str) -> None:

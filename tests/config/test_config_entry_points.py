@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 import yaml
 from pydantic import BaseModel, ValidationError
+from test_config_entry_guard import guard_violations, json_bypass_violations
 
 import reach_around
 from reach_around.commands import check as check_cmd
@@ -134,15 +135,19 @@ def test_every_construction_path_runs_the_budget(how: str) -> None:
 
 
 def test_check_command_uses_the_one_function() -> None:
-    tree = ast.parse(Path(check_cmd.__file__).read_text(encoding="utf-8"))
+    source = Path(check_cmd.__file__).read_text(encoding="utf-8")
     calls = [
         node
-        for node in ast.walk(tree)
+        for node in ast.walk(ast.parse(source))
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == "validate_site_config"
     ]
-    assert calls
+    assert len(calls) == 1
+    # The old entry point (SiteConfig(...), SiteConfig.model_validate(...), an
+    # alias of it) must not exist beside it, on any branch.
+    assert guard_violations(source) == []
+    assert json_bypass_violations(source) == []
 
 
 # ---- 2. ImportedHistory is budgeted at its own entry ------------------------

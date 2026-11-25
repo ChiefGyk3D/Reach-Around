@@ -9,7 +9,6 @@ Every model refuses unknown keys and is frozen. Later phases extend
 from __future__ import annotations
 
 import functools
-import itertools
 import re
 from collections.abc import Iterator
 from dataclasses import replace
@@ -1325,6 +1324,10 @@ def error_message(error_type: str, reason: str = "") -> str:
     return _ERROR_TEXT.get(error_type, _UNKNOWN_PROBLEM)
 
 
+def _where(err: Any) -> str:
+    return _dotted(err["loc"], unknown_last=err.get("type") == "extra_forbidden")
+
+
 def problem_text(exc: ValidationError) -> str:
     """The capped, value-free problem list for a failed site config.
 
@@ -1341,35 +1344,38 @@ def problem_text(exc: ValidationError) -> str:
             "fix the first ones and run the check again"
         )
     problems: list[str] = []
-    seen = 0
-    for err in itertools.islice(
-        exc.errors(include_url=False, include_input=False, include_context=False),
-        MAX_REPORTED_PROBLEMS,
+    entries = 0
+    capped = False
+    for err in exc.errors(
+        include_url=False, include_input=False, include_context=False
     ):
-        where = _dotted(err["loc"], unknown_last=err.get("type") == "extra_forbidden")
-        seen += 1
         kind, reason = str(err.get("type", "")), str(err.get("msg", ""))
         located = _located_reasons(reason) if kind == "value_error" else []
         if located:
-            for path, text in located:
-                full = f"{where}.{path}" if where else path
-                problems.append(f"{full}: {text}")
+            # A message with more located reasons than the scan reads is only
+            # known to hold "at least" that many.
+            capped = capped or len(located) > MAX_LOCATED_REASONS
+            entries += len(located)
+            if len(problems) < MAX_REPORTED_PROBLEMS:
+                where = _where(err)
+                for path, text in located:
+                    full = f"{where}.{path}" if where else path
+                    problems.append(f"{full}: {text}")
         else:
-            msg = error_message(kind, reason)
-            problems.append(f"{where}: {msg}" if where else msg)
-        if len(problems) >= MAX_REPORTED_PROBLEMS:
-            break
-    # One cap for every printed entry, located reasons included: a validator's
-    # located reasons are cut at the cap, and the rest of that error is counted
-    # as omitted (never a negative count).
-    cut = len(problems) > MAX_REPORTED_PROBLEMS
+            entries += 1
+            if len(problems) < MAX_REPORTED_PROBLEMS:
+                where = _where(err)
+                msg = error_message(kind, reason)
+                problems.append(f"{where}: {msg}" if where else msg)
+    # One cap for every printed entry, located reasons included. The remainder
+    # counts every entry not printed (an ordinary error is one, a located reason
+    # is one each); when a message held more located reasons than are read, the
+    # count is not known, so it is not printed.
     problems = problems[:MAX_REPORTED_PROBLEMS]
-    extra = total - seen
+    extra = entries - len(problems)
     text = "; ".join(problems)
     if extra > 0:
-        text += f"; and {extra} more problems"
-    elif cut:
-        text += "; and more problems"
+        text += "; and more problems" if capped else f"; and {extra} more problems"
     return text
 
 
