@@ -750,6 +750,16 @@ _MALFORMED = [
     "https:///x",
     "ftp:twitch.tv/x",
     "https:twitch.tv/x",
+    "@@twitch.tv",
+    "@@@twitch.tv",
+    "https://a-.twitch.tv/x",
+    "https://-a.twitch.tv/x",
+    "a-.twitch.tv",
+    "a..twitch.tv",
+    ".twitch.tv",
+    "a_b.twitch.tv",
+    ("a" * 64) + ".twitch.tv",
+    ".".join(["a" * 60] * 5) + ".twitch.tv",
 ]
 
 
@@ -766,3 +776,15 @@ def test_malformed_authorities_are_unrecognized_never_a_platform(
     # a malformed record cannot make a platform look available
     assert [e["platform"] for e in b["not_available"]] == ["Twitch", "Kick"]
     assert name not in repr(b) and name not in "\n".join(private_lines(b))
+
+
+@pytest.mark.parametrize("bad", ["@@twitch", "@@kick", "@@@twitch", "@@kick.com"])
+def test_only_one_leading_at_is_a_handle(bad: str) -> None:
+    assert canonical_platform(bad) == UNRECOGNIZED_PLATFORM
+    assert canonical_platform("@twitch") == "twitch"
+    assert canonical_platform("@kick") == "kick"
+
+
+def test_valid_label_edges_are_still_accepted() -> None:
+    assert canonical_platform(("a" * 63) + ".twitch.tv") == "twitch"
+    assert canonical_platform("a-b.kick.com.") == "kick"

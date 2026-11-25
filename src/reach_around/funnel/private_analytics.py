@@ -190,7 +190,8 @@ def _withhold_pinning_shares(section: dict[str, Any], floor: int) -> None:
 _PLATFORM_HOSTS = {"twitch.tv": "twitch", "kick.com": "kick"}
 # Marker for an identifier that cannot be one platform (non-ASCII, malformed).
 UNRECOGNIZED_PLATFORM = ""
-_HOSTLIKE = re.compile(r"^[a-z0-9][a-z0-9.-]*$")
+_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+_HOST_MAX = 253
 
 
 _SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*://")
@@ -207,12 +208,15 @@ def canonical_platform(name: object) -> str:
     first; any non-ASCII character left over (a lookalike letter) makes the
     identifier unrecognized. Every malformed authority is unrecognized too: an
     empty, non-numeric or out-of-range (1 to 65535) port, userinfo or any
-    other @, brackets (IPv6 literals), percent-encoding, backslashes, more
-    than one colon, empty labels and several trailing dots. A scheme without
-    // (such as ftp:twitch.tv) is not a supported form and is unrecognized.
+    other @ (a second leading @ included), brackets (IPv6 literals),
+    percent-encoding, backslashes, more than one colon, empty labels, several
+    trailing dots and invalid DNS labels (1 to 63 of a-z, 0-9 and hyphen, no
+    leading or trailing hyphen, host at most 253). A scheme without // (such
+    as ftp:twitch.tv) is not a supported form and is unrecognized.
     """
     text = unicodedata.normalize("NFKC", str(name)).strip().casefold()
-    text = text.lstrip("@").strip()
+    if text.startswith("@"):
+        text = text[1:]  # one leading @ is a handle; any other @ is malformed
     if not text or not text.isascii() or any(c.isspace() or c < " " for c in text):
         return UNRECOGNIZED_PLATFORM
     rest = text
@@ -227,7 +231,7 @@ def canonical_platform(name: object) -> str:
         return UNRECOGNIZED_PLATFORM
     if host.endswith("."):
         host = host[:-1]  # one trailing dot (an absolute name) is accepted
-    if host.endswith(".") or ".." in host or not _HOSTLIKE.match(host):
+    if len(host) > _HOST_MAX or not all(_LABEL.match(x) for x in host.split(".")):
         return UNRECOGNIZED_PLATFORM
     for known, canonical in _PLATFORM_HOSTS.items():
         if host == known or host.endswith("." + known):
