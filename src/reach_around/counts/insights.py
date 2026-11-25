@@ -19,6 +19,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from itertools import islice
 from typing import Any
 
 from reach_around.config.numbers_sources import (
@@ -237,20 +238,24 @@ class _Budget:
         self.deadline = clock() + seconds
         self.spent = False
 
-    def check(self) -> None:
-        if self.left <= 0 or self.clock() >= self.deadline:
+    def take(self) -> float:
+        """Spend one request; the time left, measured once, just before it."""
+        remaining = self.deadline - self.clock()
+        if self.left <= 0 or remaining <= 0:
             self.spent = True
             raise _BudgetSpent
+        self.left -= 1
+        return remaining
 
     def wrap(self, fetch: Fetch) -> Fetch:
         def counted(*args: Any, **kwargs: Any) -> dict[str, object]:
-            self.check()
-            self.left -= 1
             # A request may not run past the run's deadline: its own time limit
             # is cut to what is left (the fetch layer enforces it as one total
-            # limit over connect, send and read).
+            # limit over connect, send and read). The remainder is read once,
+            # right before the request, and a spent one sends nothing.
+            remaining = self.take()
             own = kwargs.get("timeout", FETCH_TIMEOUT)
-            kwargs["timeout"] = max(0.001, min(own, self.deadline - self.clock()))
+            kwargs["timeout"] = min(own, remaining)
             return fetch(*args, **kwargs)
 
         return counted
@@ -279,15 +284,19 @@ def collect(
     stamp = now.astimezone(UTC)
     budget = _Budget(max_requests, deadline_seconds, clock)
     fetch = budget.wrap(fetch)
-    opted = [s for s in sources if _opted_in(s)]
-    for index, source in enumerate(opted):
-        if index >= max_sources or budget.spent or clock() >= budget.deadline:
-            failures.extend(
-                InsightFailure(s.platform, "budget_exhausted")
-                for s in opted[index:]
-                if s.platform in ok_platforms
-            )
-            break
+    # Walk the list lazily and look at no more than a bounded window of it, so a
+    # list built without model validation (which limits it to MAX_SOURCES) costs
+    # a bounded amount of work and memory; entries past the window are neither
+    # looked at nor named.
+    done = 0
+    for source in islice(sources, max_sources + MAX_SOURCES):
+        if not _opted_in(source):
+            continue
+        if done >= max_sources or budget.spent or clock() >= budget.deadline:
+            if source.platform in ok_platforms:
+                failures.append(InsightFailure(source.platform, "budget_exhausted"))
+            continue
+        done += 1
         try:
             _collect_one(source, ok_platforms, env, fetch, stamp, figures, failures)
         except _BudgetSpent:

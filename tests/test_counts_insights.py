@@ -835,6 +835,62 @@ def test_collect_looks_at_no_more_sources_than_the_cap() -> None:
     ]
 
 
+def test_collect_does_not_walk_an_unbounded_source_list() -> None:
+    """A list built without model validation costs bounded work: only a
+    window of it is touched and the report stays bounded."""
+    touched = [0]
+    template = _threads_sources(1)[0]
+
+    class Many:
+        def __iter__(self) -> Any:
+            while touched[0] < 5_000_000:
+                touched[0] += 1
+                yield template
+
+        def __len__(self) -> int:
+            return 5_000_000
+
+    fetch_calls: list[int] = []
+
+    def fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        fetch_calls.append(1)
+        return {"data": []}
+
+    ok = frozenset({template.platform})
+    _, failures = collect(Many(), ok, TH_ENV, fetch, NOW, max_sources=1)  # type: ignore[arg-type]
+    assert len(fetch_calls) == 1
+    assert touched[0] <= 1 + 50 + 50
+    assert len(failures) <= 100
+
+
+def test_a_request_is_never_sent_with_time_the_run_does_not_have() -> None:
+    """The time left is read once, right before the request: a clock that moves
+    between two reads must not turn a spent deadline into one more request."""
+    from reach_around.counts.insights import _Budget, _BudgetSpent
+
+    reads = [0.0]
+
+    def clock() -> float:
+        value = reads[0]
+        reads[0] += 0.6  # every read finds the clock further on
+        return value
+
+    sent: list[float] = []
+
+    def fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        sent.append(kwargs["timeout"])
+        return {}
+
+    budget = _Budget(5, 1.0, clock)
+    counted = budget.wrap(fetch)
+    counted()
+    assert sent == [pytest.approx(0.4)]  # one read: 0.6 into a 1.0 s run
+    with pytest.raises(_BudgetSpent):
+        counted()  # read at 1.2 s: spent, nothing is sent
+    assert len(sent) == 1
+    assert budget.spent
+
+
 def test_collect_stops_at_the_deadline() -> None:
     now = [0.0]
     calls: list[int] = []
