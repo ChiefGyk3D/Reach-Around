@@ -257,6 +257,62 @@ the result lines (no values) in #344. Do not start the DNS steps with a box open
 - [ ] The full Beacons export (step 9 in the who-does-what table) is in the private instance
       repository before the switch, as a second copy of what week 1 requires (D1).
 
+### 2.4a Payments and support rails
+
+Issue #888. The Support page is link-out cards only. Nothing is checked until it
+is run on the staging host.
+
+- [ ] **The five rails are on the Support page:** Patreon, StreamElements,
+      Ko-fi, cryptocurrency and merch. Ko-fi and StreamElements are separate
+      tipping platforms, so each has its own card.
+- [ ] **Each link-out answers (agent-ready).** "Answers" is defined per rail
+      and is checked without following redirects, so a hop to an unexpected
+      host cannot hide. For each provider URL on the staging Support page run
+      `curl --proto '=https' -sSI --max-time 20 "<provider URL>"` (no `-L`) and
+      read the status line and `Location` header only. Pass means either
+      status `200`, or a `3xx` whose `Location` host is exactly the provider
+      host the owner wrote down for that rail in the private cutover record
+      (Patreon, StreamElements, Ko-fi, the cryptocurrency page or wallet
+      service, the merch store). Any other `Location` host fails the rail.
+      If the first hop is on the expected host, repeat the same command on that
+      `Location`, at most 3 hops, applying the same host rule to every hop.
+      Record status and `Location` host only (no query values, no cookies). A
+      provider that blocks automated requests is reported as not checked, not
+      as passing.
+- [ ] **Each link-out works (owner-only).** The owner opens each card on a phone
+      and a laptop and confirms it lands on the right provider page. This
+      navigation check is the whole requirement and needs no payment. A real
+      transaction is never required to complete this checklist, and the
+      default is to make none. The provider help pages for refunds were not
+      readable by an agent on 2026-11-25 (HTTP 403 for the StreamElements
+      "Tipping FAQ for viewers", the Ko-fi "Supporter payments FAQ" and the
+      Patreon "Why are there refunds I didn't initiate" pages), so what each
+      rail does on a refund, cancellation or chargeback is **UNVERIFIED** here.
+      Secondary indications only, not a source: StreamElements tips may be
+      final by default with refunds through support; a Ko-fi one-time payment
+      goes through the payment processor; cancelling a Patreon pledge stops
+      future charges but need not reverse one already taken. Therefore: check
+      the provider's help before tipping; the tip may not be refundable, and
+      processing fees may not be returned. If the owner still chooses to test,
+      it is one tip of the provider's minimum amount on a tipping rail only
+      (not merch, and not cryptocurrency, because on-chain transfers cannot be
+      refunded), made by the owner personally with the owner's own payment
+      method, after the owner has read that rail's current refund page and
+      noted in the private record what it says. An agent never makes a payment.
+- [ ] **OWNER DECISION: the tips host.** The tips host was reported to answer a
+      301 to the StreamElements tip page. That state is UNVERIFIED here: no
+      observation is recorded in this repository. Immediately before the
+      decision, check it read-only (`curl --proto '=https' -sSI
+      "https://tips.example.com/"`, no `-L`; record status and `Location` host
+      only). At cutover it either stays that 301, or points at the in-site
+      Support page. Not decided; do not change it until the owner says
+      which, in chat, with the cutover word.
+- [ ] **The old support host is consolidated** by the redirect plan in 3.5, with
+      the owner's explicit word on cutover day.
+- [ ] **No payment data touches the site.** Link-out only: no form, no script and
+      no frame from a payment provider on the page. A Ko-fi frame is optional
+      later and needs the privacy page line and a per-path `frame-src`.
+
 ### 2.5 DNS inputs
 
 - [ ] The current record at the production host is written down in the private
@@ -369,6 +425,180 @@ query (query twice, a minute apart, and compare).
 - Tell the assistant the time of each check. A page that looks right on one
   device and wrong on another is a propagation or cache difference, not yet a
   rollback reason (see 4.1).
+
+### 3.5 Support page consolidation (draft, owner approves each step)
+
+Issue #888 (under #860). Owner decision of 2026-11-25: "Consolidate at cutover,
+I will approve the redirect then". The old support host
+(`support.example.com` here) is replaced by the in-site Support page on the new
+site (`links.example.com/support/` here). This is a draft plan, **inferred and
+not yet run**.
+
+Two separate approvals apply, and neither covers the other:
+
+- **Staging rehearsal approval (once, before cutover day).** The owner approves
+  one edit for the staging host only: a single redirect rule on
+  `support-staging.example.com`, status `302`, target
+  `https://links-staging.example.com/support/`, query string preserved. The
+  approval lists that exact edit, is quoted with its time in the private
+  cutover record, and covers nothing on a production host.
+- **Production cutover approval (cutover day).** Every DNS or redirect edit on
+  a production host waits for the owner's explicit word on cutover day, quoted
+  with its time in the cutover record. Until then the old support host is
+  untouched and stays the live page.
+
+The engine's `redirects` switch ([deploy.md](deploy.md), "Redirecting the old
+/socials path") only writes rules for paths on the site's own host. The old
+support host is a different hostname, so its rule is a redirect on that host in
+Cloudflare, written by the owner. The wording is the same as for `/socials`.
+
+**Vendor behavior (read 2026-11-25).** Cloudflare Single Redirects take a status
+code of 301, 302, 307 or 308 and a "Preserve query string" setting
+(https://developers.cloudflare.com/rules/url-forwarding/single-redirects/settings/).
+The default edge cache TTL, when the response carries no `Cache-Control` or
+`Expires`, is 120 minutes for 301 and 20 minutes for 302 and 303
+(https://developers.cloudflare.com/cache/how-to/configure-cache-status-code/).
+Single-file purge removes a cached redirect response itself, not the content at
+the destination
+(https://developers.cloudflare.com/cache/how-to/purge-cache/purge-by-single-file/).
+INFERRED, not verified: whether a rule-generated redirect response can carry a
+chosen `Cache-Control` (check the rule's settings and a `curl -sSI` on staging
+before relying on it), and how long a given browser keeps a 301 with no
+`Cache-Control` (heuristic, per client).
+
+1. **Rule.** On the old support host, redirect every request for `/` to
+   `https://links.example.com/support/`, keep the query string, and leave other
+   paths unaffected (a path the old page served that has no new home is listed
+   in the private cutover record before the switch). Cloudflare Redirect Rules
+   (or a Bulk Redirect) hold this; the owner reads the current screens in the
+   vendor docs before the edit, not this runbook.
+2. **Staging first, status 302.** Point the staging copy of the rule at
+   `https://links-staging.example.com/support/` with status `302`.
+3. **Staging checks** (agent-ready, read-only). Run the verifier, which never
+   follows redirects and fails closed:
+
+   ```sh
+   SRC_HOST=support-staging.example.com EXP_HOST=links-staging.example.com \
+     scripts/verify-support-redirect.sh
+   echo "exit=$?"
+   ```
+
+   Both hosts are required and their normalized authorities must differ.
+   Normalization lowercases the host, removes one trailing dot, and removes
+   `:443` for HTTPS or `:80` for HTTP before comparison. A host is a valid DNS
+   name containing only lowercase ASCII letters, digits, hyphens and dots after
+   normalization, with a maximum length of 253 characters and labels of 1
+   through 63 characters that do not begin or end with a hyphen, or a canonical
+   IPv4 dotted quad with four decimal octets from 0 through 255 and no leading
+   zeros. Empty hosts, control characters, and legacy numeric or hexadecimal
+   IPv4 spellings are rejected. An optional decimal port is from 1 through
+   65535 without a leading zero; userinfo, slashes and spaces are rejected.
+   Nothing is defaulted. Every request is a direct GET made by a validated,
+   absolute curl executable owned by root and not group or world writable.
+   Its resolved target and every parent directory through `/` must also be
+   root-owned and not group or world writable. Symlinks are resolved before
+   validation and the resolved target is executed. The remaining theoretical
+   race in which root replaces a validated root-owned executable is accepted.
+   The verifier supports only Linux systems that provide `/usr/bin/bash` and a
+   root-owned curl at `/usr/bin/curl` or `/bin/curl` (that is an explicit
+   prerequisite; layouts such as NixOS are not supported, and the test suite
+   skips when `/usr/bin/bash` is missing). Its shebang is `#!/usr/bin/bash -p`,
+   so bash ignores `BASH_ENV`, `ENV`, `SHELLOPTS`, `BASHOPTS` and exported shell
+   functions instead of running caller-controlled code before the first
+   statement. Run it as the executable (`scripts/verify-support-redirect.sh`),
+   or as `/usr/bin/bash -p scripts/verify-support-redirect.sh`, never as plain
+   `bash scripts/verify-support-redirect.sh`: a shell script cannot secure
+   itself before bash has started, so the script refuses to run without
+   privileged mode, and that refusal is only an accident guard.
+   Its first executable statement replaces the caller's `PATH` with
+   `/usr/bin:/bin`, exports it, and its security-sensitive utilities are invoked
+   by absolute path so later `PATH` changes cannot select substitutes. Curl runs
+   in a clean environment containing only that fixed safe `PATH`, `LC_ALL=C`,
+   and an empty private temporary `HOME`. Caller proxy, curl, certificate, TLS
+   key logging, and other environment settings cannot affect the request.
+   Response headers are captured in that private directory with a 64 KiB
+   file-size limit (`ulimit -f 64`, in 1024-byte units). The body is discarded and redirects are never followed. It
+   is never HEAD, because browsers navigate with GET and a rule or origin can
+   treat HEAD differently.
+   It exits `0` only after every
+   check ran and passed: two probe requests (`?probe=a%2Fb&probe=two` and
+   `?q=x%20y&utm_source=mail&empty=`) each return status `302` and exactly one
+   `Location` header (two or more fail), equal, character for character, to
+   `https://links-staging.example.com/support/` plus the exact query sent (so a
+   rule that hard-codes a query fails); the other path (`OTHER_PATH`, default
+   `/other-path`) is not redirected at all: it answers `OTHER_EXPECT_STATUS`
+   (default `200`; set it, for example to `404`, to the status that page
+   really serves) with no `Location` header, so a redirect to Support, to
+   another host or to itself fails; and the Support page (`/support/`) answers
+   `200`. Each request has a connect timeout and a total time limit. A failed
+   request, an oversized header capture, an unparsable final response status
+   line, an obsolete folded header, or a missing or duplicated `Location` is a
+   failure (exit `1`). If curl returns multiple response header blocks, only
+   the last block is evaluated.
+   A missing, equal or malformed host or an invalid port is a usage error (exit
+   `2`). It is tested against local servers (which record every request
+   path and query) in `tests/test_verify_support_redirect.py`, and each check
+   was revert-proved by breaking it and watching a test fail. It has not yet
+   been run against a real Cloudflare rule.
+4. **Cutover build, short-lived redirect first.** After the owner's cutover
+   word, create the production rule with status `302`, not `301`, and (if the
+   rule settings allow it, otherwise INFERRED unavailable) a short
+   `Cache-Control: max-age` of 300 seconds or less on the redirect response.
+   Verify with the same script on the real hosts, both set explicitly:
+
+   ```sh
+   SRC_HOST=support.example.com EXP_HOST=links.example.com \
+     scripts/verify-support-redirect.sh
+   echo "exit=$?"
+   ```
+5. **Soak, then permanent.** The owner decides the promotion; these health
+   gates must all hold first, and the evidence for each is recorded in the
+   private cutover record before the owner is asked for the second word:
+   - the verifier exits `0` on staging and, freshly (same day as the request),
+     on production;
+   - the Support page answers `200` and each card passes the 2.4a checks;
+   - the analytics report (or the host's error-rate view) shows no spike in
+     errors or in visitors landing on the old host, compared with before the
+     switch, and no unresolved incident is open;
+   - the stated soak of at least 7 days (the owner may lengthen it) has passed,
+     with the verifier run at least once a day and every run passing.
+   If any gate fails, the rule stays a `302` or is rolled back; time alone never
+   promotes it. Only then, on a second explicit word from the owner, switch the
+   rule to `301`. Record the soak start and end, the gate evidence and the
+   owner's word.
+6. **Rollback and client recovery.** While the rule is a `302`, deleting it (or
+   restoring the written-down previous state) returns the old page once any
+   cached copy is gone. Cloudflare's cache page gives a default edge TTL of 20
+   minutes for a `302` (read 2026-11-25, URL above), but that page frames it
+   around origin responses. **INFERRED, not established:** that a redirect
+   produced by a Single Redirect rule enters the cache under that default, and
+   how quickly a rule change or removal takes effect (the Single Redirects
+   page, https://developers.cloudflare.com/rules/url-forwarding/single-redirects/,
+   read 2026-11-25, states neither). Measure it on staging first: request the
+   staging redirect twice and record `CF-Cache-Status` and `Age`, remove the
+   rule, and record how long the old behavior takes to return.
+   After removing the rule, purge every cached redirect for the old host, not
+   only the probe URL. Cloudflare lists these purge options, available on all
+   plans (https://developers.cloudflare.com/cache/how-to/purge-cache/, read
+   2026-11-25): by single URL, by hostname, by prefix, by tag and purge
+   everything. Single-URL purge covers only the URLs given, and the page says
+   nothing about query-string variants (INFERRED: each variant is its own
+   URL), so it cannot enumerate unknown query variants. Use **purge by
+   hostname** for the old support host, which covers every variant under that
+   hostname, and then request `/` and one query variant and confirm `CF-Cache-Status` is not
+   `HIT` (the page notes a purge is not confirmed by Cloudflare, so verify).
+   **A served `301` is not undone by removing the rule.** Browsers and
+   intermediaries that cached it keep sending visitors to the new page until
+   their cache expires or is cleared, and the runbook cannot reach those
+   clients. After the switch to `301`, the recovery path is on the destination
+   side: keep the Support page live and correct, disable individual cards
+   without touching the rule, or serve a replacement redirect from the old
+   host's path only if the owner decides. A browser's cached `301` is cleared
+   by clearing the site's cache in that browser; a hard reload is not a
+   guaranteed way to drop it. This is why the `301` waits for the health gates.
+7. Record the rule, its status, the time, the owner's quoted words and the
+   `curl` output lines (status and `Location` only, no cookies) in the private
+   cutover record.
 
 ## Part 4. Rollback
 
