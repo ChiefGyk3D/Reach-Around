@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: Apache-2.0
+# Owners of the paths that implement the merge gate, the release path and the pins.
+# This file only names owners so a change here is easy to see and to route. Branch
+# protection does NOT require a code owner review (require_code_owner_reviews stays
+# false); nothing here blocks a merge. The merge policy decides who reviews what.
+
+/.github/workflows/                     @ChiefGyk3D
+/.github/scripts/                       @ChiefGyk3D
+/.github/dependabot.yml                 @ChiefGyk3D
+/.github/CODEOWNERS                     @ChiefGyk3D
+
+# Gate and changelog implementation
+/scripts/gate.sh                        @ChiefGyk3D
+/scripts/changelog-assemble.py          @ChiefGyk3D
+/scripts/check-token-drift              @ChiefGyk3D
+
+# Test configuration and discovery
+/tests/conftest.py                      @ChiefGyk3D
+/pyproject.toml                         @ChiefGyk3D
+
+# Pins and locks
+/vendor/brand/tokens.lock.json          @ChiefGyk3D
+/requirements.in                        @ChiefGyk3D
+/requirements.txt                       @ChiefGyk3D
+/requirements-build.in                  @ChiefGyk3D
+/requirements-build.txt                 @ChiefGyk3D
+/requirements-dev.in                    @ChiefGyk3D
+/requirements-dev.txt                   @ChiefGyk3D
+/Containerfile                          @ChiefGyk3D
+
+# Release path and its docs
+/docs/releasing.md                      @ChiefGyk3D
+/docs/deploy.md                         @ChiefGyk3D
+/.github/scripts/deploy-guard.py        @ChiefGyk3D
+/.github/scripts/verify-manifest.py     @ChiefGyk3D
