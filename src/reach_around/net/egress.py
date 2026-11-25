@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import http.client
 import ipaddress
+import itertools
 import re
 import socket
 import ssl
@@ -120,6 +121,15 @@ Resolver = Callable[[str, int], list[str]]
 # run against a black-holed resolver would pile up threads. Callers asking for the
 # same name while a lookup is in flight share that lookup instead of starting one.
 MAX_RESOLVER_THREADS = 8
+# At most this many distinct validated addresses are tried per fetch, so a
+# hostile answer set cannot fan one request out into many connections.
+MAX_CONNECT_ADDRESSES = 4
+# At most this many resolver answers are kept, validated and considered; the
+# rest are dropped. This bounds our own per-answer work (validation, dedupe,
+# connection attempts). It does NOT bound what socket.getaddrinfo allocates
+# or parses: that call builds its whole list before we see it, and the
+# resolve time is bounded only by the request deadline.
+MAX_DNS_ANSWERS = 32
 
 
 class _Lookup:
@@ -146,7 +156,9 @@ def _start_lookup(host: str, port: int) -> _Lookup:
     def work() -> None:
         try:
             infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-            lookup.answers = [str(info[4][0]) for info in infos]
+            lookup.answers = [
+                str(info[4][0]) for info in itertools.islice(infos, MAX_DNS_ANSWERS)
+            ]
         except Exception:
             lookup.failed = True
         finally:
@@ -368,19 +380,24 @@ class HttpsTransport:
             answers = system_resolver(host, 443, timeout=remaining)
         else:
             answers = self._resolver(host, 443)
+        # keep at most the cap, so validation and dedupe below do bounded work
+        answers = list(itertools.islice(answers, MAX_DNS_ANSWERS))
         if not answers:
             raise EgressBlocked("no_address", host)
         # every answer must be public; a mixed set is refused whole
         if not all(is_public_address(answer) for answer in answers):
             raise EgressBlocked("non_public_address", host)
-        address = answers[0]
+        # checked answers only, in order, capped (the deadline stays the other bound)
+        addresses = list(dict.fromkeys(answers))[:MAX_CONNECT_ADDRESSES]
         remaining = deadline - self._clock()
         if remaining <= 0:
             raise EgressBlocked("timeout", host)
         watchdog = _Watchdog(remaining)
-        conn = _PinnedConnection(
-            host, address, remaining, self._connector, self._wrapper, watchdog
-        )
+        try:
+            conn = self._connect_any(host, addresses, deadline, watchdog)
+        except BaseException:
+            watchdog.stop()
+            raise
         try:
             try:
                 conn.request(
@@ -412,6 +429,43 @@ class HttpsTransport:
         finally:
             watchdog.stop()
             conn.close()
+
+    def _connect_any(
+        self,
+        host: str,
+        addresses: list[str],
+        deadline: float,
+        watchdog: _Watchdog,
+    ) -> _PinnedConnection:
+        """Connect (and finish TLS) to the first checked address that answers.
+
+        Only the connection step is retried: nothing has been sent yet, so a
+        request is never replayed. Every address comes from the one validated
+        answer set, and the one absolute deadline covers all attempts.
+        """
+        failure: EgressBlocked | None = None
+        for index, address in enumerate(addresses):
+            remaining = deadline - self._clock()
+            if remaining <= 0 or watchdog.fired:
+                raise EgressBlocked("timeout", host)
+            share = remaining / (len(addresses) - index)
+            conn = _PinnedConnection(
+                host, address, share, self._connector, self._wrapper, watchdog
+            )
+            try:
+                conn.connect()
+            except ssl.SSLError:
+                conn.close()
+                failure = EgressBlocked("tls_failed", host)
+            except (OSError, http.client.HTTPException, ValueError):
+                conn.close()
+                failure = EgressBlocked("connect_failed", host)
+            else:
+                conn.timeout = max(deadline - self._clock(), 0.001)
+                return conn
+        if watchdog.fired:
+            raise EgressBlocked("timeout", host)
+        raise failure or EgressBlocked("connect_failed", host)
 
     def _read(
         self,

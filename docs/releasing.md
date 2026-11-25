@@ -57,7 +57,17 @@ fragments folded into `[Unreleased]` and writes nothing. Only `release` (below) 
 4. Watch the `Release` run. The first job fails the release if the tag is not exactly
    `v` plus `__version__`.
 5. Image tags come from the tag: `0.1.0`, `0.1`, `latest` and `sha-<short>`. There is no
-   major-only tag while the project is `0.x`.
+   major-only tag while the project is `0.x`. `0.1.0` and `sha-<short>` are written by
+   the build; `0.1` and `latest` move in a last job, after the image is verified, and
+   only if the tag still points at the released commit and is still the highest tag.
+   The check runs before the first write and again after the last one. If the tag moved
+   in between, or a write fails, the job fails and puts the tags back to their previous
+   digests (best effort and not atomic: the registry has no compare-and-swap for a tag,
+   so a manual push by someone with package write access between the rollback's read
+   and write can be overwritten; a tag with no previous digest is named in the log for
+   manual cleanup, and the job says plainly when the rollback was incomplete). A moving tag can point at the new image for a few seconds before such a
+   rollback. Only immutable release tags (a tag ruleset) close that window.
+   The first-ever promotion of a brand-new tag depends on the message `docker buildx imagetools inspect` prints for a missing GHCR tag; that wording has not yet been checked against a real GHCR response (owner to verify), and if it differs the job fails closed rather than promoting.
 6. Confirm the package is visible the way you want it. A new GHCR package inherits
    the repository's visibility. This repository is public, so the image is public and
    pulling it needs no sign-in. A fork that is private gets a private image, and pulling
