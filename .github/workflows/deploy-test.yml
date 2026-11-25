@@ -410,8 +410,12 @@ jobs:
     name: Deploy test site and Worker
     needs: build
     # Refuse any ref other than main. The `test` environment can also restrict
-    # deployment branches and require a reviewer (docs/deploy.md).
-    if: github.ref == 'refs/heads/main'
+    # deployment branches and require a reviewer (docs/deploy.md). A bare ref
+    # check carries an implicit success() and so skips whenever a transitive
+    # ancestor (wheels, counts) was skipped, as with skip_counts (issue #860).
+    # !cancelled() lifts that, and the explicit build result keeps a failed or
+    # skipped build from deploying.
+    if: ${{ !cancelled() && needs.build.result == 'success' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: test

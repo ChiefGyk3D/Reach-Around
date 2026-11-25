@@ -35,6 +35,7 @@ import math
 import os
 import re
 import secrets
+import stat
 import unicodedata
 import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
@@ -111,6 +112,14 @@ from reach_around.config.trust import (
 from reach_around.config.zones import ZONES, utc_day_start_iso
 from reach_around.funnel.floor import FLOOR, share_pins_small_count, shown_count
 from reach_around.funnel.floor import UNDER_FLOOR as UNDER_FLOOR
+from reach_around.kit.binding import (
+    BINDING_FILE,
+    PENDING_FILE,
+    acquire_gated_lock,
+    leftover_names,
+    open_locked_dir,
+    rows_digest,
+)
 from reach_around.site.platforms import platform_rows
 from reach_around.site.privacy import gate_notice_parts
 
@@ -164,6 +173,8 @@ class KitRender:
     warnings: list[str]
     # ``policy_fingerprint()`` at build time; "" when the build has no kit.
     policy: str = ""
+    # Digest of the gated projection's measures, for the build binding.
+    measures_digest: str = ""
 
 
 def has_gate_form(kit: KitConfig) -> bool:
@@ -583,44 +594,22 @@ def _leak(where: str, rel: Path) -> KitLeakError:
     )
 
 
-@dataclass
-class StagedGated:
-    """A gated page written to a temporary name in the gated root, or a pending
-    removal. ``commit`` makes it the real file; ``discard`` removes the temp."""
-
-    root: Path
-    temp: Path | None
-    policy: str | None = None
-
-    def commit(self) -> None:
-        target = self.root / GATED_FILE
-        record = self.root / GATED_POLICY_FILE
-        if self.temp is None:
-            for path in (target, record):
-                if os.path.lexists(path):
-                    path.unlink()
-            return
-        try:
-            os.replace(self.temp, target)
-        except OSError:
-            self.discard()
-            raise
-        self.temp = None
-        if self.policy is not None:
-            _write_private_file(record, self.policy)
-
-    def discard(self) -> None:
-        if self.temp is not None:
-            self.temp.unlink(missing_ok=True)
-            self.temp = None
+# A test seam: called after each step of ``StagedGated.commit`` with the step name,
+# so a test can fail the commit after any one of them.
+_after_commit_step: Callable[[str], None] | None = None
 
 
-def _write_private_file(target: Path, text: str) -> None:
-    """Write a small owner-only file through a new temp name, never following a
-    link, and rename it into place."""
+def _step(name: str) -> None:
+    if _after_commit_step is not None:
+        _after_commit_step(name)
+
+
+def _stage_text(root: Path, target: Path, text: str) -> Path:
+    """Write ``text`` owner-only to a new temp name beside ``target``, never
+    following a link, and return the temp path (renamed into place by the caller)."""
     if target.is_symlink():
         raise ValueError(f"{target} is a symbolic link; it is never written through")
-    temp = target.parent / f".{target.name}.{secrets.token_hex(8)}.tmp"
+    temp = root / f".{target.name}.{secrets.token_hex(8)}.tmp"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(temp, flags, 0o600)
     try:
@@ -628,6 +617,174 @@ def _write_private_file(target: Path, text: str) -> None:
             handle.write(text.encode("utf-8"))
             handle.flush()
             os.fsync(handle.fileno())
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
+    return temp
+
+
+def _sync_dir(root: Path) -> None:
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+@dataclass
+class StagedGated:
+    """The gated artifacts of one build, held under the gated directory lock.
+
+    ``temp`` is the page written to a temporary name (None when there is no gated
+    page). ``commit`` replaces the page, the policy record and the binding as one
+    recoverable set: every new file is first written (fsync) to a temporary name,
+    the previous files are hard-linked as backups, ``.kit-commit.pending`` marks
+    the work, the files are renamed into place in a fixed order with the binding
+    LAST, and the marker is removed last, after the backups. The directory is synced
+    (fsync of its descriptor) after the marker and backups exist and before the
+    first target is renamed, after the renames, and after each removal. A failure
+    rolls every step back from the backups; a crash leaves the marker, which
+    every reader refuses (and the next build clears by writing all three files
+    again), and a half state is also caught by the binding, which holds the
+    page's digest.
+    ``discard`` removes the temp. The directory lock is released by either."""
+
+    root: Path
+    temp: Path | None
+    policy: str | None = None
+    binding: str | None = None
+    lock: int | None = None
+
+    def _release(self) -> None:
+        if self.lock is not None:
+            fd, self.lock = self.lock, None
+            os.close(fd)
+
+    def commit(self) -> None:
+        try:
+            self._commit()
+        finally:
+            self._release()
+
+    def _commit(self) -> None:
+        root = self.root
+        if self.lock is None and not root.is_dir():
+            return  # no kit, no gated directory: nothing to write or remove
+        page, record, binding = (
+            root / GATED_FILE,
+            root / GATED_POLICY_FILE,
+            root / BINDING_FILE,
+        )
+        pending = root / PENDING_FILE
+        # what each target becomes: a temp path to rename in, or None to remove
+        plan: list[tuple[Path, Path | None]] = []
+        temps: list[Path] = []
+        backups: dict[Path, Path] = {}
+        applied: list[Path] = []
+        made_marker = False
+        try:
+            # all three files are always part of the set: each is put or removed,
+            # so a page can never sit beside a policy or binding of another build
+            plan.append((page, self.temp))
+            for target, text in ((record, self.policy), (binding, self.binding)):
+                if text is None:
+                    plan.append((target, None))
+                else:
+                    new = _stage_text(root, target, text)
+                    temps.append(new)
+                    plan.append((target, new))
+            for target, _ in plan:
+                if target.is_symlink():
+                    raise ValueError(
+                        f"{target} is a symbolic link; it is never written through"
+                    )
+            _step("staged")
+            for target, _ in plan:
+                if os.path.lexists(target):
+                    backup = root / f".{target.name}.{secrets.token_hex(8)}.bak"
+                    os.link(target, backup, follow_symlinks=False)
+                    backups[target] = backup
+            if not os.path.lexists(pending):
+                _write_private_file(pending, "an interrupted build; rebuild\n")
+                made_marker = True
+            _step("marker")
+            # the marker, the backups and the new temp names must be on disk
+            # before the first target changes: otherwise a crash could keep a
+            # renamed target while the marker (and the backups) are lost
+            _sync_dir(root)
+            _step("prepared")
+            for target, source in plan:
+                if source is None:
+                    target.unlink(missing_ok=True)
+                else:
+                    os.replace(source, target)
+                applied.append(target)
+                _step(target.name)
+            _sync_dir(root)
+            _step("applied")
+        except BaseException:
+            self._rollback(plan, applied, backups, temps, pending, made_marker)
+            raise
+        # The set is complete and durable. From here nothing rolls back: the
+        # marker stays until the backups are gone and that removal is durable,
+        # so a crash in this tail leaves the marker (readers refuse, the next
+        # build clears the leftovers), never leftover backups under a clean
+        # directory.
+        self.temp = None
+        for backup in backups.values():
+            backup.unlink(missing_ok=True)
+        _sync_dir(root)
+        _step("cleaned")
+        if made_marker or os.path.lexists(pending):
+            pending.unlink(missing_ok=True)
+        _sync_dir(root)
+        _step("done")
+
+    def _rollback(
+        self,
+        plan: list[tuple[Path, Path | None]],
+        applied: list[Path],
+        backups: dict[Path, Path],
+        temps: list[Path],
+        pending: Path,
+        made_marker: bool,
+    ) -> None:
+        """Put every replaced file back. The marker stays when this cannot finish
+        (so readers still refuse the directory) and when it was there before."""
+        clean = True
+        for target in reversed(applied):
+            try:
+                backup = backups.get(target)
+                if backup is not None:
+                    os.replace(backup, target)
+                else:
+                    target.unlink(missing_ok=True)
+            except OSError:
+                clean = False
+        for leftover in (*temps, *backups.values()):
+            leftover.unlink(missing_ok=True)
+        if made_marker and clean:
+            try:
+                # the restored files must be durable before the marker goes
+                _sync_dir(self.root)
+                pending.unlink(missing_ok=True)
+                _sync_dir(self.root)
+            except OSError:
+                pass  # the marker stays or returns: readers refuse, rebuild clears
+        self.discard()
+
+    def discard(self) -> None:
+        if self.temp is not None:
+            self.temp.unlink(missing_ok=True)
+            self.temp = None
+        self._release()
+
+
+def _write_private_file(target: Path, text: str) -> None:
+    """Write a small owner-only file through a new temp name, never following a
+    link, and rename it into place."""
+    temp = _stage_text(target.parent, target, text)
+    try:
         os.replace(temp, target)
     except BaseException:
         temp.unlink(missing_ok=True)
@@ -644,16 +801,20 @@ def check_private_root(gated_out: Path) -> None:
         )
 
 
-_STAGING = re.compile(rf"\.{re.escape(GATED_FILE.name)}\.[0-9a-f]{{16}}\.tmp")
-
-
-def _remove_stale_staging(gated_out: Path) -> None:
-    """Delete staging files a crashed build left behind: regular files whose
-    name is exactly the temporary pattern, nothing else."""
-    for entry in gated_out.iterdir():
-        if _STAGING.fullmatch(entry.name) and not entry.is_symlink():
-            if entry.is_file():
-                entry.unlink()
+def _remove_stale_staging(gated_out: Path, lock_fd: int) -> None:
+    """Delete staging and backup files a crashed build left behind: regular files
+    whose name is exactly the temporary or backup pattern, nothing else. Called
+    with the gated lock held, so no other build's files are removed. The listing
+    and each removal go through a held descriptor of the locked directory, so a
+    path swapped after the lock was taken cannot send the removal elsewhere."""
+    dir_fd = open_locked_dir(gated_out, lock_fd)
+    try:
+        for name in leftover_names(dir_fd):
+            info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+            if stat.S_ISREG(info.st_mode):
+                os.unlink(name, dir_fd=dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 class KitRemoteRequestError(ValueError):
@@ -769,7 +930,10 @@ def check_gated_requests(page: str, files: Mapping[Path, bytes]) -> None:
 
 
 def stage_gated(
-    gated_out: Path, page: str | None, policy: str | None = None
+    gated_out: Path,
+    page: str | None,
+    policy: str | None = None,
+    binding: str | None = None,
 ) -> StagedGated:
     """Prepare the gated page without touching the destination name.
 
@@ -783,24 +947,27 @@ def stage_gated(
             "through a link. Remove it and build again."
         )
     check_private_root(gated_out)
-    if gated_out.is_dir():
-        _remove_stale_staging(gated_out)
-    if page is None:
-        return StagedGated(gated_out, None)
+    if page is None and binding is None and not gated_out.is_dir():
+        # nothing to write and nothing there to remove
+        return StagedGated(gated_out, None, None, None)
     if not gated_out.exists():
         gated_out.mkdir(parents=True, mode=0o700)
-    temp = gated_out / f".{GATED_FILE.name}.{secrets.token_hex(8)}.tmp"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(temp, flags, 0o600)
+    # the lock is held from here to the end of ``commit`` or ``discard``, and the
+    # leftovers of an earlier crash are removed only under it
+    staged = StagedGated(
+        gated_out, None, policy, binding, acquire_gated_lock(gated_out, exclusive=True)
+    )
     try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(page.encode("utf-8"))
-            handle.flush()
-            os.fsync(handle.fileno())
+        if staged.lock is None:  # unreachable: the lock was taken just above
+            raise ValueError("the gated directory lock was not taken")
+        _remove_stale_staging(gated_out, staged.lock)
+        if page is not None:
+            temp = _stage_text(gated_out, target, page)
+            staged.temp = temp
     except BaseException:
-        temp.unlink(missing_ok=True)
+        staged.discard()
         raise
-    return StagedGated(gated_out, temp, policy)
+    return staged
 
 
 # --- content -----------------------------------------------------------------
@@ -1765,4 +1932,10 @@ def render_kit(
         gated = env.get_template("kit_gated.html").render(
             **{**ctx, "root": "/", "kit": content, "inquiry": inquiry, "noindex": True}
         )
-    return KitRender(pages, gated, warnings, policy_fingerprint())
+    return KitRender(
+        pages,
+        gated,
+        warnings,
+        policy_fingerprint(),
+        rows_digest(data["measures"]),
+    )

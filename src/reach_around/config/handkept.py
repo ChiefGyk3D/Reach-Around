@@ -42,6 +42,7 @@ from reach_around.config.measures import (
     REGISTRY,
     Measure,
     MeasureVisibility,
+    is_source_field,
     narrow,
     source_level,
 )
@@ -167,9 +168,7 @@ def make_entry(
         chosen = info.field
     else:
         chosen = DEFAULT_FIELD if field is None else field
-    from reach_around.config.kit import KIT_FIELD_POLICY
-
-    if chosen not in KIT_FIELD_POLICY:
+    if not is_source_field(chosen):
         raise HandKeptError("field is not a known source field")
     return HandKeptEntry(
         platform=platform,
