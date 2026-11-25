@@ -36,7 +36,7 @@
 {%- endmacro %}
 {% block content %}
 {% if compact %}
-<div class="smart-stack smart-compact">
+<div class="smart-stack smart-compact{% if page.status.schedule %} smart-has-schedule{% endif %}">
 <section class="smart-group smart-onair smart-group-watch" id="group-watch" aria-labelledby="group-watch-title">
 <h2 id="group-watch-title">{{ watch_title }}</h2>
 <section class="smart-status{{ frames.cls("hero") }}" aria-labelledby="smart-status-title">

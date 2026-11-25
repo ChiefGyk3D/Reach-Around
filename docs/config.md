@@ -350,7 +350,9 @@ example is [`examples/instance/site-link-grid.yaml`](../examples/instance/site-l
 - A label is clipped to two lines with an ellipsis inside its tile, so a long
   or unbroken title never reaches the next tile. Where a row of four to six
   tiles would be narrower than 44 px (a very narrow screen or a large zoom),
-  the group falls back to three across and the last short row wraps to the left.
+  the group falls back to three across and the last short row wraps to the left;
+  narrower than three tiles it goes two across, then one, so a tile is never
+  under 44 px wide and the page never scrolls sideways.
 - The `gear`, `more` and `hire` intents exist for the groups the grid uses
   (a gear section, Website, GitHub, Email and RSS, a hire-me group); each may
   appear once like every intent. Name the gear group anything you like in its
@@ -359,10 +361,14 @@ example is [`examples/instance/site-link-grid.yaml`](../examples/instance/site-l
   the example (eight rows of tiles) fits 390x844, 390x664 and 360x640 with no
   scroll. Past about eight rows the tiles stay at the tap size and the page
   scrolls rather than shrinking a target. On a short screen (under 43.75 rem
-  tall) the schedule line and the avatar are not drawn.
+  tall) the avatar is not drawn and the gaps tighten; the schedule line stays.
+  One line of schedule still fits the three phone sizes without scrolling; a
+  schedule long enough to wrap to a second line may scroll the page by that
+  line, because configured content is never removed to save space.
 - Desktop (48 rem and up): one centered column up to 72 rem, the Watch group on
   top, then the groups three across (a group of five or six tiles takes two
-  columns).
+  columns). Groups keep their config order, which is also the keyboard order, so
+  a short row can leave a gap rather than pull a later group forward.
 
 ```yaml
 page:

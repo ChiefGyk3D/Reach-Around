@@ -14,6 +14,7 @@ import threading
 from collections.abc import Iterator
 from datetime import date
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit
 
 import pytest
@@ -55,6 +56,31 @@ def browser() -> Iterator[Browser]:
 def base_url(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
     out = tmp_path_factory.mktemp("gridvis") / "out"
     doc = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
+    build_site(
+        SiteConfig.model_validate(doc), out, today=TODAY, assets_dir=EXAMPLE.parent
+    )
+    handler = functools.partial(_Quiet, directory=str(out))
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+SCHEDULE = "Tue and Thu 8 PM Eastern"
+LONG_SCHEDULE = "Tue and Thu 8 PM, Sat 2 PM Eastern, with a long second line of notes"
+
+
+@pytest.fixture(scope="module")
+def scheduled_url(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
+    """The example grid with the optional schedule line configured."""
+    out = tmp_path_factory.mktemp("gridsched") / "out"
+    doc = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
+    doc["page"]["status"]["schedule"] = SCHEDULE
     build_site(
         SiteConfig.model_validate(doc), out, today=TODAY, assets_dir=EXAMPLE.parent
     )
@@ -139,6 +165,65 @@ def test_every_tile_is_on_screen_without_scrolling(
     assert got["scrollW"] <= got["w"]
     assert foreign == []
     page.context.close()
+
+
+@pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
+def test_a_configured_schedule_stays_visible_and_every_tile_still_fits(
+    browser: Browser, scheduled_url: str, size: tuple[int, int]
+) -> None:
+    """Short screens keep the schedule line (round 2 of #879): no content is
+    removed from the visual or the accessibility tree, and the tiles still fit."""
+    page, _foreign = open_page(browser, scheduled_url, size)
+    line = page.locator(".smart-status-schedule")
+    assert line.count() == 1
+    assert line.is_visible()
+    assert line.evaluate("e => getComputedStyle(e).display") != "none"
+    box = line.bounding_box()
+    assert box is not None and box["height"] > 0 and box["width"] > 0
+    assert page.get_by_text(SCHEDULE, exact=True).count() == 1
+    got = page.evaluate(MEASURE)
+    inside = [
+        t
+        for t in got["tiles"]
+        if t["top"] >= -0.5
+        and t["bottom"] <= got["h"] + 0.5
+        and t["left"] >= -0.5
+        and t["right"] <= got["w"] + 0.5
+    ]
+    assert len(inside) == TILES, f"{len(inside)} of {TILES} visible at {size}"
+    assert got["scrollH"] <= got["h"], (got["scrollH"], got["h"])
+    page.context.close()
+
+
+@pytest.mark.parametrize("size", PHONES, ids=lambda s: f"{s[0]}x{s[1]}")
+def test_a_two_line_schedule_is_kept_and_the_page_scrolls_not_clips(
+    browser: Browser, tmp_path_factory: pytest.TempPathFactory, size: tuple[int, int]
+) -> None:
+    """A schedule too long for one line wraps: the page may scroll a little, but
+    nothing is hidden, clipped sideways or removed from the accessibility tree."""
+    out = tmp_path_factory.mktemp("gridlong") / "out"
+    doc = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
+    doc["page"]["status"]["schedule"] = LONG_SCHEDULE
+    build_site(
+        SiteConfig.model_validate(doc), out, today=TODAY, assets_dir=EXAMPLE.parent
+    )
+    handler = functools.partial(_Quiet, directory=str(out))
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        page, _foreign = open_page(
+            browser, f"http://127.0.0.1:{server.server_address[1]}/", size
+        )
+        assert page.get_by_text(LONG_SCHEDULE, exact=True).is_visible()
+        got = page.evaluate(MEASURE)
+        assert got["scrollW"] <= got["w"]
+        assert len(got["tiles"]) == TILES
+        page.context.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
 
 
 @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
@@ -348,13 +433,152 @@ def test_hostile_labels_stay_inside_their_tiles(
     page.context.close()
 
 
-def test_the_hostile_labels_keep_their_full_text_for_assistive_tech(
+def test_the_hostile_labels_are_clipped_to_look_not_to_read(
     browser: Browser, hostile_url: str
 ) -> None:
+    """Both halves in one test, so neither can pass alone: the long labels are
+    really clipped on screen (two lines, the rest cut), and the browser's own
+    accessible name for each link is still the complete label."""
     page, _foreign = open_page(browser, hostile_url, (360, 640))
-    names = page.evaluate(
-        "[...document.querySelectorAll('a.smart-tile .link-title')]"
-        ".map(e => e.textContent)"
+    clipped = page.evaluate(
+        """() => [...document.querySelectorAll('a.smart-tile .link-title')]
+          .map(e => ({text: e.textContent, cut: e.scrollHeight - e.clientHeight,
+                      h: e.clientHeight,
+                      line: parseFloat(getComputedStyle(e).lineHeight)}))"""
     )
-    assert LABELS[0] in names and LABELS[1] in names  # clipped to look, not to read
+    by_text = {c["text"]: c for c in clipped}
+    for label in (LABELS[0], LABELS[1]):  # 200 characters each
+        got = by_text[label]
+        assert got["cut"] > 1, ("not clipped on screen", label[:20], got)
+        assert got["h"] <= 2 * got["line"] + 1, got
+    for label in LABELS:
+        name = " ".join(label.split())
+        links = page.get_by_role("link", name=name, exact=True)
+        assert links.count() >= 1, ("accessible name is not the full label", name[:30])
+    assert page.locator("a.smart-tile[aria-label], a.smart-tile[title]").count() == 0
+    page.context.close()
+
+
+# --- narrow containers and keyboard order (the review of #879, round 2) -------
+
+NARROW_SIZES = [(280, 500), (240, 500), (200, 500)]
+
+
+@pytest.mark.parametrize("size", NARROW_SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
+def test_the_width_guarantee_holds_on_a_very_narrow_screen(
+    browser: Browser, base_url: str, size: tuple[int, int]
+) -> None:
+    page, foreign = open_page(browser, base_url, size)
+    got = page.evaluate(MEASURE)
+    assert len(got["tiles"]) == TILES
+    assert got["scrollW"] <= got["w"], (got["scrollW"], got["w"])
+    for tile in got["tiles"]:
+        assert tile["w"] >= 44, tile
+        assert tile["h"] >= 44 - 0.5, tile
+        assert tile["left"] >= -0.5 and tile["right"] <= got["w"] + 0.5, tile
+    assert foreign == []
+    page.context.close()
+
+
+@pytest.mark.parametrize("container", [130, 100, 80, 60], ids=lambda c: f"{c}px")
+def test_a_container_below_three_tap_targets_falls_back_to_fewer_columns(
+    browser: Browser, base_url: str, container: int
+) -> None:
+    """The container query itself: the group is forced to a width a whole phone
+    never reaches, so three across (3 x 44 px plus gaps) cannot fit."""
+    page, _foreign = open_page(browser, base_url, (390, 844))
+    page.add_style_tag(
+        content=f".smart-compact .smart-group {{ width: {container}px !important;"
+        f" max-width: {container}px !important; }}"
+    )
+    got = page.evaluate(
+        """() => [...document.querySelectorAll('.smart-tiles')].map(g => {
+          const gb = g.getBoundingClientRect();
+          return {w: gb.width, tiles: [...g.querySelectorAll('a.smart-tile')].map(a => {
+            const b = a.getBoundingClientRect();
+            return {l: b.left - gb.left, r: b.right - gb.left, w: b.width};
+          })};
+        })"""
+    )
+    assert got
+    for grp in got:
+        for tile in grp["tiles"]:
+            assert tile["w"] >= 44 - 0.01, (container, grp["w"], tile)
+            assert tile["l"] >= -0.5 and tile["r"] <= grp["w"] + 0.5, (
+                container,
+                grp,
+                tile,
+            )
+    page.context.close()
+
+
+GROUP_ORDER = """() => [...document.querySelectorAll(
+  '.smart-groups > .smart-group')].map(g => {
+  const b = g.getBoundingClientRect();
+  return {top: Math.round(b.top), left: Math.round(b.left),
+          id: g.querySelector('h2').textContent.trim()};
+})"""
+
+
+def reading_order_is_visual_order(groups: list[dict[str, Any]]) -> bool:
+    """Row-major: a later group in the DOM is never above an earlier one, and on
+    the same row it is to the right."""
+    keys = [(g["top"], g["left"]) for g in groups]
+    return all(a <= b for a, b in zip(keys, keys[1:], strict=False))
+
+
+def test_desktop_groups_sit_in_dom_and_focus_order_on_the_example(
+    browser: Browser, base_url: str
+) -> None:
+    page, _foreign = open_page(browser, base_url, (1920, 930))
+    groups = page.evaluate(GROUP_ORDER)
+    assert len(groups) == 6
+    assert reading_order_is_visual_order(groups), groups
+    page.context.close()
+
+
+@pytest.fixture(scope="module")
+def spans_url(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
+    """Two groups of six (two columns wide each) followed by groups of three: the
+    layout where dense packing used to pull a later group above an earlier one."""
+    from test_smart_stack_compact import raw
+
+    data = raw()
+    for tab in data["tabs"]:
+        if tab["intent"] in ("videos", "follow"):
+            tab["blocks"] = [
+                {
+                    **tab["blocks"][0],
+                    "id": f"{tab['intent']}-{n}",
+                    "url": f"https://example.invalid/{tab['intent']}/{n}",
+                }
+                for n in range(1, 7)
+            ]
+            tab["columns"] = 6
+    out = tmp_path_factory.mktemp("gridspans") / "out"
+    build_site(SiteConfig.model_validate(data), out, today=TODAY)
+    handler = functools.partial(_Quiet, directory=str(out))
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@pytest.mark.parametrize("width", [1920, 1280, 1024, 800], ids=lambda w: f"{w}w")
+def test_wide_groups_never_let_a_later_group_jump_ahead(
+    browser: Browser, spans_url: str, width: int
+) -> None:
+    page, _foreign = open_page(browser, spans_url, (width, 930))
+    groups = page.evaluate(GROUP_ORDER)
+    spanning = page.evaluate(
+        "[...document.querySelectorAll('.smart-groups > .smart-group')]"
+        ".filter(g => g.querySelector('.smart-cols-6')).length"
+    )
+    assert spanning == 2  # the pattern under test is really on the page
+    assert reading_order_is_visual_order(groups), groups
     page.context.close()

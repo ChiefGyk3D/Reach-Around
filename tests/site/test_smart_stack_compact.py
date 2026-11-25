@@ -251,8 +251,30 @@ def test_tiles_never_drop_below_the_tap_size(tmp_path: Path) -> None:
     assert re.search(r"min-height: clamp\(var\(--ra-tap\),", rule.group(0))
     assert "min-width: var(--ra-tap)" in rule.group(0)
     # Where four to six across cannot give 44 px a tile, the group falls back.
-    assert "@container (max-width: 17.75rem)" in css
-    assert "@container (max-width: 14.75rem)" in css
+    assert "@container (max-width: 18rem)" in css
+
+
+def test_the_stylesheet_has_no_dense_packing_and_never_hides_the_schedule(
+    tmp_path: Path,
+) -> None:
+    out, _html = build(tmp_path)
+    css = re.sub(r"/\*.*?\*/", "", smart_css(out), flags=re.S)
+    assert "dense" not in css  # DOM order is the visual order (#879, round 2)
+    assert not re.search(r"smart-status-schedule[^{]*\{[^}]*display:\s*none", css)
+    for width in ("18rem", "15rem", "12rem", "9rem", "6rem"):
+        assert f"@container (max-width: {width})" in css  # N tap targets: 3 rem each
+
+
+def test_a_schedule_marks_the_stack_so_tiles_give_the_room_back(
+    tmp_path: Path,
+) -> None:
+    _out, html = build(tmp_path, raw())
+    assert "smart-has-schedule" not in html
+    data = raw()
+    data["page"]["status"]["schedule"] = "Tue and Thu 8 PM Eastern"
+    _out, html = build(tmp_path / "s", data)
+    assert 'class="smart-stack smart-compact smart-has-schedule"' in html
+    assert "Tue and Thu 8 PM Eastern" in html
 
 
 def test_a_label_is_clamped_inside_its_tile(tmp_path: Path) -> None:
@@ -509,11 +531,44 @@ CLASSIFIED: dict[str, dict[str, str]] = {
 }
 
 
+# One config mutation per refused field. The classification test below ties the
+# two tables together, so a field cannot be called "refused" without a mutation
+# that the validator really rejects (and a field cannot be refused unlisted).
+# The refusal must be the compact one: an unrelated error (a spoke page needing a
+# url, say) would pass a bare ValidationError check with the guard deleted.
+COMPACT_REFUSAL = r"density: compact"
+REFUSED: dict[tuple[str, str], list[Any]] = {
+    ("Page", "featured"): [
+        lambda d: d["page"].update(featured={"link": "videos-1", "kicker": "New"})
+    ],
+    ("Tab", "collapsed"): [lambda d: d["tabs"][1].update(collapsed=True)],
+    ("Tab", "spoke"): [lambda d: d["tabs"][1].update(spoke=True)],
+    ("Tab", "style"): [
+        lambda d: d["tabs"][1].update(style="rows"),
+        lambda d: d["tabs"][1].update(style="icons"),
+    ],
+}
+
+
 def test_every_config_key_is_classified_for_hiding_links() -> None:
     from reach_around.config import models
 
     for name, fields in CLASSIFIED.items():
         assert set(getattr(models, name).model_fields) == set(fields), name
+    refused = {
+        (name, field)
+        for name, fields in CLASSIFIED.items()
+        for field, kind in fields.items()
+        if kind == "refused"
+    }
+    assert refused == set(REFUSED)
+    SiteConfig.model_validate(raw())  # the control: the untouched config is valid
+    for (_name, _field), mutations in REFUSED.items():
+        for mutate in mutations:
+            data = raw()
+            mutate(data)
+            with pytest.raises(ValidationError, match=COMPACT_REFUSAL):
+                SiteConfig.model_validate(data)
 
 
 def test_inert_keys_leave_every_link_on_the_page(tmp_path: Path) -> None:
@@ -544,22 +599,13 @@ def test_inert_keys_leave_every_link_on_the_page(tmp_path: Path) -> None:
     assert "<details" not in html
 
 
-@pytest.mark.parametrize(
-    "mutate",
-    [
-        lambda d: d["page"].update(featured={"link": "videos-1", "kicker": "New"}),
-        lambda d: d["tabs"][1].update(collapsed=True),
-        lambda d: d["tabs"][1].update(spoke=True),
-        lambda d: d["tabs"][1].update(style="rows"),
-        lambda d: d["tabs"][1].update(style="icons"),
-    ],
-    ids=["featured", "collapsed", "spoke", "style-rows", "style-icons"],
-)
-def test_options_that_hide_or_restyle_links_are_refused(mutate: Any) -> None:
-    data = raw()
-    mutate(data)
-    with pytest.raises(ValidationError):
-        SiteConfig.model_validate(data)
+@pytest.mark.parametrize("key", sorted(REFUSED), ids=lambda k: f"{k[0]}.{k[1]}".lower())
+def test_options_that_hide_or_restyle_links_are_refused(key: tuple[str, str]) -> None:
+    for mutate in REFUSED[key]:
+        data = raw()
+        mutate(data)
+        with pytest.raises(ValidationError, match=COMPACT_REFUSAL):
+            SiteConfig.model_validate(data)
 
 
 # --- hostile input through the real builder (the review of #879, round 1) -----
@@ -607,11 +653,28 @@ def test_hostile_text_is_escaped_everywhere_a_compact_page_prints_it(
         "https://example.invalid/\u202e",
     ],
 )
-def test_a_hostile_url_never_reaches_a_tile(url: str) -> None:
+def test_a_hostile_url_is_refused_by_the_shared_link_model(url: str) -> None:
+    # The guard is the pre-existing Link model, shared with every layout; this
+    # pins that a compact page cannot be configured around it.
     data = raw()
     data["tabs"][1]["blocks"][0]["url"] = url
     with pytest.raises(ValidationError):
         SiteConfig.model_validate(data)
+
+
+def test_every_tile_href_is_the_configured_https_url_or_a_click_path(
+    tmp_path: Path,
+) -> None:
+    """The compact-specific half: whatever the template prints into a tile's href
+    is an https URL from the config or the local click-counting path."""
+    data = raw()
+    _out, html = build(tmp_path, data)
+    configured = {link["url"] for tab in data["tabs"] for link in tab["blocks"]}
+    hrefs = re.findall(r'<a class="link[^"]*smart-tile[^"]*"[^>]*?href="([^"]*)"', html)
+    assert len(hrefs) == LINKS
+    for href in hrefs:
+        assert href in configured or href.startswith("/"), href
+        assert not re.match(r"\s*(javascript|data|vbscript):", href, re.I), href
 
 
 def test_quotes_and_markup_in_a_valid_url_are_escaped(tmp_path: Path) -> None:

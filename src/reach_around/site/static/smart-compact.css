@@ -6,7 +6,9 @@
    height follows the viewport height between the tap size and a roomy cap
    (sized for about eight rows of tiles), so a tall phone gets big tiles and a
    short one gets tap-size tiles instead of a scroll. Dark only, tokens only. */
-.smart-compact { gap: var(--ra-space-2); }
+.smart-compact { --smart-reserve: 21rem; gap: var(--ra-space-2); }
+/* The optional schedule line takes up to two lines: tiles give that back. */
+.smart-compact.smart-has-schedule { --smart-reserve: 23.5rem; }
 .smart-compact .smart-groups { gap: var(--ra-space-2); }
 .smart-compact .smart-group,
 .smart-compact.smart-stack .smart-onair { gap: var(--ra-space-1); padding: 0; border: 0; background: none; box-shadow: none; }
@@ -18,7 +20,11 @@
 .smart-tiles {
   display: grid;
   grid-template-columns: repeat(60, minmax(0, 1fr));
-  gap: var(--ra-space-1);
+  /* The gap between tiles is a half-gap margin on each tile, not a grid gap:
+     sixty tracks with a gap each would be wider than a very narrow screen. The
+     negative margin gives the half-gaps back, so rows line up with the heading. */
+  gap: var(--ra-space-1) 0;
+  margin-inline: calc(var(--ra-space-1) / -2);
   container-type: inline-size;
 }
 .smart-span-60 { grid-column: span 60; }
@@ -34,7 +40,8 @@
   justify-content: center;
   gap: 0;
   min-width: var(--ra-tap);
-  min-height: clamp(var(--ra-tap), calc((100dvh - 21rem) / 8), 4.5rem);
+  margin-inline: calc(var(--ra-space-1) / 2);
+  min-height: clamp(var(--ra-tap), calc((100dvh - var(--smart-reserve)) / 8), 4.5rem);
   padding: 0 var(--ra-space-1);
   overflow: hidden;
   border: var(--ra-rule-width) solid var(--ra-color-border);
@@ -84,15 +91,25 @@
 .smart-compact .smart-cols-6 .smart-tile .link-title { font-size: 0.75rem; letter-spacing: -0.01em; }
 /* A tile is never narrower than the tap size: where a row of four, five or six
    cannot give 44 px a tile (a very narrow screen or a large zoom), the group
-   falls back to three across and the last short row wraps to the left. */
-@container (max-width: 17.75rem) {
+   falls back to three across and the last short row wraps to the left. A tile
+   needs its 44 px plus the 0.25 rem between tiles: 3 rem a column here. */
+@container (max-width: 18rem) {
   .smart-compact .smart-cols-6 a.link.smart-tile { grid-column: span 20; }
 }
-@container (max-width: 14.75rem) {
+@container (max-width: 15rem) {
   .smart-compact .smart-cols-5 a.link.smart-tile { grid-column: span 20; }
 }
-@container (max-width: 11.75rem) {
+@container (max-width: 12rem) {
   .smart-compact .smart-cols-4 a.link.smart-tile { grid-column: span 20; }
+}
+/* Below the width of three tap-size tiles (9 rem with the gaps) every group of
+   three or more goes two across, and below two tiles (6 rem) one across,
+   so a tile is never narrower than 44 px and the page never grows sideways. */
+@container (max-width: 9rem) {
+  .smart-compact :is(.smart-cols-3, .smart-cols-4, .smart-cols-5, .smart-cols-6) a.link.smart-tile { grid-column: span 30; }
+}
+@container (max-width: 6rem) {
+  .smart-compact .smart-tiles a.link.smart-tile { grid-column: span 60; }
 }
 /* One tight screen: the page header and footer give back their padding, and
    the privacy and credit links share a line, so the tiles stay on screen. */
@@ -111,9 +128,11 @@ main.main-deck:has(.smart-compact) > footer > .disclosure,
 main.main-deck:has(.smart-compact) > footer > .site-nav,
 main.main-deck:has(.smart-compact) > footer > .cookie-banner { flex: 0 0 100%; }
 @media (max-height: 43.75rem) {
-  /* A short screen (a phone browser with its toolbars): the schedule line and
-     the decorative avatar give way, so every tile and the footer stay on screen. */
-  .smart-compact .smart-status-schedule { display: none; }
+  /* A short screen (a phone browser with its toolbars): the decorative avatar
+     gives way so every tile and the footer stay on screen. The schedule line is
+     configured content and stays (#873). The gap between groups tightens to
+     pay for one line of it. */
+  .smart-compact .smart-groups { gap: var(--ra-space-1); }
   main.main-deck:has(.smart-compact) > .site-header .avatar { display: none; }
   main.main-deck:has(.smart-compact) > .site-header h1 { font-size: var(--ra-text-md); }
   main.main-deck:has(.smart-compact) > .site-header { padding-top: var(--ra-space-1); }
@@ -124,7 +143,7 @@ main.main-deck:has(.smart-compact) > footer > .cookie-banner { flex: 0 0 100%; }
   /* A desktop window: one centered column of Live now, then the groups three
      across (a group of five or six tiles takes two of the three). */
   .smart-stack.smart-compact { display: flex; flex-direction: column; }
-  .smart-compact .smart-groups { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-flow: dense; gap: var(--ra-space-3) var(--ra-space-5); }
+  .smart-compact .smart-groups { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--ra-space-3) var(--ra-space-5); }
   .smart-compact .smart-group { grid-column: auto; }
   .smart-compact .smart-group:has(.smart-cols-5, .smart-cols-6) { grid-column: span 2; }
   .smart-compact .smart-tile .link-title,
