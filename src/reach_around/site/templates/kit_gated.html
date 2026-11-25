@@ -23,6 +23,9 @@
 {% if kit.contact %}
 <p class="kit-about kit-contact">{{ kit.contact }}</p>
 {% endif %}
+{% if kit.consulting_url %}
+<p class="kit-about kit-consulting">Consulting instead? Visit my <a href="{{ kit.consulting_url }}" rel="noopener noreferrer">consulting site</a>.</p>
+{% endif %}
 </div>
 </div>
 {{ numbers(kit, "kit-numbers-title") }}

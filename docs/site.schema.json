@@ -1764,6 +1764,19 @@
           "title": "Channels",
           "type": "array"
         },
+        "consulting_url": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consulting Url"
+        },
         "contact": {
           "anyOf": [
             {
