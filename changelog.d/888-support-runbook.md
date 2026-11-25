@@ -1,1 +1,9 @@
-- Cutover runbook: new section 3.5 on consolidating the old support host into the Support page (redirect plan, staging checks, rollback, owner approves each step), a "Payments and support rails" checklist entry, and matching parity checklist wording. Docs only, refs #888. Review round 1 fixes: exact `Location` host checks without `-L`, per-rail provider checks, separate staging and production approvals, a 302 soak before a permanent 301 with client recovery and purge steps, one optional owner-only test tip, and the tips-host state marked unverified. Round 3: the redirect check is now `scripts/verify-support-redirect.sh` with local-server tests in `tests/test_verify_support_redirect.py`. It fails closed and uses GET, not HEAD (explicit status, exactly one `Location` header equal to the expected URL with two probe queries, the other path must not redirect at all and must answer its configured non-redirect status, Support page 200 at `/support/`), takes separate required `SRC_HOST` and `EXP_HOST` (compared case-insensitively, plain hosts only), has connect and total timeouts on every request, and has a production invocation. Rollback purges the whole old host by hostname, rollback timing for Single Redirects is marked inferred, promotion to 301 needs measurable health gates plus the owner's word, and tip refund behavior per rail is marked unverified (provider help pages returned HTTP 403), with the test tip optional.
+- Cutover runbook: new section 3.5 on consolidating the old support host into
+  the Support page (redirect plan, staging checks, rollback, owner approves
+  each step), a "Payments and support rails" checklist entry, and matching
+  parity checklist wording. The verifier uses direct GET requests without
+  following redirects or honoring proxy environment variables, validates and
+  normalizes host authorities including default and invalid ports, parses only
+  the final response header block, and rejects obsolete folded headers. It
+  still checks exact `Location` values, two probe queries, an unaffected path,
+  and a 200 response from `/support/`. Docs and tests, refs #888.

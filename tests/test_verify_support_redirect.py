@@ -359,9 +359,58 @@ def test_single_location_with_crlf_and_odd_case_passes_probe_one(
     assert "ok: 302" in r.stdout and "not exactly" in r.stderr
 
 
+@pytest.mark.parametrize("continuation", [" folded", "\tfolded"])
+def test_obsolete_folded_location_fails(tmp_path: Path, continuation: str) -> None:
+    raw = f"HTTP/1.1 302 Found\r\nLocation: {GOOD_LOC}\r\n{continuation}\r\n\r\n"
+    r = run_fake(tmp_path, raw)
+    assert r.returncode == 1 and "folded header" in r.stderr
+    assert "ok: 302" not in r.stdout
+
+
+def test_only_last_response_header_block_is_parsed(tmp_path: Path) -> None:
+    raw = (
+        "HTTP/1.1 200 Connection established\r\n"
+        "Proxy-Agent: test\r\n\r\n"
+        f"HTTP/1.1 302 Found\r\nLocation: {GOOD_LOC}\r\n\r\n"
+    )
+    r = run_fake(tmp_path, raw)
+    assert r.returncode == 1
+    assert "ok: 302" in r.stdout and "not exactly" in r.stderr
+
+
+def test_final_header_block_without_status_line_fails(tmp_path: Path) -> None:
+    raw = (
+        "HTTP/1.1 302 Found\r\n"
+        f"Location: {GOOD_LOC}\r\n\r\n"
+        "not an HTTP response\r\n\r\n"
+    )
+    r = run_fake(tmp_path, raw)
+    assert r.returncode == 1 and "no parsable HTTP status" in r.stderr
+
+
 def test_unparsable_status_line_fails(tmp_path: Path) -> None:
     r = run_fake(tmp_path, "garbage without a status line\r\n\r\n")
     assert r.returncode == 1 and "no parsable HTTP status" in r.stderr
+
+
+def test_proxy_environment_is_ignored_for_loopback_requests(
+    sites: list[Site],
+) -> None:
+    src, dst = make(sites, good())
+    bogus = "http://127.0.0.1:1"
+    r = run(
+        src,
+        dst,
+        http_proxy=bogus,
+        https_proxy=bogus,
+        HTTP_PROXY=bogus,
+        HTTPS_PROXY=bogus,
+        ALL_PROXY=bogus,
+        NO_PROXY="",
+    )
+    assert r.returncode == 0, r.stderr
+    assert src.requests == [("GET", PROBE_1), ("GET", PROBE_2), ("GET", OTHER)]
+    assert dst.requests == [("GET", "/support/")]
 
 
 def test_curl_is_called_with_timeouts_get_and_no_redirect_following(
@@ -382,8 +431,9 @@ def test_curl_is_called_with_timeouts_get_and_no_redirect_following(
     assert r.returncode == 1
     argv = log.read_text().splitlines()[0].split()
     assert argv[0] == "-q"
-    for needed in ("--max-time", "--connect-timeout", "-sS", "-D", "-o"):
+    for needed in ("--max-time", "--connect-timeout", "--noproxy", "-sS", "-D", "-o"):
         assert needed in argv, needed
+    assert argv[argv.index("--noproxy") + 1] == "*"
     assert argv[argv.index("--max-time") + 1].isdigit()
     assert argv[argv.index("--connect-timeout") + 1].isdigit()
     for forbidden in ("-L", "--location", "-I", "--head", "-X"):
@@ -500,6 +550,47 @@ def test_case_or_trailing_dot_host_difference_is_a_usage_error(
 ) -> None:
     r = run_hosts(src, dst, VERIFY_SCHEME="https")
     assert r.returncode == 2 and "must differ" in r.stderr
+
+
+@pytest.mark.parametrize(
+    ("scheme", "src", "dst"),
+    [
+        ("https", "example.com", "example.com:443"),
+        ("https", "example.com:443", "example.com"),
+        ("http", "127.0.0.1", "127.0.0.1:80"),
+        ("http", "127.0.0.1:80", "127.0.0.1"),
+    ],
+)
+def test_default_port_does_not_make_equal_authorities_different(
+    scheme: str, src: str, dst: str
+) -> None:
+    r = run_hosts(src, dst, VERIFY_SCHEME=scheme)
+    assert r.returncode == 2 and "must differ" in r.stderr
+
+
+def test_nondefault_port_keeps_authorities_different() -> None:
+    r = run_hosts("example.com", "example.com:8443", VERIFY_SCHEME="https")
+    assert r.returncode == 1
+    assert "must differ" not in r.stderr
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "example.com:0",
+        "example.com:080",
+        "example.com:65536",
+        "example.com:99999",
+        "example.com:abc",
+        "example.com:123456",
+    ],
+)
+@pytest.mark.parametrize("role", ["SRC_HOST", "EXP_HOST"])
+def test_invalid_ports_are_usage_errors(role: str, bad: str) -> None:
+    env = {"SRC_HOST": "support.example.com", "EXP_HOST": "links.example.com"}
+    env[role] = bad
+    r = run_hosts(env["SRC_HOST"], env["EXP_HOST"], VERIFY_SCHEME="https")
+    assert r.returncode == 2 and "plain host" in r.stderr
 
 
 @pytest.mark.parametrize(

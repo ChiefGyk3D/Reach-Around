@@ -483,11 +483,15 @@ before relying on it), and how long a given browser keeps a 301 with no
    echo "exit=$?"
    ```
 
-   Both hosts are required and must differ (compared case-insensitively and
-   without a trailing dot); a host is letters, digits, dots and hyphens with an
-   optional `:port`, nothing else; nothing is defaulted. Every request is a GET
-   with the body discarded, never HEAD, because browsers navigate with GET and
-   a rule or origin can treat HEAD differently. It exits `0` only after every
+   Both hosts are required and their normalized authorities must differ.
+   Normalization lowercases the host, removes one trailing dot, and removes
+   `:443` for HTTPS or `:80` for HTTP before comparison. A host is letters,
+   digits, dots and hyphens with an optional decimal port from 1 through 65535
+   without a leading zero, userinfo, slashes or spaces; nothing is defaulted.
+   Every request is a direct GET that ignores proxy environment variables, with
+   the body discarded and redirects never followed. It is never HEAD, because
+   browsers navigate with GET and a rule or origin can treat HEAD differently.
+   It exits `0` only after every
    check ran and passed: two probe requests (`?probe=a%2Fb&probe=two` and
    `?q=x%20y&utm_source=mail&empty=`) each return status `302` and exactly one
    `Location` header (two or more fail), equal, character for character, to
@@ -498,9 +502,11 @@ before relying on it), and how long a given browser keeps a 301 with no
    really serves) with no `Location` header, so a redirect to Support, to
    another host or to itself fails; and the Support page (`/support/`) answers
    `200`. Each request has a connect timeout and a total time limit. A failed
-   request, an unparsable status line, a missing or duplicated `Location` is a
-   failure (exit `1`); a missing, equal or malformed host is a usage error
-   (exit `2`). It is tested against local servers (which record every request
+   request, an unparsable final response status line, an obsolete folded header,
+   or a missing or duplicated `Location` is a failure (exit `1`). If curl
+   returns multiple response header blocks, only the last block is evaluated.
+   A missing, equal or malformed host or an invalid port is a usage error (exit
+   `2`). It is tested against local servers (which record every request
    path and query) in `tests/test_verify_support_redirect.py`, and each check
    was revert-proved by breaking it and watching a test fail. It has not yet
    been run against a real Cloudflare rule.
