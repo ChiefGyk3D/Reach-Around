@@ -15,3 +15,6 @@ node_modules/
 .env
 .env.*
 .wrangler/
+
+# Local forbidden terms for scripts/check-wiki-scrub.py (never commit)
+.wiki-scrub-forbidden

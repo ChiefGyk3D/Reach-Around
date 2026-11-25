@@ -104,6 +104,47 @@ have_ref="$(git -C "$ENGINE_DIR" rev-parse HEAD)"
 [ "$have_ref" = "$want_ref" ] ||
   fail "ENGINE_DIR is at $have_ref but engine.lock pins $want_ref"
 
+# The three pins must describe one release (image, repository, commit, tag), and
+# the checkout must be that release's repository, at that tag, with the schema
+# the manifest names and no local edits (issue #768, F-11 and F-60).
+"$instance_dir/scripts/read-lock.sh" --release >/dev/null ||
+  fail "engine.lock and engine.release.json do not describe one release"
+want_repo="$("$instance_dir/scripts/read-lock.sh" ENGINE_REPO)"
+want_repo_lc="$(printf '%s' "$want_repo" | tr '[:upper:]' '[:lower:]')"
+remote_ok=0
+while read -r remote_name; do
+  [ -n "$remote_name" ] || continue
+  remote_url="$(git -C "$ENGINE_DIR" remote get-url "$remote_name" 2>/dev/null || true)"
+  # Only GitHub: https://github.com/O/N(.git), ssh://git@github.com/O/N(.git),
+  # git@github.com:O/N(.git). A URL with credentials or another host never matches.
+  case "$remote_url" in
+    https://github.com/* | ssh://git@github.com/* | git@github.com:*) ;;
+    *) continue ;;
+  esac
+  remote_path="$(printf '%s' "$remote_url" |
+    sed -E 's#^(https://github\.com/|ssh://git@github\.com/|git@github\.com:)##; s#\.git$##' |
+    tr '[:upper:]' '[:lower:]')"
+  if [ "$remote_path" = "$want_repo_lc" ]; then remote_ok=1; fi
+done < <(git -C "$ENGINE_DIR" remote)
+[ "$remote_ok" -eq 1 ] ||
+  fail "no remote of ENGINE_DIR is github.com/$want_repo (the repository engine.lock names)"
+want_tag="$(jq -er '.tag | strings' "$instance_dir/engine.release.json")"
+tag_commit="$(git -C "$ENGINE_DIR" rev-parse --verify --quiet "refs/tags/${want_tag}^{commit}" || true)"
+[ -n "$tag_commit" ] ||
+  fail "ENGINE_DIR has no tag $want_tag (run: git -C ENGINE_DIR fetch --tags)"
+[ "$tag_commit" = "$want_ref" ] ||
+  fail "tag $want_tag in ENGINE_DIR is $tag_commit, not the pinned $want_ref"
+want_schema="$(jq -er '.d1_schema | strings' "$instance_dir/engine.release.json")"
+have_schema=""
+for migration in "$ENGINE_DIR"/worker/migrations/[0-9][0-9][0-9][0-9]_*.sql; do
+  [ -e "$migration" ] || continue
+  have_schema="$(basename "$migration" | cut -c1-4)"
+done
+[ "$have_schema" = "$want_schema" ] ||
+  fail "ENGINE_DIR migrations end at ${have_schema:-none} but engine.release.json says $want_schema"
+[ -z "$(git -C "$ENGINE_DIR" status --porcelain --untracked-files=no)" ] ||
+  fail "ENGINE_DIR has uncommitted changes to tracked files"
+
 umask 077
 mkdir -p "$PRIVATE_DIR"
 site_out="$PRIVATE_DIR/site-out"
@@ -178,9 +219,36 @@ cd "$ENGINE_DIR/worker"
 # Install the Worker's dependencies without running their install scripts.
 # No token exists for this command.
 npm ci --ignore-scripts
+
+# The migrations, the Worker and Pages are three separate changes, and a
+# failure after the first leaves the old Worker on the new schema (issue #768,
+# F-10). So: record the Worker version that is live now (the JSON shape is
+# INFERRED, see docs/deploy.md; an empty answer means "unknown"), and on any
+# failure from here on print the exact rollback command. Migrations must be
+# additive (expand, migrate, contract), so the old Worker keeps working on the
+# new schema; a rollback restores the code, never the schema.
+prev_version="$(with_token npx --no-install wrangler deployments status \
+  --config "$wrangler_toml" --json 2>/dev/null |
+  jq -r '[.. | objects | .version_id? | strings] | .[0] // empty' 2>/dev/null || true)"
+case "$prev_version" in
+  *[!0-9a-f-]*) prev_version="" ;;
+esac
+on_failure() {
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "error: a deploy step failed (exit $status)." >&2
+    if [ -n "$prev_version" ]; then
+      echo "To restore the previous Worker code: npx wrangler rollback $prev_version --config $wrangler_toml --message rollback" >&2
+    else
+      echo "The previous Worker version could not be read; use 'wrangler deployments list' to pick one." >&2
+    fi
+  fi
+}
+trap on_failure EXIT
 with_token npx --no-install wrangler d1 migrations apply DB --remote \
   --config "$wrangler_toml"
 with_token npx --no-install wrangler deploy --config "$wrangler_toml"
 with_token npx --no-install wrangler pages deploy "$site_out" \
   --project-name "$PAGES_PROJECT" --branch main --commit-dirty=true
+trap - EXIT
 echo "done."

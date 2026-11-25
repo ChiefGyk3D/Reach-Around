@@ -65,8 +65,12 @@ stretch with clicks off is not marked.
 | `ALERTS_CONFIG` unset or empty | no alerts at all |
 
 Flip one with a deploy of the variable (see [deploy.md](deploy.md) for the
-exact command and the token it needs), then check the next report: the hours show
-as `kill_switch` and nothing else changes. Turn it back off the same way.
+exact command and the token it needs). After flipping `VIEWS_KILL` or
+`VIEWS_KILL_SITES`, check the next report: the hours show as `kill_switch` and
+nothing else changes. After flipping a click or live switch, no report marks the
+stretch, because those switches are not sampled: write down the start and end of
+the interval yourself, and treat the click counts for it as missing, not as
+zero. Turn a switch back off the same way.
 
 ## Quota and budgets
 

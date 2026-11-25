@@ -104,7 +104,11 @@ BUDGET: dict[str, dict[str, int]] = {
         "requests": 11,
     },
     "support": {
-        "html": 4600,
+        # The privacy page carries the fixed, owner-approved privacy notice
+        # (#777, about 5 KB of copy that must stay verbatim), so the shared
+        # small-page html budget is raised from 4600 to 8000. The budget exists
+        # to catch accidental bloat, not to cap required legal copy.
+        "html": 8000,
         "css": 72000,
         "js": 13000,
         "images": 1300,

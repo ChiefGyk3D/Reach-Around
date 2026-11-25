@@ -296,7 +296,12 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # One deploy per Worker at a time, whatever the callers do.
+    # One deploy per Worker at a time FROM ONE CALLING REPOSITORY. GitHub scopes
+    # a concurrency group to the repository that runs the workflow, so two
+    # repositories deploying one Worker name are not serialized by this group
+    # (issue #768, F-49). The owner check below refuses a Worker whose recent
+    # deployments name another repository, and docs/deploy.md states the rule:
+    # one Worker, one deploying repository.
     concurrency:
       group: deploy-worker-${{ inputs.worker_name }}
       cancel-in-progress: false
@@ -327,6 +332,7 @@ jobs:
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
             results-receiver.actions.githubusercontent.com:443
+            ${{inputs.site_host}}:443
 
       # Egress canary, as in git-your-ship-together (EX-0001): a runner with
       # broken DNS makes block mode fail confusingly, so say which it is first.
@@ -990,6 +996,69 @@ jobs:
             exit 1
           fi
 
+      # Issue #768 (F-10, F-49). The migrations, the Worker and the caller's Pages
+      # deploy are separate changes, so a failure after the migrations leaves the
+      # old Worker on the new schema. Three guards, in order:
+      #   1. Before anything changes, record the Worker version that is live now
+      #      (`wrangler deployments status --json`) and the recent deployment
+      #      messages (`wrangler deployments list --json`). Both are read only.
+      #   2. Migrations must be additive (expand, migrate, contract), enforced
+      #      for every pull request by .github/scripts/check-migrations.py, so
+      #      the old Worker keeps working on the new schema and a rollback only
+      #      has to restore code.
+      #   3. After the deploy, a probe asks the Worker's route for an answer; if
+      #      it fails, `wrangler rollback <recorded version>` restores the code.
+      # VERIFIED (https://developers.cloudflare.com/workers/wrangler/commands/workers/
+      # read 2026-11-24): `wrangler rollback [VERSION_ID] --name --message`
+      # (--message skips the prompts), `wrangler deployments status|list --name
+      # --json`, `wrangler deploy --message`. INFERRED: the field names inside
+      # the JSON (the helper searches the document for `version_id` and an empty
+      # answer means "unknown", see deploy-guard.py). VERIFIED (same date,
+      # https://developers.cloudflare.com/workers/wrangler/commands/d1/):
+      # a failing migration is rolled back on its own, an applied one is not.
+      #
+      # Single owner (F-49): GitHub concurrency groups are scoped to the calling
+      # repository, so two repositories that deploy one Worker name are NOT
+      # serialized. Each deploy writes `reach-around-owner=<repository>` into the
+      # deployment message, and this step refuses when one of the last 10
+      # deployments names another repository. It narrows the window, it is not a
+      # lock (two simultaneous first deploys both pass); the rule stays: one
+      # Worker, one deploying repository (docs/deploy.md, "Single owner").
+      - name: Read the live Worker version and deployment owners
+        timeout-minutes: 3
+        working-directory: engine/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ fromJSON(steps.cf_doppler.outputs.secrets).CLOUDFLARE_KEY_VALUE }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
+          WORKER_NAME: ${{ inputs.worker_name }}
+          WRANGLER_SEND_METRICS: "false"
+        run: |
+          set -u
+          # A first deploy has no Worker yet: both reads may fail, which only
+          # means "nothing to record".
+          npx --no-install wrangler deployments status --config wrangler.deploy.toml \
+            --name "$WORKER_NAME" --json > "$RUNNER_TEMP/deploy-status.json" 2>/dev/null || : > "$RUNNER_TEMP/deploy-status.json"
+          npx --no-install wrangler deployments list --config wrangler.deploy.toml \
+            --name "$WORKER_NAME" --json > "$RUNNER_TEMP/deploy-list.json" 2>/dev/null || : > "$RUNNER_TEMP/deploy-list.json"
+
+      # No secret in this step's environment.
+      - name: Record the previous version and check the owner
+        timeout-minutes: 2
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -eu
+          guard=engine/.github/scripts/deploy-guard.py
+          python3 -I "$guard" owner-check "$RUNNER_TEMP/deploy-list.json" "$REPOSITORY"
+          version="$(python3 -I "$guard" active-version "$RUNNER_TEMP/deploy-status.json")"
+          # A file, not a step output: a test keeps step outputs out of this job.
+          printf '%s' "$version" > "$RUNNER_TEMP/previous-worker-version"
+          if [ -n "$version" ]; then
+            echo "previous Worker version recorded: ${version}"
+          else
+            echo "::warning::no previous Worker version could be read (a first deploy, or the output shape changed); an automatic rollback is not possible for this run"
+          fi
+
       # A quiet deploy never migrates: the runbook takes a backup between the
       # quiet deploy and the migrations, so the migrations are a second call
       # with quiet false (docs/deploy.md, "Deploying the Worker from an
@@ -1006,11 +1075,71 @@ jobs:
       # --name always: wrangler.toml's name is the test Worker's, and a staging
       # or production deploy must never replace it.
       - name: Deploy the Worker
+        id: deploy
         working-directory: engine/worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ fromJSON(steps.cf_doppler.outputs.secrets).CLOUDFLARE_KEY_VALUE }}
           CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
           WORKER_NAME: ${{ inputs.worker_name }}
+          DEPLOY_MESSAGE: reach-around-owner=${{ github.repository }} run=${{ github.run_id }}
           WRANGLER_SEND_METRICS: "false"
-        run: npx --no-install wrangler deploy --config wrangler.deploy.toml --name "$WORKER_NAME"
+        run: npx --no-install wrangler deploy --config wrangler.deploy.toml --name "$WORKER_NAME" --message "$DEPLOY_MESSAGE"
 
+      # Post-deploy probe (issue #768). A GET to the click route answers 204 with
+      # no D1 access whatever the switches are (the Worker only counts a POST), so
+      # this proves the Worker is serving on its route, not that every feature
+      # works. It needs the route: only with zone_name, and not with a custom
+      # route_pattern (the host to ask is then not known here). Up to 6 tries,
+      # 10 seconds apart, each cut at 10 seconds. No secret in this step.
+      - name: Probe the deployed Worker
+        id: probe
+        if: ${{ inputs.zone_name != '' && inputs.route_pattern == '' }}
+        timeout-minutes: 3
+        env:
+          SITE_HOST: ${{ inputs.site_host }}
+        run: |
+          set -u
+          code=""
+          for attempt in 1 2 3 4 5 6; do
+            code="$(curl --silent --show-error --output /dev/null --max-time 10 \
+              --write-out '%{http_code}' "https://${SITE_HOST}/e/deploy-probe" 2>/dev/null || true)"
+            if [ "$code" = "204" ]; then
+              echo "probe: the Worker answered 204 (attempt ${attempt})"
+              exit 0
+            fi
+            echo "probe attempt ${attempt}: answered '${code}', expected 204"
+            sleep 10
+          done
+          echo "::error::the deployed Worker did not answer 204 on https://${SITE_HOST}/e/ after 6 tries"
+          exit 1
+
+      - name: Note a skipped probe
+        if: ${{ !(inputs.zone_name != '' && inputs.route_pattern == '') }}
+        run: echo "::notice::no post-deploy probe ran, it needs zone_name and the default route (route_pattern empty)"
+
+      # Automatic rollback (issue #768): only when the Worker deploy itself
+      # succeeded, the probe failed, and a previous version was recorded. It
+      # restores the Worker CODE; the schema stays migrated, which is why
+      # migrations must be additive. The step then fails the job on purpose.
+      - name: Roll back the Worker after a failed probe
+        if: ${{ failure() && steps.deploy.outcome == 'success' && steps.probe.outcome == 'failure' }}
+        timeout-minutes: 3
+        working-directory: engine/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ fromJSON(steps.cf_doppler.outputs.secrets).CLOUDFLARE_KEY_VALUE }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
+          WORKER_NAME: ${{ inputs.worker_name }}
+          ROLLBACK_MESSAGE: automatic rollback after a failed probe, run ${{ github.run_id }}
+          WRANGLER_SEND_METRICS: "false"
+        run: |
+          set -eu
+          PREVIOUS_VERSION="$(cat "$RUNNER_TEMP/previous-worker-version")"
+          if [ -z "$PREVIOUS_VERSION" ]; then
+            echo "::error::the probe failed and no previous Worker version was recorded; roll back by hand (docs/deploy.md, Rollback)"
+            exit 1
+          fi
+          printf '%s' "$PREVIOUS_VERSION" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          npx --no-install wrangler rollback "$PREVIOUS_VERSION" --config wrangler.deploy.toml \
+            --name "$WORKER_NAME" --message "$ROLLBACK_MESSAGE"
+          echo "::error::the Worker was rolled back to ${PREVIOUS_VERSION}; the D1 schema was not (migrations are additive)"
+          exit 1

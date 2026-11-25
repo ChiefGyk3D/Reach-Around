@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+from typing import Literal
 
 from pydantic import (
     BaseModel,
@@ -57,6 +58,10 @@ class Analytics(BaseModel):
     # What the privacy page says, so it matches how the Worker is set up. The
     # build cannot read the Worker's settings: keep RAW_KEEP_DAYS in sync.
     raw_keep_days: StrictInt = DEFAULT_RAW_KEEP_DAYS
+    # The Worker's GEO_LEVEL (or the site's own `geo`), for the privacy page. Raw view
+    # records hold at most the region (#778); at "city" the city is counted only in a
+    # daily total. The default matches the Worker's. Keep it in sync.
+    geo_level: Literal["country", "region", "city"] = "region"
     # Other sites counted by the same collector (the Worker's SITES), named on
     # the privacy page. Host names only.
     other_sites: tuple[str, ...] = ()
