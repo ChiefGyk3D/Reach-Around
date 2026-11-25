@@ -290,18 +290,20 @@ def collect(
     # looked at nor named.
     done = 0
     for source in islice(sources, max_sources + MAX_SOURCES):
-        if not _opted_in(source):
+        # A source with no opt-in, or whose follower read did not succeed, costs
+        # nothing and takes no place in the cap, so it cannot starve a valid one
+        # later in the list; the window above still bounds the walk.
+        if not _opted_in(source) or source.platform not in ok_platforms:
             continue
         if done >= max_sources or budget.spent or clock() >= budget.deadline:
-            if source.platform in ok_platforms:
-                failures.append(InsightFailure(source.platform, "budget_exhausted"))
+            failures.append(InsightFailure(source.platform, "budget_exhausted"))
             continue
         done += 1
         try:
             _collect_one(source, ok_platforms, env, fetch, stamp, figures, failures)
         except _BudgetSpent:
             budget.spent = True  # reported once just below
-        if budget.spent and source.platform in ok_platforms:
+        if budget.spent:
             failures.append(InsightFailure(source.platform, "budget_exhausted"))
     return figures, failures
 

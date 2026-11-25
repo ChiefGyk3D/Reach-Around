@@ -835,6 +835,62 @@ def test_collect_looks_at_no_more_sources_than_the_cap() -> None:
     ]
 
 
+def test_ineligible_sources_do_not_use_up_the_cap() -> None:
+    """Sources whose follower read did not succeed take no place in the cap, so
+    a valid source after them still gets its insights (and costs no request)."""
+    calls: list[str] = []
+
+    def fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append("x")
+        return {"data": []}
+
+    sources = _threads_sources(4)
+    ok = frozenset({sources[3].platform})  # the first three failed their read
+    _, failures = collect(sources, ok, TH_ENV, fetch, NOW, max_sources=1)
+    assert len(calls) >= 1  # the valid source was collected, not starved
+    assert {f.platform for f in failures} <= {sources[3].platform}
+    assert "budget_exhausted" not in [f.word for f in failures]
+
+
+def test_failed_reads_ahead_of_a_valid_source_still_leave_it_collected() -> None:
+    sources = _threads_sources(6)
+    ok = frozenset({sources[5].platform})
+    seen: list[Any] = []
+
+    def fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        seen.append(args)
+        return {"data": []}
+
+    _, failures = collect(sources, ok, TH_ENV, fetch, NOW, max_sources=2)
+    assert seen  # reached the sixth source despite max_sources=2
+    assert "budget_exhausted" not in [f.word for f in failures]
+
+
+def test_total_work_stays_bounded_when_every_source_is_ineligible() -> None:
+    touched = [0]
+    template = _threads_sources(1)[0]
+
+    class Many:
+        def __iter__(self) -> Any:
+            while touched[0] < 5_000_000:
+                touched[0] += 1
+                yield template
+
+        def __len__(self) -> int:
+            return 5_000_000
+
+    calls: list[int] = []
+
+    def fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append(1)
+        return {"data": []}
+
+    _, failures = collect(Many(), frozenset(), TH_ENV, fetch, NOW, max_sources=1)  # type: ignore[arg-type]
+    assert calls == []
+    assert failures == []
+    assert touched[0] <= 1 + 50 + 50
+
+
 def test_collect_does_not_walk_an_unbounded_source_list() -> None:
     """A list built without model validation costs bounded work: only a
     window of it is touched and the report stays bounded."""
