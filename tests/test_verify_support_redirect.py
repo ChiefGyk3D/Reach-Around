@@ -82,7 +82,13 @@ def run(src: Site, dst: Site, **env: str) -> subprocess.CompletedProcess[str]:
     return run_hosts(src.host, dst.host, **env)
 
 
-def run_hosts(src: str, dst: str, **env: str) -> subprocess.CompletedProcess[str]:
+def run_hosts(
+    src: str,
+    dst: str,
+    *,
+    script: Path = SCRIPT,
+    **env: str,
+) -> subprocess.CompletedProcess[str]:
     e = {
         "PATH": os.environ["PATH"],
         "SRC_HOST": src,
@@ -91,7 +97,7 @@ def run_hosts(src: str, dst: str, **env: str) -> subprocess.CompletedProcess[str
     }
     e.update(env)
     return subprocess.run(  # noqa: S603 - fixed argv, loopback only
-        ["/usr/bin/bash", str(SCRIPT)],
+        ["/usr/bin/bash", str(script)],
         env=e,
         capture_output=True,
         text=True,
@@ -309,9 +315,28 @@ def fake_curl_dir(tmp_path: Path, raw_headers: str) -> Path:
     d.mkdir()
     (d / "resp.txt").write_bytes(raw_headers.encode())
     sh = d / "curl"
-    sh.write_text(f'#!/usr/bin/bash\ncat "{d / "resp.txt"}"\n')
+    sh.write_text(
+        "#!/usr/bin/bash\n"
+        'hdr=""; prev=""; for a in "$@"; do '
+        'if [ "$prev" = "-D" ]; then hdr="$a"; fi; prev="$a"; done\n'
+        f'cat "{d / "resp.txt"}" > "$hdr"\n'
+    )
     sh.chmod(0o755)
     return d
+
+
+def script_with_curl(tmp_path: Path, curl: Path) -> Path:
+    """Copy the verifier and replace only its trusted curl candidates."""
+    script = tmp_path / "verify-support-redirect.sh"
+    source = SCRIPT.read_text()
+    source = source.replace(
+        "readonly CURL_PRIMARY=/usr/bin/curl\nreadonly CURL_FALLBACK=/bin/curl\n",
+        f"readonly CURL_PRIMARY={curl!s}\nreadonly CURL_FALLBACK={curl!s}\n",
+    )
+    assert source != SCRIPT.read_text()
+    script.write_text(source)
+    script.chmod(0o755)
+    return script
 
 
 def run_fake(
@@ -321,6 +346,7 @@ def run_fake(
     return run_hosts(
         "127.0.0.1:1",
         "127.0.0.1:2",
+        script=script_with_curl(tmp_path, d / "curl"),
         PATH=f"{d}:{os.environ['PATH']}",
         **env,
     )
@@ -422,12 +448,19 @@ def test_curl_is_called_with_timeouts_get_and_no_redirect_following(
     sh = d / "curl"
     sh.write_text(
         '#!/usr/bin/bash\nprintf "%s\\n" "$*" >> "' + str(log) + '"\n'
-        'printf "HTTP/1.1 200 OK\\r\\n\\r\\n"\n'
+        'hdr=""; prev=""; for a in "$@"; do '
+        'if [ "$prev" = "-D" ]; then hdr="$a"; fi; prev="$a"; done\n'
+        'printf "HTTP/1.1 200 OK\\r\\n\\r\\n" > "$hdr"\n'
     )
     sh.chmod(0o755)
     # Every call answers 200, so the run fails at the first probe; one call is
     # enough to inspect the arguments the script builds.
-    r = run_hosts("127.0.0.1:1", "127.0.0.1:2", PATH=f"{d}:{os.environ['PATH']}")
+    r = run_hosts(
+        "127.0.0.1:1",
+        "127.0.0.1:2",
+        script=script_with_curl(tmp_path, sh),
+        PATH=f"{d}:{os.environ['PATH']}",
+    )
     assert r.returncode == 1
     argv = log.read_text().splitlines()[0].split()
     assert argv[0] == "-q"
@@ -681,13 +714,16 @@ def test_curl_receives_only_the_controlled_environment(tmp_path: Path) -> None:
         "#!/usr/bin/bash\n"
         f"tr '\\0' '\\n' < /proc/$$/environ | sort > {environment_log!s}\n"
         f'printf "%s\\n" "$@" > {arguments_log!s}\n'
-        'printf "HTTP/1.1 200 OK\\r\\n\\r\\n"\n'
+        'hdr=""; prev=""; for a in "$@"; do '
+        'if [ "$prev" = "-D" ]; then hdr="$a"; fi; prev="$a"; done\n'
+        'printf "HTTP/1.1 200 OK\\r\\n\\r\\n" > "$hdr"\n'
     )
     sh.chmod(0o755)
 
     r = run_hosts(
         "127.0.0.1:1",
         "127.0.0.1:2",
+        script=script_with_curl(tmp_path, sh),
         PATH=f"{d}:{os.environ['PATH']}",
         CURL_CA_BUNDLE="/bogus/ca-bundle",
         SSL_CERT_FILE="/bogus/cert-file",
@@ -713,3 +749,123 @@ def test_curl_receives_only_the_controlled_environment(tmp_path: Path) -> None:
     assert arguments[0] == "-q"
     assert arguments[arguments.index("--noproxy") + 1] == "*"
     assert "-L" not in arguments
+
+
+def test_caller_path_cannot_select_curl(tmp_path: Path) -> None:
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    marker = tmp_path / "called"
+    fake = fakebin / "curl"
+    fake.write_text(f"#!/usr/bin/bash\ntouch {marker!s}\nexit 0\n")
+    fake.chmod(0o755)
+
+    r = run_hosts(
+        "127.0.0.1:1",
+        "127.0.0.1:2",
+        PATH=f"{fakebin}:{os.environ['PATH']}",
+    )
+
+    assert r.returncode == 1
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("mode", ["missing", "world-writable"])
+def test_untrusted_curl_path_is_a_usage_error(tmp_path: Path, mode: str) -> None:
+    curl = tmp_path / "curl"
+    if mode == "world-writable":
+        curl.write_text("#!/usr/bin/bash\nexit 0\n")
+        curl.chmod(0o777)
+    script = script_with_curl(tmp_path, curl)
+
+    r = run_hosts(
+        "127.0.0.1:1",
+        "127.0.0.1:2",
+        script=script,
+    )
+
+    assert r.returncode == 2
+    assert "trusted curl" in r.stderr
+    if mode == "world-writable":
+        assert "group or world writable" in r.stderr
+    else:
+        assert "not available" in r.stderr
+
+
+@pytest.mark.parametrize("bad", ["", ".", ":443"])
+def test_host_empty_after_normalization_is_a_usage_error(bad: str) -> None:
+    r = run_hosts(bad, "links.example.com", VERIFY_SCHEME="https")
+    assert r.returncode == 2
+    assert "SRC_HOST" in r.stderr
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["127.1", "0x7f.1", "2130706433", "017700000001", "0177.0.0.1"],
+)
+@pytest.mark.parametrize("role", ["SRC_HOST", "EXP_HOST"])
+def test_legacy_ipv4_spellings_are_usage_errors(role: str, bad: str) -> None:
+    hosts = {
+        "SRC_HOST": "support.example.com",
+        "EXP_HOST": "links.example.com",
+    }
+    hosts[role] = bad
+    r = run_hosts(
+        hosts["SRC_HOST"],
+        hosts["EXP_HOST"],
+        VERIFY_SCHEME="https",
+    )
+    assert r.returncode == 2
+    assert f"{role} {DNS_MSG}" in r.stderr
+
+
+def test_canonical_loopback_ipv4_still_works(sites: list[Site]) -> None:
+    src, dst = make(sites, good())
+    assert src.host.startswith("127.0.0.1:")
+    assert dst.host.startswith("127.0.0.1:")
+    r = run(src, dst)
+    assert r.returncode == 0, r.stderr
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "good.example\nevil.example",
+        "good.example\r",
+        "good.example\t",
+        r"good.example\0evil.example",
+        "good.example\n--max-time.example",
+    ],
+)
+@pytest.mark.parametrize("role", ["SRC_HOST", "EXP_HOST"])
+def test_control_or_nul_looking_host_input_is_a_usage_error(
+    role: str, bad: str
+) -> None:
+    hosts = {
+        "SRC_HOST": "support.example.com",
+        "EXP_HOST": "links.example.com",
+    }
+    hosts[role] = bad
+    r = run_hosts(
+        hosts["SRC_HOST"],
+        hosts["EXP_HOST"],
+        VERIFY_SCHEME="https",
+    )
+    assert r.returncode == 2
+    assert f"{role} {DNS_MSG}" in r.stderr
+
+
+def test_oversized_response_headers_fail_within_timeout(sites: list[Site]) -> None:
+    huge = "x" * (200 * 1024)
+
+    def reply(path: str, dst: str) -> tuple[int, Headers | dict[str, str]]:
+        if path.startswith("/?"):
+            return 302, [
+                ("X-Oversized", huge),
+                ("Location", f"http://{dst}/support/{path[1:]}"),
+            ]
+        return 200, {}
+
+    src, dst = make(sites, reply)
+    r = run(src, dst)
+    assert r.returncode == 1
+    assert "request did not complete" in r.stderr

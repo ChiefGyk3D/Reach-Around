@@ -10,3 +10,8 @@
   obsolete folded headers. It
   still checks exact `Location` values, two probe queries, an unaffected path,
   and a 200 response from `/support/`. Docs and tests, refs #888.
+  Curl is selected by an absolute path independent of the caller's `PATH` and
+  must be a regular executable owned by root or the current user that is not
+  group or world writable. Header capture is limited to 64 KiB. Host validation
+  also rejects empty normalized hosts, control characters, legacy numeric and
+  hexadecimal IPv4 spellings, and noncanonical dotted quads.

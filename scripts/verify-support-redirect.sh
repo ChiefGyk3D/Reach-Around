@@ -66,14 +66,20 @@ validate_host() {
   if [[ "$authority" =~ ^(.*):[0-9]+$ ]]; then
     host="${BASH_REMATCH[1]}"
   fi
+  [ -n "$host" ] || usage "$label is not a valid DNS name or IPv4 address"
   [ "${#host}" -le 253 ] || usage "$label is not a valid DNS name or IPv4 address"
-  if [[ "$host" =~ ^[0-9]+(\.[0-9]+){3}$ ]]; then
+  [[ "$host" =~ ^[a-z0-9.-]+$ ]] \
+    || usage "$label is not a valid DNS name or IPv4 address"
+  if [[ "$host" =~ ^(0|[1-9][0-9]{0,2})(\.(0|[1-9][0-9]{0,2})){3}$ ]]; then
     IFS=. read -r -a octets <<< "$host"
     for octet in "${octets[@]}"; do
       [ "$octet" -le 255 ] 2>/dev/null \
         || usage "$label is not a valid DNS name or IPv4 address"
     done
     return
+  fi
+  if [[ "$host" =~ ^([0-9]+|0x[0-9a-f]+)(\.([0-9]+|0x[0-9a-f]+))*$ ]]; then
+    usage "$label is not a valid DNS name or IPv4 address"
   fi
   IFS=. read -r -a labels <<< "${host}."
   for part in "${labels[@]}"; do
@@ -100,29 +106,59 @@ case "$SCHEME" in
   *) usage "VERIFY_SCHEME must be https" ;;
 esac
 
-CURL_BIN="$(command -v curl)" || fail "curl is not available"
+readonly CURL_PRIMARY=/usr/bin/curl
+readonly CURL_FALLBACK=/bin/curl
+if [ -f "$CURL_PRIMARY" ] && [ -x "$CURL_PRIMARY" ]; then
+  CURL_BIN="$CURL_PRIMARY"
+elif [ -f "$CURL_FALLBACK" ] && [ -x "$CURL_FALLBACK" ]; then
+  CURL_BIN="$CURL_FALLBACK"
+else
+  usage "trusted curl is not available"
+fi
+readonly CURL_BIN
+[ -f "$CURL_BIN" ] && [ -x "$CURL_BIN" ] \
+  || usage "trusted curl is not a regular executable file"
+CURL_META="$(/usr/bin/stat -Lc '%u %a' -- "$CURL_BIN" 2>/dev/null)" \
+  || usage "could not inspect trusted curl"
+CURL_OWNER="${CURL_META%% *}"
+CURL_MODE="${CURL_META#* }"
+[[ "$CURL_OWNER" =~ ^[0-9]+$ && "$CURL_MODE" =~ ^[0-7]{3,4}$ ]] \
+  || usage "trusted curl has invalid ownership or permissions"
+[ "$CURL_OWNER" = "0" ] || [ "$CURL_OWNER" = "$EUID" ] \
+  || usage "trusted curl must be owned by root or the current user"
+[[ "${CURL_MODE: -2:1}" != [2367] && "${CURL_MODE: -1}" != [2367] ]] \
+  || usage "trusted curl must not be group or world writable"
+
 CURL_HOME="$(mktemp -d)" || fail "could not create private curl home"
 chmod 700 "$CURL_HOME" || fail "could not protect private curl home"
 cleanup() { rm -rf -- "$CURL_HOME"; }
 trap cleanup EXIT
 readonly CURL_PATH="/usr/local/bin:/usr/bin:/bin"
 
-# fetch URL: one GET, no redirects followed, body discarded, headers kept.
+# fetch URL: one GET, no redirects followed, body discarded, headers bounded.
 # Sets STATUS, LOC_COUNT (number of Location header fields, name matched
 # case-insensitively, CR removed) and LOC (the first value, or empty).
 STATUS=""
 LOC_COUNT=0
 LOC=""
 fetch() {
-  local url="$1" out all_headers hdr
+  local url="$1" header_file all_headers hdr
+  header_file="$CURL_HOME/headers"
+  : > "$header_file" || fail "could not prepare response header file"
   # Start curl with a fixed PATH, C locale and empty private HOME. The empty
   # environment excludes proxy, curl, certificate and TLS key-log settings.
-  # Redirect following remains disabled: no -L is ever used.
-  out="$(env -i PATH="$CURL_PATH" HOME="$CURL_HOME" LC_ALL=C \
-           "$CURL_BIN" -q --noproxy '*' --proto "=${SCHEME}" \
-             --connect-timeout 5 --max-time 20 -sS -D - -o /dev/null "$url")" \
-    || fail "request did not complete: ${url%%\?*}"
-  all_headers="$(printf '%s\n' "$out" | tr -d '\r')"
+  # Redirect following remains disabled: no -L is ever used. Limit the header
+  # file to 128 512-byte blocks, or 64 KiB.
+  if ! (
+    ulimit -f 128
+    env -i PATH="$CURL_PATH" HOME="$CURL_HOME" LC_ALL=C \
+      "$CURL_BIN" -q --noproxy '*' --proto "=${SCHEME}" \
+        --connect-timeout 5 --max-time 20 -sS \
+        -D "$header_file" -o /dev/null "$url"
+  ); then
+    fail "request did not complete: ${url%%\?*}"
+  fi
+  all_headers="$(tr -d '\r' < "$header_file")"
   printf '%s\n' "$all_headers" | awk '/^[ \t]/ {found=1} END {exit !found}' \
     && fail "obsolete folded header in response from ${url%%\?*}"
   # Curl can print more than one response header block. Only the last response

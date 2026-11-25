@@ -486,15 +486,21 @@ before relying on it), and how long a given browser keeps a 301 with no
    Both hosts are required and their normalized authorities must differ.
    Normalization lowercases the host, removes one trailing dot, and removes
    `:443` for HTTPS or `:80` for HTTP before comparison. A host is a valid DNS
-   name, with a maximum length of 253 characters and labels of 1 through 63
-   ASCII letters, digits or hyphens that do not begin or end with a hyphen, or
-   a valid IPv4 dotted quad. An optional decimal port is from 1 through 65535
-   without a leading zero; userinfo, slashes and spaces are rejected. Nothing
-   is defaulted. Every request is a direct GET made by curl in a clean
-   environment containing only a fixed safe `PATH`, `LC_ALL=C`, and an empty
-   private temporary `HOME`. Caller proxy, curl, certificate, TLS key logging,
-   and other environment settings cannot affect the request. The body is
-   discarded and redirects are never followed. It is never HEAD, because
+   name containing only lowercase ASCII letters, digits, hyphens and dots after
+   normalization, with a maximum length of 253 characters and labels of 1
+   through 63 characters that do not begin or end with a hyphen, or a canonical
+   IPv4 dotted quad with four decimal octets from 0 through 255 and no leading
+   zeros. Empty hosts, control characters, and legacy numeric or hexadecimal
+   IPv4 spellings are rejected. An optional decimal port is from 1 through
+   65535 without a leading zero; userinfo, slashes and spaces are rejected.
+   Nothing is defaulted. Every request is a direct GET made by a validated,
+   absolute curl executable owned by root or the current user and not group or
+   world writable. Curl runs in a clean environment containing only a fixed
+   safe `PATH`, `LC_ALL=C`, and an empty private temporary `HOME`. Caller proxy,
+   curl, certificate, TLS key logging, and other environment settings cannot
+   affect the request. Response headers are captured in that private directory
+   with a 64 KiB file-size limit. The body is discarded and redirects are never
+   followed. It is never HEAD, because
    browsers navigate with GET and a rule or origin can treat HEAD differently.
    It exits `0` only after every
    check ran and passed: two probe requests (`?probe=a%2Fb&probe=two` and
@@ -507,9 +513,10 @@ before relying on it), and how long a given browser keeps a 301 with no
    really serves) with no `Location` header, so a redirect to Support, to
    another host or to itself fails; and the Support page (`/support/`) answers
    `200`. Each request has a connect timeout and a total time limit. A failed
-   request, an unparsable final response status line, an obsolete folded header,
-   or a missing or duplicated `Location` is a failure (exit `1`). If curl
-   returns multiple response header blocks, only the last block is evaluated.
+   request, an oversized header capture, an unparsable final response status
+   line, an obsolete folded header, or a missing or duplicated `Location` is a
+   failure (exit `1`). If curl returns multiple response header blocks, only
+   the last block is evaluated.
    A missing, equal or malformed host or an invalid port is a usage error (exit
    `2`). It is tested against local servers (which record every request
    path and query) in `tests/test_verify_support_redirect.py`, and each check
