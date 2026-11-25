@@ -105,23 +105,143 @@ describe("F-02 the overdue count cannot be lost to a failure after the delete", 
     await purgeViews({ DB }, NOW);
     expect((await meta()).rollup_overdue_rows).toBe("1");
   });
+});
 
-  it("a_bookkeeping_statement_that_fails_rolls_the_delete_back_and_the_next_run_recovers_the_count", async () => {
-    await oneLateRow();
+describe("F-02 the bookkeeping shares the delete's picker and does not read changes()", () => {
+  const old = NOW - 30 * DAY;
+  async function lateRows(n: number): Promise<void> {
+    await addRaw(old, n + 1);
+    const ids = (await q<{ id: number }>("SELECT id FROM view_events ORDER BY id")).map((r) => r.id);
+    await sealDay(day(old), ids[0] as number); // every row after the first is uncounted
+  }
+  function recording() {
+    const sqls: string[] = [];
+    const proxy = new Proxy(DB, {
+      get(t, p) {
+        if (p === "prepare") {
+          return (sql: string) => {
+            sqls.push(sql);
+            return t.prepare(sql);
+          };
+        }
+        const v = Reflect.get(t, p, t);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    }) as D1Database;
+    return { sqls, proxy };
+  }
+
+  it("counter_flag_and_delete_embed_one_identical_picker_and_the_bookkeeping_comes_first", async () => {
+    await lateRows(2);
+    const { sqls, proxy } = recording();
+    await purgeViews({ DB: proxy }, NOW);
+    const del = sqls.findIndex((s) => s.startsWith("DELETE FROM view_events WHERE id IN (") && s.includes("typeof(e.ts)"));
+    const counter = sqls.findIndex((s) => s.includes("'rollup_overdue_rows'") && s.includes("COUNT(*)"));
+    const flag = sqls.findIndex((s) => s.includes("'rollup_overdue', ?") && s.includes("COUNT(*)"));
+    expect(del).toBeGreaterThan(-1);
+    expect(counter).toBeGreaterThan(-1);
+    expect(flag).toBeGreaterThan(-1);
+    expect(counter).toBeLessThan(del);
+    expect(flag).toBeLessThan(del);
+    const delPick = (sqls[del] as string).slice("DELETE FROM view_events WHERE id IN (".length, -1);
+    expect(delPick).toContain("LIMIT ?");
+    expect(sqls[counter]).toContain(delPick);
+    expect(sqls[flag]).toContain(delPick);
+    for (const s of sqls) expect(s).not.toContain("changes()");
+  });
+
+  it("the_count_uses_the_same_limit_as_the_delete_so_it_never_overcounts", async () => {
+    await lateRows(5);
+    await purgeViews({ DB }, NOW, { batch: 2, maxBatches: 1 });
+    expect((await q<{ n: number }>("SELECT COUNT(*) AS n FROM view_events"))[0]?.n).toBe(3); // 6 rows: 1 counted row (raw-purge step) and 2 uncounted ones (emergency, LIMIT 2) deleted
+    expect((await meta()).rollup_overdue_rows).toBe("2");
+    await purgeViews({ DB }, NOW, { batch: 2, maxBatches: 1 });
+    expect((await meta()).rollup_overdue_rows).toBe("4");
+  });
+
+  it("a_failure_on_the_delete_rolls_the_bookkeeping_back", async () => {
+    await lateRows(2);
     await DB.prepare(
-      "CREATE TRIGGER fail_overdue_rows BEFORE INSERT ON view_meta WHEN NEW.key = 'rollup_overdue_rows' BEGIN SELECT RAISE(ABORT, 'injected'); END",
+      "CREATE TRIGGER fail_emergency_delete BEFORE DELETE ON view_events WHEN OLD.id > 0 BEGIN SELECT RAISE(ABORT, 'injected'); END",
     ).run();
     try {
       await expect(purgeViews({ DB }, NOW)).rejects.toThrow();
-      // The delete shared the failed statement's transaction: the row is still there to count.
-      expect((await q<{ n: number }>("SELECT COUNT(*) AS n FROM view_events"))[0]?.n).toBe(2);
-      expect((await meta()).rollup_overdue_rows).toBeUndefined();
+      expect((await q<{ n: number }>("SELECT COUNT(*) AS n FROM view_events"))[0]?.n).toBe(3);
+      const m = await meta();
+      expect(m.rollup_overdue_rows).toBeUndefined();
+      expect(m.rollup_overdue).toBeUndefined();
     } finally {
-      await DB.prepare("DROP TRIGGER IF EXISTS fail_overdue_rows").run();
+      await DB.prepare("DROP TRIGGER IF EXISTS fail_emergency_delete").run();
     }
     await purgeViews({ DB }, NOW);
+    expect((await meta()).rollup_overdue_rows).toBe("2");
+  });
+
+  // Why a row cannot arrive between the count and the delete: both are statements of one db.batch(),
+  // which D1 runs as one transaction in order, so a concurrent insert lands entirely before or after
+  // it. A row inserted before the batch is counted AND deleted; one inserted after is neither (it is
+  // picked up by the next run). The test pins the observable consequence: count == rows removed.
+  it("the_count_equals_the_rows_removed_when_a_row_arrives_just_before_the_batch", async () => {
+    await lateRows(1);
+    let injected = false;
+    const racing = new Proxy(DB, {
+      get(t, p) {
+        if (p === "batch") {
+          return async (stmts: D1PreparedStatement[]) => {
+            if (!injected) {
+              injected = true;
+              await addRaw(old + 5000, 1); // arrives before the batch starts: inside it, counted and deleted
+            }
+            return t.batch(stmts);
+          };
+        }
+        const v = Reflect.get(t, p, t);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    }) as D1Database;
+    await purgeViews({ DB: racing }, NOW);
     expect(await q("SELECT id FROM view_events")).toEqual([]);
-    expect((await meta()).rollup_overdue_rows).toBe("1");
+    expect((await meta()).rollup_overdue_rows).toBe("2");
+  });
+});
+
+describe("F-22 the rollup log goes only after the site's other rows", () => {
+  const old = day(NOW - 120 * DAY);
+  const dim = (site: string, v: string) =>
+    DB.prepare("INSERT INTO view_dim_daily (site, day, day_tz, dim, value, bot_class, views, uniques) VALUES (?, ?, 'UTC', 'browser', ?, 'h', 1, 0)").bind(site, old, v);
+  const logRow = (site: string) =>
+    DB.prepare(`INSERT INTO view_rollup_log ${LOG_COLS} VALUES (?, ?, 'UTC', 0, 0, 0, 0, 0, 0, 0, 0, 0)`).bind(site, old);
+  const sites = async () => (await q<{ site: string }>("SELECT site FROM view_rollup_log ORDER BY site")).map((r) => r.site);
+
+  it("skewed_dimension_rows_of_one_site_keep_that_sites_log_but_not_the_others", async () => {
+    const stmts: D1PreparedStatement[] = [];
+    for (let i = 0; i < 12; i++) stmts.push(dim("s00", `v${i}`));
+    for (const s of ["s00", "s01", "s02", "s03"]) stmts.push(logRow(s));
+    await DB.batch(stmts);
+    await purgeViews({ DB }, NOW, { batch: 5, maxBatches: 1 });
+    expect((await q<{ n: number }>("SELECT COUNT(*) AS n FROM view_dim_daily"))[0]?.n).toBe(7);
+    expect(await sites()).toEqual(["s00"]); // the others had nothing left, s00 still has aggregates
+    await purgeViews({ DB }, NOW, { batch: 5, maxBatches: 10 });
+    expect((await q<{ n: number }>("SELECT COUNT(*) AS n FROM view_dim_daily"))[0]?.n).toBe(0);
+    expect(await sites()).toEqual(["s00"]); // the log step is not a full step, so it waits for the next run
+    await purgeViews({ DB }, NOW, { batch: 5, maxBatches: 10 });
+    expect(await sites()).toEqual([]);
+  });
+
+  it("retained_raw_rows_of_the_day_keep_its_log", async () => {
+    const stmts: D1PreparedStatement[] = [logRow("links")];
+    await DB.batch(stmts);
+    const ts = Date.parse(`${old}T10:00:00Z`);
+    await addRaw(ts, 6);
+    const max = (await q<{ m: number }>("SELECT MAX(id) AS m FROM view_events"))[0]?.m as number;
+    await DB.prepare("UPDATE view_rollup_log SET max_id = ? WHERE site = 'links'").bind(max).run();
+    await purgeViews({ DB }, NOW, { batch: 5, maxBatches: 1 });
+    expect((await q<{ n: number }>("SELECT COUNT(*) AS n FROM view_events"))[0]?.n).toBe(1);
+    expect(await sites()).toEqual(["links"]);
+    await purgeViews({ DB }, NOW, { batch: 5, maxBatches: 10 });
+    expect(await q("SELECT id FROM view_events")).toEqual([]);
+    await purgeViews({ DB }, NOW, { batch: 5, maxBatches: 10 });
+    expect(await sites()).toEqual([]);
   });
 });
 

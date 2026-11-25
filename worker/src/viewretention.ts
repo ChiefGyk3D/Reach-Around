@@ -95,8 +95,12 @@ function keepDays(raw: string | undefined): number {
 interface Step {
   sql: string;
   args: Array<string | number>;
-  /** Deletes rows no aggregate counts (the hard ceiling); its row count is recorded. */
-  emergency?: boolean;
+  /**
+   * Deletes rows no aggregate counts (the hard ceiling); its row count is recorded. `pick` is the ONE
+   * `SELECT e.id ... LIMIT ?` (and its binds, `args` then the batch size) that the delete, the count
+   * and the flag all embed, so the three can never select different rows.
+   */
+  emergency?: { pick: string };
 }
 
 /** Purge every view table, inside the invocation's D1 query budget. */
@@ -135,6 +139,12 @@ export async function purgeViews(env: RetentionEnv, nowMs: number, opts: PurgeOp
   const hardOf = "COALESCE((SELECT k.hard FROM k WHERE k.site = e.site), ?)";
   const sealedJoin = "JOIN view_rollup_log l ON l.site = e.site AND l.day = strftime('%Y-%m-%d', e.ts / 1000, 'unixepoch')";
   const leftJoin = sealedJoin.replace("JOIN view_rollup_log l", "LEFT JOIN view_rollup_log l");
+  // The emergency delete's row picker, built ONCE: the delete, the counter and the flag each embed this
+  // exact text and bind the exact same args (`kArgs`, `hardCutoff`, then the batch size), so the
+  // predicate and the LIMIT cannot drift between them.
+  const emergencyPick =
+    `${kCte}SELECT e.id FROM view_events e ${leftJoin} ` +
+    `WHERE (e.ts < ${hardOf} AND (l.site IS NULL OR e.id > l.max_id)) OR typeof(e.ts) <> 'integer' LIMIT ?`;
   const steps: Step[] = [
     {
       // CONTROL:seen-purge  unconditional: pseudonymous, and the rollup never reads it.
@@ -153,10 +163,8 @@ export async function purgeViews(env: RetentionEnv, nowMs: number, opts: PurgeOp
       // past min(3 x keep, 90 days), per site. Counted rows past the ceiling are already taken by
       // the raw-purge step above (the ceiling is never shorter than the keep window), so this step
       // is the only one that loses data no aggregate holds, and its row count is recorded.
-      emergency: true,
-      sql:
-        `DELETE FROM view_events WHERE id IN (${kCte}SELECT e.id FROM view_events e ${leftJoin} ` +
-        `WHERE (e.ts < ${hardOf} AND (l.site IS NULL OR e.id > l.max_id)) OR typeof(e.ts) <> 'integer' LIMIT ?)`,
+      emergency: { pick: emergencyPick },
+      sql: `DELETE FROM view_events WHERE id IN (${emergencyPick})`,
       args: [...kArgs, hardCutoff],
     },
     {
@@ -182,7 +190,20 @@ export async function purgeViews(env: RetentionEnv, nowMs: number, opts: PurgeOp
     { sql: "DELETE FROM view_dim_daily WHERE (site, day, day_tz, dim, value, bot_class) IN (SELECT site, day, day_tz, dim, value, bot_class FROM view_dim_daily WHERE day < ? LIMIT ?)", args: [aggCutoff] },
     { sql: "DELETE FROM view_geo_daily WHERE (site, day, day_tz, country, region, city, bot_class) IN (SELECT site, day, day_tz, country, region, city, bot_class FROM view_geo_daily WHERE day < ? LIMIT ?)", args: [aggCutoff] },
     { sql: "DELETE FROM view_hour_daily WHERE (site, day, hour, bot_class) IN (SELECT site, day, hour, bot_class FROM view_hour_daily WHERE day < ? LIMIT ?)", args: [aggCutoff] },
-    { sql: "DELETE FROM view_rollup_log WHERE (site, day) IN (SELECT site, day FROM view_rollup_log WHERE day < ? LIMIT ?)", args: [aggCutoff] },
+    {
+      // CONTROL:log-after-aggregates  a day's log row is the proof its raw rows were counted, so it goes only once
+      // no aggregate, city or raw row of THAT (site, day) is left: the tables above are bounded independently
+      // and may leave different sites' rows behind, and an early log delete would orphan them.
+      sql:
+        "DELETE FROM view_rollup_log WHERE (site, day) IN (SELECT l.site, l.day FROM view_rollup_log l WHERE l.day < ? " +
+        ["view_daily", "view_dim_daily", "view_geo_daily", "view_hour_daily", "view_city_daily"]
+          .map((t) => `AND NOT EXISTS (SELECT 1 FROM ${t} a WHERE a.site = l.site AND a.day = l.day) `)
+          .join("") +
+        "AND NOT EXISTS (SELECT 1 FROM view_events e WHERE e.site = l.site " +
+        "AND e.ts >= CAST(strftime('%s', l.day) AS INTEGER) * 1000 " +
+        "AND e.ts < (CAST(strftime('%s', l.day) AS INTEGER) + 86400) * 1000) LIMIT ?)",
+      args: [aggCutoff],
+    },
     {
       sql: "DELETE FROM view_meta WHERE key IN (SELECT key FROM view_meta WHERE key >= 'bud:' AND key < ? LIMIT ?)",
       args: [`bud:${padHour(hour - 48)}`],
@@ -193,35 +214,43 @@ export async function purgeViews(env: RetentionEnv, nowMs: number, opts: PurgeOp
     },
   ];
   const del = (st: Step) => db.prepare(st.sql).bind(...st.args, batch);
-  // An emergency delete carries its own bookkeeping in the SAME db.batch() (one transaction): the
-  // two statements after it read changes(), the row count of the delete just before, so the count
-  // and the flag commit with the delete or not at all. A failure after the delete can no longer
-  // lose the count, because there is no "after": the rows come back and the next run takes them
-  // again. changes() is only the previous statement's count, so the order is load-bearing: delete,
-  // counter, flag (the counter's own write makes changes() 1 for the flag, and 0 if it was skipped).
-  const unit = (st: Step): D1PreparedStatement[] =>
-    st.emergency
-      ? [
-          del(st),
-          db.prepare(
-            "INSERT INTO view_meta (key, value) SELECT 'rollup_overdue_rows', CAST(changes() AS TEXT) WHERE changes() > 0 " +
+  // An emergency delete carries its own bookkeeping in the SAME db.batch() (one transaction, rolled back
+  // together on any failure). The bookkeeping goes FIRST and does not read changes(): it computes the
+  // count with SELECT COUNT(*) over the very same picker (same text, same binds, same LIMIT) that the
+  // delete then runs. Both see one snapshot (no write can land between two statements of a batch), so
+  // the count equals the rows the delete removes. If the delete fails, the count rolls back with it and
+  // the rows are still there for the next run; there is no "after" in which the count could be lost.
+  // Order: counter, flag, delete (the flag also reads the count, so both must precede the delete).
+  const countOf = (st: Step) => `SELECT COUNT(*) AS n FROM (${(st.emergency as { pick: string }).pick})`;
+  const unit = (st: Step): { stmts: D1PreparedStatement[]; delAt: number } => {
+    if (!st.emergency) return { stmts: [del(st)], delAt: 0 };
+    return {
+      stmts: [
+        db
+          .prepare(
+            `INSERT INTO view_meta (key, value) SELECT 'rollup_overdue_rows', CAST(c.n AS TEXT) FROM (${countOf(st)}) c WHERE c.n > 0 ` +
               "ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(view_meta.value AS INTEGER) + CAST(excluded.value AS INTEGER) AS TEXT)",
-          ),
-          db
-            .prepare(
-              "INSERT INTO view_meta (key, value) SELECT 'rollup_overdue', ?1 WHERE changes() > 0 " +
-                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            )
-            .bind(today),
-        ]
-      : [del(st)];
+          )
+          .bind(...st.args, batch),
+        db
+          .prepare(
+            `INSERT INTO view_meta (key, value) SELECT 'rollup_overdue', ? FROM (${countOf(st)}) c WHERE c.n > 0 ` +
+              "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+          )
+          .bind(today, ...st.args, batch),
+        del(st),
+      ],
+      delAt: 2,
+    };
+  };
   /** Index of each step's delete inside the flattened statement list of one batch. */
   const flatten = (set: Step[], head: D1PreparedStatement[]) => {
     const stmts = [...head];
     const at: number[] = [];
     for (const st of set) {
-      at.push(stmts.length);
-      stmts.push(...unit(st));
+      const u = unit(st);
+      at.push(stmts.length + u.delAt);
+      stmts.push(...u.stmts);
     }
     return { stmts, at };
   };
