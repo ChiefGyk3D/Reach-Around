@@ -174,7 +174,7 @@ def offline_problems(root: Path) -> list[str]:
     else:
         problems += rate_limit_problems(rl)
 
-    problems += module_problems(edge, main_tf)
+    problems += module_problems(edge)
     if "NOT approved" not in main_tf:
         problems.append("main.tf header must say the apply path is NOT approved")
     if "desired-state.json" not in main_tf:
@@ -208,6 +208,8 @@ ALLOWED_EDGE_FILES = frozenset(
 ALLOWED_BLOCKS = frozenset({"terraform", "provider", "variable", "locals", "resource"})
 # The one resource, and the exact attribute-to-key binding it must have.
 RESOURCE = ("cloudflare_bot_management", "zone")
+
+
 class HclError(Exception):
     """The text is outside the small HCL subset these files use."""
 
@@ -227,8 +229,9 @@ def hcl_tokens(text: str) -> list[Token]:
     parser. A string may not hold a brace at all (that also rules out the
     dollar-brace interpolation), nor a raw newline, a control character or a
     non-ASCII one. Comments start with # and run to the end of the line. A
-    slash, a dollar sign outside a string, a backtick, a lone carriage return and the heredoc
-    marker are refused outside comments, and so is any other character.
+    slash, a dollar sign outside a string, a backtick, a lone carriage return
+    and the heredoc marker are refused outside comments, and so is any other
+    character.
     """
     if len(text) > MAX_HCL_CHARS:
         raise HclError("file too large")
@@ -467,7 +470,7 @@ def variable_problems(name: str, block: Block) -> list[str]:
     return problems
 
 
-def module_problems(edge: Path, main_tf: str) -> list[str]:
+def module_problems(edge: Path) -> list[str]:
     """main.tf is bound to desired-state.json by exact structure, not by substring.
 
     Every .tf file is tokenized (strings are atomic, so braces inside them cannot
@@ -489,7 +492,8 @@ def module_problems(edge: Path, main_tf: str) -> list[str]:
     variables = 0
     for tf in sorted(edge.glob("*.tf")):
         try:
-            text = main_tf if tf.name == "main.tf" else tf.read_text("utf-8")
+            # bytes, not read_text: universal newlines would turn a lone CR into LF
+            text = tf.read_bytes().decode("utf-8")
         except (OSError, ValueError):
             problems.append(f"{tf.name}: cannot be read")
             continue

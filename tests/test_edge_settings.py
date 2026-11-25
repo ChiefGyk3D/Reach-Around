@@ -1439,7 +1439,9 @@ def test_a_brace_inside_a_string_cannot_hide_a_resource(root: Path) -> None:
     # Counted per line, the "{" opens a phantom block and swallows what follows.
     append_main(root, 'locals_decoy = "{"\n' + HIDDEN)
     problems = check.offline_problems(root)
-    assert any("brace inside a string" in p or "cannot be parsed" in p for p in problems)
+    assert any(
+        "brace inside a string" in p or "cannot be parsed" in p for p in problems
+    )
 
 
 def test_a_closing_brace_in_a_string_cannot_close_the_block_early(root: Path) -> None:
@@ -1494,7 +1496,7 @@ def test_a_lone_carriage_return_is_refused(root: Path) -> None:
     assert any("cannot be parsed" in p for p in check.offline_problems(root))
 
 
-@pytest.mark.parametrize("text", ["{\n", "}\n", "locals {\n", 'locals {\n}\n}\n'])
+@pytest.mark.parametrize("text", ["{\n", "}\n", "locals {\n", "locals {\n}\n}\n"])
 def test_unbalanced_braces_fail_closed(root: Path, text: str) -> None:
     append_main(root, "\n" + text)
     assert check.offline_problems(root)
@@ -1510,7 +1512,7 @@ def test_unbalanced_braces_fail_closed(root: Path, text: str) -> None:
         "x = `tick`\n",
         "x = a / b\n",
         "x = $y\n",
-        "﻿variable \"a\" {}\n",
+        '﻿variable "a" {}\n',
         'x = "café"\n',
         "x = <<EOT\nbody\nEOT\n",
         "/* c */\n",
@@ -1534,7 +1536,10 @@ def test_a_brace_in_a_comment_is_harmless_and_a_hash_in_a_string_is_not_a_commen
 @pytest.mark.parametrize(
     ("old", "new"),
     [
-        ('required_version = ">= 1.9.0"', 'required_version = ">= 1.9.0"\n  backend = 1'),
+        (
+            'required_version = ">= 1.9.0"',
+            'required_version = ">= 1.9.0"\n  backend = 1',
+        ),
         ('source = "cloudflare/cloudflare"', 'source = "evil/cloudflare"'),
         ('version = "= 5.29.0"', 'version = "= 5.29.0"\n      extra = 1'),
         ("required_providers {", 'required_providers {\n    other = "x"'),
@@ -1547,13 +1552,15 @@ def test_the_terraform_block_is_checked_against_an_allowlist(
     text = path.read_text()
     assert old in text
     path.write_text(text.replace(old, new, 1))
-    assert any("terraform" in p or "cloudflare" in p for p in check.offline_problems(root))
+    assert any(
+        "terraform" in p or "cloudflare" in p for p in check.offline_problems(root)
+    )
 
 
 @pytest.mark.parametrize(
     ("old", "new"),
     [
-        ("  type        = string\n", "  type        = string\n  default     = \"x\"\n"),
+        ("  type        = string\n", '  type        = string\n  default     = "x"\n'),
         ("  type        = string\n", "  type        = string\n  sensitive   = true\n"),
         ("var.zone_id))", "true) || true"),
         ('"zone_id"', '"other"'),
