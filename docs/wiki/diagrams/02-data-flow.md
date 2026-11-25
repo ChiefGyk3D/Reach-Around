@@ -54,7 +54,7 @@ flowchart TD
   d1pub -.-> hourly
 ```
 
-## Text description
+Text description of this diagram, for readers who cannot see it.
 
 Read in three lanes.
 
