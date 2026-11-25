@@ -62,6 +62,11 @@ OVERRIDE_VARS = (
 
 
 def load(path: Path, name: str) -> ModuleType:
+    import sys
+
+    # Loading the checker must not write its bytecode next to it: that cache would
+    # hold the token variable name, and the repository scan reads bytecode files.
+    sys.dont_write_bytecode = True
     spec = spec_from_loader(name, SourceFileLoader(name, str(path)))
     assert spec is not None and spec.loader is not None
     module = module_from_spec(spec)
@@ -1922,7 +1927,7 @@ def import_checker(
         "print('imported')\n"
     )
     return subprocess.run(  # noqa: S603
-        [sys.executable, "-c", code],
+        [sys.executable, "-B", "-c", code],  # -B: write no cache of the checker
         capture_output=True,
         text=True,
         env=env,
@@ -2061,11 +2066,19 @@ def test_the_handoff_scan_skips_ignored_directories_only_at_the_root(
     assert scan(root, "scripts/__pycache__/x.pyc", NAME.encode())
     assert scan(root, "lib/payload.pyo", NAME.encode())
     assert scan(root, "payload.pyc", NAME.encode("utf-16-le"))
-    # only the checker's own cache entry (the name is in its bytecode) is exempt
-    assert not scan(
-        root, "scripts/__pycache__/check-edge.cpython-312.pyc", NAME.encode()
-    )
+    # no path or name is exempt, the checker's own cache name included
+    assert scan(root, "scripts/__pycache__/check-edge.fake.pyc", NAME.encode())
+    assert scan(root, "scripts/__pycache__/check-edge.cpython-312.pyc", NAME.encode())
     assert scan(root, "tests/__pycache__/check-edge.cpython-312.pyc", NAME.encode())
+
+
+def test_loading_the_checker_writes_no_cache_of_it(tmp_path: Path) -> None:
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    copy = scripts / "check-edge.py"
+    copy.write_bytes(CHECKER.read_bytes())
+    load(copy, "check_edge_copy")
+    assert not (scripts / "__pycache__").exists()
 
 
 def test_a_computed_name_is_outside_the_documented_scan_limit(root: Path) -> None:

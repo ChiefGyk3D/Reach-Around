@@ -232,7 +232,8 @@ applied from here" is structural:
   importing; those are the caller's trust. CI runs the offline step as
   `/usr/bin/python3 -I` (no `PATH` lookup) and holds no read token.
 - The honest limit of that scan: it finds the literal name only (bytecode files
-  are scanned like any other file; only the checker's own cache entry is exempt).
+  are scanned like any other file, with no exemption: the tests load the checker
+  without writing its bytecode, and a stale cache of it is reported, so delete it).
   A name built at run time, such as two string pieces joined, is not found and is
   out of scope; a test pins that limit. A token handed on through the
   environment of another process is not found either, so the scan is a tripwire

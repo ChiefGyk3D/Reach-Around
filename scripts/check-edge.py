@@ -358,9 +358,10 @@ TOKEN_CHECKER = "scripts/check-edge.py"  # noqa: S105 (a path)
 TOKEN_TEST_FILE = "tests/test_edge_settings.py"  # noqa: S105 (a path)
 DOC_PATHS = frozenset({"docs/edge.md"})
 # Bytecode is scanned like any other file (it is executable and can hold the
-# name). The one exemption is the checker's own cache entry, which holds the name
-# by construction and which importing the checker writes next to it.
-OWN_BYTECODE = re.compile(r"scripts/__pycache__/check-edge\.[^/]+\.py[co]")
+# name), with no exemption by path or name: the checker's own cache would hold
+# the name, so the tests load the checker with sys.dont_write_bytecode set and no
+# cache of it is ever written. A stale cache left by an earlier run is reported
+# like any other file; delete it.
 ROOT_SKIP_DIRS = frozenset(
     {".git", "node_modules", ".venv", "venv", ".terraform"}
     | {".mypy_cache", ".ruff_cache", ".pytest_cache", "__pycache__"}
@@ -526,7 +527,7 @@ def repo_handoff_problems(root: Path) -> list[str]:
         for name in sorted(files):
             path = Path(current) / name
             rel = path.relative_to(root).as_posix()
-            if rel == TOKEN_CHECKER or OWN_BYTECODE.fullmatch(rel):
+            if rel == TOKEN_CHECKER:
                 continue
             scanned = path
             try:
