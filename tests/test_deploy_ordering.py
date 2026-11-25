@@ -277,12 +277,14 @@ def test_an_image_from_another_release_is_refused(tmp_path: Path) -> None:
     root = _instance(tmp_path)
     lock = root / "engine.lock"
     text = lock.read_text(encoding="utf-8").replace(
-        "reach-around:0.2.0@", "reach-around:0.3.0@"
+        "reach-around:0.3.0-rc.6@", "reach-around:0.3.0@"
     )
     lock.write_text(text, encoding="utf-8")
     path = root / "engine.release.json"
     doc = json.loads(path.read_text(encoding="utf-8"))
-    doc["image"] = doc["image"].replace("reach-around:0.2.0@", "reach-around:0.3.0@")
+    doc["image"] = doc["image"].replace(
+        "reach-around:0.3.0-rc.6@", "reach-around:0.3.0@"
+    )
     path.write_text(json.dumps(doc), encoding="utf-8")
     assert _release(root).returncode == 1  # the image tag and the ref comment disagree
 
@@ -320,13 +322,17 @@ def _deploy_local_fixture(
     _git(engine, "init", "-q")
     _git(engine, "add", "-A")
     _git(engine, "commit", "-q", "-m", "x")
-    _git(engine, "tag", "v0.2.0")
+    _git(engine, "tag", "v0.3.0-rc.6")
     commit = _git(engine, "rev-parse", "HEAD")
     _git(engine, "remote", "add", "origin", remote)
     root = _instance(tmp_path)
     lock = root / "engine.lock"
     lines = [
-        line if not line.startswith("ENGINE_REF=") else f"ENGINE_REF={commit} # v0.2.0"
+        (
+            line
+            if not line.startswith("ENGINE_REF=")
+            else f"ENGINE_REF={commit} # v0.3.0-rc.6"
+        )
         for line in lock.read_text(encoding="utf-8").splitlines()
     ]
     lock.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -369,7 +375,7 @@ def test_deploy_local_accepts_the_named_repository_past_the_pin_checks(
     # It gets past every pin check; the build that follows needs a container runtime.
     assert "no remote of ENGINE_DIR" not in result.stderr
     assert "do not describe one release" not in result.stderr
-    assert "tag v0.2.0" not in result.stderr
+    assert "tag v0.3.0-rc.6" not in result.stderr
     assert "migrations end" not in result.stderr
 
 
