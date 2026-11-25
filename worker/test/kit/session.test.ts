@@ -98,6 +98,29 @@ describe("migration 0021: negative kit-wide floor", () => {
     expect(await authorizeSession(testEnv.DB, [KEY], claims({ lid, iat: nowSec - 60 }))).toBe("expired");
     expect(await authorizeSession(testEnv.DB, [KEY], claims({ lid, iat: nowSec + 5 }))).toBe("ok");
   });
+  async function triggerNames() {
+    const r = await testEnv.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'kit_meta_floor_%' ORDER BY name").all<{ name: string }>();
+    return r.results.map((x) => x.name);
+  }
+  it("applies twice in a row without dropping anything", async () => {
+    for (const q of mig().queries) await testEnv.DB.prepare(q).run();
+    for (const q of mig().queries) await testEnv.DB.prepare(q).run();
+    expect(await triggerNames()).toEqual(["kit_meta_floor_insert", "kit_meta_floor_update"]);
+  });
+  it("a re-run converges after a partial application stopped after each statement", async () => {
+    const queries = mig().queries;
+    expect(queries.length).toBe(3);
+    for (let k = 0; k <= queries.length; k++) {
+      await dropTriggers();
+      await testEnv.DB.prepare("DELETE FROM kit_meta WHERE key = ?").bind(UNSTORED_FLOOR_KEY).run();
+      await testEnv.DB.prepare("INSERT INTO kit_meta (key, value) VALUES (?, -1)").bind(UNSTORED_FLOOR_KEY).run();
+      for (const q of queries.slice(0, k)) await testEnv.DB.prepare(q).run();
+      for (const q of queries) await testEnv.DB.prepare(q).run(); // the retry
+      expect(await triggerNames(), `after ${k} statements`).toEqual(["kit_meta_floor_insert", "kit_meta_floor_update"]);
+      expect((await floor())!.value, `after ${k} statements`).toBeGreaterThanOrEqual(0);
+      await expect(testEnv.DB.prepare("UPDATE kit_meta SET value = -1 WHERE key = ?").bind(UNSTORED_FLOOR_KEY).run()).rejects.toThrow();
+    }
+  });
   it("leaves a valid existing floor unchanged", async () => {
     await dropTriggers();
     await testEnv.DB.prepare("INSERT INTO kit_meta (key, value) VALUES (?, 12345)").bind(UNSTORED_FLOOR_KEY).run();
