@@ -34,7 +34,7 @@
 # added by hand (docs/edge.md, "Rate rule: a MANUAL step").
 
 locals {
-  desired = jsondecode(file("${path.module}/desired-state.json"))
+  desired = jsondecode(file(join("/", [path.module, "desired-state.json"])))
   bot     = local.desired.bot_management
 }
 

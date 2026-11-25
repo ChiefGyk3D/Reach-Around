@@ -208,78 +208,275 @@ ALLOWED_EDGE_FILES = frozenset(
 ALLOWED_BLOCKS = frozenset({"terraform", "provider", "variable", "locals", "resource"})
 # The one resource, and the exact attribute-to-key binding it must have.
 RESOURCE = ("cloudflare_bot_management", "zone")
-EXPECTED_LOCALS = {
-    "desired": 'jsondecode(file("${path.module}/desired-state.json"))',
-    "bot": "local.desired.bot_management",
-}
-_HEADER = re.compile(r'(\w+)((?:\s+"[^"]*")*)\s*\{(\s*\})?')
-_ASSIGN = re.compile(r"(\w+)\s*=\s*(.+)")
+class HclError(Exception):
+    """The text is outside the small HCL subset these files use."""
 
 
-def hcl_code(text: str) -> list[str]:
-    """Non-blank lines with # comments dropped (the files use no other style)."""
-    lines = []
-    for raw in text.splitlines():
-        line = re.sub(r"(?:^|\s)#.*$", "", raw).strip()
-        if line:
-            lines.append(line)
-    return lines
+Token = tuple[str, str]  # (kind, text): ident, string, punct, nl
+_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*|[0-9][0-9.]*")
+_PUNCT = frozenset("{}[]()=,.:!<>&|+-*?^~")
+_ESCAPES = frozenset('"\\nt')
+MAX_HCL_CHARS = 65536
+MAX_DEPTH = 8
 
 
-def hcl_blocks(
-    path: str, lines: list[str]
-) -> tuple[list[tuple[str, tuple[str, ...], list[str]]], list[str]]:
-    """Top-level blocks as (kind, labels, body lines). Anything else is a problem."""
-    blocks: list[tuple[str, tuple[str, ...], list[str]]] = []
-    problems: list[str] = []
-    depth = 0
-    current: tuple[str, tuple[str, ...], list[str]] | None = None
-    for line in lines:
-        if depth == 0:
-            match = _HEADER.fullmatch(line)
+def hcl_tokens(text: str) -> list[Token]:
+    """Tokens of one .tf file; raises HclError on anything outside the subset.
+
+    Strings are single tokens, so a brace inside one never reaches the block
+    parser. A string may not hold a brace at all (that also rules out the
+    dollar-brace interpolation), nor a raw newline, a control character or a
+    non-ASCII one. Comments start with # and run to the end of the line. A
+    slash, a dollar sign outside a string, a backtick, a lone carriage return and the heredoc
+    marker are refused outside comments, and so is any other character.
+    """
+    if len(text) > MAX_HCL_CHARS:
+        raise HclError("file too large")
+    text = text.replace("\r\n", "\n")
+    if "\r" in text or "\x00" in text:
+        raise HclError("carriage return or NUL character")
+    tokens: list[Token] = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c in " \t":
+            i += 1
+        elif c == "\n":
+            tokens.append(("nl", c))
+            i += 1
+        elif c == "#":
+            while i < n and text[i] != "\n":
+                i += 1
+        elif c == '"':
+            i, value = _hcl_string(text, i + 1)
+            tokens.append(("string", value))
+        elif c.isascii() and (c.isalnum() or c == "_"):
+            match = _IDENT.match(text, i)
             if match is None:
-                problems.append(f"{path}: unrecognized top-level code {line!r}")
+                raise HclError("bad identifier")
+            tokens.append(("ident", match.group(0)))
+            i = match.end()
+        elif c in _PUNCT:
+            if text.startswith("<<", i):
+                raise HclError("heredoc marker")
+            tokens.append(("punct", c))
+            i += 1
+        else:
+            raise HclError("character not allowed in code")
+    return tokens
+
+
+def _hcl_string(text: str, start: int) -> tuple[int, str]:
+    """The string body that starts at start; returns (index after the quote, body)."""
+    out: list[str] = []
+    i, n = start, len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            return i + 1, "".join(out)
+        if c == "\\":
+            if i + 1 >= n or text[i + 1] not in _ESCAPES:
+                raise HclError("unsupported escape in a string")
+            out.append(text[i : i + 2])
+            i += 2
+            continue
+        if c in "{}":
+            raise HclError("brace inside a string")
+        if not (c.isascii() and c.isprintable()):
+            raise HclError("character not allowed in a string")
+        out.append(c)
+        i += 1
+    raise HclError("unterminated string")
+
+
+class Block:
+    """A parsed block: kind, labels, attributes (name, compact value), children."""
+
+    def __init__(self, kind: str, labels: tuple[str, ...]) -> None:
+        self.kind = kind
+        self.labels = labels
+        self.attrs: list[tuple[str, str]] = []
+        self.children: list[Block] = []
+
+
+_CLOSERS = {"{": "}", "[": "]", "(": ")"}
+
+
+class _Parser:
+    def __init__(self, tokens: list[Token]) -> None:
+        self.t = tokens
+        self.i = 0
+
+    def peek(self, offset: int = 0) -> Token | None:
+        j = self.i + offset
+        return self.t[j] if j < len(self.t) else None
+
+    def skip_newlines(self) -> None:
+        while (tok := self.peek()) is not None and tok[0] == "nl":
+            self.i += 1
+
+    def top(self) -> list[Block]:
+        blocks: list[Block] = []
+        while True:
+            self.skip_newlines()
+            if self.peek() is None:
+                return blocks
+            blocks.append(self.block(0))
+
+    def block(self, depth: int) -> Block:
+        if depth > MAX_DEPTH:
+            raise HclError("blocks nested too deeply")
+        tok = self.peek()
+        if tok is None or tok[0] != "ident":
+            raise HclError("expected a block name")
+        self.i += 1
+        labels: list[str] = []
+        while (label := self.peek()) is not None and label[0] in ("string", "ident"):
+            labels.append(label[1])
+            self.i += 1
+        if self.peek() != ("punct", "{"):
+            raise HclError("expected an opening brace")
+        self.i += 1
+        block = Block(tok[1], tuple(labels))
+        while True:
+            self.skip_newlines()
+            nxt = self.peek()
+            if nxt is None:
+                raise HclError("unbalanced braces")
+            if nxt == ("punct", "}"):
+                self.i += 1
+                break
+            self.item(block, depth)
+        # A block ends its line: anything after the closing brace on the same line
+        # (another block, an attribute, a second brace) is refused.
+        after = self.peek()
+        if after is not None and after[0] != "nl":
+            raise HclError("code after a closing brace on the same line")
+        return block
+
+    def item(self, block: Block, depth: int) -> None:
+        tok = self.peek()
+        if tok is None or tok[0] != "ident":
+            raise HclError("expected an attribute or block name")
+        if self.peek(1) == ("punct", "="):
+            self.i += 2
+            block.attrs.append((tok[1], self.expression()))
+        else:
+            block.children.append(self.block(depth + 1))
+
+    def expression(self) -> str:
+        """Tokens up to the end of the line at bracket depth 0, as compact text."""
+        parts: list[str] = []
+        stack: list[str] = []
+        while True:
+            tok = self.peek()
+            if tok is None:
+                break
+            kind, text = tok
+            self.i += 1
+            if kind == "nl":
+                if not stack:
+                    break
+                if parts and parts[-1] not in _CLOSERS and parts[-1] != "\n":
+                    parts.append("\n")
                 continue
-            labels = tuple(re.findall(r'"([^"]*)"', match.group(2)))
-            current = (match.group(1), labels, [])
-            blocks.append(current)
-            depth = 0 if match.group(3) else 1
-            continue
-        if line == "}" and depth == 1:
-            depth = 0
-            continue
-        depth += line.count("{") - line.count("}")
-        if current is not None:
-            current[2].append(line)
-    if depth != 0:
-        problems.append(f"{path}: unbalanced braces")
-    return blocks, problems
+            if kind == "punct" and text in _CLOSERS:
+                stack.append(_CLOSERS[text])
+            elif kind == "punct" and text in _CLOSERS.values():
+                if not stack or stack.pop() != text:
+                    raise HclError("unbalanced brackets")
+                if parts and parts[-1] == "\n":
+                    parts.pop()
+            parts.append(f'"{text}"' if kind == "string" else text)
+        if stack or not parts:
+            raise HclError("unbalanced brackets or an empty value")
+        return "".join(parts)
 
 
-def assignments(
-    path: str, what: str, body: list[str]
-) -> tuple[dict[str, str], list[str]]:
+def hcl_blocks(text: str) -> list[Block]:
+    """Top-level blocks of one .tf file, built from tokens (never from raw lines)."""
+    return _Parser(hcl_tokens(text)).top()
+
+
+def attr_map(path: str, what: str, block: Block) -> tuple[dict[str, str], list[str]]:
     found: dict[str, str] = {}
     problems: list[str] = []
-    for line in body:
-        match = _ASSIGN.fullmatch(line)
-        if match is None:
-            problems.append(f"{path}: {what} holds something other than assignments")
-            continue
-        name, value = match.group(1), match.group(2).strip()
+    if block.children:
+        problems.append(f"{path}: {what} holds something other than assignments")
+    for name, value in block.attrs:
         if name in found:
             problems.append(f"{path}: {what} assigns {name} twice")
         found[name] = value
     return found, problems
 
 
+EXPECTED_LOCALS = {
+    "desired": 'jsondecode(file(join("/",[path.module,"desired-state.json"])))',
+    "bot": "local.desired.bot_management",
+}
+EXPECTED_CONDITION = 'can(regex("^[0-9a-f]+$",var.zone_id))&&length(var.zone_id)==32'
+_REQUIRED_VERSION = re.compile(r'">= \d+\.\d+\.\d+"')
+_CLOUDFLARE_PIN = re.compile(
+    r'\{source="cloudflare/cloudflare"\nversion="= \d+\.\d+\.\d+"\}'
+)
+
+
+def terraform_problems(name: str, block: Block) -> list[str]:
+    """The terraform block: required_version and the one pinned provider only."""
+    problems: list[str] = []
+    attrs = dict(block.attrs)
+    if len(block.attrs) != 1 or set(attrs) != {"required_version"}:
+        problems.append(f"{name}: terraform may only set required_version")
+    elif not _REQUIRED_VERSION.fullmatch(attrs["required_version"]):
+        problems.append(f"{name}: terraform required_version is not a plain minimum")
+    kids = block.children
+    if len(kids) != 1 or kids[0].kind != "required_providers" or kids[0].labels:
+        problems.append(f"{name}: terraform may only hold required_providers")
+        return problems
+    inner = kids[0]
+    if inner.children or [a for a, _ in inner.attrs] != ["cloudflare"]:
+        problems.append(f"{name}: required_providers may only list cloudflare")
+    elif not _CLOUDFLARE_PIN.fullmatch(inner.attrs[0][1]):
+        problems.append(f"{name}: the cloudflare provider source or pin differs")
+    return problems
+
+
+def variable_problems(name: str, block: Block) -> list[str]:
+    """The zone_id variable: description, type and one validation block."""
+    if block.labels != ("zone_id",):
+        return [f"{name}: the only variable allowed is zone_id"]
+    problems: list[str] = []
+    attrs = dict(block.attrs)
+    if len(block.attrs) != 2 or set(attrs) != {"description", "type"}:
+        problems.append(f"{name}: variable zone_id may only set description and type")
+    elif attrs["type"] != "string" or not attrs["description"].startswith('"'):
+        problems.append(f"{name}: variable zone_id must be a described string")
+    kids = block.children
+    if len(kids) != 1 or kids[0].kind != "validation" or kids[0].labels:
+        problems.append(f"{name}: variable zone_id may only hold one validation")
+        return problems
+    rule = dict(kids[0].attrs)
+    if (
+        kids[0].children
+        or len(kids[0].attrs) != 2
+        or set(rule) != {"condition", "error_message"}
+    ):
+        problems.append(f"{name}: validation may only set condition and error_message")
+    elif rule["condition"] != EXPECTED_CONDITION:
+        problems.append(f"{name}: the zone_id validation differs from the reviewed one")
+    return problems
+
+
 def module_problems(edge: Path, main_tf: str) -> list[str]:
     """main.tf is bound to desired-state.json by exact structure, not by substring.
 
-    Every .tf file may hold only the allowed block kinds; the only resource is
-    cloudflare_bot_management.zone, and each attribute in it must be assigned
-    exactly the matching local.bot key. Extra resources, data sources, modules,
-    provisioners, lifecycle blocks, other locals or a literal value all fail.
+    Every .tf file is tokenized (strings are atomic, so braces inside them cannot
+    move a block boundary) and may hold only the allowed block kinds; the only
+    resource is cloudflare_bot_management.zone, and each attribute in it must be
+    assigned exactly the matching local.bot key. The terraform and variable
+    blocks are checked against an allowlist of attributes. Extra resources, data
+    sources, modules, provisioners, lifecycle blocks, other locals or a literal
+    value all fail, and so does any text the tokenizer cannot parse.
     """
     problems: list[str] = []
     for item in sorted(edge.iterdir(), key=lambda p: p.name):
@@ -289,29 +486,41 @@ def module_problems(edge: Path, main_tf: str) -> list[str]:
                 "state never belong in this directory)"
             )
     resources = 0
+    variables = 0
     for tf in sorted(edge.glob("*.tf")):
         try:
             text = main_tf if tf.name == "main.tf" else tf.read_text("utf-8")
         except (OSError, ValueError):
             problems.append(f"{tf.name}: cannot be read")
             continue
-        lines = hcl_code(text)
-        if any("/*" in x or "//" in x or "<<" in x for x in lines):
-            problems.append(f"{tf.name}: only # comments and no heredocs are allowed")
-        blocks, found = hcl_blocks(tf.name, lines)
-        problems += found
-        for kind, labels, body in blocks:
+        try:
+            blocks = hcl_blocks(text)
+        except HclError as exc:
+            problems.append(
+                f"{tf.name}: cannot be parsed safely ({exc}); only # comments, "
+                "no heredocs, and no braces inside strings are allowed"
+            )
+            continue
+        for block in blocks:
+            kind = block.kind
             if kind not in ALLOWED_BLOCKS:
                 problems.append(f"{tf.name}: block kind {kind!r} is not allowed")
             elif kind == "resource":
                 resources += 1
-                problems += resource_problems(tf.name, labels, body)
+                problems += resource_problems(tf.name, block)
             elif kind == "locals":
-                got, bad = assignments(tf.name, "locals", body)
+                got, bad = attr_map(tf.name, "locals", block)
                 problems += bad
                 if got != EXPECTED_LOCALS or tf.name != "main.tf":
                     problems.append(f"{tf.name}: locals differ from the reviewed ones")
-            elif kind == "provider" and (labels != ("cloudflare",) or body):
+            elif kind == "variable":
+                variables += 1
+                problems += variable_problems(tf.name, block)
+            elif kind == "terraform":
+                problems += terraform_problems(tf.name, block)
+            elif kind == "provider" and (
+                block.labels != ("cloudflare",) or block.attrs or block.children
+            ):
                 problems.append(
                     f"{tf.name}: provider must be an empty cloudflare block"
                 )
@@ -319,17 +528,19 @@ def module_problems(edge: Path, main_tf: str) -> list[str]:
         problems.append(
             f"deploy/edge must hold exactly one resource, found {resources}"
         )
+    if variables > 1:
+        problems.append("deploy/edge must declare the zone_id variable once")
     return problems
 
 
-def resource_problems(name: str, labels: tuple[str, ...], body: list[str]) -> list[str]:
-    if labels != RESOURCE:
+def resource_problems(name: str, block: Block) -> list[str]:
+    if block.labels != RESOURCE:
         return [
             f"{name}: the only resource allowed is {RESOURCE[0]}.{RESOURCE[1]} "
             "(a cloudflare_ruleset would own the whole http_ratelimit phase and "
             "replace other sites' rules)"
         ]
-    got, problems = assignments(name, "the resource", body)
+    got, problems = attr_map(name, "the resource", block)
     want = {"zone_id": "var.zone_id"}
     want |= {PROVIDER_ATTR.get(k, k): f"local.bot.{k}" for k in BOT_KEYS}
     for attr in sorted(set(want) | set(got)):

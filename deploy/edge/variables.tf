@@ -4,7 +4,7 @@ variable "zone_id" {
   type        = string
 
   validation {
-    condition     = can(regex("^[0-9a-f]{32}$", var.zone_id))
+    condition     = can(regex("^[0-9a-f]+$", var.zone_id)) && length(var.zone_id) == 32
     error_message = "zone_id must be 32 lowercase hex characters."
   }
 }

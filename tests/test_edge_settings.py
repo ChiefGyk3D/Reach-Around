@@ -1415,3 +1415,162 @@ def test_two_rules_with_our_expression_and_no_ref_are_ambiguous() -> None:
     clone["ref"] = "renamed-2"
     live["rules"].append(clone)
     assert any("ambiguous" in x for x in check.rate_differences(d, live))
+
+
+# --- the HCL checker reads tokens, never braces counted on raw lines (#613) ----
+
+HIDDEN = 'resource "cloudflare_ruleset" "x" {\n  y = 1\n}\n'
+
+
+def append_main(root: Path, text: str) -> None:
+    path = root / EDGE / "main.tf"
+    path.write_text(path.read_text() + text)
+
+
+def test_the_real_files_tokenize_and_parse() -> None:
+    for name in ("main.tf", "variables.tf", "versions.tf"):
+        blocks = check.hcl_blocks((REPO / EDGE / name).read_text())
+        assert blocks
+    kinds = [b.kind for b in check.hcl_blocks((REPO / EDGE / "main.tf").read_text())]
+    assert kinds == ["locals", "resource"]
+
+
+def test_a_brace_inside_a_string_cannot_hide_a_resource(root: Path) -> None:
+    # Counted per line, the "{" opens a phantom block and swallows what follows.
+    append_main(root, 'locals_decoy = "{"\n' + HIDDEN)
+    problems = check.offline_problems(root)
+    assert any("brace inside a string" in p or "cannot be parsed" in p for p in problems)
+
+
+def test_a_closing_brace_in_a_string_cannot_close_the_block_early(root: Path) -> None:
+    edit_main(root, "zone_id = var.zone_id\n", 'zone_id = var.zone_id\n  note = "}"\n')
+    assert any("brace inside a string" in p for p in check.offline_problems(root))
+
+
+def test_an_escaped_quote_followed_by_a_brace_is_still_inside_the_string(
+    root: Path,
+) -> None:
+    append_main(root, 'x = "a\\"}"\n' + HIDDEN)
+    assert any("brace inside a string" in p for p in check.offline_problems(root))
+
+
+def test_an_interpolation_is_refused(root: Path) -> None:
+    edit_main(root, "zone_id = var.zone_id\n", 'zone_id = "${var.zone_id}"\n')
+    assert any("brace inside a string" in p for p in check.offline_problems(root))
+
+
+def test_a_closing_brace_then_a_hidden_block_on_the_same_line_is_refused(
+    root: Path,
+) -> None:
+    path = root / EDGE / "main.tf"
+    path.write_text(path.read_text().rstrip().removesuffix("}") + "} " + HIDDEN)
+    problems = check.offline_problems(root)
+    assert any("same line" in p for p in problems)
+
+
+def test_a_hidden_block_before_the_closing_brace_on_one_line_is_refused(
+    root: Path,
+) -> None:
+    edit_main(root, "locals {", 'locals { extra = 1 }\nresource "x" "y" {')
+    assert check.offline_problems(root)
+
+
+def test_crlf_line_endings_parse_the_same(root: Path) -> None:
+    for name in ("main.tf", "variables.tf", "versions.tf"):
+        path = root / EDGE / name
+        path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+    assert check.offline_problems(root) == []
+
+
+def test_crlf_cannot_hide_a_block(root: Path) -> None:
+    path = root / EDGE / "main.tf"
+    data = path.read_bytes().replace(b"\n", b"\r\n")
+    path.write_bytes(data + HIDDEN.replace("\n", "\r\n").encode())
+    assert check.offline_problems(root)
+
+
+def test_a_lone_carriage_return_is_refused(root: Path) -> None:
+    append_main(root, "# comment\r" + HIDDEN)
+    assert any("cannot be parsed" in p for p in check.offline_problems(root))
+
+
+@pytest.mark.parametrize("text", ["{\n", "}\n", "locals {\n", 'locals {\n}\n}\n'])
+def test_unbalanced_braces_fail_closed(root: Path, text: str) -> None:
+    append_main(root, "\n" + text)
+    assert check.offline_problems(root)
+    with pytest.raises(check.HclError):
+        check.hcl_blocks(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'x = "unterminated\n',
+        'x = "bad \\q escape"\n',
+        "x = `tick`\n",
+        "x = a / b\n",
+        "x = $y\n",
+        "﻿variable \"a\" {}\n",
+        'x = "café"\n',
+        "x = <<EOT\nbody\nEOT\n",
+        "/* c */\n",
+        "// c\n",
+    ],
+)
+def test_text_outside_the_subset_fails_closed(root: Path, text: str) -> None:
+    with pytest.raises(check.HclError):
+        check.hcl_blocks(text)
+    append_main(root, "\n" + text)
+    assert any("cannot be parsed" in p for p in check.offline_problems(root))
+
+
+def test_a_brace_in_a_comment_is_harmless_and_a_hash_in_a_string_is_not_a_comment(
+    root: Path,
+) -> None:
+    blocks = check.hcl_blocks('# }{\nlocals {\n  a = "x#y" # }\n}\n')
+    assert [b.attrs for b in blocks] == [[("a", '"x#y"')]]
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ('required_version = ">= 1.9.0"', 'required_version = ">= 1.9.0"\n  backend = 1'),
+        ('source = "cloudflare/cloudflare"', 'source = "evil/cloudflare"'),
+        ('version = "= 5.29.0"', 'version = "= 5.29.0"\n      extra = 1'),
+        ("required_providers {", 'required_providers {\n    other = "x"'),
+    ],
+)
+def test_the_terraform_block_is_checked_against_an_allowlist(
+    root: Path, old: str, new: str
+) -> None:
+    path = root / EDGE / "versions.tf"
+    text = path.read_text()
+    assert old in text
+    path.write_text(text.replace(old, new, 1))
+    assert any("terraform" in p or "cloudflare" in p for p in check.offline_problems(root))
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("  type        = string\n", "  type        = string\n  default     = \"x\"\n"),
+        ("  type        = string\n", "  type        = string\n  sensitive   = true\n"),
+        ("var.zone_id))", "true) || true"),
+        ('"zone_id"', '"other"'),
+        ("  validation {", '  provisioner "x" {\n  }\n  validation {'),
+    ],
+)
+def test_the_variable_block_is_checked_against_an_allowlist(
+    root: Path, old: str, new: str
+) -> None:
+    path = root / EDGE / "variables.tf"
+    text = path.read_text()
+    assert old in text
+    path.write_text(text.replace(old, new, 1))
+    assert any("zone_id" in p or "variable" in p for p in check.offline_problems(root))
+
+
+def test_a_second_variable_block_fails(root: Path) -> None:
+    path = root / EDGE / "variables.tf"
+    path.write_text(path.read_text() + path.read_text().split("\n", 1)[1])
+    assert any("once" in p for p in check.offline_problems(root))
