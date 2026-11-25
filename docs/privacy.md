@@ -131,7 +131,7 @@ If you turn on owner alerts (`alerts` in `site.yaml`, see [alerts](alerts.md)),
 the Worker forwards a short notice to the Discord room, Matrix room or mailbox
 you chose when someone unlocks the kit or a new lead is stored. That notice can
 carry the visitor's address (`alerts.visitor_email`: `full`, `masked` or
-`none`) and the UTC time. It never carries an IP address, user agent, cookie,
+`none`; masked by default) and the UTC time. It never carries an IP address, user agent, cookie,
 token or country. The copy in your chat service or mailbox is outside the
 Worker's retention: the `LEAD_RETENTION_DAYS` purge does not reach it, so delete
 it there when you honor a deletion request, and mention the channel in your own
