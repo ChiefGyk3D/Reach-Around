@@ -38,11 +38,13 @@ import sys
 # user site files by now, so an attacker-controlled module (a json.py on
 # PYTHONPATH, say) would run before any check below could see the token. Running
 # under `python3 -I` ignores them; anything else is refused before the token is
-# read or any further module is imported.
+# read or any further module is imported. Importing the file from another
+# process skips this entry check, so live() refuses again unless isolated.
+ISOLATION_MESSAGE = (
+    "REFUSED run this checker as: /usr/bin/python3 -I scripts/check-edge.py\n"
+)
 if __name__ == "__main__" and sys.flags.isolated != 1:
-    sys.stderr.write(
-        "REFUSED run this checker as: /usr/bin/python3 -I scripts/check-edge.py\n"
-    )
+    sys.stderr.write(ISOLATION_MESSAGE)
     sys.exit(2)
 
 import argparse  # noqa: E402
@@ -348,22 +350,51 @@ ROOT_SKIP_DIRS = frozenset(
     | {".mypy_cache", ".ruff_cache", ".pytest_cache", "__pycache__"}
 )
 SCAN_CHUNK = 1_048_576
+# Generous bounds on the repository scan (the largest tracked file is about 1 MB).
+# Crossing either one is a reported problem, never a clean result.
+MAX_SCAN_FILE_BYTES = 64 * 1_048_576
+MAX_SCAN_TOTAL_BYTES = 1_024 * 1_048_576
+# The name as plain text and as the wide encodings a script or tool can read.
+NEEDLES = tuple(
+    TOKEN_ENV.encode(enc)
+    for enc in ("utf-8", "utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be")
+)
+
+
+class ScanTooLarge(Exception):
+    """A file or the whole scan went past its byte bound."""
+
+
+class Budget:
+    """Bytes the whole repository scan may still read."""
+
+    def __init__(self, total: int) -> None:
+        self.left = total
+
+
+def _isolated() -> bool:
+    return sys.flags.isolated == 1
 
 
 def _same_file(a: os.stat_result, b: os.stat_result) -> bool:
-    return (a.st_dev, a.st_ino, a.st_size, a.st_mtime_ns) == (
-        b.st_dev,
-        b.st_ino,
-        b.st_size,
-        b.st_mtime_ns,
-    )
+    # ctime moves on any write, hardlink or link-count change and cannot be set
+    # back from user space, so it catches an in-place edit that restores mtime.
+    return (
+        a.st_dev,
+        a.st_ino,
+        a.st_size,
+        a.st_nlink,
+        a.st_mtime_ns,
+        a.st_ctime_ns,
+    ) == (b.st_dev, b.st_ino, b.st_size, b.st_nlink, b.st_mtime_ns, b.st_ctime_ns)
 
 
-def _names_token(path: Path) -> bool | None:
-    """True when the file's bytes hold the variable name; None if it cannot be
-    read as a regular file or changed while it was being read."""
-    needle = TOKEN_ENV.encode()
+def _names_token(path: Path, budget: Budget | None = None) -> bool | None:
+    """True when the file's bytes hold the variable name (as text or UTF-16/32);
+    None if it cannot be read as a regular file or changed while it was being
+    read; ScanTooLarge past the per-file or total byte bound."""
     keep = b""
+    overlap = max(len(n) for n in NEEDLES) - 1
     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
     try:
         fd = os.open(path, flags)
@@ -373,14 +404,22 @@ def _names_token(path: Path) -> bool | None:
         before = os.fstat(fd)
         if not stat.S_ISREG(before.st_mode) or not _same_file(before, os.lstat(path)):
             return None
+        if before.st_size > MAX_SCAN_FILE_BYTES:
+            raise ScanTooLarge
         found = False
+        read = 0
         with os.fdopen(fd, "rb", closefd=False) as handle:
             while chunk := handle.read(SCAN_CHUNK):
+                read += len(chunk)
+                if budget is not None:
+                    budget.left -= len(chunk)
+                if read > MAX_SCAN_FILE_BYTES or (budget and budget.left < 0):
+                    raise ScanTooLarge
                 window = keep + chunk
-                if needle in window:
+                if any(needle in window for needle in NEEDLES):
                     found = True
                     break
-                keep = window[-(len(needle) - 1) :]
+                keep = window[-overlap:]
         after = os.fstat(fd)
         if not _same_file(before, after) or not _same_file(after, os.lstat(path)):
             return None
@@ -447,7 +486,20 @@ def repo_handoff_problems(root: Path) -> list[str]:
     """Fail when anything outside the checker names the read token variable."""
     problems: list[str] = []
     resolved_root = root.resolve()
-    for current, dirs, files in os.walk(root):
+    budget = Budget(MAX_SCAN_TOTAL_BYTES)
+
+    def walk_error(exc: OSError) -> None:
+        name = getattr(exc, "filename", None)
+        try:
+            rel = Path(name).relative_to(root).as_posix() if name else "."
+        except ValueError:
+            rel = str(name)
+        problems.append(
+            f"{rel}: directory cannot be listed, so it is not scanned for the "
+            "edge token"
+        )
+
+    for current, dirs, files in os.walk(root, onerror=walk_error):
         if Path(current) == root:
             dirs[:] = [d for d in dirs if d not in ROOT_SKIP_DIRS]
         dirs.sort()
@@ -485,7 +537,20 @@ def repo_handoff_problems(root: Path) -> list[str]:
                 if bad is not None:
                     problems.append(f"{rel}: {bad}")
                 continue
-            hit = _names_token(scanned)
+            try:
+                hit = _names_token(scanned, budget)
+            except ScanTooLarge:
+                problems.append(
+                    f"{rel}: file too large to scan (or the scan passed its total "
+                    "byte bound), so it is not checked for the edge token"
+                )
+                if budget.left < 0:
+                    problems.append(
+                        "scan stopped: total byte bound passed; remaining files "
+                        "were not checked"
+                    )
+                    return problems
+                continue
             if hit is None:
                 problems.append(
                     f"{rel}: cannot be read or changed while it was scanned, so it "
@@ -1338,6 +1403,11 @@ def load_desired() -> dict[str, Any]:
 
 
 def live(args: argparse.Namespace) -> int:
+    # Importing this file from a non-isolated interpreter skips the entry guard
+    # above, so the token-reading path checks again before it touches the token.
+    if not _isolated():
+        sys.stderr.write(ISOLATION_MESSAGE)
+        return 2
     token = os.environ.get(TOKEN_ENV, "")
     zone = args.zone_id or ""
     if not token or not re.fullmatch(r"[0-9a-f]{32}", zone):

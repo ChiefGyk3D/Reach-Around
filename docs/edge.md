@@ -196,10 +196,17 @@ applied from here" is structural:
   symlink to a file is followed to its target and refused if it is outside the
   repository, missing or not a regular file, and a FIFO, socket or device is
   reported and never opened. Files are read in full, opened without following
-  links, and the opened file must match its path before and after the read, so a
-  file replaced during its own scan is reported. That is the whole race guarantee:
-  a file already scanned can still be swapped afterwards, so run the check on a
-  checkout no other step is changing. There is no local launcher: no wrapper
+  links, and the opened file must match its path before and after the read
+  (device, inode, size, link count, modification time and change time), so a file
+  replaced, relinked or written in place during its own scan is reported. The
+  guarantee is bounded: it rests on the filesystem's change time, which user space
+  cannot set back but which can be coarse, and a file already scanned can still be
+  changed afterwards, so run the check on a checkout no other step is changing.
+  The name is searched as UTF-8 text and as UTF-16 and UTF-32 (both byte orders);
+  other encodings are not decoded. A directory that cannot be listed is reported,
+  never treated as clean, and the scan has generous bounds (64 MiB per file, 1 GiB
+  in all): crossing one is a reported problem, not a clean result. There is no
+  local launcher: no wrapper
   script, no CLI configuration file and no configurable path to a tool.
   `scripts/check-edge.py --offline` fails if `deploy/edge/` holds a launcher or
   CLI configuration, or any text that names a token variable, starts a subprocess
@@ -214,7 +221,12 @@ applied from here" is structural:
   one the deployment image provides) whenever the token is in the environment. A
   normal interpreter honors `PYTHONPATH`, `PYTHONHOME` and site files before any
   line of the script, so a planted module could read the token first. The refusal
-  comes before the token is read or any other module is imported.
+  comes before the token is read or any other module is imported. Importing the
+  file from another process skips that entry guard, so the live path checks again
+  and refuses before it reads the token; importing it that way for the pure helpers
+  is allowed, and a process that imports it is trusted for what it has already
+  loaded. CI runs the offline step as `/usr/bin/python3 -I` (no `PATH` lookup)
+  and holds no read token.
 - The honest limit of that scan: it finds the literal name only. A name built at
   run time, or a token handed on through the environment of another process, is
   not found, so the scan is a tripwire for review, not a proof. The real control

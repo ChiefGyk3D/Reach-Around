@@ -73,6 +73,15 @@ check: Any = load(REPO / "scripts" / "check-edge.py", "check_edge")
 SENTINEL = "sentinel-token-value-123456"
 
 
+REAL_ISOLATED = check._isolated
+
+
+@pytest.fixture(autouse=True)
+def isolated_interpreter(monkeypatch: pytest.MonkeyPatch) -> None:
+    # pytest is not run with -I; the live path is tested as if it were.
+    monkeypatch.setattr(check, "_isolated", lambda: True)
+
+
 @pytest.fixture(autouse=True)
 def clean_ambient_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in OVERRIDE_VARS:
@@ -448,7 +457,7 @@ def test_ci_runs_the_offline_check() -> None:
         for x in ci.splitlines()
         if not x.strip().startswith("#") and "python3 -I scripts/check-edge.py" in x
     ]
-    assert runs == ["python3 -I scripts/check-edge.py --offline"]
+    assert runs == ["/usr/bin/python3 -I scripts/check-edge.py --offline"]
 
 
 def test_the_doc_names_every_setting_and_scope() -> None:
@@ -1871,6 +1880,34 @@ def test_an_isolated_run_ignores_pythonpath(tmp_path: Path) -> None:
     assert not (tmp_path / "stolen").exists()
 
 
+def test_importing_the_checker_without_isolation_fails_closed_before_any_token_read(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(check, "_isolated", REAL_ISOLATED)
+    assert check.sys.flags.isolated != 1  # this test process is not run with -I
+    reads: list[str] = []
+
+    real_get = check.os.environ.get
+
+    def spy(key: str, default: Any = None) -> Any:
+        if key == check.TOKEN_ENV:
+            reads.append(key)
+            return "secret"
+        return real_get(key, default)
+
+    monkeypatch.setattr(check.os.environ, "get", spy)
+
+    def no_network(*a: Any, **k: Any) -> Any:
+        raise AssertionError("network used")
+
+    monkeypatch.setattr(check, "api_result", no_network)
+    monkeypatch.setattr(check, "fetch_robots", no_network)
+    assert check.main(["--live", "--zone-id", "0" * 32]) == 2
+    assert reads == []
+    err = capsys.readouterr().err
+    assert "REFUSED" in err and "secret" not in err
+
+
 def test_the_entry_point_has_no_shebang_and_no_executable_bit() -> None:
     assert not CHECKER.read_bytes().startswith(b"#!")
     assert not CHECKER.stat().st_mode & 0o111
@@ -2106,6 +2143,134 @@ def test_a_file_replaced_during_its_own_scan_is_reported(
 
     monkeypatch.setattr(check.os, "lstat", swapping)
     assert check._names_token(target) is None
+
+
+def test_an_in_place_write_with_restored_times_is_reported(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    target = root / "inplace.py"
+    target.write_bytes(b"A" * 40)
+    before = os.stat(target)
+    real = check.os.lstat
+    calls: list[int] = []
+
+    def writing(path: Any, *a: Any, **k: Any) -> Any:
+        if Path(path) == target:
+            calls.append(1)
+            if len(calls) == 2:  # the check after the read
+                with open(target, "r+b") as handle:  # same inode, same size
+                    handle.write(NAME.encode()[:40])
+                os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(check, "SCAN_CHUNK", 8)
+    monkeypatch.setattr(check.os, "lstat", writing)
+    assert check._names_token(target) is None
+
+
+def test_a_new_hardlink_during_the_scan_is_reported(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    target = root / "linked.py"
+    target.write_text("x = 1\n")
+    real = check.os.lstat
+    calls: list[int] = []
+
+    def linking(path: Any, *a: Any, **k: Any) -> Any:
+        if Path(path) == target:
+            calls.append(1)
+            if len(calls) == 2:
+                os.link(target, root / "alias.py")
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(check.os, "lstat", linking)
+    assert check._names_token(target) is None
+
+
+@pytest.mark.parametrize("enc", ["utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"])
+def test_the_scan_finds_the_name_in_wide_encodings(root: Path, enc: str) -> None:
+    data = ("$x = $env:" + NAME + "\n").encode(enc)
+    assert scan(root, "leak.ps1", data), enc
+    assert scan(root, "bom.txt", ("﻿" + NAME).encode(enc)), enc
+
+
+def test_the_scan_finds_a_wide_name_split_across_read_chunks(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(check, "SCAN_CHUNK", 5)
+    assert scan(root, "wide/f", b"xx" + NAME.encode("utf-16-le") + b"yy")
+    assert scan(root, "wide/g", b"x" + NAME.encode("utf-32-be") + b"y")
+
+
+def test_an_unreadable_directory_is_reported_not_treated_as_clean(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    hidden = root / "hidden"
+    hidden.mkdir()
+    (hidden / "leak").write_text(NAME)
+    real = os.scandir
+
+    def denying(path: Any = ".") -> Any:
+        if Path(path) == hidden:
+            raise PermissionError(13, "denied", str(hidden))
+        return real(path)
+
+    monkeypatch.setattr(check.os, "scandir", denying)
+    problems = check.repo_handoff_problems(root)
+    assert any(p.startswith("hidden:") and "cannot be listed" in p for p in problems)
+
+
+def test_a_file_past_the_size_bound_is_reported_without_being_read(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(check, "MAX_SCAN_FILE_BYTES", 100)
+    problems = scan(root, "huge.bin", b"A" * 300 + NAME.encode())
+    assert problems and "too large" in problems[0]
+    sparse = root / "sparse.bin"
+    with open(sparse, "wb") as handle:
+        handle.truncate(10**12)  # sparse: no disk used, never read
+    assert any(
+        p.startswith("sparse.bin:") and "too large" in p
+        for p in check.repo_handoff_problems(root)
+    )
+
+
+def test_a_file_that_grows_while_read_is_cut_off_at_the_bound(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = root / "grow.log"
+    target.write_bytes(b"A" * 10)
+    monkeypatch.setattr(check, "MAX_SCAN_FILE_BYTES", 50)
+
+    class Endless:
+        def __enter__(self) -> Endless:
+            return self
+
+        def __exit__(self, *exc: Any) -> None:
+            return None
+
+        def read(self, size: int) -> bytes:
+            return b"A" * 8  # a file that keeps growing as it is read
+
+    monkeypatch.setattr(check.os, "fdopen", lambda *a, **k: Endless())
+    with pytest.raises(check.ScanTooLarge):
+        check._names_token(target)
+
+
+def test_the_whole_scan_has_a_total_byte_bound(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(check, "MAX_SCAN_TOTAL_BYTES", 150)
+    for i in range(5):
+        (root / f"f{i}.txt").write_bytes(b"A" * 60)
+    problems = check.repo_handoff_problems(root)
+    assert any("total byte bound" in p for p in problems), problems
 
 
 def test_a_path_that_is_a_symlink_at_open_time_is_not_followed(root: Path) -> None:
