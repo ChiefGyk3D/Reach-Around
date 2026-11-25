@@ -52,7 +52,7 @@ jobs:
     outputs:
       enabled: ${{ steps.wiki.outputs.enabled }}
     steps:
-      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+      - uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: block
           allowed-endpoints: >-
@@ -97,7 +97,7 @@ jobs:
     name: Publish docs/wiki to the wiki
     needs: precheck
     if: ${{ needs.precheck.outputs.enabled == 'true' && github.event.repository.fork == false && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
-    uses: ChiefGyk3D/git-your-ship-together/.github/workflows/wiki-publish.yml@01f397834f7acc553593abefbba135b18f580730 # v1.34.0
+    uses: ChiefGyk3D/git-your-ship-together/.github/workflows/wiki-publish.yml@ff658b7c11a55eea1394af5fd1a3a1b4b09d9cd0 # v1.36.0
     permissions:
       contents: write # the reusable's publish job only; its generate job holds contents: read
     with:
