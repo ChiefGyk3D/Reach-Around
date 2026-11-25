@@ -398,10 +398,17 @@ taken from a table inside the database, because a restore or a clone copies that
 3. Move (dry run, `--copy`, then `--purge --locked-window-confirmed`; see below).
 4. Verify. Exit 0 only when the analytics lead tables hold no row and are frozen (or are gone), AND
    the leads database holds exactly the rows the move recorded: the same count and the same digest of
-   every column, none missing, none different, none extra (run it before the gate is enabled, while
-   the leads database holds nothing but the moved rows). It reads the move's manifest from the work
-   directory (`move-manifest.json`, digests only, kept after the move); without it, it passes only if
-   the leads database holds no lead row either. A non-zero exit blocks enabling the gate:
+   every column, none missing and none different. Every destination row must also still exist in the
+   source or be recorded in a recovery export made by this cutover. A lead deleted from the source
+   after the copy is reported, never silently kept or silently deleted. The operator decides whether
+   to keep it in the destination because the lead existed and was moved, or remove it with the
+   documented command below. The tool never claims success while the destination and manifest
+   accounting disagree. It reads the move's manifest from the work directory
+   (`move-manifest.json`, digests only, kept after the move). The source-or-export reconciliation
+   runs only after a destructive attempt is recorded in that manifest; before a purge, verification
+   retains the exact source, freeze, and destination checks used by the copy procedure. Without a
+   manifest there is nothing to reconcile: verification retains its previous behavior and passes
+   only if the source is empty and frozen and the leads database also holds no lead row. A non-zero exit blocks enabling the gate:
    `python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --verify`
 5. Only then deploy the new Worker and enable `features.kit_gate`.
 
@@ -453,7 +460,10 @@ per copied row and a cursor, no address) and one mode-600 `lead-recovery-*.json`
 attempt. The recovery exports contain full lead rows. Keep them private and outside every repository.
 Do not delete them before the retention decision and recovery window have ended. The copy and delete
 run in chunks of 200 rows (`MOVE_BATCH`, 1 to 1000), so memory and each statement file stay bounded;
-a run that stops midway resumes from the cursor
+a run that stops midway rechecks every destination row at or before the cursor against the manifest
+before it resumes. A prefix mismatch is refused with exit 3. After resolving why the destination
+changed, rerun the copy from the beginning by adding `--restart-copy`; this clears only the saved
+cursors and preserves the manifest digests and recovery records. An intact prefix resumes normally,
 and running it again is safe:
 
 ```bash
@@ -465,6 +475,8 @@ npx wrangler d1 info reach-around-leads --json
 python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work
 # 2. Copy and verify (still deletes nothing). Read the "not in dest" line: it must say 0 and 0.
 python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --copy
+# If a saved destination prefix differs after investigation, restart from the beginning:
+python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --copy --restart-copy
 # 3. Delete the analytics copies, inside the locked window of step 2 of the cutover.
 python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --purge --locked-window-confirmed
 # Recovery of only the deleted lead rows, if needed:
@@ -483,6 +495,13 @@ no event left), never the whole table. Every destructive attempt gets its own ti
 export; the current bookmark is labeled and earlier bookmarks are listed separately. A row added or
 changed after the copy survives; the script then exits 4 and says to run it again. Last,
 in the same run, it runs the `--verify` check and fails unless that passes.
+If verification reports rows as "removed at source or unknown," it prints only the count. Decide
+whether each moved lead should remain in the destination because it existed at copy time, or should
+be removed under the applicable retention or deletion record. To remove an approved lead, use the
+owner deletion procedure in [privacy.md](privacy.md), recording the decision and identifier outside
+tool output, then rerun `--verify`. Do not delete a row merely to make verification pass. A recovery
+export accounts only for rows the tool itself made eligible for deletion during this cutover, so an
+unrelated source deletion cannot silently become a successful verification.
 
 What the locked window can and cannot prove. D1 has no transaction across two databases, so the
 re-read of the leads database and the delete in the analytics database can never be one atomic step,

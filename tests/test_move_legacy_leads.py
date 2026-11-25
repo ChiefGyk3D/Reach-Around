@@ -1718,3 +1718,77 @@ def test_export_contents_never_appear_in_output(tmp_path: Path) -> None:
     output = result.stdout + result.stderr
     assert "person1@example.test" not in output
     assert format(1, "032x") not in output
+
+
+def test_verify_reports_moved_rows_absent_from_source_and_recovery_exports(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    result = purge(env, work)
+    assert result.returncode == 0, result.stderr
+    manifest_path = work / "move-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["recovery_exports"] = []
+    manifest_path.write_text(json.dumps(manifest))
+    manifest_path.chmod(0o600)
+    checked = run(env, work, "--verify")
+    assert checked.returncode == 1
+    assert "removed at source or unknown: 6" in checked.stdout
+    assert "operator must decide" in checked.stderr
+    assert "person1@example.test" not in checked.stdout + checked.stderr
+    assert format(1, "032x") not in checked.stdout + checked.stderr
+
+
+def test_verify_accepts_rows_accounted_for_by_the_recovery_export(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    result = purge(env, work)
+    assert result.returncode == 0, result.stderr
+    checked = run(env, work, "--verify")
+    assert checked.returncode == 0, checked.stderr
+    assert "removed at source or unknown: 0" in checked.stdout
+    assert count(env["STUB_SRC"], "leads") == 0
+    assert count(env["STUB_DEST"], "leads") == 3
+
+
+def test_resume_refuses_a_tampered_destination_prefix(tmp_path: Path) -> None:
+    env = make(tmp_path, count=5)
+    env["MOVE_BATCH"] = "2"
+    env["STUB_COUNTER"] = str(tmp_path / "calls")
+    env["CRASH_AT"] = "2"
+    work = workdir(tmp_path)
+    first = run(env, work, "--copy")
+    assert first.returncode == 1
+    with closing(sqlite3.connect(env["STUB_DEST"])) as db:
+        db.execute(
+            "UPDATE leads SET email = ? WHERE id = ?",
+            ("tampered-prefix@example.test", format(1, "032x")),
+        )
+        db.commit()
+    del env["CRASH_AT"]
+    resumed = run(env, work, "--copy")
+    assert resumed.returncode == 3
+    assert "destination prefix at or before the saved cursor" in resumed.stderr
+    assert "--restart-copy" in resumed.stderr
+    assert count(env["STUB_DEST"], "leads") == 2
+
+
+def test_resume_with_an_intact_destination_prefix_continues(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path, count=5)
+    env["MOVE_BATCH"] = "2"
+    env["STUB_COUNTER"] = str(tmp_path / "calls")
+    env["CRASH_AT"] = "2"
+    work = workdir(tmp_path)
+    first = run(env, work, "--copy")
+    assert first.returncode == 1
+    del env["CRASH_AT"]
+    resumed = run(env, work, "--copy")
+    assert resumed.returncode == 0, resumed.stderr
+    assert "resuming an unfinished copy from the recorded cursor" in resumed.stdout
+    assert rows(env["STUB_SRC"], "leads") == rows(env["STUB_DEST"], "leads")
+    assert rows(env["STUB_SRC"], "kit_events") == rows(env["STUB_DEST"], "kit_events")

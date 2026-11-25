@@ -724,9 +724,49 @@ def freeze(w: Wrangler, db: str) -> int:
     return 0
 
 
-def check_dest(w: Wrangler, dest: str, manifest: Manifest, size: int) -> None:
-    """DEST must hold exactly the manifest's rows: counts, then a digest of each row."""
+def accounted_rows(
+    w: Wrangler,
+    source: str,
+    work: Path,
+    manifest: Manifest,
+    size: int,
+) -> set[tuple[str, str, str]]:
+    """Manifest rows still in SOURCE or captured by a recovery export."""
+    accounted: set[tuple[str, str, str]] = set()
+    have = present_tables(w, source)
+    for table, _ in TABLES:
+        after: object | None = None
+        while table in have:
+            rows = page(w, source, table, after, size)
+            if not rows:
+                break
+            for row in rows:
+                key = str(row.get("id"))
+                row_digest = digest(table, row)
+                if manifest.digests[table].get(key) == row_digest:
+                    accounted.add((table, key, row_digest))
+            after = rows[-1].get("id")
+    for name in manifest.recovery_exports:
+        if Path(name).name != name or not name.startswith(EXPORT_PREFIX):
+            raise Refused("the manifest contains an invalid recovery export name.")
+        for item in read_recovery_export(work / name, manifest):
+            table = item["table"]
+            row = item["row"]
+            accounted.add((table, str(row.get("id")), item["digest"]))
+    return accounted
+
+
+def check_dest(
+    w: Wrangler,
+    source: str,
+    dest: str,
+    work: Path,
+    manifest: Manifest,
+    size: int,
+) -> None:
+    """DEST must match the manifest and each row must still be accounted for."""
     have = present_tables(w, dest)
+    matched: set[tuple[str, str, str]] = set()
     missing = different = extra = 0
     for table, _ in TABLES:
         want = dict(manifest.digests[table])
@@ -738,11 +778,15 @@ def check_dest(w: Wrangler, dest: str, manifest: Manifest, size: int) -> None:
                 break
             for r in rows:
                 seen += 1
-                got = want.pop(str(r.get("id")), None)
+                key = str(r.get("id"))
+                row_digest = digest(table, r)
+                got = want.pop(key, None)
                 if got is None:
                     extra += 1
-                elif got != digest(table, r):
+                elif got != row_digest:
                     different += 1
+                else:
+                    matched.add((table, key, row_digest))
             after = rows[-1].get("id")
         missing += len(want)
         print(f"dest {table}: {seen} rows, manifest {len(manifest.digests[table])}")
@@ -752,6 +796,18 @@ def check_dest(w: Wrangler, dest: str, manifest: Manifest, size: int) -> None:
     )
     if missing or different or extra:
         raise Failed("the leads database does not hold exactly the moved rows")
+    if not manifest.bookmarks:
+        return
+
+    accounted = accounted_rows(w, source, work, manifest, size)
+    unaccounted = len(matched - accounted)
+    print(f"removed at source or unknown: {unaccounted}")
+    if unaccounted:
+        raise Failed(
+            f"{unaccounted} destination row(s) are removed at source or unknown; "
+            "the operator must decide whether to keep the moved rows or remove them "
+            "with the documented command"
+        )
 
 
 def check_frozen(w: Wrangler, db: str) -> None:
@@ -785,7 +841,7 @@ def verify(w: Wrangler, args: argparse.Namespace, work: Path) -> int:
     elif manifest.state != "copied":
         raise Failed("the manifest says a copy did not finish; run the move again")
     else:
-        check_dest(w, dest, manifest, size)
+        check_dest(w, source, dest, work, manifest, size)
     print("cutover verified: moved completely, and no older Worker can store a lead.")
     return 0
 
@@ -808,6 +864,36 @@ def check_recorded_dest(
             )
 
 
+def check_resume_prefix(
+    w: Wrangler, dest: str, table: str, cursor: object, m: Manifest
+) -> None:
+    """Refuse to continue past a cursor whose destination prefix changed."""
+    columns = ", ".join(COLUMNS[table])
+    rows = w.execute(
+        dest,
+        command=(
+            f"SELECT {columns} FROM {table} WHERE id <= {literal(cursor)} ORDER BY id"
+        ),
+    )
+    expected = {
+        key: value for key, value in m.digests[table].items() if key <= str(cursor)
+    }
+    actual = {str(row.get("id")): digest(table, row) for row in rows}
+    if actual != expected:
+        raise Refused(
+            "the destination prefix at or before the saved cursor does not match "
+            "the manifest; rerun with --restart-copy to copy from the beginning"
+        )
+
+
+def check_resume_prefixes(w: Wrangler, dest: str, m: Manifest) -> None:
+    """Check every saved table cursor before advancing any of them."""
+    for table, _ in TABLES:
+        cursor = m.cursor.get(table)
+        if cursor is not None:
+            check_resume_prefix(w, dest, table, cursor, m)
+
+
 def copy_chunks(w: Wrangler, args: argparse.Namespace, work: Path, m: Manifest) -> None:
     """Copy and read back in bounded chunks, recording each chunk before the next.
 
@@ -816,7 +902,11 @@ def copy_chunks(w: Wrangler, args: argparse.Namespace, work: Path, m: Manifest) 
     still holds the recorded version) and its digest is replaced after the read-back,
     never skipped."""
     size = batch_size()
-    if m.state == "copying" and m.exists:
+    if args.restart_copy:
+        m.state, m.cursor = "copying", {}
+        print("restarting the copy from the beginning as requested")
+    elif m.state == "copying" and m.exists:
+        check_resume_prefixes(w, args.dest, m)
         print("resuming an unfinished copy from the recorded cursor")
     else:
         m.state, m.cursor = "copying", {}
@@ -1196,7 +1286,7 @@ def purge_phase(
     progress = Progress()
     try:
         check_frozen(w, args.source)
-        check_dest(w, args.dest, m, batch_size())
+        check_dest(w, args.source, args.dest, work, m, batch_size())
         prove_quiet(w, args)
         record_bookmark(w, args, m)
         try:
@@ -1313,6 +1403,11 @@ def main(argv: list[str]) -> int:
         help="restore exported source rows and verify them",
     )
     parser.add_argument(
+        "--restart-copy",
+        action="store_true",
+        help="--copy or --purge only: ignore saved cursors and copy from the start",
+    )
+    parser.add_argument(
         "--locked-window-confirmed",
         action="store_true",
         help="--purge only: every writer is off (kill switches, old Workers)",
@@ -1320,6 +1415,8 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     if args.locked_window_confirmed and not args.purge:
         parser.error("--locked-window-confirmed is only for --purge")
+    if args.restart_copy and not (args.copy or args.purge):
+        parser.error("--restart-copy is only for --copy or --purge")
     for value in (args.source, args.dest):
         if not NAME.match(value):
             print("error: bad database name", file=sys.stderr)
