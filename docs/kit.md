@@ -17,6 +17,9 @@ Add a `kit` section to `site.yaml`. The full field list is in the
 ```yaml
 features:
   kit_gate: true
+privacy:
+  controller_name: Example Creator LLC
+  contact: privacy@example.com
 kit:
   title: Example Creator media kit
   about: A fake creator who streams games and talks about gear.

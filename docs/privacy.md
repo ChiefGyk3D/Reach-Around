@@ -1,5 +1,7 @@
 # Privacy: lead retention and deletion requests
 
+> **Stale in parts (state STALE, issue #801). Covers lead retention and deletion only. The 2026-11-24 privacy decisions supersede it where they differ: region-only raw rows, hour-rounded raw events, masked alert emails by default, and the operator duties still to be written. The wording tested in this page is unchanged. See the ADR index in `docs/wiki/adr/` once merged (PR #835).**
+
 For the analytics boundary that applies across tables, logs, caches, queues and
 exports, see the [Audience-analysis do-not-collect list](audience-analysis-privacy.md).
 
@@ -9,6 +11,34 @@ long, and how you honor a request to delete it. It is not legal advice, and the
 public privacy page your site shows is generated from the site config
 (`features`, `analytics`, the live block and `alerts`) separately, in the
 owner-approved wording in `src/reach_around/site/privacy.py`.
+
+## The fixed privacy notice and the gate form notice
+
+The generated page keeps the per-item what, why and kept sections and adds one
+fixed section after them (`NOTICE_TEMPLATE` in `privacy.py`, issue #777). It cannot
+be turned off. Owner-approved copy is used verbatim; only the placeholders are
+filled:
+
+- `controller_name` and `contact` from `privacy.controller_name` and
+  `privacy.contact`. Both are required when `features.kit_gate` is on or alerts
+  are on (the config is refused, and the build refuses too, naming the field and
+  never the value). With neither on, an unset value prints as "the site owner".
+- `raw_view_days` from `analytics.raw_keep_days`; `raw_view_max_days` is the
+  Worker's cap, `min(3 x raw_keep_days, 90)`, the same rule as the per-item text.
+- `click_days` is `RAW_CLICK_KEEP_DAYS`, `daily_totals_days` is
+  `AGGREGATE_KEEP_DAYS`, `monthly_totals_months` is `MONTHLY_KEEP_MONTHS` (25,
+  `MONTHS_KEPT` in `worker/src/clickfunnel.ts`; a test reads the Worker source).
+- `geo_level` is `analytics.geo_level` when the config has that field, else the
+  Worker's default (`region`, set by PR #793; a test reads the Worker source).
+- `alert_providers` is the list of configured `alerts.channels`, names only. The
+  one sentence that uses it is dropped when alerts are off.
+- `dpa_note` and `turnstile_storage_note` are optional text, empty by default.
+- `lead_days` is `privacy.lead_retention_days`.
+
+The build fails if any placeholder has no value, and a test scans every generated
+page for a leftover one. The same notice, ending with a link to the privacy page,
+sits beside the email field of the kit gate form on the kit page and the retry
+page (issue #780, `GATE_NOTICE_TEMPLATE`). The form is the only place it appears.
 
 ## Live status request
 
