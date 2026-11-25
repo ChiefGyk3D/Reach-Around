@@ -10,6 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "check-wiki-freshness.py"
@@ -59,7 +60,7 @@ def commit(root: Path, message: str, when: str) -> None:
     )
 
 
-def registry(root: Path, pages: dict) -> None:
+def registry(root: Path, pages: dict[str, Any]) -> None:
     (root / "docs/wiki").mkdir(parents=True, exist_ok=True)
     (root / "docs/wiki/FRESHNESS.json").write_text(json.dumps({"pages": pages}))
 
