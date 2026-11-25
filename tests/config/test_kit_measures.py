@@ -395,7 +395,8 @@ def test_every_measure_builder_derives_visibility_through_source_level() -> None
         "live_measures",
         "engagement_measures",
     ):
-        assert "source_level(" in inspect.getsource(getattr(measures_module, name)), name
+        built = inspect.getsource(getattr(measures_module, name))
+        assert "source_level(" in built, name
 
 
 @pytest.mark.parametrize(
