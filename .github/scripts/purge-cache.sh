@@ -27,7 +27,9 @@
 # header file (a mode-0600 file under RUNNER_TEMP, removed on exit), and the
 # JSON body goes to curl on stdin (--data-binary @-), so neither the token nor
 # the URLs appear in a process list, and the token is never echoed. A path over
-# 2000 characters is skipped. Shell tracing is never turned on here.
+# 2000 characters is skipped. A batch counts as purged only when the response
+# parses as JSON (jq) and its top-level "success" is exactly true; a nested
+# "success" never counts, and a missing jq or malformed JSON fails closed. Shell tracing is never turned on here.
 set -u
 
 # URLs per request. Cloudflare's single-file purge allows 100 per request and
@@ -164,7 +166,7 @@ send() {
     )
     status=$?
     if [ "$status" -eq 0 ] &&
-      printf '%s' "$response" | grep -Eq '"success"[[:space:]]*:[[:space:]]*true'; then
+      printf '%s' "$response" | jq -e 'type == "object" and .success == true' >/dev/null 2>&1; then
       total=$((total + batch_count))
       break
     fi

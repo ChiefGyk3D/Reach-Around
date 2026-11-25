@@ -52,6 +52,10 @@ case "${mode:-ok}" in
   rlbig)
     printf 'HTTP/2 429\r\nretry-after: 500\r\n\r\n' > "$dump"
     echo '{"success": false, "errors": [{"code": 971, "message": "Too many"}]}' ;;
+  nested) echo '{"success": false, "errors": [{"code": 1000}],
+    "result": {"success": true}}' ;;
+  nestedmissing) echo '{"errors": [{"success": true}], "result": {"success": true}}' ;;
+  notobject) echo '[{"success": true}]' ;;
   slow) sleep 2; echo '{"success": true}' ;;
   curlfail) echo "curl: (6) Could not resolve host" >&2; exit 6 ;;
 esac
@@ -293,6 +297,14 @@ def test_a_retry_after_past_the_time_budget_is_not_waited_for(tmp_path: Path) ->
     assert result.code == 0
     assert len(result.calls) == 1
     assert "5 URL(s) were not purged" in result.out
+
+
+@pytest.mark.parametrize("mode", ["nested", "nestedmissing", "notobject"])
+def test_a_nested_success_is_not_a_purge(tmp_path: Path, mode: str) -> None:
+    result = run_script(tmp_path, urls(3), modes=[mode])
+    assert result.code == 0
+    assert "3 URL(s) were not purged" in result.out
+    assert "purged 0 URL(s)" in result.out
 
 
 def test_a_transport_failure_is_a_warning_and_later_batches_still_run(

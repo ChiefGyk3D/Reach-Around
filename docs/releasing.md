@@ -67,6 +67,7 @@ fragments folded into `[Unreleased]` and writes nothing. Only `release` (below) 
    and write can be overwritten; a tag with no previous digest is named in the log for
    manual cleanup, and the job says plainly when the rollback was incomplete). A moving tag can point at the new image for a few seconds before such a
    rollback. Only immutable release tags (a tag ruleset) close that window.
+   The first-ever promotion of a brand-new tag depends on the message `docker buildx imagetools inspect` prints for a missing GHCR tag; that wording has not yet been checked against a real GHCR response (owner to verify), and if it differs the job fails closed rather than promoting.
 6. Confirm the package is visible the way you want it. A new GHCR package inherits
    the repository's visibility. This repository is public, so the image is public and
    pulling it needs no sign-in. A fork that is private gets a private image, and pulling
