@@ -257,6 +257,31 @@ the result lines (no values) in #344. Do not start the DNS steps with a box open
 - [ ] The full Beacons export (step 9 in the who-does-what table) is in the private instance
       repository before the switch, as a second copy of what week 1 requires (D1).
 
+### 2.4a Payments and support rails
+
+Issue #888. The Support page is link-out cards only. Nothing is checked until it
+is run on the staging host.
+
+- [ ] **The five rails are on the Support page:** Patreon, StreamElements,
+      Ko-fi, cryptocurrency and merch. Ko-fi and StreamElements are separate
+      tipping platforms, so each has its own card.
+- [ ] **Each link-out answers (agent-ready).** For each provider URL on the
+      staging Support page, `curl -sI` returns a normal answer (`200`, or a
+      redirect that ends on the provider). Record status codes only. A provider
+      that blocks automated requests is reported as not checked, not as passing.
+- [ ] **Each link-out works (owner-only).** The owner opens each card on a phone
+      and a laptop, and makes one real tip on a rail when the owner chooses to.
+      An agent never makes a payment.
+- [ ] **OWNER DECISION: the tips host.** It currently answers a 301 to the
+      StreamElements tip page. At cutover it either stays that 301, or points at
+      the in-site Support page. Not decided; do not change it until the owner
+      says which, in chat, with the cutover word.
+- [ ] **The old support host is consolidated** by the redirect plan in 3.5, with
+      the owner's explicit word on cutover day.
+- [ ] **No payment data touches the site.** Link-out only: no form, no script and
+      no frame from a payment provider on the page. A Ko-fi frame is optional
+      later and needs the privacy page line and a per-path `frame-src`.
+
 ### 2.5 DNS inputs
 
 - [ ] The current record at the production host is written down in the private
@@ -369,6 +394,56 @@ query (query twice, a minute apart, and compare).
 - Tell the assistant the time of each check. A page that looks right on one
   device and wrong on another is a propagation or cache difference, not yet a
   rollback reason (see 4.1).
+
+### 3.5 Support page consolidation (draft, owner approves each step)
+
+Issue #888 (under #860). Owner decision of 2026-11-25: "Consolidate at cutover,
+I will approve the redirect then". The old support host
+(`support.example.com` here) is replaced by the in-site Support page on the new
+site (`links.example.com/support/` here). This is a draft plan, **inferred and
+not yet run**: rehearse it on the staging host first.
+
+**Every DNS or redirect edit in this section waits for the owner's explicit word
+on cutover day**, quoted with its time in the cutover record. Until then the old
+support host is untouched and stays the live page.
+
+The engine's `redirects` switch ([deploy.md](deploy.md), "Redirecting the old
+/socials path") only writes rules for paths on the site's own host. The old
+support host is a different hostname, so its rule is a redirect on that host in
+Cloudflare, written by the owner. The wording is the same as for `/socials`.
+
+1. **Rule.** On the old support host, redirect every request for `/` to
+   `https://links.example.com/support/`, keep the query string, and leave other
+   paths unaffected (a path the old page served that has no new home is listed
+   in the private cutover record before the switch). Cloudflare Redirect Rules
+   (or a Bulk Redirect) hold this; the owner reads the current screens in the
+   vendor docs before the edit, not this runbook.
+2. **Staging first, status 302.** Point a staging copy of the rule at
+   `https://links-staging.example.com/support/` with status `302`. A `301` can
+   stay cached in browsers, which is why testing uses `302`.
+3. **Staging checks** (agent-ready, read-only):
+
+   ```sh
+   curl -sI "https://support-staging.example.com/?x=1"
+   curl -sI "https://support-staging.example.com/other-path"
+   curl -sI "https://links-staging.example.com/support/"
+   ```
+
+   Expect, in order: status `302` with a `Location` that ends at
+   `/support/` and still carries `x=1`; the other path unchanged (its normal
+   status, no redirect to the Support page); and `200` on the Support page.
+4. **Cutover build, status 301.** After the owner's word, switch the rule to
+   `301` and deploy with the cutover. Verify with the same `curl -sI` lines on
+   the real hosts: `301`, `Location` ends at `/support/`, query string kept.
+5. **Rollback.** Delete the redirect rule on the old support host (or switch it
+   back to the written-down previous state); the old page answers again within
+   the TTL. If a `301` was already served, browsers that cached it keep going to
+   the new page until their cache clears, which is acceptable because the new
+   page is the intended home; the owner can disable the new page's cards
+   individually without touching the rule.
+6. Record the rule, its status, the time, the owner's quoted word and the
+   `curl` lines (status and `Location` only, no cookies) in the private cutover
+   record.
 
 ## Part 4. Rollback
 

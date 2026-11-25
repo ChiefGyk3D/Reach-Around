@@ -170,7 +170,7 @@ These amend the cutover order. Where an earlier line implies the kit or analytic
 
 ## Cutover checklist
 
-All seven must hold, with Beacons still live. The items under "Owner requirements of 2026-11-08" are part of items 1 and 5.
+All eight must hold, with Beacons still live. The items under "Owner requirements of 2026-11-08" are part of items 1 and 5.
 
 Status 2026-11-25, read from merged pull requests only (issue #860). No item below is checked: each still needs the owner's or a staging run. "Built" means merged on main with tests; it is not "verified". The runbook order was corrected in #774 (`docs/cutover-runbook.md`).
 
@@ -188,6 +188,8 @@ Status 2026-11-25, read from merged pull requests only (issue #860). No item bel
    - Status: not done. Merged: release and helper script hardening (#789, which changes a release workflow and needed the owner's word), deploy ordering and engine pinning (#811), SECURITY.md (#839), CODEOWNERS (#854), privacy and security documentation corrections (#796). The kill switch test, the privacy page approval and the tag are owner-only. Tracked for the rehearsal in #860.
 7. **The old path redirects.** `/socials` and `/socials/` redirect to `/` with the query string kept, other paths unaffected (#356). Checked on the staging host with `status: 302`, then switched to `301` for the cutover build. See `docs/deploy.md`, "Redirecting the old /socials path".
    - Status: unchanged. Not checked on a staging host here.
+8. **Payments and support rails.** The in-site Support page carries link-out cards for exactly five rails: Patreon, StreamElements, Ko-fi, cryptocurrency and merch (Ko-fi and StreamElements are separate tipping platforms). Link-out only: no payment data touches the site; a Ko-fi frame is optional later and needs the privacy line and a per-path `frame-src`. Agent-ready check on the staging host: each provider URL answers (status and `Location` only). Owner-only: a real tip on each rail. **OWNER DECISION, open:** the tips host either stays a 301 to the StreamElements tip page or points at the in-site Support page. The old support host is consolidated into the Support page at cutover with the owner's word on the redirect. Steps: `docs/cutover-runbook.md`, 3.5 and the "Payments and support rails" checklist entry in Part 2.
+   - Status: NOT CHECKED. Nothing is verified on a staging host; the redirect and the tips host decision are the owner's (#888).
 
 ## Rollback plan
 

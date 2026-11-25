@@ -1,0 +1,1 @@
+- Cutover runbook: new section 3.5 on consolidating the old support host into the Support page (redirect plan, staging checks, rollback, owner approves each step), a "Payments and support rails" checklist entry, and matching parity checklist wording. Docs only, refs #888.
