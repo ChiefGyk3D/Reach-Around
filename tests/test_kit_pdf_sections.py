@@ -129,3 +129,53 @@ def test_the_public_pdf_prints_the_live_block_and_the_check_bites(
             config=config,
             check_days=(TODAY,),
         )
+
+
+# --- the channel block (#633) -------------------------------------------------
+
+
+def test_the_public_pdf_prints_the_channel_cards_and_the_check_bites(
+    tmp_path: Path,
+) -> None:
+    found = kit_doc()
+    found["sections"] = [{"platform": "peertube"}, {"platform": "newsletter"}]
+    found["channels"] = [
+        {
+            "platform": "peertube",
+            "url": "https://video.example/c/example",
+            "as_of": "2027-03-08",
+            "subscribers": 340,
+            "unique_viewers": 8200,
+        },
+        {"platform": "newsletter", "as_of": "2027-03-08", "delivered": 2300},
+    ]
+    config = make_config(found)
+    _, site, _ = build_instance(tmp_path, config)
+    out = build_public_kit_pdf(
+        config,
+        site_dir=site,
+        out_dir=tmp_path / "private",
+        name="kit-public.pdf",
+        created=CREATED,
+        renderer=fake_renderer,
+    ).path
+    kit = config.kit
+    assert kit is not None
+    text = "\n".join(extract_pages(out.read_bytes()))
+    flat_text = "".join(text.split())
+    for line in (
+        "Counts are as reported by the instance.",
+        "https://video.example/c/example",
+        "Not provided by Newsletter: opens.",
+        "Not provided: Subscribers, Email clicks (30 days).",
+    ):
+        assert "".join(line.split()) in flat_text, line
+        with pytest.raises(PdfError, match="platform card"):
+            check_text(
+                kit,
+                text.replace(line, ""),
+                public=True,
+                config=config,
+                check_days=(TODAY,),
+            )
+    check_text(kit, text, public=True, config=config, check_days=(TODAY,))

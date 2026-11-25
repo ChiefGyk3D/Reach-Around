@@ -345,6 +345,172 @@
       "title": "CaseStudy",
       "type": "object"
     },
+    "ChannelEntry": {
+      "additionalProperties": false,
+      "description": "What one channel shows, typed by the owner on ``as_of``.\n\n``url`` is the public page the re-check link points at (required for PeerTube\nand Lemmy, which have one; optional for the rest). The 30-day figures cover the\n30 days ending on ``as_of``. A figure left out prints \"not provided\", never zero.",
+      "properties": {
+        "active_users_month": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Active Users Month"
+        },
+        "as_of": {
+          "format": "date",
+          "title": "As Of",
+          "type": "string"
+        },
+        "avg_watch_seconds": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Avg Watch Seconds"
+        },
+        "clicks": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Clicks"
+        },
+        "delivered": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Delivered"
+        },
+        "downloads": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Downloads"
+        },
+        "platform": {
+          "enum": [
+            "peertube",
+            "lemmy",
+            "podcast",
+            "newsletter",
+            "blog"
+          ],
+          "title": "Platform",
+          "type": "string"
+        },
+        "subscribers": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subscribers"
+        },
+        "unique_viewers": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unique Viewers"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        },
+        "views": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Views"
+        },
+        "watch_time_hours": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Watch Time Hours"
+        }
+      },
+      "required": [
+        "as_of",
+        "platform"
+      ],
+      "title": "ChannelEntry",
+      "type": "object"
+    },
     "Creator": {
       "additionalProperties": false,
       "properties": {
@@ -1589,6 +1755,27 @@
           "maxItems": 20,
           "title": "Case Studies",
           "type": "array"
+        },
+        "channels": {
+          "items": {
+            "$ref": "#/$defs/ChannelEntry"
+          },
+          "maxItems": 5,
+          "title": "Channels",
+          "type": "array"
+        },
+        "consulting_url": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consulting Url"
         },
         "contact": {
           "anyOf": [

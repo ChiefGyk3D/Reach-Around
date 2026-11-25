@@ -85,6 +85,7 @@ fields:
       - {name: Analytics production readiness, color: GRAY, description: "Epic #365"}
       - {name: Brand alignment with the main blog, color: PINK, description: "Epic #508"}
       - {name: Link page and support page updates, color: YELLOW, description: "Epic #509"}
+  - {name: "Epic (text)", type: text}
   - {name: Decision, type: text}
   - name: Priority
     type: single_select
@@ -129,6 +130,9 @@ rules:
   done_date_field: Done on
   new_item_defaults:
     Priority: P2 later
+  tracking:
+    epic_field: "Epic (text)"
+    exempt_authors: [dependabot]
 agents:
   field: Agent
   working: [In progress, In review, Next]

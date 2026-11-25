@@ -19,6 +19,10 @@ sum of the daily rows. Watch time is added in exact decimal arithmetic and
 rounded half up to whole hours. The period is the first to the last day found;
 ``as_of`` is the last day.
 
+Privacy: the shared import guard (``import_guard``, #784) refuses a header outside
+the three allowed columns or naming a person, and a cell shaped like an email, an
+@handle, an IP address or a channel id, with a fixed error that never echoes it.
+
 Limits: at most ``MAX_BYTES`` bytes, ``MAX_ROWS`` rows, ``MAX_CELL`` characters
 per cell. No day after today. A whole export is refused for any bad row; nothing
 is half read. Errors name the row, never print a cell.
@@ -39,6 +43,11 @@ from reach_around.config.handkept import (
     HandKeptError,
     make_entry,
     read_regular,
+)
+from reach_around.config.import_guard import (
+    ImportGuardError,
+    check_names,
+    check_value,
 )
 
 EXPORT = "youtube-analytics"
@@ -73,6 +82,10 @@ def import_youtube(path: Path, *, today: date | None = None) -> list[HandKeptEnt
         header = next(reader, None)
         if header is None:
             raise HandKeptError("the export is empty")
+        try:
+            check_names(header, _COLUMNS)
+        except ImportGuardError as refused:
+            raise HandKeptError(str(refused)) from None
         if len(header) != len(set(header)) or set(header) != _COLUMNS:
             raise HandKeptError(
                 "the header must name exactly Date, Views and Watch time (hours)"
@@ -89,6 +102,11 @@ def import_youtube(path: Path, *, today: date | None = None) -> list[HandKeptEnt
                 raise HandKeptError(f"row {number} has the wrong number of cells")
             if any(len(cell) > MAX_CELL for cell in row):
                 raise HandKeptError(f"row {number} has a cell that is too long")
+            try:
+                for cell in row:
+                    check_value(cell)
+            except ImportGuardError as refused:
+                raise HandKeptError(f"row {number}: {refused}") from None
             stamp = row[where[DATE_COLUMN]]
             if stamp == "Total":
                 if saw_total:
