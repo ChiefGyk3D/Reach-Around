@@ -1438,3 +1438,146 @@ def test_a_malformed_expected_binding_is_refused(tmp_path: Path) -> None:
     path = write(tmp_path, config, site, gated)
     with pytest.raises(MeasuresFileError, match="expected"):
         load_measures_file(path, expected_binding={"policy": "x"})
+
+
+# --- the anchored read: ancestors, swaps, non-regular files --------------------------
+
+
+def _decoy(tmp_path: Path, gated: Path) -> Path:
+    """A look-alike gated directory with a record an attacker chose."""
+    decoy = tmp_path / "decoy"
+    decoy.mkdir()
+    (decoy / BINDING_FILE).write_bytes((gated / BINDING_FILE).read_bytes())
+    return decoy
+
+
+def test_a_symlinked_gated_directory_is_refused(tmp_path: Path) -> None:
+    config, site, gated = instance(tmp_path)
+    path = write(tmp_path, config, site, gated)
+    link = tmp_path / "gated-link"
+    link.symlink_to(gated)
+    assert load_measures_for_build(path, gated)  # control: the real directory reads
+    with pytest.raises(MeasuresFileError, match="symbolic link"):
+        load_measures_for_build(path, link)
+
+
+def test_a_symlinked_ancestor_of_the_gated_directory_is_refused(
+    tmp_path: Path,
+) -> None:
+    config, site, gated = instance(tmp_path)
+    path = write(tmp_path, config, site, gated)
+    ancestor = tmp_path / "ancestor-link"
+    ancestor.symlink_to(tmp_path)
+    with pytest.raises(MeasuresFileError, match="symbolic link"):
+        load_measures_for_build(path, ancestor / gated.name)
+
+
+def test_a_symlinked_ancestor_of_the_measures_file_is_refused(
+    tmp_path: Path,
+) -> None:
+    config, site, gated = instance(tmp_path)
+    path = write(tmp_path, config, site, gated)
+    ancestor = tmp_path / "private-link"
+    ancestor.symlink_to(path.parent)
+    with pytest.raises(MeasuresFileError, match="symbolic link"):
+        load_measures_for_build(ancestor / path.name, gated)
+
+
+def test_swapping_the_gated_directory_for_a_link_mid_read_changes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After the directory chain is held, the real directory is moved away and a
+    link to an attacker's directory (holding a forged record) takes its name. The
+    held descriptor still reads the genuine record."""
+    import reach_around.kit.binding as binding_module
+
+    config, site, gated = instance(tmp_path)
+    write(tmp_path, config, site, gated)
+    genuine = json.loads((gated / BINDING_FILE).read_text("utf-8"))
+    decoy = _decoy(tmp_path, gated)
+    forged = dict(genuine, measures="f" * 64)
+    (decoy / BINDING_FILE).write_text(json.dumps(forged), "utf-8")
+    moved = tmp_path / "gated-moved"
+    swapped: list[bool] = []
+
+    def swap() -> None:
+        os.rename(gated, moved)
+        gated.symlink_to(decoy)
+        swapped.append(True)
+
+    monkeypatch.setattr(binding_module, "_before_final_open", swap)
+    from reach_around.kit.binding import read_binding
+
+    assert read_binding(gated / BINDING_FILE) == genuine
+    assert swapped == [True]
+
+
+@pytest.mark.parametrize("kind", ["fifo", "directory"])
+def test_a_non_regular_binding_record_is_refused_without_blocking(
+    tmp_path: Path, kind: str
+) -> None:
+    import signal
+
+    config, site, gated = instance(tmp_path)
+    path = write(tmp_path, config, site, gated)
+    record = gated / BINDING_FILE
+    record.unlink()
+    if kind == "fifo":
+        os.mkfifo(record)
+    else:
+        record.mkdir()
+
+    def stuck(*_args: object) -> None:
+        raise AssertionError("the reader blocked on a non-regular record")
+
+    previous = signal.signal(signal.SIGALRM, stuck)
+    signal.alarm(5)
+    try:
+        with pytest.raises(MeasuresFileError, match="binding"):
+            load_measures_for_build(path, gated)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def test_a_fifo_measures_file_is_refused_without_blocking(tmp_path: Path) -> None:
+    import signal
+
+    config, site, gated = instance(tmp_path)
+    path = write(tmp_path, config, site, gated)
+    path.unlink()
+    os.mkfifo(path)
+
+    def stuck(*_args: object) -> None:
+        raise AssertionError("the reader blocked on a FIFO")
+
+    previous = signal.signal(signal.SIGALRM, stuck)
+    signal.alarm(5)
+    try:
+        with pytest.raises(MeasuresFileError, match="regular file"):
+            load_measures_for_build(path, gated)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def test_a_group_writable_ancestor_is_refused(tmp_path: Path) -> None:
+    config, site, gated = instance(tmp_path)
+    path = write(tmp_path, config, site, gated)
+    assert load_measures_for_build(path, gated)  # control
+    gated.chmod(0o770)
+    try:
+        with pytest.raises(MeasuresFileError, match="written by the group"):
+            load_measures_for_build(path, gated)
+    finally:
+        gated.chmod(0o700)
+
+
+def test_a_symlinked_site_directory_is_refused_for_the_page_digest(
+    tmp_path: Path,
+) -> None:
+    config, site, gated = instance(tmp_path)
+    link = tmp_path / "site-link"
+    link.symlink_to(site)
+    with pytest.raises(MeasuresFileError, match="public page cannot be read"):
+        write(tmp_path, config, link, gated)

@@ -15,11 +15,13 @@ gated figures are not for the public tree.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
 import re
-from collections.abc import Iterable, Mapping
+import stat
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -109,19 +111,111 @@ def check_binding_shape(found: object) -> dict[str, str | None]:
     return {key: found[key] for key in BINDING_KEYS}
 
 
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+
+# A test seam: called after the whole directory chain is held and before the final
+# file is opened, so a test can swap a directory or a link in at the worst moment.
+_before_final_open: Callable[[], None] | None = None
+
+
+class AnchoredReadError(ValueError):
+    """The anchored read refused: the message names the problem, never the content."""
+
+
+def _check_dir(fd: int, me: int) -> None:
+    info = os.fstat(fd)
+    if info.st_uid not in (me, 0):
+        raise AnchoredReadError("a directory on the path belongs to another user")
+    if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH) and not info.st_mode & stat.S_ISVTX:
+        raise AnchoredReadError(
+            "a directory on the path can be written by the group or by others"
+        )
+
+
+def read_anchored(path: Path, limit: int) -> bytes:
+    """Read a regular file at ``path`` through a held chain of directory descriptors.
+
+    The (absolute, not link-resolved) path is walked from ``/`` one component at a
+    time with ``openat(O_DIRECTORY | O_NOFOLLOW)``, so a link anywhere on the path,
+    in an ancestor as well as in the last name, is refused, and a directory
+    swapped for a link after it was checked cannot redirect the read: the
+    descriptor already held is what is used. Every directory on the way (the root
+    included) must belong to this user or root and must not be writable by the
+    group or others unless sticky, so no one else could rename an ancestor and
+    move the tree. The file is opened ``O_NOFOLLOW | O_NONBLOCK`` and its
+    ``fstat`` must say regular file before anything is read, so a FIFO, a socket or
+    a device cannot block the reader. At most ``limit`` bytes are returned; one
+    more byte present means the file is too large and it is refused."""
+    parts = Path(os.path.abspath(path)).parts
+    if len(parts) < 2:
+        raise AnchoredReadError("the path is not a file")
+    me = os.geteuid()
+    held: list[int] = []
+    try:
+        held.append(os.open("/", _DIR_FLAGS))
+        _check_dir(held[-1], me)
+        for part in parts[1:-1]:
+            try:
+                held.append(os.open(part, _DIR_FLAGS, dir_fd=held[-1]))
+            except OSError as exc:
+                linked = exc.errno == errno.ELOOP
+                if exc.errno == errno.ENOTDIR:
+                    try:
+                        linked = stat.S_ISLNK(
+                            os.stat(
+                                part, dir_fd=held[-1], follow_symlinks=False
+                            ).st_mode
+                        )
+                    except OSError:
+                        linked = False
+                if linked:
+                    raise AnchoredReadError(
+                        "the path goes through a symbolic link"
+                    ) from exc
+                raise AnchoredReadError(
+                    f"a directory on the path cannot be opened ({exc.strerror})"
+                ) from exc
+            _check_dir(held[-1], me)
+        if _before_final_open is not None:
+            _before_final_open()
+        try:
+            fd = os.open(parts[-1], _FILE_FLAGS, dir_fd=held[-1])
+        except OSError as exc:
+            raise AnchoredReadError(
+                f"the file cannot be opened ({exc.strerror})"
+            ) from exc
+    finally:
+        for left in held:
+            os.close(left)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise AnchoredReadError("the file is not a regular file")
+    except BaseException:
+        os.close(fd)
+        raise
+    with os.fdopen(fd, "rb") as handle:
+        if info.st_size > limit:
+            raise AnchoredReadError("the file is too large")
+        data = handle.read(limit + 1)
+    if len(data) > limit:
+        raise AnchoredReadError("the file is too large")
+    return data
+
+
 def read_binding(path: Path) -> dict[str, str | None]:
-    """Read the binding record of a build. A missing, linked or malformed record
-    is refused with a message that says to rebuild."""
+    """Read the binding record of a build, through ``read_anchored``. A missing,
+    linked (in the last name or any ancestor), non-regular, oversized or malformed
+    record is refused with a message that says to rebuild."""
     rebuild = "rebuild the site first (reach-around build --gated-out)"
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    except OSError as exc:
-        raise ValueError(f"the build has no binding record; {rebuild}") from exc
-    with os.fdopen(fd, "rb") as handle:
-        raw = handle.read(MAX_BINDING_BYTES + 1)
+        raw = read_anchored(path, MAX_BINDING_BYTES)
+    except AnchoredReadError as exc:
+        raise ValueError(
+            f"the build has no usable binding record ({exc}); {rebuild}"
+        ) from exc
     try:
-        if len(raw) > MAX_BINDING_BYTES:
-            raise ValueError("too large")
         return check_binding_shape(json.loads(raw.decode("utf-8")))
     except (ValueError, UnicodeDecodeError) as exc:
         raise ValueError(f"the build binding record is not valid; {rebuild}") from exc

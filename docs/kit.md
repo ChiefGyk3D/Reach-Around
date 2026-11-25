@@ -1016,7 +1016,17 @@ Where it may go, and what it holds:
   gated_dir)`, which reads the build's own `kit-binding.json` from the gated
   directory (a different file in a different directory, mode 0600 there) and
   refuses the measures file unless its binding equals that record and its rows
-  digest to it. A missing, linked or malformed record fails closed.
+  digest to it. A missing, linked, non-regular, oversized or malformed record fails closed. The
+  read is anchored: the path is walked from `/` one component at a time with
+  `openat(O_DIRECTORY | O_NOFOLLOW)`, so a link in the gated directory or in any
+  ancestor is refused (not only a link at the last name), and a directory swapped
+  for a link after the check cannot redirect the read, since the descriptor
+  already held is what is used. Every directory on the path (the root included)
+  must belong to you or root and must not be writable by the group or others
+  unless sticky, or the read is refused. The file is opened `O_NOFOLLOW |
+  O_NONBLOCK` and must be a regular file (checked with `fstat` before anything
+  is read), so a FIFO or device cannot block the reader; the size is bounded.
+  The measures file and the two kit pages the binding checks are read the same way.
   **What this defends against:** an edit of the measures file alone (accidental
   or deliberate, with or without recomputing its own binding), and a file made
   from another build. **What it does not defend against:** a party who can write

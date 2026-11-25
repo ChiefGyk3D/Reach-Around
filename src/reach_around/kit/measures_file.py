@@ -32,7 +32,6 @@ import json
 import math
 import os
 import re
-import stat
 import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
@@ -59,8 +58,10 @@ from reach_around.config.trust import LABELS as TRUST_LABELS
 from reach_around.kit.binding import (
     BINDING_FILE,
     BINDING_KEYS,
+    AnchoredReadError,
     check_binding_shape,
     measure_row,
+    read_anchored,
     read_binding,
     rows_digest,
     rows_digest_of,
@@ -517,18 +518,12 @@ def check_no_private_values(
 
 def _digest_file(path: Path, limit: int, what: str) -> str:
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    except OSError as exc:
+        data = read_anchored(path, limit)
+    except AnchoredReadError as exc:
         raise MeasuresFileError(
-            f"the {what} cannot be read; rebuild the site first "
+            f"the {what} cannot be read ({exc}); rebuild the site first "
             "(reach-around build --gated-out)"
         ) from exc
-    with os.fdopen(fd, "rb") as handle:
-        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-            raise MeasuresFileError(f"the {what} is not a regular file")
-        data = handle.read(limit + 1)
-    if len(data) > limit:
-        raise MeasuresFileError(f"the {what} is too large")
     return sha256_text(data)
 
 
@@ -765,24 +760,9 @@ def load_measures_file(
     record's ``measures`` digest. This holds against an editor of the measures
     file who cannot also write the gated directory; see docs/kit.md."""
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    except OSError as exc:
-        if os.path.islink(path):
-            raise MeasuresFileError(
-                "the measures file is a link; it is refused"
-            ) from exc
-        raise MeasuresFileError(
-            f"the measures file cannot be read ({exc.strerror})"
-        ) from exc
-    with os.fdopen(fd, "rb") as handle:
-        info = os.fstat(handle.fileno())
-        if not stat.S_ISREG(info.st_mode):
-            raise MeasuresFileError("the measures file is not a regular file")
-        if info.st_size > MAX_BYTES:
-            raise MeasuresFileError("the measures file is too large")
-        raw = handle.read(MAX_BYTES + 1)
-    if len(raw) > MAX_BYTES:
-        raise MeasuresFileError("the measures file is too large")
+        raw = read_anchored(path, MAX_BYTES)
+    except AnchoredReadError as exc:
+        raise MeasuresFileError(f"the measures file cannot be read ({exc})") from exc
     if _depth(raw) > MAX_DEPTH:
         raise MeasuresFileError("the measures file is nested too deeply")
     try:
