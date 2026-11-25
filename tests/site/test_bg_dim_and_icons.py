@@ -193,7 +193,23 @@ def test_no_shipped_icon_file_is_missing_from_the_slug_set() -> None:
     assert {p.stem for p in ICON_DIR.glob("*.svg")} == set(ICON_SLUGS)
 
 
-@pytest.mark.parametrize("slug", ["bitcoin", "ethereum", "merch", "monero", "solana"])
+@pytest.mark.parametrize(
+    "slug",
+    [
+        "bitcoin",
+        "ethereum",
+        "merch",
+        "monero",
+        "solana",
+        "facebook",
+        "kofi",
+        "telegram",
+        "website",
+        "radio",
+        "shield",
+        "tools",
+    ],
+)
 def test_the_added_icons_are_wired(slug: str) -> None:
     assert slug in ICON_SLUGS
     assert (ICON_DIR / f"{slug}.svg").is_file()

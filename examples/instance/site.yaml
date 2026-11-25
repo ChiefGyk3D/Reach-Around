@@ -108,3 +108,5 @@ tabs:
         url: https://tickets.example.invalid/spring
         show_from: 2027-03-01
         show_until: 2027-04-15
+# A compact phone grid (page.layout: stack with page.density: compact, #873) is
+# in site-link-grid.yaml next to this file; docs/config.md describes it.
