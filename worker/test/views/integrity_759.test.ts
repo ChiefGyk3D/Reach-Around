@@ -591,6 +591,32 @@ describe("F-02 bounded reads of the emergency picker and the log probes", () => 
     expect((await meta()).rollup_overdue_rows).toBe("1");
   });
 
+  it("a_pile_of_rows_from_a_site_with_a_longer_keep_never_hides_an_overdue_row_of_another_site", async () => {
+    // Round 5 finding: `long` asks for 30 days, but the effective keep is min(site, global) = 7 days
+    // (ceiling 21), so its rows 25 days old are overdue and are in the global window like any other;
+    // none of them may keep the overdue `links` row 22 days old out of reach. 10,000 rows is 20 batches.
+    const SITES = JSON.stringify({
+      links: { hosts: ["links.example.test"], mode: "beacon", pages: ["home"] },
+      long: { hosts: ["long.example.test"], mode: "beacon", pages: ["home"], raw_keep_days: 30 },
+    });
+    const ts = NOW - 25 * DAY;
+    await DB.prepare(
+      "WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 9999) " +
+        "INSERT INTO view_events (ts, page, src_kind, bot_class, reason, site) SELECT ? + i, 'home', 'd', 'h', 'ok', 'long' FROM n",
+    ).bind(ts).run();
+    await insertMany(NOW - 22 * DAY, 1, "links");
+    const left = async (site: string) =>
+      (await q<{ n: number }>(`SELECT COUNT(*) AS n FROM view_events WHERE site = '${site}'`))[0]?.n as number;
+    expect(await left("long")).toBe(10_000);
+    // One run is at most EMERGENCY_ROUNDS rounds of one batch, so the 10,000 older rows take two runs and
+    // the `links` row, which is behind them, is reached in the second run at the latest.
+    await purgeViews({ DB, SITES }, NOW);
+    expect(await left("long")).toBe(10_000 - EMERGENCY_ROUNDS * 500);
+    await purgeViews({ DB, SITES }, NOW);
+    expect(await left("links")).toBe(0);
+    expect(await left("long")).toBe(0);
+  });
+
   it("a_row_whose_timestamp_is_not_a_number_is_still_found_at_the_tail", async () => {
     await DB.prepare("INSERT INTO view_events (ts, page, src_kind, bot_class, reason) VALUES ('not-a-number', 'home', 'd', 'h', 'ok')").run();
     await insertMany(NOW - DAY, 50);

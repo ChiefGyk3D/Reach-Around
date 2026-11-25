@@ -226,6 +226,43 @@ def test_the_migrations_are_applied_before_the_new_worker_is_deployed(
     assert _index(steps, "Apply D1 migrations") < _index(steps, "Deploy the Worker")
 
 
+@pytest.mark.parametrize("workflow", ["deploy-worker.yml", "deploy-test.yml"])
+def test_the_migration_step_targets_the_database_the_worker_is_deployed_to(
+    workflow: str,
+) -> None:
+    # Order alone is not enough: a migration step that is renamed in place but targets
+    # another database, drops --remote, runs from another directory, uses another config
+    # file or account, or is skipped when the Worker is deployed would still pass the
+    # order check. The migration must run against the same binding, config, directory and
+    # account as the deploy, and cover migration 0018 (which the Worker's rollup needs).
+    steps = _steps(WORKFLOWS / workflow, "deploy")
+    migrate = steps[_index(steps, "Apply D1 migrations")]
+    deploy = steps[_index(steps, "Deploy the Worker")]
+    mig_cmd = " ".join(str(migrate["run"]).split())
+    dep_cmd = " ".join(str(deploy["run"]).split())
+    assert (
+        "wrangler d1 migrations apply DB --remote --config wrangler.deploy.toml"
+        in mig_cmd
+    )
+    assert "--local" not in mig_cmd
+    assert "--config wrangler.deploy.toml" in dep_cmd
+    assert migrate["working-directory"] == deploy["working-directory"]
+    m_env, d_env = migrate["env"], deploy["env"]
+    assert isinstance(m_env, dict) and isinstance(d_env, dict)
+    for key in ("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"):
+        assert m_env[key] == d_env[key]
+    # The only condition allowed on the migration is the documented quiet path (a quiet
+    # deploy turns every scheduled job off, so no rollup runs ahead of its migration);
+    # the deploy itself is never conditional on anything else.
+    assert migrate.get("if") in (None, "${{ !inputs.quiet }}")
+    assert "if" not in deploy
+    # The name the config and the Worker use for the database, and the migration it needs.
+    toml = (ROOT / "worker" / "wrangler.toml").read_text(encoding="utf-8")
+    assert 'binding = "DB"' in toml
+    assert 'migrations_dir = "migrations"' in toml
+    assert list((ROOT / "worker" / "migrations").glob("0018_*.sql"))
+
+
 def test_deploy_test_widens_before_pages_and_narrows_after() -> None:
     steps = _steps(WORKFLOWS / "deploy-test.yml", "deploy")
     widen = _index(steps, "(phase 1)")
