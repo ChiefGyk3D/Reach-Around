@@ -485,11 +485,16 @@ before relying on it), and how long a given browser keeps a 301 with no
 
    Both hosts are required and their normalized authorities must differ.
    Normalization lowercases the host, removes one trailing dot, and removes
-   `:443` for HTTPS or `:80` for HTTP before comparison. A host is letters,
-   digits, dots and hyphens with an optional decimal port from 1 through 65535
-   without a leading zero, userinfo, slashes or spaces; nothing is defaulted.
-   Every request is a direct GET that ignores proxy environment variables, with
-   the body discarded and redirects never followed. It is never HEAD, because
+   `:443` for HTTPS or `:80` for HTTP before comparison. A host is a valid DNS
+   name, with a maximum length of 253 characters and labels of 1 through 63
+   ASCII letters, digits or hyphens that do not begin or end with a hyphen, or
+   a valid IPv4 dotted quad. An optional decimal port is from 1 through 65535
+   without a leading zero; userinfo, slashes and spaces are rejected. Nothing
+   is defaulted. Every request is a direct GET made by curl in a clean
+   environment containing only a fixed safe `PATH`, `LC_ALL=C`, and an empty
+   private temporary `HOME`. Caller proxy, curl, certificate, TLS key logging,
+   and other environment settings cannot affect the request. The body is
+   discarded and redirects are never followed. It is never HEAD, because
    browsers navigate with GET and a rule or origin can treat HEAD differently.
    It exits `0` only after every
    check ran and passed: two probe requests (`?probe=a%2Fb&probe=two` and

@@ -574,53 +574,59 @@ def test_nondefault_port_keeps_authorities_different() -> None:
     assert "must differ" not in r.stderr
 
 
-@pytest.mark.parametrize(
-    "bad",
-    [
-        "example.com:0",
-        "example.com:080",
-        "example.com:65536",
-        "example.com:99999",
-        "example.com:abc",
-        "example.com:123456",
-    ],
-)
-@pytest.mark.parametrize("role", ["SRC_HOST", "EXP_HOST"])
-def test_invalid_ports_are_usage_errors(role: str, bad: str) -> None:
-    env = {"SRC_HOST": "support.example.com", "EXP_HOST": "links.example.com"}
-    env[role] = bad
-    r = run_hosts(env["SRC_HOST"], env["EXP_HOST"], VERIFY_SCHEME="https")
-    assert r.returncode == 2 and "plain host" in r.stderr
+PORT_MSG = "is not a plain host with a valid port"
+DNS_MSG = "is not a valid DNS name or IPv4 address"
 
 
 @pytest.mark.parametrize(
-    "bad",
+    ("bad", "message"),
     [
-        "https://expected.example@evil.example",
-        "expected.example@evil.example",
-        "user:pw@evil.example",
-        "evil.example/path",
-        "evil.example?x=1",
-        "evil.example#frag",
-        "-evil.example",
-        "--max-time=1",
-        "evil.example:port",
-        "evil.example:123456789",
-        "evil .example",
-        "evil.example\t",
-        "ev$(id).example",
-        "ev;il.example",
-        "[::1]",
-        ".evil.example",
-        "evil..example:80/",
+        ("example.com:0", PORT_MSG),
+        ("example.com:080", PORT_MSG),
+        ("example.com:65536", PORT_MSG),
+        ("example.com:99999", PORT_MSG),
+        ("example.com:abc", DNS_MSG),
+        ("example.com:123456", PORT_MSG),
     ],
 )
 @pytest.mark.parametrize("role", ["SRC_HOST", "EXP_HOST"])
-def test_hostile_host_values_are_usage_errors(role: str, bad: str) -> None:
+def test_invalid_ports_are_usage_errors(role: str, bad: str, message: str) -> None:
     env = {"SRC_HOST": "support.example.com", "EXP_HOST": "links.example.com"}
     env[role] = bad
     r = run_hosts(env["SRC_HOST"], env["EXP_HOST"], VERIFY_SCHEME="https")
-    assert r.returncode == 2 and "plain host" in r.stderr
+    assert r.returncode == 2 and f"{role} {message}" in r.stderr
+
+
+@pytest.mark.parametrize(
+    ("bad", "message"),
+    [
+        ("https://expected.example@evil.example", DNS_MSG),
+        ("expected.example@evil.example", DNS_MSG),
+        ("user:pw@evil.example", DNS_MSG),
+        ("evil.example/path", DNS_MSG),
+        ("evil.example?x=1", DNS_MSG),
+        ("evil.example#frag", DNS_MSG),
+        ("-evil.example", DNS_MSG),
+        ("--max-time=1", DNS_MSG),
+        ("evil.example:port", DNS_MSG),
+        ("evil.example:123456789", PORT_MSG),
+        ("evil .example", DNS_MSG),
+        ("evil.example\t", DNS_MSG),
+        ("ev$(id).example", DNS_MSG),
+        ("ev;il.example", DNS_MSG),
+        ("[::1]", DNS_MSG),
+        (".evil.example", DNS_MSG),
+        ("evil..example:80/", DNS_MSG),
+    ],
+)
+@pytest.mark.parametrize("role", ["SRC_HOST", "EXP_HOST"])
+def test_hostile_host_values_are_usage_errors(
+    role: str, bad: str, message: str
+) -> None:
+    env = {"SRC_HOST": "support.example.com", "EXP_HOST": "links.example.com"}
+    env[role] = bad
+    r = run_hosts(env["SRC_HOST"], env["EXP_HOST"], VERIFY_SCHEME="https")
+    assert r.returncode == 2 and f"{role} {message}" in r.stderr
 
 
 def test_http_refused_for_non_loopback(sites: list[Site]) -> None:
@@ -642,3 +648,68 @@ def test_http_refused_for_loopback_lookalike_hosts(sites: list[Site]) -> None:
         r = run_hosts(src.host, look)
         assert r.returncode == 2, look
     assert src.requests == [] and dst.requests == []
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "a..example",
+        f"{'a' * 64}.example",
+        f"{'a.' * 126}aa",
+        "-bad.example",
+        "bad_name.example",
+        "caf\u00e9.example",
+        "example.com..",
+    ],
+)
+@pytest.mark.parametrize("role", ["SRC_HOST", "EXP_HOST"])
+def test_malformed_dns_names_are_usage_errors(role: str, bad: str) -> None:
+    env = {"SRC_HOST": "support.example.com", "EXP_HOST": "links.example.com"}
+    env[role] = bad
+    r = run_hosts(env["SRC_HOST"], env["EXP_HOST"], VERIFY_SCHEME="https")
+    assert r.returncode == 2
+    assert "valid DNS name or IPv4 address" in r.stderr
+
+
+def test_curl_receives_only_the_controlled_environment(tmp_path: Path) -> None:
+    d = tmp_path / "fakebin"
+    d.mkdir()
+    environment_log = tmp_path / "environment.log"
+    arguments_log = tmp_path / "arguments.log"
+    sh = d / "curl"
+    sh.write_text(
+        "#!/usr/bin/bash\n"
+        f"tr '\\0' '\\n' < /proc/$$/environ | sort > {environment_log!s}\n"
+        f'printf "%s\\n" "$@" > {arguments_log!s}\n'
+        'printf "HTTP/1.1 200 OK\\r\\n\\r\\n"\n'
+    )
+    sh.chmod(0o755)
+
+    r = run_hosts(
+        "127.0.0.1:1",
+        "127.0.0.1:2",
+        PATH=f"{d}:{os.environ['PATH']}",
+        CURL_CA_BUNDLE="/bogus/ca-bundle",
+        SSL_CERT_FILE="/bogus/cert-file",
+        SSL_CERT_DIR="/bogus/cert-dir",
+        SSLKEYLOGFILE="/bogus/key-log",
+        CURL_HOME="/bogus/curl-home",
+        http_proxy="http://127.0.0.1:9",
+        HTTPS_PROXY="http://127.0.0.1:9",
+    )
+
+    assert r.returncode == 1
+    passed_environment = environment_log.read_text().splitlines()
+    names = {entry.partition("=")[0] for entry in passed_environment}
+    assert names == {"HOME", "LC_ALL", "PATH"}
+    values = dict(entry.split("=", 1) for entry in passed_environment)
+    assert values["PATH"] == "/usr/local/bin:/usr/bin:/bin"
+    assert values["LC_ALL"] == "C"
+    curl_home = Path(values["HOME"])
+    assert curl_home.name.startswith("tmp.")
+    assert not curl_home.exists()
+
+    arguments = arguments_log.read_text().splitlines()
+    assert arguments[0] == "-q"
+    assert arguments[arguments.index("--noproxy") + 1] == "*"
+    assert "-L" not in arguments

@@ -61,13 +61,34 @@ normalize_authority() {
   printf '%s%s' "$h" "$port"
 }
 
-host_re='^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?$'
+validate_host() {
+  local label="$1" authority="$2" host="$2" part octet
+  if [[ "$authority" =~ ^(.*):[0-9]+$ ]]; then
+    host="${BASH_REMATCH[1]}"
+  fi
+  [ "${#host}" -le 253 ] || usage "$label is not a valid DNS name or IPv4 address"
+  if [[ "$host" =~ ^[0-9]+(\.[0-9]+){3}$ ]]; then
+    IFS=. read -r -a octets <<< "$host"
+    for octet in "${octets[@]}"; do
+      [ "$octet" -le 255 ] 2>/dev/null \
+        || usage "$label is not a valid DNS name or IPv4 address"
+    done
+    return
+  fi
+  IFS=. read -r -a labels <<< "${host}."
+  for part in "${labels[@]}"; do
+    [ -n "$part" ] && [ "${#part}" -le 63 ] \
+      && [[ "$part" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] \
+      || usage "$label is not a valid DNS name or IPv4 address"
+  done
+}
+
 [ -n "$SRC_HOST" ] || usage "SRC_HOST is required"
 [ -n "$EXP_HOST" ] || usage "EXP_HOST is required"
 SRC_HOST="$(normalize_authority SRC_HOST "$SRC_HOST")"
 EXP_HOST="$(normalize_authority EXP_HOST "$EXP_HOST")"
-[[ "$SRC_HOST" =~ $host_re ]] || usage "SRC_HOST is not a plain host"
-[[ "$EXP_HOST" =~ $host_re ]] || usage "EXP_HOST is not a plain host"
+validate_host SRC_HOST "$SRC_HOST"
+validate_host EXP_HOST "$EXP_HOST"
 [ "$SRC_HOST" != "$EXP_HOST" ] || usage "SRC_HOST and EXP_HOST must differ"
 case "$EXPECT_STATUS" in 301 | 302) ;; *) usage "EXPECT_STATUS must be 301 or 302" ;; esac
 [[ "$OTHER_EXPECT_STATUS" =~ ^[245][0-9]{2}$ ]] || usage "OTHER_EXPECT_STATUS must be a 2xx, 4xx or 5xx code"
@@ -79,6 +100,13 @@ case "$SCHEME" in
   *) usage "VERIFY_SCHEME must be https" ;;
 esac
 
+CURL_BIN="$(command -v curl)" || fail "curl is not available"
+CURL_HOME="$(mktemp -d)" || fail "could not create private curl home"
+chmod 700 "$CURL_HOME" || fail "could not protect private curl home"
+cleanup() { rm -rf -- "$CURL_HOME"; }
+trap cleanup EXIT
+readonly CURL_PATH="/usr/local/bin:/usr/bin:/bin"
+
 # fetch URL: one GET, no redirects followed, body discarded, headers kept.
 # Sets STATUS, LOC_COUNT (number of Location header fields, name matched
 # case-insensitively, CR removed) and LOC (the first value, or empty).
@@ -87,12 +115,12 @@ LOC_COUNT=0
 LOC=""
 fetch() {
   local url="$1" out all_headers hdr
-  # Ignore proxy configuration so CONNECT responses cannot enter the header
-  # stream. Redirect following remains disabled: no -L is ever used.
-  out="$(env -u http_proxy -u https_proxy -u all_proxy \
-             -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
-           curl -q --noproxy '*' --proto "=${SCHEME}" \
-           --connect-timeout 5 --max-time 20 -sS -D - -o /dev/null "$url")" \
+  # Start curl with a fixed PATH, C locale and empty private HOME. The empty
+  # environment excludes proxy, curl, certificate and TLS key-log settings.
+  # Redirect following remains disabled: no -L is ever used.
+  out="$(env -i PATH="$CURL_PATH" HOME="$CURL_HOME" LC_ALL=C \
+           "$CURL_BIN" -q --noproxy '*' --proto "=${SCHEME}" \
+             --connect-timeout 5 --max-time 20 -sS -D - -o /dev/null "$url")" \
     || fail "request did not complete: ${url%%\?*}"
   all_headers="$(printf '%s\n' "$out" | tr -d '\r')"
   printf '%s\n' "$all_headers" | awk '/^[ \t]/ {found=1} END {exit !found}' \
