@@ -41,6 +41,8 @@ def workflow_files() -> list[Path]:
 JOB_PERMISSIONS: dict[str, dict[str, str]] = {
     "comment": {"contents": "read", "pull-requests": "write"},
     "ci-green": {},
+    # Opens, updates and closes the one reminder issue; reads no key.
+    "freshness": {"contents": "read", "issues": "write"},
     # Holds the API keys, so it can only read; it publishes nothing.
     "refresh": {"contents": "read"},
     # Pushes the counts/refresh branch and opens one pull request; no keys.
@@ -106,6 +108,7 @@ def test_the_template_files_exist() -> None:
         "README.md",
         "site.yaml",
         "engine.lock",
+        "engine.release.json",
         "renovate.json",
         ".gitignore",
         "media/.gitkeep",
@@ -122,6 +125,8 @@ def test_the_template_files_exist() -> None:
         "scripts/validate-numbers.py",
         "scripts/verify-history.sh",
         "scripts/unmerged-history.sh",
+        ".github/workflows/check-hand-kept-freshness.yml",
+        "scripts/check-freshness.py",
     ):
         assert (TEMPLATE / rel).is_file(), rel
 
@@ -149,6 +154,7 @@ def test_the_template_config_names_the_schema() -> None:
 
 def test_all_workflows_are_collected() -> None:
     assert [p.name for p in workflow_files()] == [
+        "check-hand-kept-freshness.yml",
         "deploy.yml",
         "preview.yml",
         "refresh-counts.yml",
@@ -421,6 +427,7 @@ TRUSTED_FILES = {
     "scripts/validate.sh",
     "scripts/write-result.py",
     "engine.lock",
+    "engine.release.json",
     "site.yaml",
 }
 FORK_GUARD = "head.repo.full_name == github.repository"
@@ -1872,7 +1879,7 @@ class _Run:
         for tool in (
             "bash", "cp", "chmod", "mktemp", "git", "find", "sed", "cat", "grep",
             "dirname", "basename", "wc", "head", "tr", "id", "rm", "mkdir", "touch",
-            "readlink", "cut", "sort", "uname", "tee",
+            "readlink", "cut", "sort", "uname", "tee", "jq",
         ):  # fmt: skip
             for folder in ("/usr/bin", "/bin"):
                 if (Path(folder) / tool).exists():

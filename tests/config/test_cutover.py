@@ -170,7 +170,14 @@ def test_kit_omits_the_line_for_a_future_day(tmp_path: Path) -> None:
 
 
 def test_gated_page_carries_the_line_too(tmp_path: Path) -> None:
-    data = doc(cutover_date="2026-11-08", features={"kit_gate": True})
+    data = doc(
+        cutover_date="2026-11-08",
+        features={"kit_gate": True},
+        privacy={
+            "controller_name": "Example Creator",
+            "contact": "example.com/contact",
+        },
+    )
     data["kit"]["rates"] = [{"item": "Sponsored video", "price_text": "Ask"}]
     out, gated = tmp_path / "out", tmp_path / "gated"
     build_site(SiteConfig.model_validate(data), out, today=TODAY, gated_out=gated)

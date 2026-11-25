@@ -317,21 +317,64 @@ def youtube(source: YoutubeSource, ctx: Context) -> int:
         type(handle_name) is not str or handle_name != YOUTUBE_HANDLE_ENV
     ):
         raise SourceError("bad_source_setting")
-    key = _secret(ctx.env, YOUTUBE_KEY_ENV)
-    query = {"part": "statistics"}
-    if channel_id is not None:
-        query["id"] = channel_id
-    else:
-        query["forHandle"] = _youtube_handle(ctx.env)
-    url = "https://www.googleapis.com/youtube/v3/channels?" + urlencode(query)
-    # the key travels in a header, never in the URL
-    payload = _guarded_fetch(ctx, url, _YOUTUBE_HOSTS, headers={"x-goog-api-key": key})
-    stats = _object(_first(payload, "items"), "statistics")
-    if stats.get("hiddenSubscriberCount") is True:
-        raise SourceSkip(SKIP_HIDDEN)
-    if "subscriberCount" not in stats:
-        raise SourceError("missing_field")
-    return _digit_count(stats["subscriberCount"])
+    return _unseal(_youtube_sealed(ctx, channel_id))
+
+
+def _unseal(outcome: tuple[str, object]) -> int:
+    """Turn a sealed helper's outcome back into a count or the usual exception.
+
+    The exception is raised here, in a frame that holds no credential, so a
+    traceback-locals logger sees none."""
+    tag, value = outcome
+    if tag == "ok" and type(value) is int:
+        return value
+    word = value if type(value) is str else "fetch_failed"
+    if tag == "skip":
+        raise SourceSkip(word)
+    if tag == "fetch":
+        raise FetchError(word)
+    raise SourceError(word)
+
+
+def _sealed_outcome(exc: Exception) -> tuple[str, object]:
+    """The fixed word for a failure; the exception itself is not kept."""
+    if isinstance(exc, SourceSkip):
+        return ("skip", exc.reason if type(exc.reason) is str else "fetch_failed")
+    if isinstance(exc, FetchError):
+        return ("fetch", exc.kind if type(exc.kind) is str else "fetch_failed")
+    if isinstance(exc, SourceError):
+        return ("source", exc.kind if type(exc.kind) is str else "fetch_failed")
+    return ("source", "fetch_failed")
+
+
+def _youtube_sealed(ctx: Context, channel_id: str | None) -> tuple[str, object]:
+    """The credential-bearing YouTube call. Every exception is caught here and
+    reduced to a fixed word; the credential locals are cleared on the way out,
+    so no traceback frame of the caller holds them."""
+    key: str | None = None
+    headers: dict[str, str] | None = None
+    try:
+        key = _secret(ctx.env, YOUTUBE_KEY_ENV)
+        query = {"part": "statistics"}
+        if channel_id is not None:
+            query["id"] = channel_id
+        else:
+            query["forHandle"] = _youtube_handle(ctx.env)
+        url = "https://www.googleapis.com/youtube/v3/channels?" + urlencode(query)
+        # the key travels in a header, never in the URL
+        headers = {"x-goog-api-key": key}
+        payload = _guarded_fetch(ctx, url, _YOUTUBE_HOSTS, headers=headers)
+        stats = _object(_first(payload, "items"), "statistics")
+        if stats.get("hiddenSubscriberCount") is True:
+            raise SourceSkip(SKIP_HIDDEN)
+        if "subscriberCount" not in stats:
+            raise SourceError("missing_field")
+        return ("ok", _digit_count(stats["subscriberCount"]))
+    except Exception as exc:
+        return _sealed_outcome(exc)
+    finally:
+        key = None
+        headers = None
 
 
 def twitch(source: TwitchSource, ctx: Context) -> int:
@@ -351,51 +394,69 @@ def twitch(source: TwitchSource, ctx: Context) -> int:
         check_names(source)
     except TwitchUserError as err:
         raise SourceError(err.kind) from None
-    client_id = _secret(ctx.env, source.client_id_env)
-    client_secret = _secret(ctx.env, source.client_secret_env)
-    form = urlencode(
-        {
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "grant_type": "client_credentials",
-        }
-    ).encode("ascii")
-    token_reply = _guarded_fetch(
-        ctx,
-        "https://id.twitch.tv/oauth2/token",
-        _TWITCH_HOSTS,
-        method="POST",
-        body=form,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
-    token = token_reply.get("access_token")
-    if not isinstance(token, str) or not token or len(token) > 512:
-        raise SourceError("missing_field")
-    headers = {"Authorization": f"Bearer {token}", "Client-Id": client_id}
-    user = _guarded_fetch(
-        ctx,
-        "https://api.twitch.tv/helix/users?" + urlencode({"login": source.login}),
-        _TWITCH_HOSTS,
-        headers=headers,
-    )
-    user_id = _first(user, "data").get("id")
-    if not isinstance(user_id, str) or not (user_id.isascii() and user_id.isdigit()):
-        raise SourceError("missing_field")
+    return _unseal(_twitch_app_sealed(source, ctx))
+
+
+def _twitch_app_sealed(source: TwitchSource, ctx: Context) -> tuple[str, object]:
+    """The credential-bearing Twitch app-token path; see ``_youtube_sealed``."""
+    client_id: str | None = None
+    client_secret: str | None = None
+    form: bytes | None = None
+    token: object = None
+    token_reply: object = None
+    headers: dict[str, str] | None = None
     try:
-        followers = _guarded_fetch(
+        client_id = _secret(ctx.env, source.client_id_env)
+        client_secret = _secret(ctx.env, source.client_secret_env)
+        form = urlencode(
+            {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "grant_type": "client_credentials",
+            }
+        ).encode("ascii")
+        token_reply = _guarded_fetch(
             ctx,
-            "https://api.twitch.tv/helix/channels/followers?"
-            + urlencode({"broadcaster_id": user_id, "first": "1"}),
+            "https://id.twitch.tv/oauth2/token",
+            _TWITCH_HOSTS,
+            method="POST",
+            body=form,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        token = token_reply.get("access_token")
+        if not isinstance(token, str) or not token or len(token) > 512:
+            raise SourceError("missing_field")
+        headers = {"Authorization": f"Bearer {token}", "Client-Id": client_id}
+        user = _guarded_fetch(
+            ctx,
+            "https://api.twitch.tv/helix/users?" + urlencode({"login": source.login}),
             _TWITCH_HOSTS,
             headers=headers,
         )
-    except FetchError as exc:
-        # Twitch has asked for a user token (moderator:read:followers) on this
-        # route; app credentials cannot get one. Say so; do not guess another route.
-        if exc.kind in ("http_401", "http_403"):
-            raise SourceSkip(SKIP_USER_AUTH) from None
-        raise
-    return _count(followers, "total")
+        user_id = _first(user, "data").get("id")
+        if not isinstance(user_id, str) or not (
+            user_id.isascii() and user_id.isdigit()
+        ):
+            raise SourceError("missing_field")
+        try:
+            followers = _guarded_fetch(
+                ctx,
+                "https://api.twitch.tv/helix/channels/followers?"
+                + urlencode({"broadcaster_id": user_id, "first": "1"}),
+                _TWITCH_HOSTS,
+                headers=headers,
+            )
+        except FetchError as exc:
+            # Twitch has asked for a user token (moderator:read:followers) on this
+            # route; app credentials cannot get one. Say so; do not guess another route.
+            if exc.kind in ("http_401", "http_403"):
+                raise SourceSkip(SKIP_USER_AUTH) from None
+            raise
+        return ("ok", _count(followers, "total"))
+    except Exception as exc:
+        return _sealed_outcome(exc)
+    finally:
+        client_id = client_secret = form = token = token_reply = headers = None
 
 
 def _meta(source: InstagramSource | ThreadsSource, ctx: Context) -> int:

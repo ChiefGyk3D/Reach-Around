@@ -10,7 +10,7 @@
 <link rel="stylesheet" href="../static/tokens.d0c7809a44429f3609ea.css">
 <link rel="stylesheet" href="../static/site.abee3f6ec3420f4e7e3c.css">
 <link rel="stylesheet" href="../static/theme.71ca8fb8f7b69ca52f1f.css">
-<link rel="stylesheet" href="../static/kit.9f83b4bf071d0ecdb9fd.css">
+<link rel="stylesheet" href="../static/kit.9f9cbe924358b15fde5f.css">
 <link rel="stylesheet" href="../static/components.fef7bc6b1817ae139f93.css">
 <script src="../static/zone.83e1025518ab22b4b9cc.js" defer></script>
 </head>
@@ -78,8 +78,9 @@
 <form class="kit-gate" method="post" action="/k/gate">
 <p class="kit-field">
 <label for="kit-email">Email address</label>
-<input id="kit-email" name="email" type="email" inputmode="email" autocomplete="email" maxlength="254" required>
+<input id="kit-email" name="email" type="email" inputmode="email" autocomplete="email" maxlength="254" aria-describedby="kit-gate-notice" required>
 </p>
+<p class="kit-note" id="kit-gate-notice">Your address is used only to deliver the media kit and reply to you. It is stored for 30 days, then deleted. It is not verified when entered, shared, sold, or used for marketing. You may request deletion at any time at example.com/contact. This form uses a bot check and sets a secure 24-hour unlock cookie with no analytics. Privacy details: <a href="../privacy/">privacy page</a>.</p>
 <div class="kit-hp" aria-hidden="true">
 <label for="kit-website">Leave this field empty</label>
 <input id="kit-website" name="website" type="text" tabindex="-1" autocomplete="off">

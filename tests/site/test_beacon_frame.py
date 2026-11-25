@@ -29,6 +29,9 @@ TODAY = date(2027, 3, 10)
 KEY = "1x00000000000000000000AA"  # Cloudflare's published always-pass test key
 ORIGIN = "https://challenges.cloudflare.com"
 STATIC = resources.files("reach_around.site") / "static"
+# The beacon script or frame host as a reference (a path or a script tag), not the
+# word in prose: the fixed privacy notice names the bot check in plain words.
+BEACON_ASSET = re.compile(r"static/beacon|<script\b[^>]*beacon|<iframe", re.I)
 LOGIC = Path(__file__).with_name("beacon_logic.mjs")
 ON: dict[str, Any] = {"turnstile_beacon": True, "turnstile_site_key": KEY}
 
@@ -188,7 +191,7 @@ def test_off_has_no_page_no_script_no_header_no_reference(tmp_path: Path) -> Non
     assert ORIGIN not in headers
     for page in out.rglob("*.html"):
         text = page.read_text()
-        assert "e-frame" not in text and "beacon" not in text.lower()
+        assert "e-frame" not in text and not BEACON_ASSET.search(text)
         assert ORIGIN not in text
 
 
@@ -292,7 +295,7 @@ def test_pages_that_count_nothing_do_not_load_it(tmp_path: Path) -> None:
     out = build(tmp_path, ON)
     for rel in ("privacy/index.html", "404.html"):
         text = (out / rel).read_text()
-        assert "beacon" not in text
+        assert not BEACON_ASSET.search(text)
     page = out / "e-frame" / "index.html"
     assert asset(out, "static/beacon.js") not in page.read_text()
 

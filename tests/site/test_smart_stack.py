@@ -126,7 +126,8 @@ def test_stack_keeps_frame_levels_on_status_and_links(tmp_path: Path) -> None:
     out, html = build(tmp_path, frame="faithful")
     assert re.search(r'class="smart-status[^\"]*ra-bx', html)
     assert re.search(r'class="link[^\"]*smart-watch-link[^\"]*ra-bx', html)
-    assert re.search(r'class="link link-featured[^\"]*ra-fa ra-z-xl ra-am', html)
+    # The featured link is a dark card in the deck (#677): no frame art.
+    assert re.search(r'class="link link-featured smart-card"', html)
     assert list((out / "static").glob("frame.*.css"))
 
 

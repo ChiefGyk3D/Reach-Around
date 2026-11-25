@@ -128,9 +128,13 @@ class MetaTokenSink(Protocol):
     no-op sink ships. A sink must never log or print the value.
     """
 
-    def store(
-        self, token: NewToken, name: str, source: str, expires_on: date
-    ) -> None: ...
+    def store(self, token: NewToken, name: str, source: str, expires_on: date) -> bool:
+        """Persist the token; return exactly ``True`` once it is kept.
+
+        Any other result (None, False, a truthy object) or any exception counts
+        as not persisted: the original token stays in use for this run.
+        """
+        ...
 
     def alert(self, alert: HealthAlert) -> None: ...
 
@@ -144,7 +148,7 @@ class NoopSink:
     def _out(self) -> TextIO:
         return self._stream if self._stream is not None else sys.stderr
 
-    def store(self, token: NewToken, name: str, source: str, expires_on: date) -> None:
+    def store(self, token: NewToken, name: str, source: str, expires_on: date) -> bool:
         self.alert(HealthAlert(source, "rotated_unstored", (name,)))
         print(
             f"  action needed: the token for {source} was refreshed. This run did "
@@ -153,6 +157,7 @@ class NoopSink:
             "(docs/instagram-threads-sources.md).",
             file=self._out(),
         )
+        return False  # nothing was kept
 
     def alert(self, alert: HealthAlert) -> None:
         print(alert.line(), file=self._out())
@@ -324,8 +329,12 @@ class _Session:
         # drops the new one, so nothing is half-rotated.
         stored = False
         try:
-            self.sink.store(NewToken(new), s.access_token_env, s.platform, expires_on)
-            stored = True
+            stored = (
+                self.sink.store(
+                    NewToken(new), s.access_token_env, s.platform, expires_on
+                )
+                is True
+            )
         except Exception:
             stored = False
         if not stored:
