@@ -196,7 +196,7 @@ tabs:
         url: https://example.invalid/paid-ko-fi
         icon: kofi
       - id: paid-stream-tip
-        title: Stream tip
+        title: StreamElements
         url: https://example.invalid/paid-stream-tip
         icon: streamelements
       - id: paid-merch

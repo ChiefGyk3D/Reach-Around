@@ -61,7 +61,7 @@ GROUPS: list[tuple[str, str, int | None, list[tuple[str, str]]]] = [
         [
             ("Patreon", "patreon"),
             ("Ko-fi", "kofi"),
-            ("Stream tip", "streamelements"),
+            ("StreamElements", "streamelements"),
             ("Merch", "merch"),
             ("Crypto", "bitcoin"),
         ],

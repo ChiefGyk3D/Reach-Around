@@ -63,7 +63,7 @@ def raw() -> dict[str, Any]:
             "blocks": [
                 block("paid-patreon", "Patreon", icon="patreon"),
                 block("paid-kofi", "Ko-fi", icon="kofi"),
-                block("paid-tip", "Stream tip", icon="streamelements"),
+                block("paid-tip", "StreamElements", icon="streamelements"),
                 block("paid-merch", "Merch", icon="merch"),
             ],
         },
