@@ -13,7 +13,7 @@ terraform {
   }
 }
 
-# The token comes from the CLOUDFLARE_API_TOKEN environment variable only. There
+# The provider takes its credential from the pipeline's environment only. There
 # is deliberately no variable for it, so it can never reach a tfvars file, a plan
 # file argument or the shell history.
 provider "cloudflare" {}

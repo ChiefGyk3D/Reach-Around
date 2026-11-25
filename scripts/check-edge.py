@@ -32,7 +32,6 @@ Exit 0 agrees, 1 differs, 2 usage or could not read (never read as green).
 from __future__ import annotations
 
 import argparse
-import hashlib
 import http.client
 import ipaddress
 import json
@@ -41,6 +40,7 @@ import re
 import socket
 import ssl
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -52,6 +52,10 @@ API = "https://api.cloudflare.com/client/v4"
 TOKEN_ENV = "CLOUDFLARE_EDGE_READ_TOKEN"  # noqa: S105 (the variable name)
 MAX_BYTES = 1_048_576
 TIMEOUT = 20
+# The robots.txt check is bounded as a whole: at most this many addresses are
+# tried, and every connect, handshake and read shares one monotonic deadline.
+ROBOTS_MAX_ADDRESSES = 3
+ROBOTS_DEADLINE = 30.0
 MANAGED_MARKER = "begin cloudflare managed content"
 
 # Settings the owner decided (issue #613). Anything not listed here is not ours.
@@ -120,15 +124,6 @@ MANIFEST_COMMAND = (
     "5.29.0 > deploy/edge/provider-fields.json"
 )
 MANIFEST_COMPUTED_ONLY = ["id", "stale_zone_configuration", "using_latest_model"]
-# sha256 of the files that receive or shape the API token. plan.sh gets the token;
-# tofu.rc decides which provider binary tofu installs. Any change to either needs
-# the new digest recorded here in the same change, which CODEOWNERS routes to the
-# owner. The digest is an integrity pin, not a proof the script is safe: the
-# structural scan in launcher_problems() is a second, weaker layer.
-LAUNCHER_PINS = {
-    "plan.sh": "ae61dea66bfca6df395c77f76b323b5d35f1a48606d36c8bb573e754a64de03e",
-    "tofu.rc": "fdbdca281d88fab3f0efa566da7689e9653a98ae98818192acf018717624ca82",
-}
 
 
 class Unreadable(Exception):
@@ -162,6 +157,13 @@ class NotFound(Unreadable):
 def offline_problems(root: Path) -> list[str]:
     edge = root / EDGE
     problems: list[str] = []
+    missing = [
+        f"deploy/edge/{name}: a required file is missing"
+        for name in sorted(ALLOWED_EDGE_FILES)
+        if not (edge / name).is_file()
+    ]
+    if missing:
+        return missing
     try:
         desired = json.loads((edge / "desired-state.json").read_text("utf-8"))
         main_tf = (edge / "main.tf").read_text("utf-8")
@@ -197,7 +199,7 @@ def offline_problems(root: Path) -> list[str]:
         problems += rate_limit_problems(rl)
 
     problems += module_problems(edge)
-    problems += launcher_problems(edge)
+    problems += handoff_problems(edge)
     if "NOT approved" not in main_tf:
         problems.append("main.tf header must say the apply path is NOT approved")
     if "desired-state.json" not in main_tf:
@@ -252,82 +254,49 @@ def lock_problems(lock: str, pin: Any) -> list[str]:
     return problems
 
 
-# plan.sh scan: a second layer behind the digest pin. It refuses what a token-
-# bearing launcher has no reason to use. It cannot prove a shell script safe.
-_PLAN_FORBIDDEN = re.compile(
-    r"(?<![\w$-])(?:eval|source|curl|wget|nc|ncat|netcat|socat|ssh|scp|sftp|telnet|ftp"
-    r"|python3?|perl|ruby|node|php|lua|awk|gawk|openssl|base64|xxd|od|dd|tee|nohup"
-    r"|declare|typeset|nameref|apply|destroy|import|console|taint|workspace|state"
-    r"|force-unlock|login|logout)(?![\w=-])"
-    r"|/dev/(?:tcp|udp)|\+=|\$\{!|printf\s+-v|`|>>|\bexec\s+(?!\"\$@\" 3<&-)"
-    r"|>\s*(?!&2\b|/dev/null\b)|\bcommand\b|\balias\b|\.\s+[/\"$]"
+# No file here may hand the API token to a program. The plan runs only inside the
+# project's infrastructure pipeline, with its own binary and credentials, so the
+# folder holds no launcher, no CLI configuration and no script of any kind.
+_TOKEN_HANDOFF = re.compile(
+    r"TOFU_BIN|CLOUDFLARE_API_TOKEN|CLOUDFLARE_EDGE_READ_TOKEN|TF_CLI_CONFIG_FILE"
+    r"|subprocess|\bPopen\b|os\.system|\bexec\w*\(|^#!",
+    re.I | re.M,
 )
-_PLAN_TOKEN_LINES = frozenset(
-    {
-        "HOME | CLOUDFLARE_API_TOKEN | TF_VAR_zone_id | TOFU_BIN) ;;",
-        'if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then',
-        'echo "plan: CLOUDFLARE_API_TOKEN is not set" >&2',
-        "'IFS= read -r CLOUDFLARE_API_TOKEN <&3 || exit 70",
-        "export CLOUDFLARE_API_TOKEN",
-        'bash "$here" "$tofu_bin" "$@" 3<<<"$CLOUDFLARE_API_TOKEN"',
-    }
-)
-_PLAN_RUN = re.compile(r"^\s*run_tofu\s+(\S+)")
-_PLAN_VERBS = ("init", "plan")
 
 
-def plan_script_problems(text: str) -> list[str]:
-    """Structural scan of plan.sh: allowlisted tofu verbs, no network or eval."""
+def handoff_problems(edge: Path) -> list[str]:
+    """Fail on a launcher file or any text that passes the token to a program."""
     problems: list[str] = []
-    verbs: list[str] = []
-    for number, raw in enumerate(text.splitlines(), 1):
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "CLOUDFLARE_API_TOKEN" in line and line not in _PLAN_TOKEN_LINES:
+    for name in FORBIDDEN_EDGE_FILES:
+        if (edge / name).exists():
             problems.append(
-                f"plan.sh:{number}: the token appears on a line that is not reviewed"
+                f"deploy/edge/{name}: no token-bearing launcher or CLI "
+                "configuration may live here (plans run only in the pipeline)"
             )
-        hit = _PLAN_FORBIDDEN.search(line)
-        if hit is not None:
-            problems.append(f"plan.sh:{number}: refused construct {hit.group(0)!r}")
-        run = _PLAN_RUN.match(raw)
-        if run is not None:
-            verbs.append(run.group(1))
-    if verbs != list(_PLAN_VERBS):
-        problems.append(f"plan.sh: run_tofu may only run {list(_PLAN_VERBS)}")
-    return problems
-
-
-def launcher_problems(edge: Path) -> list[str]:
-    """plan.sh and tofu.rc must match the reviewed digest and pass the scan."""
-    problems: list[str] = []
-    for name, want in LAUNCHER_PINS.items():
+    for item in sorted(edge.iterdir(), key=lambda p: p.name):
+        if item.name not in ALLOWED_EDGE_FILES or not item.is_file():
+            continue
         try:
-            data = (edge / name).read_bytes()
+            text = item.read_bytes().decode("utf-8", "replace")
         except OSError:
-            problems.append(f"deploy/edge/{name}: cannot be read")
             continue
-        if hashlib.sha256(data).hexdigest() != want:
+        hit = _TOKEN_HANDOFF.search(text)
+        if hit is not None:
             problems.append(
-                f"deploy/edge/{name}: differs from the reviewed digest pinned in "
-                "scripts/check-edge.py (LAUNCHER_PINS); a change needs the new "
-                "digest recorded there in the same reviewed change"
+                f"deploy/edge/{item.name}: refused text {hit.group(0)!r} (nothing "
+                "here may pass an API token to a program)"
             )
-        if name == "plan.sh":
-            problems += plan_script_problems(data.decode("utf-8", "replace"))
     return problems
 
 
+FORBIDDEN_EDGE_FILES = ("plan.sh", "tofu.rc")
 ALLOWED_EDGE_FILES = frozenset(
     {
         ".gitignore",
         ".terraform.lock.hcl",
         "desired-state.json",
         "main.tf",
-        "plan.sh",
         "provider-fields.json",
-        "tofu.rc",
         "variables.tf",
         "versions.tf",
     }
@@ -617,6 +586,9 @@ def module_problems(edge: Path) -> list[str]:
                 f"deploy/edge/{item.name}: not an expected file (saved plans and "
                 "state never belong in this directory)"
             )
+    for name in sorted(ALLOWED_EDGE_FILES):
+        if not (edge / name).is_file():
+            problems.append(f"deploy/edge/{name}: a required file is missing")
     resources = 0
     variables = 0
     for tf in sorted(edge.glob("*.tf")):
@@ -661,8 +633,8 @@ def module_problems(edge: Path) -> list[str]:
         problems.append(
             f"deploy/edge must hold exactly one resource, found {resources}"
         )
-    if variables > 1:
-        problems.append("deploy/edge must declare the zone_id variable once")
+    if variables != 1:
+        problems.append("deploy/edge must declare the zone_id variable exactly once")
     return problems
 
 
@@ -878,13 +850,26 @@ def public_addresses(host: str) -> list[str]:
 class PinnedHTTPSConnection(http.client.HTTPSConnection):
     """HTTPS to one validated address; the hostname stays the Host and SNI name."""
 
-    def __init__(self, host: str, address: str, timeout: float) -> None:
+    def __init__(
+        self, host: str, address: str, timeout: float, deadline: float | None = None
+    ) -> None:
         super().__init__(host, 443, timeout=timeout)
         self._address = address
+        self._deadline = deadline
+
+    def remaining(self) -> float:
+        base = float(self.timeout or TIMEOUT)
+        if self._deadline is None:
+            return base
+        left = self._deadline - time.monotonic()
+        if left <= 0:
+            raise Unreadable(f"robots.txt check exceeded {ROBOTS_DEADLINE:g} seconds")
+        return min(base, left)
 
     def connect(self) -> None:
-        sock = socket.create_connection((self._address, 443), self.timeout)
+        sock = socket.create_connection((self._address, 443), self.remaining())
         try:
+            sock.settimeout(self.remaining())
             self.sock = ssl.create_default_context().wrap_socket(
                 sock, server_hostname=self.host
             )
@@ -897,10 +882,15 @@ class PinnedHTTPSConnection(http.client.HTTPSConnection):
 
 
 def fetch_robots(host: str) -> str:
-    """GET https://host/robots.txt with no redirects, from a validated address."""
+    """GET https://host/robots.txt with no redirects, from a validated address.
+
+    The whole call has a hard limit (ROBOTS_DEADLINE seconds, ROBOTS_MAX_ADDRESSES
+    addresses); running out of either is a clear failure, never a long wait.
+    """
+    deadline = time.monotonic() + ROBOTS_DEADLINE
     last = Unreadable("no address worked")
-    for address in public_addresses(host):
-        conn = PinnedHTTPSConnection(host, address, TIMEOUT)
+    for address in public_addresses(host)[:ROBOTS_MAX_ADDRESSES]:
+        conn = PinnedHTTPSConnection(host, address, TIMEOUT, deadline)
         try:
             conn.request(
                 "GET",
@@ -910,12 +900,28 @@ def fetch_robots(host: str) -> str:
                     "Accept": "text/plain",
                 },
             )
+            if conn.sock is not None:
+                conn.sock.settimeout(conn.remaining())
             response = conn.getresponse()
             if response.status != 200:  # a redirect is refused, never followed
                 raise Unreadable(f"robots.txt answered HTTP {response.status}")
-            body = response.read(MAX_BYTES + 1)
+            chunks: list[bytes] = []
+            size = 0
+            while size <= MAX_BYTES:
+                if conn.sock is not None:
+                    conn.sock.settimeout(conn.remaining())
+                chunk = response.read(8192)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+            body = b"".join(chunks)
         except (ValueError, OSError, http.client.HTTPException) as exc:
             last = Unreadable(type(exc).__name__)
+            if time.monotonic() >= deadline:
+                raise Unreadable(
+                    f"robots.txt check exceeded {ROBOTS_DEADLINE:g} seconds"
+                ) from None
             continue
         except Unreadable as exc:
             raise exc from None

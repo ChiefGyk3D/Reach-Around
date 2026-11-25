@@ -14,7 +14,7 @@
 /scripts/changelog-assemble.py          @ChiefGyk3D
 /scripts/check-token-drift              @ChiefGyk3D
 
-# Edge settings: the token-bearing launcher, its pin and the offline check
+# Edge settings: the module, its desired state and the offline check
 /deploy/edge/                           @ChiefGyk3D
 /scripts/check-edge.py                  @ChiefGyk3D
 /tests/test_edge_settings.py            @ChiefGyk3D

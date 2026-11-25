@@ -14,7 +14,9 @@ other sites on the zone.
 
 **Nothing here applies itself, and nothing may be applied yet.** The apply path
 is NOT approved (see [the apply path](#the-apply-path-is-not-approved)).
-`deploy/edge/plan.sh` only plans. No workflow runs an apply. The module is
+This repository holds the desired state, the policy checks and the read-only
+drift check only; the plan runs inside the project's infrastructure pipeline
+(see [Where the plan runs](#where-the-plan-runs)). No workflow here runs an apply. The module is
 apply-capable but apply-prohibited (see [Policy, not capability](#policy-not-capability)).
 
 Cloudflare documentation read 2026-11-23 (page dates are Cloudflare's own
@@ -86,7 +88,7 @@ default. **The apply path is NOT approved until one of these is done and
 recorded here:** the provider's exact request body is captured, or an
 experiment on an isolated zone proves that unrepresented fields are preserved.
 Because the staging site shares the zone with production, there is no safe zone
-to try it on today. Until then use `plan.sh` and the drift check only.
+to try it on today. Until then use the pipeline's plan and the drift check only.
 
 ### Rate rule on `/e/t` (phase `http_ratelimit`): a MANUAL step
 
@@ -139,7 +141,7 @@ end date, kept in the secret manager:
 
 | Token | Permissions | Used for |
 |---|---|---|
-| `edge-read` (one per zone) | Bot Management Read, Zone WAF Read | `scripts/check-edge.py --live` and the plan |
+| `edge-read` (one per zone) | Bot Management Read, Zone WAF Read | `scripts/check-edge.py --live`; the pipeline's plan holds its own credential |
 | `edge-write` | Bot Management Write (dashboard: Bot Management Edit), Zone WAF Write (Zone WAF Edit) | Not issued: the apply path is NOT approved, and the rate rule is a manual step in the dashboard. |
 
 Calls the read token makes: `GET /zones/{zone_id}/bot_management` and
@@ -163,7 +165,9 @@ not claim more:
   `desired-state.json` (a literal, a swapped key or a stray reference fails).
 - The same check fails if `deploy/edge/` holds any file that is not on its list
   (a saved plan under any name, a state file). `deploy/edge/.gitignore` ignores
-  everything not on the list. `plan.sh` saves no plan.
+  everything not on the list.
+- The same check fails if any reviewed file is missing (`variables.tf` included)
+  or if the zone_id variable is not declared exactly once.
 - `--live` runs the same validation of the desired state, the provider manifest,
   the pin and the module before it makes any request, and exits 2 if it fails.
 
@@ -177,42 +181,44 @@ applied from here" is structural:
 - CI has no Cloudflare credentials, so no CI job can reach the zone.
 - Write tokens exist only in the secret manager and are not issued for this work.
 - No workflow is given a Cloudflare token of any kind.
-- `plan.sh` starts the tool under `env -i` with an allow-list: a fixed `PATH`, a
-  fresh scratch `HOME`, `TMPDIR` and data directory (removed again), `TF_VAR_zone_id`,
-  `CLOUDFLARE_API_TOKEN` (read from a file descriptor, never on a command line) and
-  `TF_CLI_CONFIG_FILE` pointing at the reviewed `deploy/edge/tofu.rc`, which allows
-  only a direct install of the locked provider (no `dev_overrides`, mirrors or
-  plugin cache). Nothing else reaches it: no proxy or CA variable, no other
-  `TF_VAR_*`, no `TF_PLUGIN_CACHE_DIR`. The tool is found at a fixed absolute path
-  (`/usr/local/bin`, `/usr/bin` or `~/.local/bin`, or `TOFU_BIN`), never through
-  `PATH`, and refused unless it and its parent directories belong to root or you
-  and neither the group nor others can write to the binary or its parent directories
-  (a sticky root-owned directory such as `/tmp` is the one exception). The script's own helper commands run with the
-  same cleaned environment. Exit 65 means no trusted binary.
 - The module has no rules resource, so even a mistaken run cannot touch other
   sites' rate rules.
-- `plan.sh` and `tofu.rc` receive or shape the token, so `scripts/check-edge.py`
-  pins each by sha256 (`LAUNCHER_PINS`) and fails on any difference. A change to
-  either file needs the new digest recorded in the checker in the same change;
-  `.github/CODEOWNERS` routes `deploy/edge/` and the checker to the owner. Honest
-  limit: the pin proves the file is the one that was reviewed, not that it is
-  safe, and CODEOWNERS only names a reviewer (branch protection does not require
-  a code owner review). A structural scan of `plan.sh` (no eval, network tool,
-  interpreter, apply-like verb or unreviewed use of the token; `run_tofu` only
-  runs `init` and `plan`) is a weaker second layer that a determined edit can
-  still dodge, which is why the digest and the review are the real control.
+- No file in this repository passes the API token to a program. There is no
+  local launcher: no wrapper script, no CLI configuration file and no
+  configurable path to a tool. `scripts/check-edge.py --offline` fails if
+  `deploy/edge/` holds a launcher or CLI configuration, or any text that names a
+  token variable, starts a subprocess or begins with a shebang. The one tool
+  that sends the read token, `check-edge.py --live`, reads it from the
+  environment itself and makes one HTTPS GET per call from Python: no
+  subprocess and no executable lookup.
+- The honest limit of that scan: it is a text check, and a determined edit can
+  dodge a text check. It is a tripwire for review, not a proof.
+- `.github/CODEOWNERS` names `deploy/edge/`, the checker and its tests, but it
+  only names a reviewer. It becomes a control only when the repository has a
+  branch protection rule or ruleset on the default branch with "Require review
+  from Code Owners" turned on (and, preferably, "Dismiss stale pull request
+  approvals when new commits are pushed"). That is a repository setting, not
+  something this change makes; until it is on, a change to the checker is not
+  guaranteed a code owner review.
 - The checker also pins the minimum OpenTofu version, the provider manifest's
   identity and computed-only fields, and the shape of the lock file entry.
+
+## Where the plan runs
+
+The plan runs only inside the project's infrastructure pipeline (Spacelift),
+with that pipeline's own vetted OpenTofu binary and its own credentials. It is
+not run from a developer machine, and this repository ships no script for it:
+a script that handed the token to a local executable would be a way to leak it.
+Plan output is read in the pipeline.
 
 ## Run order (each step needs the owner's explicit word)
 
 1. Read the dashboard: the zone's plan, and which `http_ratelimit` rules and
    what `robots.txt` the zone already has.
 2. `python3 -I scripts/check-edge.py --live --zone-id ID --save snapshot.json`
-   with the read token, to record what is there. Keep the file private.
-3. `TF_VAR_zone_id=ID CLOUDFLARE_API_TOKEN=... deploy/edge/plan.sh` and read it.
-   Exit 2 means changes are planned; that is not an error. Exit 64 is a usage
-   error.
+   with the read token in `CLOUDFLARE_EDGE_READ_TOKEN`, to record what is
+   there. Keep the file private.
+3. Read the pipeline's plan. Changes planned are not an error.
 4. Stop. Changing the zone waits for the apply path to be approved (above).
 5. After any change: `check-edge.py --live --zone-id ID --site-host HOST` exits
    0; a link preview of the site still renders; monitoring still sees the site;
@@ -229,7 +235,7 @@ not read (never read as green). Before any authenticated call it refuses to run,
 with exit 2, if a proxy or trust-store override variable is set (`HTTPS_PROXY`,
 `HTTP_PROXY`, `ALL_PROXY` in either case, `SSL_CERT_FILE`, `SSL_CERT_DIR`,
 `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`), and its API connection ignores
-environment proxies entirely, so a proxy with its own CA cannot read the token. `--site-host` takes a plain public hostname
+environment proxies entirely, so a proxy with its own CA cannot read the token. The `--site-host` fetch is bounded as a whole: at most 3 addresses are tried and one 30 second limit covers connecting, the handshake and reading, so it fails with a clear message instead of waiting. `--site-host` takes a plain public hostname
 only: no IP, port, path or credentials. It resolves the name, refuses if any
 address is loopback, private, link-local, multicast, reserved or unspecified,
 connects to that address with the hostname as the certificate name, and follows
@@ -244,7 +250,7 @@ are what the code assumes today.
 |---|---|---|
 | 1 | Zone layout: is the test host on its own zone? | Decided 2026-11-23: no, the staging site shares the zone with production. So nothing is applied and the zone keeps every existing rule. |
 | 2 | Zone plan | Free assumed; the limits above depend on it. The real plan is read from the dashboard first. |
-| 3 | State location: local (git-ignored) or a Spacelift stack | Plan-only local runs, state git-ignored. |
+| 3 | State location | In the pipeline (Spacelift), not on a developer machine. |
 | 4 | Code location: this repository (`deploy/edge/`) or a private infrastructure repository | This repository. |
 | 5 | Rate threshold `requests_per_period` | 4; accept it or measure first. |
 | 6 | Is the zone shared with other sites? Then their `robots.txt` and `/e/` paths change too. | Assumed shared. |
