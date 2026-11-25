@@ -293,3 +293,22 @@ def test_other_image_types_are_refused(tmp_path: Path, name: str) -> None:
 def test_the_site_key_is_not_in_the_staged_page(tmp_path: Path) -> None:
     # the gated page has no form; this guards the staging against gaining one
     assert SITE_KEY not in staged_html(tmp_path)
+
+
+def _no_split_selectors() -> list[str]:
+    """Selectors the print stylesheet keeps whole across a page break."""
+    from reach_around.kit.stage import PRINT_CSS
+
+    match = re.search(r"([^{}]*)\{break-inside:avoid\}", PRINT_CSS)
+    assert match is not None, "the print stylesheet has no break-inside rule"
+    return match.group(1).split(",")
+
+
+def test_print_keeps_the_trust_legend_whole() -> None:
+    """A legend split by a page break reads out of order in the PDF text (the
+    summary plate paints between its halves), so its sentences stop matching
+    (#749)."""
+    selectors = _no_split_selectors()
+    assert ".kit-legend" in selectors
+    assert ".kit-numbers" in selectors  # the guard reads the right rule
+    assert ".kit-not-a-section" not in selectors  # and it can say no

@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { parseAlertsConfig } from "../../src/alerts/config";
 import { createDispatcher, type AlertsEnv } from "../../src/alerts/dispatcher";
 import { formatAlert } from "../../src/alerts/format";
-import { claimDedup, DEDUP_ROW_CAP, eventHash, reserveQuota } from "../../src/alerts/quota";
+import { claimDedup, DEDUP_ROW_CAP, eventHash, QUOTA_ROW_CAP, reserveQuota } from "../../src/alerts/quota";
 import { neutralize } from "../../src/alerts/sanitize";
 import type { AlertEvent } from "../../src/alerts/types";
 import { embedsIpLiteral, validateHomeserver } from "../../src/alerts/validate";
@@ -338,6 +338,72 @@ describe("keyed dedup hash", () => {
       expect(await rows("alert_dedup")).toBe(0);
       await DB.prepare("DELETE FROM alert_quota").run();
     }
+  });
+});
+
+describe("quota housekeeping does not depend on optional settings", () => {
+  async function fillStale(): Promise<void> {
+    const stmt = DB.prepare("INSERT INTO alert_quota (site, channel, scope, window_start, count) VALUES ('default', 'discord', 'minute', ?1, 1)");
+    const batch = [];
+    for (let i = 0; i < QUOTA_ROW_CAP; i++) batch.push(stmt.bind(T0 - 3_600_000 - i * 60_000));
+    await DB.batch(batch);
+  }
+  it("without a dedup key, expired quota rows are pruned and later alerts still send", async () => {
+    await fillStale();
+    expect(await rows("alert_quota")).toBe(QUOTA_ROW_CAP);
+    const m = mockFetch();
+    const d = createDispatcher();
+    const e: AlertsEnv = { DB, ALERT_DISCORD_WEBHOOK: DISCORD, ALERTS_CONFIG: cfg({ max_per_minute: 30 }), DAILY_ALERT_BUDGET: "50" };
+    await d.notify(e, unlock("a@example.com"), { fetchFn: m.fn, nowMs: T0 });
+    expect(m.calls).toHaveLength(1);
+    expect(await rows("alert_quota")).toBeLessThan(10);
+  });
+  async function fillExpiredDedup(): Promise<void> {
+    const stmt = DB.prepare("INSERT INTO alert_dedup (site, event_hash, expires_at) VALUES ('default', ?1, ?2)");
+    const batch = [];
+    for (let i = 0; i < DEDUP_ROW_CAP; i++) batch.push(stmt.bind(String(i).padStart(32, "0"), T0 - 1000 - i));
+    await DB.batch(batch);
+  }
+  // A database wrapper that records every statement text prepared through it.
+  function recording(): { db: D1Database; sql: string[] } {
+    const sql: string[] = [];
+    // The alert code uses only prepare and batch on the database (grep src/alerts).
+    const db = {
+      prepare: (q: string) => (sql.push(q), DB.prepare(q)),
+      batch: (stmts: D1PreparedStatement[]) => DB.batch(stmts),
+    } as unknown as D1Database;
+    return { db, sql };
+  }
+  const dedupDeletes = (sql: string[]) => sql.filter((q) => q.startsWith("DELETE FROM alert_dedup")).length;
+  it("without a dedup key, expired dedup rows are pruned too, once", async () => {
+    await fillExpiredDedup();
+    expect(await rows("alert_dedup")).toBe(DEDUP_ROW_CAP);
+    const { db, sql } = recording();
+    const m = mockFetch();
+    const e: AlertsEnv = { DB: db, ALERT_DISCORD_WEBHOOK: DISCORD, ALERTS_CONFIG: cfg({ max_per_minute: 30 }), DAILY_ALERT_BUDGET: "50" };
+    await createDispatcher().notify(e, unlock("a@example.com"), { fetchFn: m.fn, nowMs: T0 });
+    expect(m.calls).toHaveLength(1);
+    expect(await rows("alert_dedup")).toBe(0);
+    expect(dedupDeletes(sql)).toBe(1);
+  });
+  it("with a dedup key, housekeeping runs once, expired dedup rows go and the claim succeeds", async () => {
+    await fillExpiredDedup();
+    const { db, sql } = recording();
+    const m = mockFetch();
+    const e: AlertsEnv = { DB: db, ALERT_DEDUP_KEY: KEY, ALERT_DISCORD_WEBHOOK: DISCORD, ALERTS_CONFIG: cfg({ max_per_minute: 30 }), DAILY_ALERT_BUDGET: "50" };
+    await createDispatcher().notify(e, unlock("a@example.com"), { fetchFn: m.fn, nowMs: T0 });
+    expect(m.calls).toHaveLength(1);
+    expect(await rows("alert_dedup")).toBe(1);
+    expect(dedupDeletes(sql)).toBe(1);
+    expect(sql.filter((q) => q.startsWith("DELETE FROM alert_quota"))).toHaveLength(1);
+  });
+  it("a health event is not starved by expired rows when the key is short", async () => {
+    await fillStale();
+    const m = mockFetch();
+    const d = createDispatcher();
+    const e: AlertsEnv = { DB, ALERT_DEDUP_KEY: "short", ALERT_DISCORD_WEBHOOK: DISCORD, ALERTS_CONFIG: cfg({ max_per_minute: 30, events: ["analytics_health"] }), DAILY_ALERT_BUDGET: "50" };
+    await d.notify(e, { kind: "analytics_health", atMs: T0, condition: "click_ceiling_reached", state: "open" } as unknown as AlertEvent, { fetchFn: m.fn, nowMs: T0 });
+    expect(m.calls).toHaveLength(1);
   });
 });
 

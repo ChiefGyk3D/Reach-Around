@@ -18,7 +18,9 @@ import pytest
 from reach_around.counts.history import History, Record, append_records, read_history
 from reach_around.funnel.private_analytics import (
     CSV_HEADER,
+    UNRECOGNIZED_PLATFORM,
     build_private,
+    canonical_platform,
     private_csv_rows,
     private_lines,
 )
@@ -596,3 +598,193 @@ def test_the_stored_other_beside_a_named_cell_follows_the_floor_rule(
         assert g["rows"] == [] and g["other"] == 40 + value
     else:
         assert rows_of(g) == {"18-24": 40} and g["other"] == value
+
+
+def test_platforms_without_a_figure_say_not_available_with_equal_wording() -> None:
+    b = block(ages(("18_24", 50)))
+    text = "\n".join(private_lines(b))
+    assert "Twitch: not available (" in text and "Kick: not available (" in text
+    twitch, kick = (e["reason"] for e in b["not_available"])
+    assert twitch == kick  # equal treatment
+    assert b["not_available"][0]["platform"] == "Twitch"
+
+
+def test_not_available_shows_even_with_no_private_data() -> None:
+    b = block([])
+    assert [e["platform"] for e in b["not_available"]] == ["Twitch", "Kick"]
+    assert "Twitch: not available" in "\n".join(private_lines(b))
+
+
+def test_a_platform_with_collected_figures_is_not_listed_not_available() -> None:
+    b = block([rec("fdemo_age_18_24", 50, platform="twitch", provider=YT)])
+    assert [e["platform"] for e in b["not_available"]] == ["Kick"]
+
+
+def test_a_legacy_block_without_not_available_still_renders() -> None:
+    legacy = block([])
+    del legacy["not_available"]
+    text = "\n".join(private_lines(legacy))
+    assert "not available" not in text and legacy["label"] in text
+
+
+@pytest.mark.parametrize("name", ["twitch", "Twitch", " twitch ", "TWITCH.TV"])
+def test_every_spelling_of_a_platform_is_one_canonical_platform(name: str) -> None:
+    b = block(
+        [
+            rec("fdemo_age_18_24", 50, platform=name, provider=YT),
+            rec("fdemo_age_25_34", 60, platform="twitch", provider=YT),
+        ]
+    )
+    sections = [s["platform"] for s in b["sections"]]
+    assert sections == ["twitch"]  # duplicates and aliases merge into one section
+    assert [e["platform"] for e in b["not_available"]] == ["Kick"]
+
+
+def _fullwidth(text: str) -> str:
+    return "".join(chr(ord(c) + 0xFEE0) if c.isalpha() else c for c in text)
+
+
+_TWITCH_FORMS = [
+    "twitch",
+    "Twitch",
+    " twitch ",
+    "TWITCH.TV",
+    "@twitch",
+    "https://www.twitch.tv/example",
+    "HTTPS://WWW.TWITCH.TV/Example/",
+    "http://twitch.tv",
+    "www.twitch.tv",
+    "twitch.tv/example",
+    "https://twitch.tv/",
+    "m.twitch.tv/example",
+    "https://m.twitch.tv/example?x=1#top",
+    "https://www.twitch.tv:443/example",
+    "twitch.tv.",
+    "//twitch.tv/example",
+    "twitch.tv:443/example",
+    "twitch.tv:1",
+    "twitch.tv:65535",
+    "ftp://twitch.tv/x",
+    "wss://www.twitch.tv:8443/x",
+    _fullwidth("twitch.tv"),
+]
+_KICK_FORMS = [
+    f.replace("twitch.tv", "kick.com").replace("TWITCH.TV", "KICK.COM")
+    for f in _TWITCH_FORMS[:-1]
+]
+_KICK_FORMS = [
+    f.replace("twitch", "kick").replace("Twitch", "Kick") for f in _KICK_FORMS
+]
+_KICK_FORMS.append(_fullwidth("kick.com"))
+
+
+@pytest.mark.parametrize(
+    ("forms", "canon"), [(_TWITCH_FORMS, "twitch"), (_KICK_FORMS, "kick")]
+)
+def test_every_accepted_form_is_one_canonical_platform(
+    forms: list[str], canon: str
+) -> None:
+    for name in forms:
+        assert canonical_platform(name) == canon, name
+        b = block([rec("fdemo_age_18_24", 50, platform=name, provider=YT)])
+        assert [s["platform"] for s in b["sections"]] == [canon], name
+        listed = [e["platform"].lower() for e in b["not_available"]]
+        assert canon not in listed, name  # never both available and not available
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "nottwitch.tv",
+        "twitch.tv.evil.com",
+        "https://twitch.tv.evil.com/x",
+        "https://evil.com/twitch.tv",
+        "https://user@evil.com/twitch.tv",
+        "kick.com.evil.com",
+        "notkick.com",
+    ],
+)
+def test_lookalike_hosts_are_not_twitch_or_kick(name: str) -> None:
+    assert canonical_platform(name) not in {"twitch", "kick"}
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "tw" + chr(0x456) + "tch",  # Cyrillic i
+        "k" + chr(0x456) + "ck",
+        chr(0x442) + "witch",  # Cyrillic te
+        "twitch" + chr(0x200B),  # zero-width space
+        "tw" + chr(0x456) + "tch.tv",
+        "",
+    ],
+)
+def test_non_ascii_lookalikes_are_unrecognized_and_not_shown(name: str) -> None:
+    assert canonical_platform(name) == UNRECOGNIZED_PLATFORM
+    b = block([rec("fdemo_age_18_24", 50, platform=name, provider=YT)])
+    assert b["sections"] == []
+    assert b["unrecognized"] == 1
+    assert [e["platform"] for e in b["not_available"]] == ["Twitch", "Kick"]
+
+
+_MALFORMED = [
+    "https://twitch.tv:notaport/x",
+    "https://www.twitch.tv:-1/",
+    "twitch.tv:99999/x",
+    "twitch.tv:65536",
+    "twitch.tv:0",
+    "twitch.tv:",
+    "https://twitch.tv:/x",
+    "twitch.tv:80:80",
+    "https://user:pass@twitch.tv/x",
+    "https://user@twitch.tv/x",
+    "https://a@b@twitch.tv/x",
+    "https://[::1]/twitch.tv",
+    "https://[twitch.tv]/x",
+    "https://twitch.tv%2eevil.com/x",
+    "https://%74witch.tv/x",
+    "https:\\\\twitch.tv\\x",
+    "twitch.tv\\@evil.com",
+    "twitch.tv..",
+    "twitch..tv",
+    "https:///x",
+    "ftp:twitch.tv/x",
+    "https:twitch.tv/x",
+    "@@twitch.tv",
+    "@@@twitch.tv",
+    "https://a-.twitch.tv/x",
+    "https://-a.twitch.tv/x",
+    "a-.twitch.tv",
+    "a..twitch.tv",
+    ".twitch.tv",
+    "a_b.twitch.tv",
+    ("a" * 64) + ".twitch.tv",
+    ".".join(["a" * 60] * 5) + ".twitch.tv",
+]
+
+
+@pytest.mark.parametrize("bad", _MALFORMED)
+@pytest.mark.parametrize("good", ["twitch.tv", "kick.com"])
+def test_malformed_authorities_are_unrecognized_never_a_platform(
+    bad: str, good: str
+) -> None:
+    name = bad.replace("twitch.tv", good)
+    assert canonical_platform(name) == UNRECOGNIZED_PLATFORM, name
+    b = block([rec("fdemo_age_18_24", 50, platform=name, provider=YT)])
+    assert b["sections"] == []
+    assert b["unrecognized"] == 1
+    # a malformed record cannot make a platform look available
+    assert [e["platform"] for e in b["not_available"]] == ["Twitch", "Kick"]
+    assert name not in repr(b) and name not in "\n".join(private_lines(b))
+
+
+@pytest.mark.parametrize("bad", ["@@twitch", "@@kick", "@@@twitch", "@@kick.com"])
+def test_only_one_leading_at_is_a_handle(bad: str) -> None:
+    assert canonical_platform(bad) == UNRECOGNIZED_PLATFORM
+    assert canonical_platform("@twitch") == "twitch"
+    assert canonical_platform("@kick") == "kick"
+
+
+def test_valid_label_edges_are_still_accepted() -> None:
+    assert canonical_platform(("a" * 63) + ".twitch.tv") == "twitch"
+    assert canonical_platform("a-b.kick.com.") == "kick"
