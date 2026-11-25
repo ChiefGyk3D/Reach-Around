@@ -215,8 +215,6 @@ def canonical_platform(name: object) -> str:
     text = text.lstrip("@").strip()
     if not text or not text.isascii() or any(c.isspace() or c < " " for c in text):
         return UNRECOGNIZED_PLATFORM
-    if any(c in text for c in "\\%[]"):
-        return UNRECOGNIZED_PLATFORM
     rest = text
     scheme = _SCHEME.match(rest)
     if scheme:
@@ -231,7 +229,7 @@ def canonical_platform(name: object) -> str:
         return UNRECOGNIZED_PLATFORM
     if host.endswith("."):
         host = host[:-1]  # one trailing dot (an absolute name) is accepted
-    if ".." in host or not _HOSTLIKE.match(host):
+    if host.endswith(".") or ".." in host or not _HOSTLIKE.match(host):
         return UNRECOGNIZED_PLATFORM
     for known, canonical in _PLATFORM_HOSTS.items():
         if host == known or host.endswith("." + known):
