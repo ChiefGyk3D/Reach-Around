@@ -112,6 +112,7 @@ from reach_around.config.zones import ZONES, utc_day_start_iso
 from reach_around.funnel.floor import FLOOR, share_pins_small_count, shown_count
 from reach_around.funnel.floor import UNDER_FLOOR as UNDER_FLOOR
 from reach_around.site.platforms import platform_rows
+from reach_around.site.privacy import gate_notice_parts
 
 KIT_PAGE = Path("kit") / "index.html"
 RETRY_PAGE = Path("kit") / "retry" / "index.html"
@@ -1228,6 +1229,7 @@ def _content(
         "about": projection["about"],
         "photo": projection["photo"],
         "contact": projection["contact"],
+        "consulting_url": projection["consulting_url"],
         "tags": projection["tags"],
         "public_pdf": projection["public_pdf"],
         "number_rows": _metric_rows(measures, config, today, live_day),
@@ -1704,6 +1706,7 @@ def render_kit(
             "site_key": kit.turnstile_site_key,
             "script": TURNSTILE_SCRIPT,
             "categories": _categories(kit, data["measures"]),
+            "notice": gate_notice_parts(config),
         }
     pages: dict[Path, str] = {}
     ctx = base("../", "Media kit", False)

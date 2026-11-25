@@ -1,0 +1,1 @@
+- Docs: architecture decision records for the wiki under `docs/wiki/adr/` (#810, epic #795). Thirteen records with status, date and a source line each, and an index. Decisions not yet merged in code are marked planned. Documentation only, no behavior change.

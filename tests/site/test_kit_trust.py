@@ -961,6 +961,10 @@ def pdf_config_with_source(doc: dict[str, Any], with_source: bool) -> Any:
             "version": 1,
             "creator": {"name": "Example Creator"},
             "features": {"kit_gate": True},
+            "privacy": {
+                "controller_name": "Example Creator",
+                "contact": "example.com/contact",
+            },
             "kit": doc,
             **extra,
         }

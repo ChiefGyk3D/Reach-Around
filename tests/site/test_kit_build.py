@@ -109,6 +109,10 @@ def make_config(kit: dict[str, Any] | None = None, **extra: Any) -> SiteConfig:
             }
         ],
         "features": {"kit_gate": True},
+        "privacy": {
+            "controller_name": "Example Creator",
+            "contact": "example.com/contact",
+        },
         "kit": kit if kit is not None else gated_doc(),
     }
     data.update(extra)
@@ -696,6 +700,10 @@ def test_cli_prints_kit_warnings_and_takes_gated_out(
             }
         ],
         "features": {"kit_gate": True},
+        "privacy": {
+            "controller_name": "Example Creator",
+            "contact": "example.com/contact",
+        },
         "kit": gated_doc(),
     }
     raw["kit"]["metrics"][0]["as_of"] = "2020-01-01"

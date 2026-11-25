@@ -1,0 +1,1 @@
+- Repository: added `.github/CODEOWNERS` naming the owner of the gate, changelog, release, pin and test-configuration paths (#849, epic #757). It only names owners; branch protection still requires no code owner review, so no merge waits on it.

@@ -1,5 +1,7 @@
 # Reach Around: design
 
+> **Stale, kept as history (state STALE, issue #801). Superseded in parts by the 2026-11-19 Paid-plan baseline and the 2026-11-24 storage, privacy and Turnstile decisions; section 7 (free tiers, first mail provider, test subdomain) is the most affected. See the ADR index in `docs/wiki/adr/` once merged (PR #835).**
+
 Status: **draft for the maintainer's approval**. Alpha. Written 2026-10-23 for issue #24, part of epic #1.
 Tagline: *Reach Around. We've got your back.*
 
