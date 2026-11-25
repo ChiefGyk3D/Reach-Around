@@ -49,7 +49,7 @@ export function parseAlertsConfig(raw: unknown): AlertsConfig | null {
   const channels = closedList(o.channels ?? [], CHANNEL_IDS);
   const events = closedList(o.events ?? [], EVENT_KINDS);
   if (channels === null || events === null || channels.size === 0 || events.size === 0) return null;
-  const ve = o.visitor_email ?? "full";
+  const ve = o.visitor_email ?? "masked";
   if (ve !== "full" && ve !== "masked" && ve !== "none") return null;
   const mpm = o.max_per_minute ?? DEFAULT_MAX_PER_MINUTE;
   if (typeof mpm !== "number" || !Number.isInteger(mpm) || mpm < 1 || mpm > MAX_PER_MINUTE_CEILING) return null;
