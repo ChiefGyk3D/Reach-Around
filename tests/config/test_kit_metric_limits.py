@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from reach_around.config import SiteConfig, load_site_config
@@ -64,8 +65,9 @@ def link(i: int) -> dict[str, Any]:
 
 def test_second_counts_metric_on_one_platform_refused() -> None:
     both = [counts(), counts(label="Subscribers")]
-    with pytest.raises(ValidationError, match="one counts metric per platform"):
+    with pytest.raises(ValidationError, match="one counts metric per platform") as exc:
         KitConfig.model_validate(kit_doc(both))
+    assert "twitch" not in str(exc.value)
     assert KitConfig.model_validate(kit_doc([counts(), counts("kick")]))
 
 
@@ -247,3 +249,24 @@ def test_error_formatting_stops_at_the_cap(
     ):
         load_site_config(path)
     assert len(calls) == MAX_REPORTED_PROBLEMS
+
+
+def test_error_details_are_requested_without_input_or_context() -> None:
+    from reach_around.config.models import problem_text
+
+    seen: dict[str, Any] = {}
+
+    class Fake:
+        def errors(self, **kwargs: Any) -> list[dict[str, Any]]:
+            seen.update(kwargs)
+            return [{"loc": ("tabs", 0, "id"), "msg": "Value error, bad"}] * 3
+
+        def error_count(self) -> int:
+            return 3
+
+    assert problem_text(Fake()) == "tabs[0].id: bad; " * 2 + "tabs[0].id: bad"  # type: ignore[arg-type]
+    assert seen == {
+        "include_url": False,
+        "include_input": False,
+        "include_context": False,
+    }

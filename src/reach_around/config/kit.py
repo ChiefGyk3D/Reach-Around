@@ -960,8 +960,8 @@ class KitConfig(_Model):
                 # counts metric would read the same number again.
                 if metric.platform in counted:
                     raise ValueError(
-                        f"the platform {metric.platform!r} has more than one "
-                        "counts metric; use one counts metric per platform"
+                        "a platform has more than one counts metric; "
+                        "use one counts metric per platform"
                     )
                 counted.add(metric.platform)
             label = " ".join(unicodedata.normalize("NFKC", metric.label).split())

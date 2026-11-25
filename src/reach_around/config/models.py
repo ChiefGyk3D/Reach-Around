@@ -1004,22 +1004,32 @@ def _dotted(loc: tuple[int | str, ...]) -> str:
     return out
 
 
+def problem_text(exc: ValidationError) -> str:
+    """The capped, value-free problem list for a failed site config."""
+    problems = []
+    # pydantic builds the whole error list (it has no lazy iterator), so the
+    # bound is the MAX_CONFIG_NODES budget checked before any model is built:
+    # at most one error per value. Drop the offending input and context so the
+    # list holds no copy of the document. Only the printed entries are
+    # formatted; the total comes from the count.
+    for err in itertools.islice(
+        exc.errors(include_url=False, include_input=False, include_context=False),
+        MAX_REPORTED_PROBLEMS,
+    ):
+        where = _dotted(err["loc"])
+        msg = err["msg"].removeprefix("Value error, ")
+        problems.append(f"{where}: {msg}" if where else msg)
+    extra = exc.error_count() - len(problems)
+    text = "; ".join(problems)
+    if extra > 0:
+        text += f"; and {extra} more problems"
+    return text
+
+
 def load_site_config(path: Path) -> SiteConfig:
     """Load and validate ``path``; every failure is a ``ConfigError``."""
     raw = load_yaml(path, max_bytes=MAX_CONFIG_BYTES)
     try:
         return SiteConfig.model_validate(raw)
     except ValidationError as exc:
-        problems = []
-        # Format only the printed entries; the total comes from the count.
-        for err in itertools.islice(
-            exc.errors(include_url=False), MAX_REPORTED_PROBLEMS
-        ):
-            where = _dotted(err["loc"])
-            msg = err["msg"].removeprefix("Value error, ")
-            problems.append(f"{where}: {msg}" if where else msg)
-        extra = exc.error_count() - len(problems)
-        text = "; ".join(problems)
-        if extra > 0:
-            text += f"; and {extra} more problems"
-        raise ConfigError(str(path), None, text) from None
+        raise ConfigError(str(path), None, problem_text(exc)) from None
