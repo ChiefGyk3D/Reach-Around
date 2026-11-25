@@ -188,9 +188,10 @@ applied from here" is structural:
   `scripts/check-edge.py` whose bytes contain `CLOUDFLARE_EDGE_READ_TOKEN` fails,
   whatever its suffix, depth or encoding. Only `docs/edge.md` (one reviewed path,
   not a suffix, since a script can source a `.txt` file) may name it;
-  `tests/test_edge_settings.py` may hold it only as a whole string element of a
-  list or tuple of fixtures, never as a value, identifier, f-string part or piece
-  of a concatenation. Directories are skipped by name at the repository root only
+  `tests/test_edge_settings.py` may not hold it at all, as a literal anywhere
+  (a list or tuple element included, since a container can be subscripted,
+  starred, iterated or passed to a call), as an identifier, f-string part or
+  piece of a concatenation; its fixtures use `check.TOKEN_ENV`. Directories are skipped by name at the repository root only
   (`.git`, virtual environments, caches). A symlink to a directory is reported, a
   symlink to a file is followed to its target and refused if it is outside the
   repository, missing or not a regular file, and a FIFO, socket or device is

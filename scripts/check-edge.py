@@ -405,15 +405,16 @@ def _constant_text(node: ast.AST) -> str | None:
 
 
 def fixture_file_problem(path: Path) -> str | None:
-    """The test file may hold the name only as a whole fixture string element."""
+    """The test file may not hold the name at all; fixtures use check.TOKEN_ENV.
+
+    A literal inside a list or tuple cannot be allowed: the container can be
+    subscripted, starred, iterated or passed to a call, which names the variable
+    for real.
+    """
     try:
         tree = ast.parse(path.read_bytes())
     except (OSError, SyntaxError, ValueError):
         return "cannot be parsed, so its use of the read token name is unchecked"
-    parents: dict[int, ast.AST] = {}
-    for parent in ast.walk(tree):
-        for child in ast.iter_child_nodes(parent):
-            parents[id(child)] = parent
     for node in ast.walk(tree):
         if isinstance(node, ast.Name | ast.arg | ast.Attribute):
             ident = (
@@ -424,11 +425,10 @@ def fixture_file_problem(path: Path) -> str | None:
             if TOKEN_ENV in ident:
                 return f"uses the read token name as an identifier (line {node.lineno})"
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            if TOKEN_ENV in node.value and not isinstance(
-                parents.get(id(node)), ast.Tuple | ast.List
-            ):
+            if TOKEN_ENV in node.value:
                 return (
-                    f"uses the read token name outside a fixture (line {node.lineno})"
+                    f"holds the read token name as a literal (line {node.lineno}); "
+                    "use check.TOKEN_ENV"
                 )
         if isinstance(node, ast.BinOp | ast.JoinedStr):
             text = _constant_text(node)
@@ -439,8 +439,7 @@ def fixture_file_problem(path: Path) -> str | None:
             if all(t is not None for t in texts) and TOKEN_ENV in "".join(
                 t for t in texts if t is not None
             ):
-                if not any(t is not None and TOKEN_ENV in t for t in texts):
-                    return f"joins pieces of the read token name (line {node.lineno})"
+                return f"joins pieces of the read token name (line {node.lineno})"
     return None
 
 

@@ -1766,13 +1766,13 @@ def test_the_extra_field_difference_reaches_the_live_exit_code(
     [
         (
             "scripts/edge-plan.py",
-            "import os\nx = os.environ['CLOUDFLARE_EDGE_READ_TOKEN']\n",
+            f"import os\nx = os.environ[{check.TOKEN_ENV!r}]\n",
         ),
         (
             ".github/workflows/edge.yml",
-            "env:\n  T: ${{ env.CLOUDFLARE_EDGE_READ_TOKEN }}\n",
+            f"env:\n  T: ${{{{ env.{check.TOKEN_ENV} }}}}\n",
         ),
-        ("tools/run", "#!/bin/sh\necho $CLOUDFLARE_EDGE_READ_TOKEN\n"),
+        ("tools/run", f"#!/bin/sh\necho ${check.TOKEN_ENV}\n"),
     ],
 )
 def test_naming_the_read_token_outside_the_checker_fails_the_offline_check(
@@ -2145,8 +2145,32 @@ def test_the_test_file_exemption_rejects_computed_use_of_the_name(
     assert scan(root, check.TOKEN_TEST_FILE, body.encode()), body
 
 
-def test_the_test_file_may_hold_the_name_only_as_a_fixture_list_element(
-    root: Path,
+@pytest.mark.parametrize(
+    "body",
+    [
+        f"import os\nos.environ[({NAME!r},)[0]]\n",
+        f"import os\nos.environ[[{NAME!r}][0]]\n",
+        f"import os\nos.environ.get(*({NAME!r},))\n",
+        f"import os\nfor n in ({NAME!r},):\n    os.environ[n]\n",
+        f"import os\nos.environ.get(*[{NAME!r}])\n",
+        f"import os\nos.getenv(*({NAME!r},), None)\n",
+        f"import os\nprint(list(({NAME!r},)))\nos.environ[{NAME!r}]\n",
+        f"X = [({NAME!r}, 1)]\n",
+        f"X = (['a', ({NAME!r},)],)\n",
+        f"CASES = [('a', 'echo {NAME}'), 'b {NAME}']\n",
+        f"CASES = [{NAME!r}]\n",
+        f"CASES = ({NAME!r},)\n",
+    ],
+)
+def test_the_test_file_may_not_hold_the_name_even_inside_a_list_or_tuple(
+    root: Path, body: str
 ) -> None:
-    body = f"CASES = [('a', 'echo {NAME}'), 'b {NAME}']\n"
-    assert not scan(root, check.TOKEN_TEST_FILE, body.encode())
+    assert scan(root, check.TOKEN_TEST_FILE, body.encode()), body
+    assert check_file_problem(root, body) is not None, body
+
+
+def check_file_problem(root: Path, body: str) -> str | None:
+    path = root / "probe_test_file.py"
+    path.write_text(body)
+    problem: str | None = check.fixture_file_problem(path)
+    return problem
