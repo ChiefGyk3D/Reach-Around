@@ -8,9 +8,8 @@
 # must be the analytics one; every run prints the name it acts on. IDENTITY is checked on the live
 # database, not by name: with --apply the script reads the db_identity row and refuses (exit 3) unless
 # it is exactly 'analytics', whatever the database is called or how it was reached (a name, an alias).
-# A DATABASE name containing "leads" is also refused up front (exit 3, a convenience, not the
-# safeguard). The leads database has its own backup procedure (docs/backup-restore.md), never this
-# allowlist.
+# The name is never a safeguard: a valid analytics database may be called anything.
+# The leads database has its own backup procedure (docs/backup-restore.md), never this allowlist.
 #
 # Usage: scripts/backup-d1.sh DATABASE DEST_DIR            # dry run: prints the plan
 #        scripts/backup-d1.sh DATABASE DEST_DIR --apply    # writes the export
@@ -68,13 +67,6 @@ case "$db" in
 "" | -* | *[!A-Za-z0-9._-]*)
   echo "error: bad database name" >&2
   exit 2
-  ;;
-esac
-
-case "$(printf '%s' "$db" | tr '[:upper:]' '[:lower:]')" in
-*leads*)
-  echo "refused: DATABASE looks like the leads database. This script exports the analytics database only; the leads database has its own backup and erasure procedure (docs/backup-restore.md)." >&2
-  exit 3
   ;;
 esac
 

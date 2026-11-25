@@ -157,15 +157,30 @@ def test_the_finished_run_names_the_database_it_exported(tmp_path: Path) -> None
 
 
 @pytest.mark.parametrize("name", ["reach-around-leads", "LEADS_DB", "my.Leads.db"])
-def test_a_leads_database_name_is_refused_before_anything_is_written(
+def test_an_analytics_database_with_leads_in_its_name_is_still_exported(
+    tmp_path: Path, name: str
+) -> None:
+    # Round 6: a name is not an identity. The database answers for itself, so a
+    # valid analytics database is never refused for what it is called.
+    env = make(tmp_path)
+    d = dest(tmp_path)
+    dry = run(env, name, str(d))
+    assert dry.returncode == 0, dry.stderr
+    done = run(env, name, str(d), "--apply")
+    assert done.returncode == 0, done.stderr
+    assert f"analytics database {name}" in done.stdout
+
+
+@pytest.mark.parametrize("name", ["reach-around-leads", "LEADS_DB", "my.Leads.db"])
+def test_a_leads_identity_is_refused_whatever_the_name_says(
     tmp_path: Path, name: str
 ) -> None:
     env = make(tmp_path)
+    set_identity(env, "leads")
     d = dest(tmp_path)
-    for extra in ((), ("--apply",)):
-        r = run(env, name, str(d), *extra)
-        assert r.returncode == 3, r.stdout
-        assert "leads database" in r.stderr
+    r = run(env, name, str(d), "--apply")
+    assert r.returncode == 3, r.stdout
+    assert "did not identify itself as the analytics database" in r.stderr
     assert list(d.iterdir()) == []
 
 

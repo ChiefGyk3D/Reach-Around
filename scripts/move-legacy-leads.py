@@ -373,12 +373,12 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--source", required=True, help="the analytics D1 database")
     parser.add_argument("--dest", required=True, help="the leads D1 database")
     parser.add_argument("--workdir", required=True, help="private (mode 700) dir")
-    parser.add_argument("--copy", action="store_true", help="copy and verify only")
-    parser.add_argument("--purge", action="store_true", help="copy, verify, delete")
-    parser.add_argument(
-        "--freeze", action="store_true", help="refuse new rows (step 1)"
-    )
-    parser.add_argument("--verify", action="store_true", help="the cutover check")
+    # One mode per run: a second flag would be silently ignored, so it is refused.
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--copy", action="store_true", help="copy and verify only")
+    modes.add_argument("--purge", action="store_true", help="copy, verify, delete")
+    modes.add_argument("--freeze", action="store_true", help="refuse new rows (step 1)")
+    modes.add_argument("--verify", action="store_true", help="the cutover check")
     args = parser.parse_args(argv)
     for value in (args.source, args.dest):
         if not NAME.match(value):

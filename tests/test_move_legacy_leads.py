@@ -7,6 +7,7 @@ the Worker's own migration folders (analytics and leads). Everything is syntheti
 
 from __future__ import annotations
 
+import itertools
 import sqlite3
 import stat
 import subprocess
@@ -346,6 +347,27 @@ def test_a_workdir_inside_a_git_work_tree_is_refused(tmp_path: Path) -> None:
     r = run(env, inner, "--purge")
     assert r.returncode == 3
     assert count(env["STUB_SRC"], "leads") == 3
+
+
+_MODES = ("--copy", "--purge", "--freeze", "--verify")
+
+
+@pytest.mark.parametrize(("first", "second"), list(itertools.combinations(_MODES, 2)))
+def test_conflicting_modes_are_refused_before_any_write(
+    tmp_path: Path, first: str, second: str
+) -> None:
+    # Round 6: only one mode used to run, with exit 0, and the other was ignored.
+    env = make(tmp_path)
+    before_src = count(env["STUB_SRC"], "leads")
+    before_dest = count(env["STUB_DEST"], "leads")
+    work = workdir(tmp_path)
+    for order in ((first, second), (second, first)):
+        r = run(env, work, *order)
+        assert r.returncode == 2, r.stdout
+        assert "not allowed with" in r.stderr
+        assert r.stdout == ""
+    assert count(env["STUB_SRC"], "leads") == before_src
+    assert count(env["STUB_DEST"], "leads") == before_dest
 
 
 def test_a_bad_database_name_is_a_usage_error(tmp_path: Path) -> None:
