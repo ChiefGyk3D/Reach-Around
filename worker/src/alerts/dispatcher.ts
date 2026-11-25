@@ -36,6 +36,7 @@ import { createMatrixChannel } from "./matrix";
 import {
   claimDedup,
   dedupKey,
+  pruneAlertState,
   eventHash,
   MAX_WHO_CHARS,
   MINUTE_MS,
@@ -286,12 +287,16 @@ export function createDispatcher() {
       let errored = false;
       try {
         const dailyBudget = loadKitLimits(env).dailyAlertBudget;
+        // Housekeeping runs exactly once per admitted event, so the row caps never fill with expired rows:
+        // claimDedup does it in its own batch when dedup is configured, and we do it here when it is not.
         if (hash !== null) {
           if (!(await claimDedup(env.DB, site, hash, now, DEDUP_MS))) {
             status.deduped++;
             return receipt;
           }
           claimed = true;
+        } else {
+          await pruneAlertState(env.DB, now);
         }
         await Promise.all(
           candidates.map(async (ch) => {
