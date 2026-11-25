@@ -656,6 +656,40 @@ def source_level(field: str) -> MeasureVisibility:
     return narrow(kit.KIT_FIELD_POLICY[field].visibility, kit.DISPLAY_POLICY[field])
 
 
+def is_source_field(name: str) -> bool:
+    """Whether ``name`` is a config field with a display policy. The one question
+    other modules may ask about the policy tables; they never read the tables."""
+    from reach_around.config import kit
+
+    return name in kit.KIT_FIELD_POLICY
+
+
+@dataclass(frozen=True)
+class MeasureBuilder:
+    """One function that constructs ``Measure`` objects, and the config fields
+    whose policy bounds what it builds (empty when the entry names its own
+    field, as the hand-kept entries do)."""
+
+    module: str
+    function: str
+    fields: tuple[str, ...]
+
+
+# The canonical list of every function that builds a ``Measure`` from config.
+# Visibility reaches a builder only through ``source_level``; no builder reads
+# ``KIT_FIELD_POLICY`` or ``DISPLAY_POLICY``. A new builder is added here, and
+# ``tests/config/test_kit_measures.py`` runs every entry under a narrowed policy.
+MEASURE_BUILDERS: tuple[MeasureBuilder, ...] = (
+    MeasureBuilder("measures", "numbers_measures", ("metrics",)),
+    MeasureBuilder("measures", "analytics_measures", ("analytics",)),
+    MeasureBuilder("measures", "live_measures", ("live",)),
+    MeasureBuilder("measures", "engagement_measures", ("engagement",)),
+    MeasureBuilder("fediverse", "fediverse_measures", ("fediverse",)),
+    MeasureBuilder("channels", "channel_measures", ("channels",)),
+    MeasureBuilder("handkept", "to_measure", ()),
+)
+
+
 def _entry(key: str) -> MeasureDef:
     return REGISTRY[key]
 
