@@ -394,7 +394,7 @@ def load_error(tmp_path: Path, profile_card: Any) -> str:
 def test_loader_names_the_bad_tag_with_a_bracket_path(tmp_path: Path) -> None:
     message = load_error(tmp_path, {"tags": ["ok", "x" * 31]})
     assert "profile_card.tags[1]: " in message
-    assert "at most 30 characters" in message
+    assert "is too long" in message
 
 
 def test_loader_names_the_bad_button_url_and_label(tmp_path: Path) -> None:
