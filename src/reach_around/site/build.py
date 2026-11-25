@@ -103,7 +103,11 @@ from reach_around.site.qr import BORDER as QR_BORDER
 from reach_around.site.qr import qr_file_name, qr_matrix, qr_svg
 from reach_around.site.redirects import render_redirects
 from reach_around.site.robots import render_robots
-from reach_around.site.supportcheck import check_qr_svg, check_support_html
+from reach_around.site.supportcheck import (
+    check_crypto_group_html,
+    check_qr_svg,
+    check_support_html,
+)
 from reach_around.site.theme import preload_fonts, theme_css
 from reach_around.site.visibility import visible_blocks
 
@@ -213,9 +217,17 @@ def _page_path(tab_index: int, tab: Tab) -> Path:
     return Path(tab.id) / "index.html"
 
 
-def _screens(config: SiteConfig) -> list[str]:
-    """The extra compact screens that hold a group, in tab-bar order (#873)."""
-    used = {tab.screen for tab in config.tabs if tab.screen is not None}
+def _screens(config: SiteConfig, shown: list[list[Block]] | None = None) -> list[str]:
+    """The extra compact screens that hold a group, in tab-bar order (#873).
+
+    With ``shown`` (the blocks left after the date windows) a screen with no
+    visible link is left out: no page, no tab in the bar.
+    """
+    used = {
+        tab.screen
+        for i, tab in enumerate(config.tabs)
+        if tab.screen is not None and (shown is None or _links_in(shown[i]))
+    }
     return [name for name in SCREEN_PATHS if name in used]
 
 
@@ -625,7 +637,7 @@ def _render_smart_stack_page(
         else []
     )
     tab = config.tabs[0]
-    names = _screens(config)
+    names = _screens(config, shown)
     screen_nav = (
         [
             {
@@ -650,7 +662,7 @@ def _render_smart_stack_page(
     ):
         featured = {"link": links[pick.link], "kicker": pick.kicker}
     root = "" if screen is None else "../"
-    return env.get_template("smart_stack.html").render(
+    html = env.get_template("smart_stack.html").render(
         compact=compact,
         screen=screen,
         screen_nav=screen_nav,
@@ -700,6 +712,9 @@ def _render_smart_stack_page(
         custom_css=custom_css,
         page_frames=_page_has_frames(config, every),
     )
+    if screen == "support":
+        check_crypto_group_html(html)
+    return html
 
 
 def _paragraphs(text: str) -> list[list[str]]:
@@ -1013,7 +1028,7 @@ def _render_pages(
                 pages[Path(tab.id) / "index.html"] = _render_spoke_page(
                     env, config, i, shown[i], custom_css
                 )
-        for name in _screens(config):
+        for name in _screens(config, shown):
             pages[Path(name) / "index.html"] = _render_smart_stack_page(
                 env, config, shown, custom_css, today, screen=name
             )

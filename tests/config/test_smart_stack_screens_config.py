@@ -50,7 +50,7 @@ def screens() -> dict[str, Any]:
             "title": "Crypto tips",
             "intent": "crypto",
             "screen": "support",
-            "blocks": links("crypto", 4),
+            "blocks": links("crypto", 4, url="tab:help-crypto"),
         },
         {
             "id": "say",
@@ -129,8 +129,8 @@ def test_an_unknown_screen_is_refused_without_echoing_it(bad: object) -> None:
     data = screens()
     tab(data, "say")["screen"] = bad
     if bad is None:
-        # None means "no screen": the group moves home, which is valid.
-        SiteConfig.model_validate(data)
+        # None means "no screen": a screen-only intent on home is refused.
+        assert any("belongs on a screen" in m for m in messages(data))
         return
     found = messages(data)
     assert len(found) == 1, found
@@ -151,14 +151,12 @@ def test_the_watch_group_stays_home_and_takes_no_note() -> None:
 
 def test_an_intent_may_repeat_on_another_screen_but_not_on_the_same_one() -> None:
     data = screens()
-    twin = copy.deepcopy(tab(data, "follow"))
-    twin.update(id="follow-again", screen="support")
-    twin["blocks"] = links("again", 2)
+    twin = copy.deepcopy(tab(data, "hire"))
+    twin.update(id="hire-home", screen=None, blocks=links("hirehome", 1))
     data["tabs"].append(twin)
-    SiteConfig.model_validate(data)  # follow on home and follow on support
-    same = copy.deepcopy(twin)
-    same["id"] = "follow-third"
-    same["blocks"] = links("third", 2)
+    SiteConfig.model_validate(data)  # hire on the home screen and on Contact
+    same = copy.deepcopy(tab(data, "help-paid"))
+    same.update(id="paid-twice", blocks=links("twice", 4))
     data["tabs"].append(same)
     assert any("may appear only once" in m for m in messages(data))
 
@@ -267,3 +265,165 @@ def test_unknown_tab_fields_are_still_refused() -> None:
     data = screens()
     tab(data, "say")["screens"] = "support"
     assert messages(data)
+
+
+# ---- Which intent goes on which screen, in what order (#873, review round 1) ----
+
+SUPPORT_ORDER = ["help-free", "help-paid", "help-crypto"]
+
+
+def reorder(data: dict[str, Any], first: list[str]) -> dict[str, Any]:
+    """Move the named tabs to the end of the tab list, in the order given."""
+    moved = [tab(data, ident) for ident in first]
+    data["tabs"] = [t for t in data["tabs"] if t["id"] not in first] + moved
+    return data
+
+
+@pytest.mark.parametrize(
+    "intent",
+    ["videos", "follow", "community", "support", "work", "shop", "blog", "gear"]
+    + ["more", "contact", "hire"],
+)
+def test_the_support_screen_refuses_every_other_intent(intent: str) -> None:
+    data = screens()
+    data["tabs"].append(
+        {
+            "id": "stray",
+            "title": "Stray group",
+            "intent": intent,
+            "screen": "support",
+            "blocks": links("stray", 2),
+        }
+    )
+    found = messages(data)
+    assert any("is not allowed on that screen" in m for m in found), found
+    assert not any("Stray group" in m for m in found)
+
+
+@pytest.mark.parametrize(
+    "intent",
+    ["videos", "follow", "community", "support", "work", "shop", "blog", "gear"]
+    + ["more", "free", "paid", "crypto"],
+)
+def test_the_contact_screen_refuses_every_other_intent(intent: str) -> None:
+    data = screens()
+    data["tabs"].append(
+        {
+            "id": "stray",
+            "title": "Stray group",
+            "intent": intent,
+            "screen": "contact",
+            "blocks": links("stray", 2),
+        }
+    )
+    found = messages(data)
+    assert any("is not allowed on that screen" in m for m in found), found
+
+
+@pytest.mark.parametrize("intent", ["free", "paid", "crypto", "contact"])
+def test_a_screen_only_intent_is_refused_on_the_home_screen(intent: str) -> None:
+    data = screens()
+    data["tabs"] = [t for t in data["tabs"] if t["intent"] != intent]
+    data["tabs"].append(
+        {
+            "id": "stray",
+            "title": "Stray group",
+            "intent": intent,
+            "blocks": links(
+                "stray", 2, **({"url": "tab:stray"} if intent == "crypto" else {})
+            ),
+        }
+    )
+    found = messages(data)
+    assert any("belongs on a screen" in m for m in found), found
+
+
+def test_hire_may_sit_on_the_home_screen_or_the_contact_screen() -> None:
+    data = screens()
+    tab(data, "hire")["screen"] = None
+    SiteConfig.model_validate(data)
+
+
+@pytest.mark.parametrize(
+    "order",
+    [
+        ["help-paid", "help-free", "help-crypto"],
+        ["help-crypto", "help-paid", "help-free"],
+        ["help-free", "help-crypto", "help-paid"],
+        ["help-paid", "help-crypto", "help-free"],
+        ["help-crypto", "help-free", "help-paid"],
+    ],
+)
+def test_the_support_screen_keeps_free_then_paid_then_crypto(order: list[str]) -> None:
+    data = reorder(screens(), order)
+    found = messages(data)
+    assert any("groups on a screen keep their order" in m for m in found), found
+
+
+def test_the_contact_screen_keeps_contact_then_hire() -> None:
+    data = reorder(screens(), ["hire", "say"])
+    assert any("groups on a screen keep their order" in m for m in messages(data))
+    SiteConfig.model_validate(reorder(screens(), ["say", "hire"]))
+
+
+def test_the_order_rule_is_per_screen_not_across_the_tab_list() -> None:
+    # Contact groups between the support groups do not break the support order.
+    data = reorder(screens(), ["help-free", "say", "help-paid", "hire", "help-crypto"])
+    SiteConfig.model_validate(data)
+
+
+@pytest.mark.parametrize("keep", [["help-paid"], ["help-crypto"], ["help-free"]])
+def test_a_support_screen_may_hold_a_subset_in_order(keep: list[str]) -> None:
+    data = screens()
+    data["tabs"] = [
+        t for t in data["tabs"] if t.get("screen") != "support" or t["id"] in keep
+    ]
+    SiteConfig.model_validate(data)
+
+
+def test_the_refusals_are_fixed_text_and_never_echo_a_config_value() -> None:
+    data = screens()
+    for t in data["tabs"]:
+        if t["id"] == "help-paid":
+            t["title"] = "ZZ-secret-title"
+            t["id"] = "zz-secret-id"
+    reorder(data, ["help-crypto", "zz-secret-id", "help-free"])
+    found = " ".join(messages(data))
+    assert "ZZ-secret-title" not in found
+    assert "zz-secret-id" in found or "tab '" in found  # the tab id is the locator
+    assert "ZZ-secret" not in found.replace("zz-secret-id", "")
+
+
+# ---- The crypto group never sits behind an outbound link ----
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://attacker.example/collect-wallet",
+        "https://example.invalid/crypto",
+    ],
+)
+def test_a_crypto_group_refuses_any_url_that_is_not_a_tab_link(url: str) -> None:
+    data = screens()
+    tab(data, "help-crypto")["blocks"][0]["url"] = url
+    found = messages(data)
+    assert any("a crypto group links inside this site only" in m for m in found), found
+    assert not any(url in m for m in found)
+
+
+@pytest.mark.parametrize("url", ["javascript:alert(1)", "data:text/html,x"])
+def test_a_crypto_group_refuses_a_script_url_too(url: str) -> None:
+    data = screens()
+    tab(data, "help-crypto")["blocks"][0]["url"] = url
+    assert messages(data)
+
+
+def test_a_crypto_group_takes_a_tab_link_and_no_image() -> None:
+    data = screens()
+    SiteConfig.model_validate(data)
+    tab(data, "help-crypto")["blocks"][0]["image"] = "thumb.png"
+    tab(data, "help-crypto")["blocks"][0]["image_alt"] = "x"
+    assert any(
+        "a crypto group links inside this site only" in m for m in messages(data)
+    )

@@ -211,19 +211,19 @@ tabs:
     blocks:
       - id: crypto-bitcoin
         title: Bitcoin
-        url: https://example.invalid/crypto-bitcoin
+        url: "tab:help-crypto"
         icon: bitcoin
       - id: crypto-monero
         title: Monero
-        url: https://example.invalid/crypto-monero
+        url: "tab:help-crypto"
         icon: monero
       - id: crypto-ethereum
         title: Ethereum
-        url: https://example.invalid/crypto-ethereum
+        url: "tab:help-crypto"
         icon: ethereum
       - id: crypto-solana
         title: Solana
-        url: https://example.invalid/crypto-solana
+        url: "tab:help-crypto"
         icon: solana
   # ---- Contact screen (/contact/): ways to get in touch, then a separate hire block.
   - id: contact-say

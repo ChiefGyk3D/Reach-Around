@@ -10,12 +10,19 @@ from typing import Any
 
 import pytest
 import yaml
+from markupsafe import escape
 from pydantic import ValidationError
 from test_smart_stack_compact import raw as compact_raw
 
 from reach_around.config import SiteConfig
 from reach_around.config.models import Link
+from reach_around.site import build as build_module
 from reach_around.site.build import _page_paths, build_site
+from reach_around.site.supportcheck import (
+    SupportPageError,
+    check_crypto_group_html,
+    check_support_html,
+)
 
 TODAY = date(2027, 3, 10)
 HERE = Path(__file__).parent
@@ -73,8 +80,8 @@ def raw() -> dict[str, Any]:
             "intent": "crypto",
             "screen": "support",
             "blocks": [
-                block("crypto-btc", "Bitcoin", icon="bitcoin"),
-                block("crypto-xmr", "Monero", icon="monero"),
+                block("crypto-btc", "Bitcoin", icon="bitcoin", url="tab:help-crypto"),
+                block("crypto-xmr", "Monero", icon="monero", url="tab:help-crypto"),
             ],
         },
         {
@@ -144,9 +151,16 @@ def test_every_link_is_on_exactly_one_page_and_the_watch_group_stays_home(
     }
     everything = [i for ids in by_page.values() for i in ids]
     assert len(everything) == len(set(everything))
-    expected = {b.id for t in config.tabs for b in t.blocks if isinstance(b, Link)}
+    # Crypto tiles are inside links (no click path), so they carry no link id.
+    expected = {
+        b.id
+        for t in config.tabs
+        if t.intent != "crypto"
+        for b in t.blocks
+        if isinstance(b, Link)
+    }
     assert set(everything) == expected
-    for tab in config.tabs:
+    for tab in (t for t in config.tabs if t.intent != "crypto"):
         name = f"{tab.screen}/index.html" if tab.screen else "index.html"
         for link in (b for b in tab.blocks if isinstance(b, Link)):
             assert link.id in by_page[name], (tab.id, link.id)
@@ -368,3 +382,362 @@ def test_screen_html_matches_golden(
         target.write_text(html, encoding="utf-8")
     assert target.is_file(), "no golden file; run pytest --update-golden"
     assert html == target.read_text(encoding="utf-8")
+
+
+# ---- Review round 1 (#873): empty screens, the crypto boundary, hostile text ----
+
+HOSTILE_TEXT = [
+    "<script>alert(1)</script>",
+    '"><img src=x onerror=alert(1)>',
+    "' onmouseover='boom()",
+    "a & b < c > d",
+    "שלום السلام",  # RTL letters
+    "‮evil‬",  # RTL override and pop
+    "zero​width",
+    "bom﻿here",
+    "L" * 400,
+]
+NEW_GROUPS = ["help-free", "help-paid", "help-crypto", "say", "hire"]
+SCREEN_OF = {
+    "help-free": "support",
+    "help-paid": "support",
+    "help-crypto": "support",
+    "say": "contact",
+    "hire": "contact",
+}
+ADDRESS = "bc1qexampleexampleexampleexampleexample"
+
+
+def group(data: dict[str, Any], ident: str) -> dict[str, Any]:
+    return next(t for t in data["tabs"] if t["id"] == ident)
+
+
+def expire(data: dict[str, Any], ident: str) -> None:
+    for item in group(data, ident)["blocks"]:
+        item["show_until"] = "2027-03-01"
+
+
+def written(out: Path) -> set[str]:
+    return {p.relative_to(out).as_posix() for p in out.rglob("*.html")}
+
+
+def tab_bar(html: str) -> list[str]:
+    nav = re.search(r'<nav class="smart-screens".*?</nav>', html, re.S)
+    return re.findall(r">([^<]+)</a>", nav.group(0)) if nav else []
+
+
+def support_page_config() -> dict[str, Any]:
+    return {
+        "title": "Support",
+        "blocks": [
+            {"id": "pay", "coins": [{"coin": "btc", "address": ADDRESS}]},
+        ],
+    }
+
+
+def test_a_screen_whose_links_are_all_expired_is_not_built_or_advertised(
+    tmp_path: Path,
+) -> None:
+    data = raw()
+    for ident in ("help-free", "help-paid", "help-crypto"):
+        expire(data, ident)
+    out = build(tmp_path, data)
+    assert "support/index.html" not in written(out)
+    assert not (out / "support").exists()
+    for name in ("index.html", "contact/index.html"):
+        assert tab_bar(page(out, name)) == ["Links", "Contact"]
+
+
+def test_every_screen_expired_leaves_no_tab_bar_and_no_screen_page(
+    tmp_path: Path,
+) -> None:
+    data = raw()
+    for ident in NEW_GROUPS:
+        expire(data, ident)
+    out = build(tmp_path, data)
+    assert "index.html" in written(out)
+    assert not {"support/index.html", "contact/index.html"} & written(out)
+    assert 'class="smart-screens"' not in page(out, "index.html")
+    assert "smart-has-tabs" not in page(out, "index.html")
+
+
+def test_a_screen_with_one_expired_group_keeps_its_page_and_other_groups(
+    tmp_path: Path,
+) -> None:
+    data = raw()
+    expire(data, "help-paid")
+    out = build(tmp_path, data)
+    html = page(out, "support/index.html")
+    assert "Paid ways to help" not in html
+    assert "Free ways to help" in html and "Crypto tips" in html
+    assert tab_bar(html) == ["Links", "Support", "Contact"]
+
+
+def test_an_expired_hire_link_drops_the_panel_and_keeps_contact(
+    tmp_path: Path,
+) -> None:
+    data = raw()
+    expire(data, "hire")
+    out = build(tmp_path, data)
+    html = page(out, "contact/index.html")
+    assert "smart-hire" not in html and "Hire me" not in html
+    assert "Get in touch" in html
+
+
+def test_a_hire_only_contact_screen_that_is_expired_is_not_built(
+    tmp_path: Path,
+) -> None:
+    data = raw()
+    data["tabs"] = [t for t in data["tabs"] if t["id"] != "say"]
+    expire(data, "hire")
+    out = build(tmp_path, data)
+    assert "contact/index.html" not in written(out)
+    assert tab_bar(page(out, "index.html")) == ["Links", "Support"]
+
+
+def test_a_future_window_hides_a_screen_until_it_opens(tmp_path: Path) -> None:
+    data = raw()
+    for item in group(data, "say")["blocks"]:
+        item["show_from"] = "2027-04-01"
+    group(data, "hire")["blocks"][0]["show_from"] = "2027-04-01"
+    out = build(tmp_path, data)
+    assert "contact/index.html" not in written(out)
+
+
+# ---- The crypto group is inside links only, checked on the built page ----
+
+
+def crypto_html(extra: str = "", href: str = "../support/#group-crypto") -> str:
+    return (
+        "<!doctype html><html><body><main>"
+        '<section class="smart-group smart-group-crypto" id="group-crypto" '
+        'aria-labelledby="group-crypto-title"><h2 id="group-crypto-title">Crypto</h2>'
+        f'<div class="smart-tiles"><a class="link" href="{href}">'
+        '<span class="link-chip"><span class="icon icon-bitcoin"></span></span>'
+        '<span class="link-text"><span class="link-title">Bitcoin</span></span></a>'
+        f"{extra}</div></section></main></body></html>"
+    )
+
+
+def test_the_built_crypto_group_holds_only_inside_links(tmp_path: Path) -> None:
+    html = page(build(tmp_path), "support/index.html")
+    check_crypto_group_html(html)
+    section = re.search(r'<section[^>]*id="group-crypto".*?</section>', html, re.S)
+    assert section is not None
+    hrefs = re.findall(r'href="([^"]*)"', section.group(0))
+    assert hrefs
+    assert all(h == "../support/#group-crypto" for h in hrefs)
+    assert "ping=" not in section.group(0)
+    assert "https:" not in section.group(0)
+
+
+@pytest.mark.parametrize(
+    "href", ["../support/#group-crypto", "#x", "./", "../", "a/b/", "../#group-videos"]
+)
+def test_the_crypto_check_accepts_the_inside_shapes(href: str) -> None:
+    check_crypto_group_html(crypto_html(href=href))
+
+
+@pytest.mark.parametrize(
+    "href",
+    [
+        "https://attacker.example/collect",
+        "HTTPS://attacker.example/",
+        "http://attacker.example/",
+        "//attacker.example/x",
+        "javascript:alert(1)",
+        "data:text/html,x",
+        "mailto:a@example.invalid",
+        "../x?next=https://attacker.example",
+        " https://attacker.example",
+        "..\\attacker.example",
+    ],
+)
+def test_the_crypto_check_refuses_a_link_that_leaves_the_site(href: str) -> None:
+    with pytest.raises(SupportPageError):
+        check_crypto_group_html(crypto_html(href=href))
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        '<form action="/x"><input name="k"></form>',
+        '<iframe src="../x"></iframe>',
+        '<img src="../x.png" alt="">',
+        "<script>1</script>",
+        "<object data='../x'></object>",
+        "<embed src='../x'>",
+        "<svg><a href='../x'></a></svg>",
+        "<style>a{}</style>",
+        '<span onclick="x()">t</span>',
+        '<span style="color:red">t</span>',
+        "<!-- a comment -->",
+        '<button type="button">Copy</button>',
+        '<a class="link" href="../x" ping="https://attacker.example/p">t</a>',
+        "<code class='crypto-address'>bc1qaddr</code>",
+    ],
+)
+def test_the_crypto_check_refuses_other_content_in_the_group(extra: str) -> None:
+    with pytest.raises(SupportPageError):
+        check_crypto_group_html(crypto_html(extra))
+
+
+def test_an_unclosed_crypto_group_is_refused() -> None:
+    with pytest.raises(SupportPageError):
+        check_crypto_group_html(crypto_html().replace("</section>", ""))
+
+
+def test_a_link_inside_crypto_content_fails_the_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If a tile ever carries an outbound URL the real build refuses the page."""
+    original = build_module._tile
+
+    def outbound(link: Link) -> Link:
+        shown = original(link)
+        if shown.id.startswith("crypto-"):
+            return shown.model_copy(update={"url": "https://attacker.example/pay"})
+        return shown
+
+    monkeypatch.setattr(build_module, "_tile", outbound)
+    with pytest.raises(SupportPageError):
+        build(tmp_path)
+
+
+def test_the_old_support_page_check_still_runs_and_still_refuses_links(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = compact_raw()
+    for t in data["tabs"]:
+        if t["id"] == "support":
+            t["id"] = "help"
+    data["support"] = support_page_config()
+    calls: list[str] = []
+    real = check_support_html
+
+    def spy(html: str, *args: Any, **kwargs: Any) -> None:
+        calls.append(html)
+        real(html, *args, **kwargs)
+
+    monkeypatch.setattr("reach_around.site.build.check_support_html", spy)
+    built = page(build(tmp_path, data), "support/index.html")
+    assert len(calls) == 1
+    assert ADDRESS in built
+    start = built.index('<section class="support"')
+    end = built.index(">", start) + 1
+    linked = built[:end] + '<a href="https://attacker.example/pay">x</a>' + built[end:]
+    with pytest.raises(SupportPageError):
+        check_support_html(linked, [ADDRESS], frozenset(), None)
+
+
+def test_a_support_screen_and_the_support_page_cannot_coexist() -> None:
+    data = raw()
+    data["support"] = support_page_config()
+    with pytest.raises(ValidationError):
+        SiteConfig.model_validate(data)
+
+
+# ---- The script claim is exact ----
+
+
+def scripts(html: str) -> list[str]:
+    return re.findall(r'<script src="([^"]+)"', html)
+
+
+def test_a_screen_page_has_no_script_when_every_script_feature_is_off(
+    tmp_path: Path,
+) -> None:
+    data = raw()
+    data["features"] = {"click_tracking": False}
+    data["page"]["live_badges"] = True
+    out = build(tmp_path, data)
+    for name in ("support/index.html", "contact/index.html"):
+        assert "<script" not in page(out, name)
+    assert any("live" in src for src in scripts(page(out, "index.html")))
+
+
+def test_a_screen_page_loads_only_the_click_script_when_click_tracking_is_on(
+    tmp_path: Path,
+) -> None:
+    data = raw()
+    data["features"] = {"click_tracking": True}
+    data["page"]["live_badges"] = True
+    out = build(tmp_path, data)
+    for name in ("support/index.html", "contact/index.html"):
+        found = scripts(page(out, name))
+        assert len(found) == 1 and "click" in found[0]
+
+
+def test_the_docs_say_exactly_when_a_screen_has_script() -> None:
+    text = (HERE.parents[1] / "docs" / "config.md").read_text(encoding="utf-8")
+    section = text.split("### Screens", 1)[1].split("### Collapsed groups", 1)[0]
+    assert "script-free" not in section
+    assert "features.click_tracking" in section
+    assert "no `<script>` at all" in section
+
+
+# ---- Hostile text on every new screen, through the real builder ----
+
+
+def refused_without_echo(data: dict[str, Any], value: str) -> bool:
+    try:
+        SiteConfig.model_validate(data)
+    except ValidationError as exc:
+        assert value not in str(exc)
+        return True
+    return False
+
+
+@pytest.mark.parametrize("ident", NEW_GROUPS)
+@pytest.mark.parametrize("value", HOSTILE_TEXT)
+def test_hostile_text_is_refused_or_exactly_escaped_on_every_new_screen(
+    tmp_path: Path, ident: str, value: str
+) -> None:
+    data = raw()
+    target = group(data, ident)
+    target["title"] = value
+    target["blocks"][0]["title"] = value
+    if ident != "help-crypto":
+        target["note"] = value
+    if refused_without_echo(data, value):
+        return
+    html = page(build(tmp_path, data), SCREEN_OF[ident] + "/index.html")
+    assert f">{escape(value)}</" in html
+    for fragment in ("<script>alert", "<img src=x", "' onmouseover='", '"><img'):
+        assert fragment not in html
+
+
+@pytest.mark.parametrize("ident", NEW_GROUPS)
+@pytest.mark.parametrize(
+    "url",
+    [
+        "javascript:alert(1)",
+        "JaVaScRiPt:alert(1)",
+        "data:text/html,<script>alert(1)</script>",
+        "vbscript:x",
+        "file:///etc/passwd",
+        "http://example.invalid/plain",
+        "//example.invalid/x",
+        "https://example.invalid/a b",
+        "https://user:pass@example.invalid/",
+        "https://example.invalid/‮",
+    ],
+)
+def test_a_hostile_url_is_refused_on_every_new_screen(ident: str, url: str) -> None:
+    data = raw()
+    group(data, ident)["blocks"][0]["url"] = url
+    with pytest.raises(ValidationError):
+        SiteConfig.model_validate(data)
+
+
+@pytest.mark.parametrize("ident", ["help-free", "help-paid", "say", "hire"])
+def test_quotes_in_a_valid_url_stay_escaped_on_every_new_screen(
+    tmp_path: Path, ident: str
+) -> None:
+    data = raw()
+    group(data, ident)["blocks"][0]["url"] = (
+        "https://example.invalid/?q=%22onmouseover%3D&x=a%26b"
+    )
+    html = page(build(tmp_path, data), SCREEN_OF[ident] + "/index.html")
+    assert " onmouseover=" not in html
+    assert 'href="https://example.invalid/?q=%22onmouseover%3D&amp;x=a%26b"' in html

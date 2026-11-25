@@ -399,7 +399,7 @@ tabs:
 
 With `page.density: compact` a group may leave the home screen: set `screen:
 support` or `screen: contact` on its tab. Each screen in use becomes its own page
-(`/support/`, `/contact/`) with the same tiles, tab-free and script-free, and every
+(`/support/`, `/contact/`) with the same tiles and no tab switching, and every
 compact page shows one tab bar (Links, then Support and Contact where used) above
 the groups. A site that sets no `screen` writes one page and no tab bar, exactly as
 before. The example is
@@ -407,12 +407,29 @@ before. The example is
 
 - The home screen holds the groups with no `screen`, and always the Watch group
   with the status line (the Watch group takes no `screen` and no `note`). A
-  screen page has no Watch group, no status line and no LIVE badge script.
-- The intents `free`, `paid`, `crypto` and `contact` exist for the screens: Support
-  is "Free ways to help" (follow and gear links), "Paid ways to help" (Patreon,
-  Ko-fi, a stream tip, merch) and "Crypto tips"; Contact is "Get in touch" and a
-  `hire` group. An intent may appear once per screen, so `follow` may sit on the
-  home screen and on the Support screen.
+  screen page has no Watch group, no status line and no LIVE badge script. It
+  loads no script of its own: the click-count script is present only when
+  `features.click_tracking` is on, and the page-view and beacon scripts only when
+  `analytics.page_views` and the beacon frame are on, exactly as on the home page.
+  With all of those off a screen page holds no `<script>` at all.
+- Which intent goes where, and in what order (refused otherwise): the Support
+  screen takes `free`, `paid` and `crypto`, in that order ("Free ways to help",
+  "Paid ways to help" with Patreon, Ko-fi, a stream tip and merch, then "Crypto
+  tips"); the Contact screen takes `contact`, then `hire` ("Get in touch", then
+  the hire panel). Each of those groups is optional, but none may repeat or come
+  out of order, and no other intent (`follow`, `gear`, `support`) sits on a
+  screen. `free`, `paid`, `crypto` and `contact` are refused on the home screen;
+  `hire` may sit on the home screen or the Contact screen.
+- The `crypto` group is a set of tiles that link inside this site (`tab:` links,
+  no image, no outbound URL) and never holds an address, a QR code, a form or a
+  frame: payment instructions stay on the structurally checked
+  [`support:`](#support) page, which a Support screen cannot share a path with,
+  so a Support screen's crypto group can only point at a place inside the site.
+  The build reads the finished crypto group again and fails if it holds an
+  outbound link, a form, a frame, an image or a script.
+- A screen whose links are all outside their `show_from`/`show_until` window
+  today is not built and has no tab in the bar (the day's build decides, as for a
+  group); a `hire` panel whose one link is outside its window is dropped.
 - `note` prints one plain line under a heading. Put the sentence that tells a
   reader a link is free but earns you a commission there (the Support example
   names the gear section, "Gear I Use"); mark each such link `affiliate: true` so

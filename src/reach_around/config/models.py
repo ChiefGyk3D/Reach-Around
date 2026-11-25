@@ -244,6 +244,15 @@ Intent = Literal[
 # Each is its own page at ``/<screen>/``, reached from a tab bar.
 TabScreen = Literal["support", "contact"]
 SCREEN_PATHS: tuple[TabScreen, ...] = ("support", "contact")
+# The intents each screen takes, in the order they must appear on it (#873).
+# ``None`` is the home screen: every other intent lives there, and the four
+# screen-only intents (free, paid, crypto, contact) never do. ``hire`` is the
+# one intent the home screen and the Contact screen both take.
+SCREEN_INTENTS: dict[str | None, tuple[str, ...]] = {
+    "support": ("free", "paid", "crypto"),
+    "contact": ("contact", "hire"),
+}
+SCREEN_ONLY_INTENTS = frozenset({"free", "paid", "crypto", "contact"})
 # ``compact`` draws every group as a grid of icon-over-label tiles (#873).
 PageDensity = Literal["comfortable", "compact"]
 
@@ -842,6 +851,7 @@ class SiteConfig(_Model):
         watch_links: dict[str, Link] = {}
         spoke_ids: set[str] = set()
         intents: set[tuple[str | None, str]] = set()
+        screen_order: dict[str | None, int] = {}
         screens = {tab.screen for tab in self.tabs if tab.screen is not None}
         if screens and self.support is not None and "support" in screens:
             raise ValueError(
@@ -860,6 +870,8 @@ class SiteConfig(_Model):
             if (tab.screen, tab.intent) in intents:
                 raise ValueError(f"tab intent {tab.intent!r} may appear only once")
             intents.add((tab.screen, tab.intent))
+            if compact:
+                _check_screen_intent(tab, screen_order)
             if not compact and tab.screen is not None:
                 raise ValueError(f"tab {tab.id!r}: screen needs page.density: compact")
             if not compact and tab.note is not None:
@@ -933,6 +945,16 @@ class SiteConfig(_Model):
                 raise ValueError(
                     f"tab {tab.id!r}: a spoke page needs at least one link"
                 )
+            if compact and tab.intent == "crypto":
+                if any(
+                    not is_tab_ref(link.url) or link.image is not None
+                    for link in group_links
+                ):
+                    raise ValueError(
+                        f"tab {tab.id!r}: a crypto group links inside this site "
+                        "only (tab: links, no image); payment instructions never "
+                        "sit behind an outbound link"
+                    )
             if compact and tab.intent == "hire":
                 if len(group_links) != 1:
                     raise ValueError(
@@ -1097,6 +1119,36 @@ class SiteConfig(_Model):
         if problems:
             raise ValueError("; ".join(problems))
         return self
+
+
+def _check_screen_intent(tab: Tab, last: dict[str | None, int]) -> None:
+    """Refuse an intent on the wrong screen, or out of its screen's order (#873).
+
+    ``last`` holds the position of the latest intent seen on each screen. The
+    reasons are fixed text: no value from the config is printed.
+    """
+    if tab.intent == "watch":
+        return  # the Watch group has its own refusal
+    allowed = SCREEN_INTENTS.get(tab.screen)
+    if allowed is None:
+        if tab.intent in SCREEN_ONLY_INTENTS:
+            raise ValueError(
+                f"tab {tab.id!r}: this intent belongs on a screen "
+                "(free, paid and crypto on support; contact on contact)"
+            )
+        return
+    if tab.intent not in allowed:
+        raise ValueError(
+            f"tab {tab.id!r}: this intent is not allowed on that screen "
+            "(support takes free, paid, crypto; contact takes contact, hire)"
+        )
+    position = allowed.index(tab.intent)
+    if position < last.get(tab.screen, -1):
+        raise ValueError(
+            f"tab {tab.id!r}: groups on a screen keep their order "
+            "(support: free, paid, crypto; contact: contact, hire)"
+        )
+    last[tab.screen] = position
 
 
 def _internal_urls(config: SiteConfig) -> list[tuple[str, str]]:
