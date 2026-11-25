@@ -9,6 +9,7 @@ import contextlib
 import json
 import os
 import socket
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -52,6 +53,8 @@ class _TrackingServer(ThreadingHTTPServer):
         super().__init__(*args, **kwargs)
         self._lock = threading.Lock()
         self._open: list[tuple[threading.Thread, socket.socket]] = []
+        self.closing = False
+        self.errors: list[BaseException] = []  # unexpected handler failures
 
     def process_request(self, request: Any, client_address: Any) -> None:
         t = threading.Thread(
@@ -66,10 +69,13 @@ class _TrackingServer(ThreadingHTTPServer):
             self._open.append((t, request))
         try:
             t.start()
-        except RuntimeError:  # cannot start a thread: drop this request only
+        except BaseException as exc:  # whatever the failure, close this request
             with self._lock:
                 self._open.remove((t, request))
             self.shutdown_request(request)
+            if not isinstance(exc, Exception):
+                raise  # an interrupt is not swallowed; an ordinary failure drops
+                # this request only and the server keeps serving
 
     def handlers(self) -> list[threading.Thread]:
         with self._lock:
@@ -83,7 +89,22 @@ class _TrackingServer(ThreadingHTTPServer):
                 s.shutdown(socket.SHUT_RDWR)
 
     def handle_error(self, request: Any, client_address: Any) -> None:
-        pass  # a handler cut off by close() must not print into the next test
+        """Record a handler failure so close() can fail the test (#859).
+
+        Only socket errors are expected: a client that hangs up (a connection
+        error or a timeout) at any time, or any OSError once close() has begun
+        cutting handlers off. Everything else, such as an AssertionError in a
+        test handler, is kept and re-raised from close().
+        """
+        exc = sys.exception()
+        if exc is None:
+            return
+        if isinstance(exc, (ConnectionError, TimeoutError)):
+            return
+        if self.closing and isinstance(exc, OSError):
+            return
+        with self._lock:
+            self.errors.append(exc)
 
 
 class Local:
@@ -113,7 +134,10 @@ class Local:
 
         self.srv = _TrackingServer(("127.0.0.1", 0), H)
         self.thread = threading.Thread(
-            target=self.srv.serve_forever, daemon=True, name="fake-http-accept"
+            target=self.srv.serve_forever,
+            kwargs={"poll_interval": 0.05},
+            daemon=True,
+            name="fake-http-accept",
         )
         self.thread.start()
 
@@ -122,17 +146,34 @@ class Local:
         return f"http://127.0.0.1:{self.srv.server_address[1]}/{{acct}}/{{db}}"
 
     def close(self, join_timeout: float = 5.0) -> None:
-        """Stop the server and every handler, or fail the test loudly (#859)."""
-        self.srv.shutdown()
+        """Stop the server and every handler, or fail the test loudly (#859).
+
+        One deadline bounds the whole call, shutdown() included: it runs in a
+        helper thread, so a stalled accept loop cannot hold close() past
+        join_timeout. An unexpected handler exception also fails the call.
+        """
+        deadline = time.monotonic() + join_timeout
+        self.srv.closing = True
+        stopper = threading.Thread(
+            target=self.srv.shutdown, daemon=True, name="fake-http-shutdown"
+        )
+        stopper.start()
+        stopper.join(max(0.0, deadline - time.monotonic()))
         self.srv.wake_handlers()  # a handler blocked in a read sees EOF now
         self.srv.server_close()
-        deadline = time.monotonic() + join_timeout
-        stuck = [self.thread, *self.srv.handlers()]
+        stuck = [stopper, self.thread, *self.srv.handlers()]
         for t in stuck:
             t.join(max(0.0, deadline - time.monotonic()))
         alive = [t.name for t in stuck if t.is_alive()]
         if alive:
             raise AssertionError(f"fake HTTP server threads did not stop: {alive}")
+        with self.srv._lock:
+            errors, self.srv.errors = self.srv.errors, []
+        if errors:
+            raise AssertionError(
+                f"fake HTTP handler raised {len(errors)} unexpected error(s): "
+                f"{[repr(e) for e in errors]}"
+            ) from errors[0]
 
 
 Serve = Callable[[Handler], Local]

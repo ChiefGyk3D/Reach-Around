@@ -138,8 +138,9 @@ def test_local_handler_drops_a_stalled_client_after_the_timeout() -> None:
         loc.close()
 
 
+@pytest.mark.parametrize("failure", [RuntimeError, OSError, MemoryError])
 def test_local_start_failure_drops_one_request_and_close_still_works(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, failure: type[Exception]
 ) -> None:
     real_start = threading.Thread.start
     failed: list[str] = []
@@ -147,7 +148,7 @@ def test_local_start_failure_drops_one_request_and_close_still_works(
     def start(self: threading.Thread) -> None:
         if self.name == "fake-http-handler" and not failed:
             failed.append(self.name)
-            raise RuntimeError("can't start new thread")
+            raise failure("can't start new thread")
         real_start(self)
 
     before = set(threading.enumerate())
@@ -268,8 +269,9 @@ def test_drip_server_does_not_leak_fds() -> None:
         server.close()
 
 
+@pytest.mark.parametrize("failure", [RuntimeError, OSError, MemoryError])
 def test_drip_start_failure_closes_the_request_and_close_still_works(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, failure: type[Exception]
 ) -> None:
     real_start = threading.Thread.start
     failed: list[str] = []
@@ -277,7 +279,7 @@ def test_drip_start_failure_closes_the_request_and_close_still_works(
     def start(self: threading.Thread) -> None:
         if self.name == "fake-drip-worker" and not failed:
             failed.append(self.name)
-            raise RuntimeError("can't start new thread")
+            raise failure("can't start new thread")
         real_start(self)
 
     before = set(threading.enumerate())
@@ -292,3 +294,146 @@ def test_drip_start_failure_closes_the_request_and_close_still_works(
         client.close()
     assert failed
     assert leaked(before, wait=0) == []
+
+
+class _Interrupt(BaseException):
+    """Stands in for KeyboardInterrupt or SystemExit during a thread start."""
+
+
+def _capture_thread_deaths(monkeypatch: pytest.MonkeyPatch) -> list[BaseException]:
+    deaths: list[BaseException] = []
+    monkeypatch.setattr(
+        threading, "excepthook", lambda args: deaths.append(args.exc_value)
+    )
+    return deaths
+
+
+def test_local_interrupt_during_start_closes_the_request_and_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_start = threading.Thread.start
+    failed: list[str] = []
+
+    def start(self: threading.Thread) -> None:
+        if self.name == "fake-http-handler" and not failed:
+            failed.append(self.name)
+            raise _Interrupt
+        real_start(self)
+
+    deaths = _capture_thread_deaths(monkeypatch)
+    loc = Local(reply(GOOD))
+    monkeypatch.setattr(threading.Thread, "start", start)
+    sock = socket.create_connection(("127.0.0.1", loc.srv.server_address[1]))
+    try:
+        sock.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        sock.settimeout(5)
+        assert sock.recv(1) == b""  # closed, not leaked
+        loc.thread.join(5)
+        assert [type(d) for d in deaths] == [_Interrupt]  # it was not swallowed
+        with contextlib.suppress(AssertionError):
+            loc.close()
+    finally:
+        sock.close()
+
+
+def test_drip_interrupt_during_start_closes_the_request_and_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_start = threading.Thread.start
+    failed: list[str] = []
+
+    def start(self: threading.Thread) -> None:
+        if self.name == "fake-drip-worker" and not failed:
+            failed.append(self.name)
+            raise _Interrupt
+        real_start(self)
+
+    deaths = _capture_thread_deaths(monkeypatch)
+    server = DripServer(_silent)
+    monkeypatch.setattr(threading.Thread, "start", start)
+    client = socket.create_connection(("127.0.0.1", server.port))
+    try:
+        client.settimeout(5)
+        assert client.recv(1) == b""
+        server._thread.join(5)
+        assert [type(d) for d in deaths] == [_Interrupt]
+        assert server._conns == [] and server._workers == []
+    finally:
+        client.close()
+        server.close()
+
+
+def test_local_close_fails_when_a_handler_raises() -> None:
+    """A handler's own failure must not vanish with its thread (#859)."""
+
+    def broken(_r: BaseHTTPRequestHandler) -> None:
+        raise ValueError("unexpected credentials")
+
+    loc = Local(broken)
+    sock = socket.create_connection(("127.0.0.1", loc.srv.server_address[1]))
+    try:
+        sock.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        sock.settimeout(5)
+        assert sock.recv(1) == b""
+        with pytest.raises(AssertionError, match="unexpected credentials"):
+            loc.close()
+        loc.close()  # the error was reported once; a second close is clean
+    finally:
+        sock.close()
+
+
+def test_local_close_ignores_a_client_that_hangs_up() -> None:
+    done = threading.Event()
+
+    def write_late(r: BaseHTTPRequestHandler) -> None:
+        try:
+            time.sleep(0.2)
+            for _ in range(500):  # the client is gone: a socket error follows
+                r.wfile.write(b"x" * 65536)
+                r.wfile.flush()
+        finally:
+            done.set()
+
+    loc = Local(write_late)
+    sock = socket.create_connection(("127.0.0.1", loc.srv.server_address[1]))
+    sock.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    sock.close()
+    assert done.wait(5)  # the error happened before close() began (not closing)
+    loc.close()  # a hang-up is expected noise, not a failure
+
+
+def test_local_close_deadline_bounds_a_stalled_accept_loop() -> None:
+    """join_timeout bounds shutdown() too, not just the thread joins."""
+    gate = threading.Event()
+    entered = threading.Event()
+    loc = Local(reply(GOOD))
+
+    def stall() -> None:
+        entered.set()
+        gate.wait(10)
+
+    loc.srv.service_actions = stall  # type: ignore[method-assign]
+    try:
+        assert entered.wait(5)  # the accept loop is now stuck
+        start = time.monotonic()
+        with pytest.raises(AssertionError, match="did not stop"):
+            loc.close(join_timeout=0.3)
+        assert time.monotonic() - start < 2.0
+    finally:
+        gate.set()
+        loc.close()
+
+
+def test_drip_server_drops_finished_workers() -> None:
+    server = DripServer(lambda conn: conn.sendall(b"x"))
+    try:
+        for _ in range(5):
+            with socket.create_connection(("127.0.0.1", server.port)) as c:
+                c.settimeout(5)
+                assert c.recv(1) == b"x"
+        deadline = time.monotonic() + 3
+        while server._workers and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert server._workers == []  # no connection follows to prune them
+    finally:
+        server.close()

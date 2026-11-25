@@ -374,11 +374,14 @@ class DripServer:
                 self._conns.append(conn)
             try:
                 worker.start()
-            except RuntimeError:  # cannot start a thread: drop this request only
+            except BaseException as exc:  # whatever the failure, close this request
                 with self._lock:
                     self._workers.remove(worker)
                     self._conns.remove(conn)
                 conn.close()
+                if not isinstance(exc, Exception):
+                    raise  # an interrupt is not swallowed; an ordinary failure
+                    # drops this request only and the server keeps accepting
 
     def _run(self, conn: socket.socket) -> None:
         raw = conn
@@ -396,6 +399,10 @@ class DripServer:
                 self._conns = [c for c in self._conns if c is not conn and c is not raw]
             conn.close()  # every accepted socket is closed exactly once, here or
             raw.close()  # in close(); raw is already detached after a TLS wrap
+            with self._lock:  # and a finished worker is not kept either
+                self._workers = [
+                    w for w in self._workers if w is not threading.current_thread()
+                ]
 
     def close(self, join_timeout: float = 5.0) -> None:
         """Stop accepting, wake every blocked worker, and join all threads.
