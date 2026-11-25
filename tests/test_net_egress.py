@@ -347,9 +347,12 @@ class DripServer:
         self.listener.listen(5)
         self.port = self.listener.getsockname()[1]
         self._behavior = behavior
+        self._lock = threading.Lock()
         self._conns: list[socket.socket] = []
         self._workers: list[threading.Thread] = []
-        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread = threading.Thread(
+            target=self._serve, daemon=True, name="fake-drip-accept"
+        )
         self._thread.start()
 
     def _serve(self) -> None:
@@ -358,21 +361,31 @@ class DripServer:
                 conn, _ = self.listener.accept()
             except OSError:
                 return
-            self._conns.append(conn)
-            worker = threading.Thread(target=self._run, args=(conn,), daemon=True)
-            self._workers.append(worker)
+            worker = threading.Thread(
+                target=self._run, args=(conn,), daemon=True, name="fake-drip-worker"
+            )
+            with self._lock:
+                self._workers = [w for w in self._workers if w.is_alive()]
+                self._workers.append(worker)
+                self._conns.append(conn)
             worker.start()
 
     def _run(self, conn: socket.socket) -> None:
+        raw = conn
         try:
             assert self._behavior is not None
             if self._tls_context is not None:
                 conn = self._tls_context.wrap_socket(conn, server_side=True)
+                with self._lock:  # wrapping detaches raw; close() must wake this one
+                    self._conns = [c for c in self._conns if c is not raw] + [conn]
             self._behavior(conn)
         except OSError:
             pass
+        finally:
+            with self._lock:  # a finished connection is not kept for teardown
+                self._conns = [c for c in self._conns if c is not conn and c is not raw]
 
-    def close(self) -> None:
+    def close(self, join_timeout: float = 5.0) -> None:
         """Stop accepting, wake every blocked worker, and join all threads.
 
         close() alone does not wake a thread blocked in accept() or recv() on
@@ -381,13 +394,18 @@ class DripServer:
         with contextlib.suppress(OSError):
             self.listener.shutdown(socket.SHUT_RDWR)
         self.listener.close()
-        self._thread.join(timeout=5)
-        for conn in list(self._conns):
+        self._thread.join(timeout=join_timeout)
+        with self._lock:
+            conns, workers = list(self._conns), list(self._workers)
+        for conn in conns:
             with contextlib.suppress(OSError):
                 conn.shutdown(socket.SHUT_RDWR)
             conn.close()
-        for worker in list(self._workers):
-            worker.join(timeout=5)
+        for worker in workers:
+            worker.join(timeout=join_timeout)
+        stuck = [t.name for t in (self._thread, *workers) if t.is_alive()]
+        if stuck:
+            raise AssertionError(f"fake drip server threads did not stop: {stuck}")
 
 
 def hold(conn: socket.socket, seconds: float = 30) -> None:

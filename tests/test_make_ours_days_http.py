@@ -5,8 +5,10 @@ data, no real network."""
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import socket
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -35,6 +37,50 @@ def out_dir(tmp_path: Path) -> Path:
     return d
 
 
+class _TrackingServer(ThreadingHTTPServer):
+    """Handlers are our own named daemon threads, so close() can bound the join.
+
+    socketserver's block_on_close joins without a timeout, which would hang the
+    run on a handler stuck in a read; here close() shuts every open request
+    socket down first and then joins with a deadline.
+    """
+
+    daemon_threads = True
+    block_on_close = False
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._lock = threading.Lock()
+        self._open: list[tuple[threading.Thread, socket.socket]] = []
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        t = threading.Thread(
+            target=self.process_request_thread,
+            args=(request, client_address),
+            daemon=True,
+            name="fake-http-handler",
+        )
+        with self._lock:
+            # drop finished handlers
+            self._open = [(h, s) for h, s in self._open if h.is_alive()]
+            self._open.append((t, request))
+        t.start()
+
+    def handlers(self) -> list[threading.Thread]:
+        with self._lock:
+            return [h for h, _ in self._open]
+
+    def wake_handlers(self) -> None:
+        with self._lock:
+            socks = [s for _, s in self._open]
+        for s in socks:
+            with contextlib.suppress(OSError):
+                s.shutdown(socket.SHUT_RDWR)
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        pass  # a handler cut off by close() must not print into the next test
+
+
 class Local:
     """A loopback server whose answer a test supplies; counts hits."""
 
@@ -44,6 +90,8 @@ class Local:
         outer = self
 
         class H(BaseHTTPRequestHandler):
+            timeout = 5  # a client that stalls mid-request cannot hold a handler
+
             def do_POST(self) -> None:  # noqa: N802 - http.server API
                 outer.hits += 1
                 outer.auth.append(self.headers.get("Authorization"))
@@ -58,22 +106,28 @@ class Local:
             def log_message(self, *_a: object) -> None:
                 pass
 
-        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
-        # Non-daemon handler threads, joined by server_close(): a handler must
-        # not outlive its test and print a traceback into the next one.
-        self.srv.daemon_threads = False
-        self.srv.block_on_close = True
-        self.thread = threading.Thread(target=self.srv.serve_forever, daemon=True)
+        self.srv = _TrackingServer(("127.0.0.1", 0), H)
+        self.thread = threading.Thread(
+            target=self.srv.serve_forever, daemon=True, name="fake-http-accept"
+        )
         self.thread.start()
 
     @property
     def url(self) -> str:
         return f"http://127.0.0.1:{self.srv.server_address[1]}/{{acct}}/{{db}}"
 
-    def close(self) -> None:
+    def close(self, join_timeout: float = 5.0) -> None:
+        """Stop the server and every handler, or fail the test loudly (#859)."""
         self.srv.shutdown()
+        self.srv.wake_handlers()  # a handler blocked in a read sees EOF now
         self.srv.server_close()
-        self.thread.join(5)
+        deadline = time.monotonic() + join_timeout
+        stuck = [self.thread, *self.srv.handlers()]
+        for t in stuck:
+            t.join(max(0.0, deadline - time.monotonic()))
+        alive = [t.name for t in stuck if t.is_alive()]
+        if alive:
+            raise AssertionError(f"fake HTTP server threads did not stop: {alive}")
 
 
 Serve = Callable[[Handler], Local]
