@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 import reach_around.commands.counts as counts_cmd
+import reach_around.counts.instagram_insights as ins
 from fakenet import FakeTransport, reply
 from reach_around.cli import main
 from reach_around.config.numbers_sources import InstagramSource, NumbersConfig
@@ -207,7 +208,18 @@ def test_requests_are_gets_to_one_host_with_the_documented_parameters() -> None:
     assert activity["since"] == [str(since)] and activity["until"] == [str(until)]
     demos = [q for q in queries if q["metric"] == ["follower_demographics"]]
     assert sorted(q["breakdown"][0] for q in demos) == ["age", "country", "gender"]
-    assert all(q["metric_type"] == ["total_value"] and "timeframe" in q for q in demos)
+    assert all(q["metric_type"] == ["total_value"] for q in demos)
+    # request construction only: the vendor acceptance is not proven here (#552)
+    assert all(q["timeframe"] == ["last_30_days"] for q in demos)
+    # per-metric table: only demographics carry timeframe; the activity metrics do not
+    for q in queries:
+        metric = q["metric"][0]
+        if metric in ins.TIMEFRAME_ALLOWED:
+            tf = q["timeframe"][0]
+            assert tf in ins.TIMEFRAME_ALLOWED[metric]
+            assert tf not in ins.TIMEFRAME_REMOVED_V20.get(metric, frozenset())
+        else:
+            assert "timeframe" not in q
 
 
 def test_no_request_follows_a_redirect_and_none_is_a_mutation() -> None:
@@ -1260,3 +1272,20 @@ def test_the_refresh_window_edge_matches_the_follower_read() -> None:
     with pytest.raises(InstagramInsightsError, match="refresh_pending"):
         run_source(source(date(2026, 11, 29)))  # exactly 10 days left
     assert run_source(source(date(2026, 11, 30)))[1] == []  # 11 days left
+
+
+def test_timeframe_removals_are_scoped_per_metric() -> None:
+    # The v20.0 removals name two metrics; follower_demographics is not one of them
+    # (vendor changelog read 2026-11-24), so nothing is removed for it.
+    assert set(ins.TIMEFRAME_REMOVED_V20) == {
+        "reached_audience_demographics",
+        "engaged_audience_demographics",
+    }
+    assert ins.DEMOGRAPHICS_METRIC not in ins.TIMEFRAME_REMOVED_V20
+
+
+def test_demographics_timeframe_is_pinned_to_last_30_days() -> None:
+    # No behavior change to the working request; this_month is not adopted until
+    # #552 shows it is accepted and returns the same window.
+    assert ins.TIMEFRAME == "last_30_days"
+    assert ins.TIMEFRAME in ins.TIMEFRAME_ALLOWED[ins.DEMOGRAPHICS_METRIC]
