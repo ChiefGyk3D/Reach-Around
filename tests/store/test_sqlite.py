@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import stat
 import threading
@@ -184,6 +185,56 @@ class TestSqliteOnly:
             SqliteStore(tmp_path / "redirect" / "s.db")
         assert list(real.iterdir()) == []
 
+    def test_symlinked_ancestor_is_refused_before_anything_is_created(
+        self, tmp_path: Path
+    ) -> None:
+        victim = tmp_path / "victim"
+        victim.mkdir(mode=0o700)
+        (tmp_path / "redirect").symlink_to(victim)
+        with pytest.raises(StoreError):
+            SqliteStore(tmp_path / "redirect" / "created" / "deeper" / "s.db")
+        assert list(victim.iterdir()) == []
+
+    def test_loose_ancestor_is_refused_before_a_directory_is_created(
+        self, tmp_path: Path
+    ) -> None:
+        shared = tmp_path / "shared"
+        shared.mkdir()
+        shared.chmod(0o777)
+        with pytest.raises(StoreError):
+            SqliteStore(shared / "created" / "s.db")
+        assert list(shared.iterdir()) == []
+
+    def test_missing_directories_are_created_private(self, tmp_path: Path) -> None:
+        path = tmp_path / "a" / "b" / "s.db"
+        SqliteStore(path).close()
+        for directory in (path.parent, path.parent.parent):
+            assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+
+    def test_hard_linked_store_file_is_refused_and_untouched(
+        self, tmp_path: Path
+    ) -> None:
+        other = tmp_path / "valuable.db"
+        other.write_bytes(b"")
+        other.chmod(0o644)
+        link = tmp_path / "s.db"
+        os.link(other, link)
+        with pytest.raises(StoreError):
+            SqliteStore(link)
+        assert stat.S_IMODE(other.stat().st_mode) == 0o644
+
+    def test_hard_linked_unwritable_store_file_is_not_chmodded(
+        self, tmp_path: Path
+    ) -> None:
+        other = tmp_path / "valuable.db"
+        other.write_bytes(b"")
+        other.chmod(0o400)
+        link = tmp_path / "s.db"
+        os.link(other, link)
+        with pytest.raises(StoreError):
+            SqliteStore(link)
+        assert stat.S_IMODE(other.stat().st_mode) == 0o400
+
     def test_parent_writable_by_others_is_refused(self, tmp_path: Path) -> None:
         parent = tmp_path / "shared"
         parent.mkdir()
@@ -219,7 +270,9 @@ class TestSqliteOnly:
         from reach_around.store.sqlite import SqliteDb
 
         def fake(mode: int, uid: int) -> os.stat_result:
-            return cast(os.stat_result, SimpleNamespace(st_mode=mode, st_uid=uid))
+            return cast(
+                os.stat_result, SimpleNamespace(st_mode=mode, st_uid=uid, st_nlink=1)
+            )
 
         me = os.geteuid()
         SqliteDb._check_file(fake(stat.S_IFREG | 0o600, me))

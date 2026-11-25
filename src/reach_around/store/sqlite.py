@@ -73,7 +73,11 @@ class SqliteDb:
         pre/post identity and sidecar checks below catch an ordinary swap but
         are best-effort, not a guarantee against a same-user attacker.
         """
-        parent = Path(os.path.abspath(path)).parent
+        SqliteDb._verify_chain(Path(os.path.abspath(path)).parent)
+
+    @staticmethod
+    def _verify_chain(parent: Path) -> None:
+        """Check ``parent`` (treated as the immediate parent) and every ancestor."""
         me = os.geteuid()
         chain = [parent, *parent.parents]
         for directory in reversed(chain):
@@ -89,13 +93,51 @@ class SqliteDb:
             if loose and (last or not info.st_mode & stat.S_ISVTX):
                 raise PermissionError("a store directory is writable by others")
 
+    @staticmethod
+    def _ensure_parent(parent: Path) -> None:
+        """Create missing store directories, but only below a trusted ancestor.
+
+        The existing part of the chain is validated first (no symlink, owned by
+        this user or root, not group/other writable), and the deepest existing
+        directory must meet the immediate-parent rules, because new directories
+        are created inside it. Nothing is created or changed before that check
+        passes. Each missing component is then made relative to a descriptor
+        opened with O_NOFOLLOW, so a component swapped for a symlink after the
+        check is refused rather than followed.
+        """
+        missing: list[str] = []
+        existing = parent
+        while True:
+            try:
+                os.lstat(existing)
+                break
+            except FileNotFoundError:
+                missing.append(existing.name)
+                existing = existing.parent
+        if not missing:
+            return
+        SqliteDb._verify_chain(existing)
+        flags = (
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        )
+        fd = os.open(existing, flags)
+        try:
+            for name in reversed(missing):
+                info = os.fstat(fd)
+                if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+                    raise PermissionError("a store directory is not trusted")
+                os.mkdir(name, 0o700, dir_fd=fd)
+                child = os.open(name, flags, dir_fd=fd)
+                os.close(fd)
+                fd = child
+                os.fchmod(fd, 0o700)
+        finally:
+            os.close(fd)
+
     @classmethod
     def _prepare_file(cls, path: Path) -> tuple[int, int]:
         """Validate the path and file; return the file's (device, inode)."""
-        parent = path.parent
-        if not parent.exists():
-            parent.mkdir(mode=0o700, parents=True)
-            parent.chmod(0o700)
+        cls._ensure_parent(Path(os.path.abspath(path)).parent)
         cls._verify_parents(path)
         flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
         try:
@@ -134,6 +176,10 @@ class SqliteDb:
             raise PermissionError("the store path is not a regular file")
         if info.st_uid != os.geteuid():
             raise PermissionError("the store file belongs to another user")
+        if info.st_nlink != 1:
+            # a hard link names an inode we do not exclusively own: chmod and
+            # migrations would change the other name's file too
+            raise PermissionError("the store file has more than one link")
 
     @staticmethod
     def _check_sidecars(path: Path) -> None:
@@ -276,11 +322,14 @@ class SqliteDb:
         label = f"{version:04d}"
         final = path.with_name(f"{path.name}.pre-{label}")
         scratch = path.with_name(f"{path.name}.pre-{label}.tmp-{uuid.uuid4().hex}")
-        fd = os.open(scratch, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        fd = os.open(
+            scratch,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+        )
         os.close(fd)
         try:
             self._conn().execute("VACUUM INTO ?", (str(scratch),))
-            scratch.chmod(0o600)
             os.replace(scratch, final)
         finally:
             scratch.unlink(missing_ok=True)
@@ -292,7 +341,7 @@ class SqliteDb:
         copies = [
             p for p in path.parent.glob(f"{path.name}.pre-*") if _BACKUP.search(p.name)
         ]
-        copies.sort(key=lambda p: (p.stat().st_mtime_ns, p.name), reverse=True)
+        copies.sort(key=lambda p: (p.lstat().st_mtime_ns, p.name), reverse=True)
         for old in copies[KEEP_BACKUPS:]:
             old.unlink(missing_ok=True)
 
