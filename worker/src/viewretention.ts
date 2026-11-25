@@ -41,6 +41,9 @@
 // aggregate already holds the class, and the raw row goes back to 'unknown'
 // (decision D-A7). A late row above max_id keeps its class until it is counted.
 //
+// The emergency picker reads a bounded window of the oldest rows of each group (never a predicate scan of
+// view_events) and runs at most EMERGENCY_ROUNDS rounds a run; docs/deploy.md has the worst case in rows read.
+//
 // Every bounded delete is keyed by the whole primary key of its table (a day of
 // many sites is never taken in one statement).
 //
@@ -60,6 +63,14 @@ const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
 const BATCH = 500;
 const MAX_BATCHES = 200;
+/**
+ * The emergency picker looks at the oldest WINDOW_FACTOR x batch rows of each group (the global window and
+ * every site with a shorter keep) and no further, so one picker reads a bounded number of rows however
+ * large view_events is (docs/analytics-design.md 3.6, issue #759).
+ */
+export const WINDOW_FACTOR = 4;
+/** Rounds of the emergency step in one run (the first round included); the rest waits for the next run. */
+export const EMERGENCY_ROUNDS = 20;
 
 export const DEFAULT_RAW_KEEP_DAYS = 7;
 export const MAX_RAW_KEEP_DAYS = 90;
@@ -101,6 +112,8 @@ interface Step {
    * and the flag all embed, so the three can never select different rows.
    */
   emergency?: { pick: string };
+  /** The ordinary raw purge: while it comes back full the emergency step runs again (its window moves). */
+  rawPurge?: boolean;
 }
 
 /** Purge every view table, inside the invocation's D1 query budget. */
@@ -140,11 +153,28 @@ export async function purgeViews(env: RetentionEnv, nowMs: number, opts: PurgeOp
   const sealedJoin = "JOIN view_rollup_log l ON l.site = e.site AND l.day = strftime('%Y-%m-%d', e.ts / 1000, 'unixepoch')";
   const leftJoin = sealedJoin.replace("JOIN view_rollup_log l", "LEFT JOIN view_rollup_log l");
   // The emergency delete's row picker, built ONCE: the delete, the counter and the flag each embed this
-  // exact text and bind the exact same args (`kArgs`, `hardCutoff`, then the batch size), so the
-  // predicate and the LIMIT cannot drift between them.
+  // exact text and bind the exact same args (`pickArgs`, then the batch size), so the predicate and the
+  // LIMIT cannot drift between them.
+  //
+  // BOUNDED READS. `LIMIT` bounds rows returned, not rows examined, so the picker never scans view_events
+  // for a predicate. It reads ONE window per group, the oldest `win` rows by ts below that group's hard
+  // cutoff (an index range read on idx_view_events_ts, or idx_view_events_site_ts for a site with a
+  // shorter keep), joins only those to the rollup log by its primary key, and filters. A third arm reads
+  // the tail of the ts index (text or blob timestamps sort after every integer) for rows whose ts is not
+  // a number. Counted rows in a window are taken by the raw-purge step just before it in the same batch,
+  // so the window moves on; an uncounted row therefore waits at most for the rows older than it.
+  const win = Math.max(1, Math.trunc(batch)) * WINDOW_FACTOR;
+  const arms: string[] = ["SELECT id, ts, site FROM (SELECT id, ts, site FROM view_events WHERE ts < ? ORDER BY ts LIMIT ?)"];
+  const armArgs: Array<string | number> = [hardCutoff, win];
+  for (const l of lows) {
+    arms.push("SELECT id, ts, site FROM (SELECT id, ts, site FROM view_events WHERE site = ? AND ts < ? ORDER BY ts LIMIT ?)");
+    armArgs.push(l.site, Math.floor(nowMs - Math.min(l.keep * HARD_CEILING_FACTOR, MAX_RAW_KEEP_DAYS) * DAY_MS), win);
+  }
   const emergencyPick =
-    `${kCte}SELECT e.id FROM view_events e ${leftJoin} ` +
-    `WHERE (e.ts < ${hardOf} AND (l.site IS NULL OR e.id > l.max_id)) OR typeof(e.ts) <> 'integer' LIMIT ?`;
+    `${kCte}SELECT id FROM (SELECT e.id AS id FROM (${arms.join(" UNION ")}) e ${leftJoin} ` +
+    `WHERE e.ts < ${hardOf} AND (l.site IS NULL OR e.id > l.max_id) ` +
+    "UNION SELECT id FROM (SELECT id FROM view_events WHERE ts > 9223372036854775807 LIMIT ?)) LIMIT ?";
+  const pickArgs: Array<string | number> = [...kArgs, ...armArgs, hardCutoff, batch];
   const steps: Step[] = [
     {
       // CONTROL:seen-purge  unconditional: pseudonymous, and the rollup never reads it.
@@ -153,6 +183,7 @@ export async function purgeViews(env: RetentionEnv, nowMs: number, opts: PurgeOp
     },
     {
       // CONTROL:raw-purge  a rolled day's rows, only up to the id the aggregate counted, per site.
+      rawPurge: true,
       sql:
         `DELETE FROM view_events WHERE id IN (${kCte}SELECT e.id FROM view_events e ${sealedJoin} ` +
         `WHERE e.ts < ${cutOf} AND e.id <= l.max_id LIMIT ?)`,
@@ -165,7 +196,7 @@ export async function purgeViews(env: RetentionEnv, nowMs: number, opts: PurgeOp
       // is the only one that loses data no aggregate holds, and its row count is recorded.
       emergency: { pick: emergencyPick },
       sql: `DELETE FROM view_events WHERE id IN (${emergencyPick})`,
-      args: [...kArgs, hardCutoff],
+      args: pickArgs,
     },
     {
       // CONTROL:net-clear  the class is already in the aggregate once the day is counted and settled.
@@ -255,6 +286,7 @@ export async function purgeViews(env: RetentionEnv, nowMs: number, opts: PurgeOp
     return { stmts, at };
   };
 
+  const changed = (r: D1Result | undefined) => r?.meta?.changes ?? 0;
   let failure: unknown = null;
   let backlog = false;
   let hardHit = false;
@@ -263,30 +295,46 @@ export async function purgeViews(env: RetentionEnv, nowMs: number, opts: PurgeOp
   try {
     // Round one: the overdue check, then every step once, in ONE query.
     const head = [
-      db
-        .prepare(
-          `${kCte}SELECT 1 AS x FROM view_events e ${leftJoin} WHERE e.ts < ${hardOf} AND ` +
-            "(l.site IS NULL OR e.id > l.max_id) LIMIT 1",
-        )
-        .bind(...kArgs, hardCutoff),
+      // Any row beyond the ceiling? The same windowed picker, asked for one row.
+      db.prepare(emergencyPick).bind(...pickArgs, 1),
       db.prepare("SELECT value FROM view_meta WHERE key = 'rollup_overdue'"),
     ];
     const f = flatten(steps, head);
     const first = await db.batch(f.stmts);
-    const changed = (r: D1Result | undefined) => r?.meta?.changes ?? 0;
     hardHit = (first[0]?.results ?? []).length > 0;
     emergencyRows += steps.reduce((n, st, i) => n + (st.emergency ? changed(first[f.at[i] as number]) : 0), 0);
     flagDay = String(((first[1]?.results ?? [])[0] as { value?: string } | undefined)?.value ?? "");
-    let open = steps.filter((_, i) => changed(first[f.at[i] as number]) >= batch);
-    // Later rounds repeat only the full steps; two queries stay free for the closing batch.
+    const emergencyStep = steps.find((st) => st.emergency);
+    const rawStep = steps.find((st) => st.rawPurge);
+    // A step runs again while it came back full; the emergency step also runs again while the raw purge
+    // does, because that purge is what moves the emergency window past the counted rows.
+    const nextOpen = (run: Step[], res: D1Result[], at: number[]): Step[] => {
+      const full = new Set(run.filter((_, i) => changed(res[at[i] as number]) >= batch));
+      return steps.filter((st) => full.has(st) || (st === emergencyStep && rawStep !== undefined && full.has(rawStep)));
+    };
+    let open = nextOpen(steps, first, f.at);
+    let emergencyRounds = 1;
+    let capped = false;
+    // Later rounds repeat only the full steps; two queries stay free for the closing batch. The emergency
+    // step is read-heavy, so it gets at most EMERGENCY_ROUNDS rounds a run; what is left waits for the next.
     for (let round = 1; open.length > 0 && round < maxRounds; round++) {
       if (meter.remaining() < 3) break;
-      const g = flatten(open, []);
+      let run = open;
+      if (emergencyStep && run.includes(emergencyStep)) {
+        if (emergencyRounds >= EMERGENCY_ROUNDS) {
+          run = run.filter((st) => st !== emergencyStep);
+          capped = true;
+        } else {
+          emergencyRounds += 1;
+        }
+      }
+      if (run.length === 0) break;
+      const g = flatten(run, []);
       const res = await db.batch(g.stmts);
-      emergencyRows += open.reduce((n, st, i) => n + (st.emergency ? changed(res[g.at[i] as number]) : 0), 0);
-      open = open.filter((_, i) => changed(res[g.at[i] as number]) >= batch);
+      emergencyRows += run.reduce((n, st, i) => n + (st.emergency ? changed(res[g.at[i] as number]) : 0), 0);
+      open = nextOpen(run, res, g.at);
     }
-    backlog = open.length > 0;
+    backlog = open.length > 0 || capped;
   } catch (e) {
     failure = e;
   }

@@ -214,6 +214,18 @@ def test_deploy_worker_records_probes_and_rolls_back_in_order() -> None:
     assert "reach-around-owner=" in json.dumps(steps[deploy])
 
 
+@pytest.mark.parametrize("workflow", ["deploy-worker.yml", "deploy-test.yml"])
+def test_the_migrations_are_applied_before_the_new_worker_is_deployed(
+    workflow: str,
+) -> None:
+    # The Worker reads columns that migrations add (view_rollup_log.reroll_closed,
+    # migration 0018), so a Worker deployed ahead of its migration would fail every
+    # rollup. Migrations are additive (see the check above): the old Worker keeps
+    # working on the new schema, and this order is the guarantee.
+    steps = _steps(WORKFLOWS / workflow, "deploy")
+    assert _index(steps, "Apply D1 migrations") < _index(steps, "Deploy the Worker")
+
+
 def test_deploy_test_widens_before_pages_and_narrows_after() -> None:
     steps = _steps(WORKFLOWS / "deploy-test.yml", "deploy")
     widen = _index(steps, "(phase 1)")

@@ -5,7 +5,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { QueryMeter, meteredDb } from "../../src/d1budget";
 import { purgeOldEvents } from "../../src/retention";
-import { purgeViews } from "../../src/viewretention";
+import { EMERGENCY_ROUNDS, purgeViews } from "../../src/viewretention";
 import { rollupClosedDays } from "../../src/viewrollup";
 import { DB, clearAll } from "./helpers";
 
@@ -109,10 +109,11 @@ describe("F-02 the overdue count cannot be lost to a failure after the delete", 
 
 describe("F-02 the bookkeeping shares the delete's picker and does not read changes()", () => {
   const old = NOW - 30 * DAY;
-  async function lateRows(n: number): Promise<void> {
+  async function lateRows(n: number): Promise<number> {
     await addRaw(old, n + 1);
     const ids = (await q<{ id: number }>("SELECT id FROM view_events ORDER BY id")).map((r) => r.id);
     await sealDay(day(old), ids[0] as number); // every row after the first is uncounted
+    return ids[0] as number;
   }
   function recording() {
     const sqls: string[] = [];
@@ -135,7 +136,7 @@ describe("F-02 the bookkeeping shares the delete's picker and does not read chan
     await lateRows(2);
     const { sqls, proxy } = recording();
     await purgeViews({ DB: proxy }, NOW);
-    const del = sqls.findIndex((s) => s.startsWith("DELETE FROM view_events WHERE id IN (") && s.includes("typeof(e.ts)"));
+    const del = sqls.findIndex((s) => s.startsWith("DELETE FROM view_events WHERE id IN (") && s.includes("9223372036854775807"));
     const counter = sqls.findIndex((s) => s.includes("'rollup_overdue_rows'") && s.includes("COUNT(*)"));
     const flag = sqls.findIndex((s) => s.includes("'rollup_overdue', ?") && s.includes("COUNT(*)"));
     expect(del).toBeGreaterThan(-1);
@@ -160,12 +161,20 @@ describe("F-02 the bookkeeping shares the delete's picker and does not read chan
   });
 
   it("a_failure_on_the_delete_rolls_the_bookkeeping_back", async () => {
-    await lateRows(2);
+    const counted = await lateRows(2);
+    // Fires only for an UNCOUNTED row (id above the sealed max_id), so the ordinary raw purge of the counted
+    // row goes through, and the failure lands ON the emergency delete. The message says whether the
+    // counter had already been written inside the batch when the delete failed.
     await DB.prepare(
-      "CREATE TRIGGER fail_emergency_delete BEFORE DELETE ON view_events WHEN OLD.id > 0 BEGIN SELECT RAISE(ABORT, 'injected'); END",
+      "CREATE TRIGGER fail_emergency_delete BEFORE DELETE ON view_events " +
+        `WHEN OLD.id > ${counted} BEGIN SELECT CASE ` +
+        "WHEN (SELECT value FROM view_meta WHERE key = 'rollup_overdue_rows') = '2' " +
+        "AND (SELECT value FROM view_meta WHERE key = 'rollup_overdue') IS NOT NULL " +
+        "THEN RAISE(ABORT, 'injected-after-bookkeeping') ELSE RAISE(ABORT, 'injected-before-bookkeeping') END; END",
     ).run();
     try {
-      await expect(purgeViews({ DB }, NOW)).rejects.toThrow();
+      await expect(purgeViews({ DB }, NOW)).rejects.toThrow(/injected-after-bookkeeping/);
+      // Everything of the batch is back: the counted row's raw purge, the counter, the flag and the delete.
       expect((await q<{ n: number }>("SELECT COUNT(*) AS n FROM view_events"))[0]?.n).toBe(3);
       const m = await meta();
       expect(m.rollup_overdue_rows).toBeUndefined();
@@ -448,5 +457,170 @@ describe("F-23 click purge options and metered cost (#759 round 3)", () => {
     const busy = new QueryMeter(100);
     await purgeOldEvents({ ...env, DB: meteredDb(DB, busy) }, NOW, 90, { batch: 3, maxBatches: 2 });
     expect(busy.used).toBe(3); // 2 deletes + 1 marker batch
+  });
+});
+
+// Round 5 (#759): the emergency picker and the log probes read a bounded number of rows. `LIMIT` bounds rows
+// returned, not rows examined, so these tests measure rows_read (the figure D1 bills) and the query plans.
+describe("F-02 bounded reads of the emergency picker and the log probes", () => {
+  const old = NOW - 30 * DAY; // past the 21 day ceiling
+  interface Seen {
+    sql: string;
+    args: unknown[];
+  }
+  /** Wraps the database: remembers every prepared statement (text and binds) and every batch's per-statement meta. */
+  function spy() {
+    const seen = new Map<D1PreparedStatement, Seen>();
+    const batches: Array<Array<{ sql: string; rowsRead: number; changes: number }>> = [];
+    const proxy = new Proxy(DB, {
+      get(t, p) {
+        if (p === "prepare") {
+          return (sql: string) => {
+            const st = t.prepare(sql);
+            const rec: Seen = { sql, args: [] };
+            const wrapped = new Proxy(st, {
+              get(u, k) {
+                if (k === "bind") {
+                  return (...a: unknown[]) => {
+                    rec.args = a;
+                    const bound = u.bind(...a);
+                    seen.set(bound, rec);
+                    return bound;
+                  };
+                }
+                const v = Reflect.get(u, k, u);
+                return typeof v === "function" ? v.bind(u) : v;
+              },
+            });
+            seen.set(st, rec);
+            return wrapped;
+          };
+        }
+        if (p === "batch") {
+          return async (stmts: D1PreparedStatement[]) => {
+            const res = await t.batch(stmts);
+            batches.push(
+              res.map((r, i) => ({
+                sql: seen.get(stmts[i] as D1PreparedStatement)?.sql ?? "",
+                rowsRead: Number((r.meta as { rows_read?: number } | undefined)?.rows_read ?? 0),
+                changes: r.meta?.changes ?? 0,
+              })),
+            );
+            return res;
+          };
+        }
+        const v = Reflect.get(t, p, t);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    }) as D1Database;
+    return { proxy, seen, batches };
+  }
+  const isPick = (sql: string) => sql.includes("9223372036854775807");
+  const insertMany = async (ts: number, n: number, site = "links") => {
+    const stmts: D1PreparedStatement[] = [];
+    for (let i = 0; i < n; i++) {
+      stmts.push(
+        DB.prepare("INSERT INTO view_events (ts, page, src_kind, bot_class, reason, site) VALUES (?, 'home', 'd', 'h', 'ok', ?)").bind(ts + i, site),
+      );
+    }
+    for (let i = 0; i < stmts.length; i += 50) await DB.batch(stmts.slice(i, i + 50));
+  };
+
+  it("the_rows_the_picker_reads_do_not_grow_with_the_table", async () => {
+    const reads: number[] = [];
+    for (const counted of [200, 1600]) {
+      await clearAll();
+      // Many counted rows past the ceiling: the raw purge takes `batch` of them a round, the rest are the
+      // window the picker must NOT read in full (an unbounded picker reads all of them, three times).
+      await insertMany(old, counted);
+      const maxId = (await q<{ m: number }>("SELECT MAX(id) AS m FROM view_events"))[0]?.m as number;
+      await sealDay(day(old), maxId);
+      await insertMany(NOW - 2 * DAY, 100); // inside the keep window: nobody may read these either
+      const s = spy();
+      await purgeViews({ DB: s.proxy }, NOW, { batch: 5, maxBatches: 1 });
+      const picked = (s.batches[0] ?? []).filter((r) => isPick(r.sql));
+      expect(picked.length).toBe(4); // the head probe, the counter, the flag and the delete
+      reads.push(picked.reduce((n, r) => n + r.rowsRead, 0));
+    }
+    // Eight times the table, the same rows read.
+    expect(reads[1]).toBe(reads[0]);
+    // And the figure itself is bounded by the window: per statement at most the window's index entries, its
+    // row fetches and its log lookups (window = 4 x batch = 20), plus the tail and the delete's own work.
+    const win = 4 * 5;
+    expect(reads[0]).toBeLessThanOrEqual(4 * (3 * win + 5 + 10));
+  });
+
+  it("a_row_behind_a_full_window_waits_a_round_instead_of_widening_the_scan", async () => {
+    // Ten counted old rows fill the window (batch 1, window 4); the one uncounted row is behind them.
+    await insertMany(old, 10);
+    const maxId = (await q<{ m: number }>("SELECT MAX(id) AS m FROM view_events"))[0]?.m as number;
+    await sealDay(day(old), maxId);
+    await DB.prepare("INSERT INTO view_events (ts, page, src_kind, bot_class, reason, site) VALUES (?, 'home', 'd', 'h', 'ok', 'links')").bind(old + 100).run();
+    await purgeViews({ DB }, NOW, { batch: 1, maxBatches: 1 });
+    expect((await q<{ n: number }>("SELECT COUNT(*) AS n FROM view_events"))[0]?.n).toBe(10); // one counted row went, the picker found nothing
+    expect((await meta()).rollup_overdue_rows).toBeUndefined();
+    // With rounds, the raw purge drains the counted rows, the window moves, and the row goes and is counted.
+    await purgeViews({ DB }, NOW, { batch: 1, maxBatches: 100 });
+    expect(await q("SELECT id FROM view_events")).toEqual([]);
+    expect((await meta()).rollup_overdue_rows).toBe("1");
+  });
+
+  it("the_emergency_step_runs_at_most_twenty_rounds_a_run_and_the_rest_waits", async () => {
+    await insertMany(old, 30);
+    await purgeViews({ DB }, NOW, { batch: 1, maxBatches: 100 });
+    expect(EMERGENCY_ROUNDS).toBe(20);
+    expect((await q<{ n: number }>("SELECT COUNT(*) AS n FROM view_events"))[0]?.n).toBe(30 - EMERGENCY_ROUNDS);
+    expect((await meta()).purge_backlog).toBeDefined();
+    expect((await meta()).rollup_overdue_rows).toBe(String(EMERGENCY_ROUNDS));
+    await purgeViews({ DB }, NOW, { batch: 1, maxBatches: 100 });
+    expect((await meta()).rollup_overdue_rows).toBe("30".replace("30", String(Math.min(30, 2 * EMERGENCY_ROUNDS))));
+    expect(await q("SELECT id FROM view_events")).toEqual([]);
+    expect((await meta()).purge_backlog).toBeUndefined();
+  });
+
+  it("a_site_with_a_shorter_keep_is_reached_through_its_own_window", async () => {
+    // links keeps 2 days (ceiling 6 days); 'other' is not configured and keeps the global window (ceiling 21).
+    // Rows aged 10 days are past links' ceiling but not the global one, so the global window never holds them.
+    const SITES = JSON.stringify({ links: { hosts: ["links.example.test"], mode: "beacon", pages: ["home"], raw_keep_days: 2 } });
+    await insertMany(NOW - 12 * DAY, 8, "other"); // inside the global ceiling: untouched
+    await insertMany(NOW - 10 * DAY, 3, "links");
+    await purgeViews({ DB, SITES }, NOW, { batch: 1, maxBatches: 1 });
+    const bySite = async (site: string) => (await q<{ id: number }>(`SELECT id FROM view_events WHERE site = '${site}'`)).length;
+    expect(await bySite("links")).toBe(2); // one went and was counted
+    expect(await bySite("other")).toBe(8);
+    expect((await meta()).rollup_overdue_rows).toBe("1");
+  });
+
+  it("a_row_whose_timestamp_is_not_a_number_is_still_found_at_the_tail", async () => {
+    await DB.prepare("INSERT INTO view_events (ts, page, src_kind, bot_class, reason) VALUES ('not-a-number', 'home', 'd', 'h', 'ok')").run();
+    await insertMany(NOW - DAY, 50);
+    await purgeViews({ DB }, NOW, { batch: 5, maxBatches: 1 });
+    expect((await q<{ n: number }>("SELECT COUNT(*) AS n FROM view_events WHERE typeof(ts) <> 'integer'"))[0]?.n).toBe(0);
+    expect((await meta()).rollup_overdue_rows).toBe("1");
+  });
+
+  it("the_picker_and_every_log_probe_use_an_index_never_a_table_scan", async () => {
+    await insertMany(old, 2);
+    const s = spy();
+    await purgeViews({ DB: s.proxy, SITES: JSON.stringify({ links: { hosts: ["links.example.test"], mode: "beacon", pages: ["home"], raw_keep_days: 2 } }) }, NOW);
+    const all = [...s.seen.values()];
+    const pick = all.find((r) => r.sql.startsWith("DELETE FROM view_events WHERE id IN (") && isPick(r.sql)) as Seen;
+    const logDel = all.find((r) => r.sql.startsWith("DELETE FROM view_rollup_log")) as Seen;
+    expect(pick).toBeDefined();
+    expect(logDel).toBeDefined();
+    const plan = async (r: Seen) =>
+      (await DB.prepare(`EXPLAIN QUERY PLAN ${r.sql}`).bind(...r.args).all<{ detail: string }>()).results.map((d) => d.detail);
+    const picked = await plan(pick);
+    // Every read of view_events is an index SEARCH (the window arms and the tail); the log is reached by key.
+    const events = picked.filter((d) => /view_events/.test(d));
+    expect(events.length).toBeGreaterThanOrEqual(3); // global arm, the short-keep site's arm, the tail
+    for (const d of events) expect(d, d).toMatch(/SEARCH view_events USING ((COVERING )?INDEX idx_view_events_(site_)?ts|INTEGER PRIMARY KEY)/);
+    expect(picked.filter((d) => /view_rollup_log/.test(d)).every((d) => /SEARCH/.test(d))).toBe(true);
+    // The log delete scans only the (small, per-site-and-day) log itself; every probe of another table is a seek.
+    const logPlan = await plan(logDel);
+    for (const d of logPlan) {
+      if (/^SCAN view_rollup_log/.test(d) || /^SCAN l\b/.test(d)) continue;
+      if (/^(SCAN|SEARCH) /.test(d) && !/^SCAN CONSTANT/.test(d)) expect(d, d).toMatch(/^SEARCH .* USING ((COVERING )?INDEX|PRIMARY KEY)/);
+    }
   });
 });
