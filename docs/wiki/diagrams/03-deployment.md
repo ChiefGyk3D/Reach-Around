@@ -36,7 +36,7 @@ flowchart TD
   frame -.-> live
 ```
 
-## Text description
+Text description of this diagram, for readers who cannot see it.
 
 Read top to bottom. The engine repository publishes a release: a signed
 container image and the Worker source. The owner's private instance repository
