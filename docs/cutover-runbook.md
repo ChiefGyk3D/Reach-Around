@@ -233,15 +233,18 @@ the result lines (no values) in #344. Do not start the DNS steps with a box open
       the click and view switches above are separate) and confirm no older
       Worker or script still writes either database; `--purge
       --locked-window-confirmed`; `--verify` exits 0. The purge records a
-      Time Travel bookmark of the analytics database in its manifest and
-      prints the restore command: keep that line in the change record. The
-      tool cannot prove the window is locked, it only checks what it can (the
-      freeze, the destination, two equal reads some seconds apart), so the
-      locked window is the operator's word. The tool's own ids are checked
-      against `npx wrangler d1 info <NAME> --json` for both databases.
-      Recovery is a restore of the analytics database to that bookmark, then
-      `--copy` again from the manifest. Exit 4 means a partial purge (safe to
-      run again), exit 5 means verify first.
+      fresh Time Travel bookmark and a private recovery export before each
+      destructive attempt. Keep the current-attempt bookmark line in the
+      change record and keep every `lead-recovery-*.json` file private.
+      The tool cannot prove the window is locked, it only checks what it can
+      (the freeze, the destination, two equal reads some seconds apart), so
+      the locked window is the operator's word. The tool's own ids are
+      checked against `npx wrangler d1 info <NAME> --json` for both databases.
+      Recovery first uses `--restore-from-export`, which restores only the
+      deleted lead rows and is idempotent. Time Travel is the last resort:
+      restoring its bookmark rolls back every write to analytics after that
+      bookmark, including views and clicks. Exit 4 means a partial purge
+      (safe to run again), exit 5 means verify first.
 - [ ] The `/e/*` route exists on the production host (zone route, or by hand,
       [deploy.md](deploy.md), "Adding the route by hand"). Without it clicks are
       not counted.

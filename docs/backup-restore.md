@@ -67,10 +67,11 @@ Time Travel on that database is its recovery path, with its own bookmark
 
 The one-time lead move ([deploy.md](deploy.md), "The one-time move of existing
 leads") uses Time Travel as its recovery point: before any delete it records a
-bookmark of the analytics database in its private manifest and prints the restore
-command. To undo a purge, run that command with the window still locked (it
-overwrites the analytics database in place), then run the move's `--copy` again
-from the manifest. The move leaves two triggers in the analytics database
+fresh bookmark and writes a private full-row recovery export. Recover deleted
+lead rows with the move's `--restore-from-export` mode first. Time Travel is the
+last-resort full-database option: restoring a bookmark rolls back everything
+written to that database after the bookmark, including views and clicks, not
+only the purged lead rows. The move leaves two triggers in the analytics database
 (`leads_frozen`, `kit_events_frozen`); `scripts/dump-schema.json` allows exactly
 those, so the dump check passes before and after the move.
 

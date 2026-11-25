@@ -449,9 +449,11 @@ only then deletes the analytics copies. Run it from the folder whose wrangler co
 databases, with a private directory outside any git work tree (mode 700); the script makes a fresh
 directory inside it for each temporary statement file (created exclusively, never through a symlink,
 removed when its chunk is done). The work directory also keeps `move-manifest.json` (mode 600, a digest
-per copied row and a cursor, no address): do not delete it before `--verify` has passed. The copy and
-the delete run in chunks of 200 rows (`MOVE_BATCH`, 1 to 1000), so memory and each statement file stay
-bounded (the manifest costs about 100 bytes per row); a run that stops midway resumes from the cursor
+per copied row and a cursor, no address) and one mode-600 `lead-recovery-*.json` file per destructive
+attempt. The recovery exports contain full lead rows. Keep them private and outside every repository.
+Do not delete them before the retention decision and recovery window have ended. The copy and delete
+run in chunks of 200 rows (`MOVE_BATCH`, 1 to 1000), so memory and each statement file stay bounded;
+a run that stops midway resumes from the cursor
 and running it again is safe:
 
 ```bash
@@ -465,6 +467,8 @@ python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-i
 python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --copy
 # 3. Delete the analytics copies, inside the locked window of step 2 of the cutover.
 python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --purge --locked-window-confirmed
+# Recovery of only the deleted lead rows, if needed:
+python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --restore-from-export
 ```
 
 What `--purge` does, in this order. It refuses (exit 3), before any copy or delete, without
@@ -473,9 +477,11 @@ read-back (a row that changed in analytics since the manifest recorded it is cop
 digest replaced, never skipped), proves from the manifest that the leads database holds exactly the
 recorded rows, reads both databases twice `MOVE_SETTLE` seconds apart (default 5, 0 to 60) and refuses
 if either changed, records a Time Travel bookmark of the analytics database in the manifest (it
-refuses without one) and prints the exact restore command, and only then deletes rows whose id and
-every column match a recorded digest (a lead only once it has no event left), never the whole table.
-A row added or changed after the copy survives; the script then exits 4 and says to run it again. Last,
+refuses without one), writes and verifies a private recovery export of every row eligible for deletion,
+and only then deletes rows whose id and every column match a recorded digest (a lead only once it has
+no event left), never the whole table. Every destructive attempt gets its own timestamped bookmark and
+export; the current bookmark is labeled and earlier bookmarks are listed separately. A row added or
+changed after the copy survives; the script then exits 4 and says to run it again. Last,
 in the same run, it runs the `--verify` check and fails unless that passes.
 
 What the locked window can and cannot prove. D1 has no transaction across two databases, so the
@@ -486,16 +492,36 @@ twice some seconds apart. It cannot prove that no writer is running: a writer th
 seconds, or an older Worker that updates or deletes (the freeze blocks inserts only), is not seen. That
 part is your statement (`--locked-window-confirmed`), backed by the kill switches. The per-chunk
 re-read of the leads database and the freeze check inside each DELETE statement are kept as defense in
-depth; they narrow the window and are not an atomic proof. The safety net is recovery, not prevention:
-the bookmark.
+depth; they narrow the window and are not an atomic proof.
 
-Recovery. The restore command the tool prints is `npx wrangler d1 time-travel restore <ANALYTICS
-DATABASE> --bookmark=<BOOKMARK>`. It overwrites the analytics database in place (and cancels queries in
-flight), so run it only with the window still locked; Time Travel keeps bookmarks 30 days on the
-Workers Paid plan and 7 on Free (Cloudflare D1 Time Travel page, read 2026-11-25). Then run the copy
-again from the manifest (`--copy`): the leads database keeps its copies and the manifest still lists
-them. The bookmark of the leads database (`npx wrangler d1 time-travel info <LEADS DATABASE>`) is a
-second, separate recovery point; take it before step 3.
+Recovery. First use `--restore-from-export`. It inserts only missing exported rows, refuses if an
+existing primary key has different data, and verifies every row by digest without printing its
+contents. It is safe to run again. The freeze triggers intentionally reject these inserts, so keep
+the locked window in place, lift only the database freeze immediately before the restore, and restore
+the freeze immediately afterward:
+
+```bash
+npx wrangler d1 execute <ANALYTICS DATABASE> --remote --command \
+  "DROP TRIGGER IF EXISTS leads_frozen; DROP TRIGGER IF EXISTS kit_events_frozen;"
+python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --restore-from-export
+python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --freeze
+```
+
+Do not re-enable any Worker or other writer between those commands. Keep all
+`lead-recovery-*.json` files private until the retention decision and recovery
+window have ended. Then destroy them with exactly:
+
+```bash
+find ~/lead-move-work -maxdepth 1 -type f -name 'lead-recovery-*.json' -exec shred -u -- {} +
+```
+
+Time Travel is the last-resort full-loss option. The command the tool prints is `npx wrangler d1
+time-travel restore <ANALYTICS DATABASE> --bookmark=<BOOKMARK>`. Restoring a bookmark rolls back
+everything written to that database after the bookmark, including views and clicks, not only lead
+rows. It overwrites the analytics database in place and cancels queries in flight, so run it only with
+the window still locked. Time Travel keeps bookmarks 30 days on the Workers Paid plan and 7 on Free
+(Cloudflare D1 Time Travel page, read 2026-11-25). The bookmark of the leads database (`npx wrangler d1
+time-travel info <LEADS DATABASE>`) is a second, separate recovery point; take it before step 3.
 
 Exit codes. 0 done or dry run; 1 a step failed and this run deleted nothing; 2 usage; 3 refused (a
 precondition did not hold, nothing deleted by this run); 4 partial purge, some chunks were deleted and

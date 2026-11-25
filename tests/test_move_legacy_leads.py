@@ -17,6 +17,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import time
 import uuid
 from contextlib import closing
 from pathlib import Path
@@ -283,11 +284,17 @@ def test_purge_moves_every_row_then_empties_analytics(tmp_path: Path) -> None:
     assert rows(env["STUB_DEST"], "leads") == before_leads
     assert rows(env["STUB_DEST"], "kit_events") == before_events
     assert "example.test" not in r.stdout + r.stderr  # counts only, never an address
-    # The statement file is gone; only the digest manifest stays, private, no address.
-    (kept,) = (tmp_path / "work").iterdir()
-    assert kept.name == "move-manifest.json"
-    assert stat.S_IMODE(kept.stat().st_mode) == 0o600
-    assert "example.test" not in kept.read_text()
+    # Statement files are gone; the private manifest and recovery export remain.
+    kept = sorted((tmp_path / "work").iterdir())
+    assert [path.name for path in kept if path.name == "move-manifest.json"] == [
+        "move-manifest.json"
+    ]
+    exports = [path for path in kept if path.name.startswith("lead-recovery-")]
+    assert len(exports) == 1
+    assert exports[0].name.endswith(".json")
+    assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in kept)
+    manifest = tmp_path / "work" / "move-manifest.json"
+    assert "example.test" not in manifest.read_text()
 
 
 def test_a_second_run_finds_nothing_to_move(tmp_path: Path) -> None:
@@ -369,11 +376,19 @@ def test_the_temporary_file_is_never_a_fixed_name_a_symlink_can_hijack(
     r = purge(env, work)
     assert r.returncode == 0, r.stderr
     assert victim.read_text() == "keep me"
-    assert sorted(p.name for p in work.iterdir()) == [
-        "move-legacy-leads.sql",
-        "move-manifest.json",
-        "statements.sql",
-    ]  # only the planted links remain: the script's own directory is gone
+    names = sorted(p.name for p in work.iterdir())
+    recovery = [name for name in names if name.startswith("lead-recovery-")]
+    assert len(recovery) == 1
+    assert recovery[0].endswith(".json")
+    assert names == sorted(
+        [
+            "move-legacy-leads.sql",
+            "move-manifest.json",
+            "statements.sql",
+            recovery[0],
+        ]
+    )
+    assert stat.S_IMODE((work / recovery[0]).stat().st_mode) == 0o600
 
 
 def test_the_statement_file_is_private_and_removed_when_a_step_fails(
@@ -1244,7 +1259,15 @@ def test_the_settle_wait_is_taken_between_two_reads_and_is_bounded(
     assert run(env, work, "--freeze").returncode == 0
     mod = load_with_env(env, monkeypatch)
     waits: list[float] = []
-    monkeypatch.setattr(mod, "time", SimpleNamespace(sleep=waits.append))
+    monkeypatch.setattr(
+        mod,
+        "time",
+        SimpleNamespace(
+            sleep=waits.append,
+            strftime=time.strftime,
+            gmtime=time.gmtime,
+        ),
+    )
     assert mod.main(main_args(work, "--purge")) == 0
     assert waits == [7]
     for bad in ("61", "x", "-1", ""):
@@ -1563,3 +1586,135 @@ def test_a_scratch_directory_that_is_not_private_is_refused(
     with pytest.raises(mod.Refused, match="not a private directory"):
         mod.run_file(w, "db", work, "SELECT 1;\n")
     assert w.seen == []
+
+
+# ---- recovery export and per-attempt bookmarks ------------------------------------
+
+
+def recovery_files(work: Path) -> list[Path]:
+    return sorted(work.glob("lead-recovery-*.json"))
+
+
+def test_export_is_private_bound_and_written_before_first_delete(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    log = tmp_path / "calls.log"
+    env["STUB_LOG"] = str(log)
+    result = purge(env, work)
+    assert result.returncode == 0, result.stderr
+    files = recovery_files(work)
+    assert len(files) == 1
+    export = files[0]
+    assert export.parent == work
+    assert not export.is_relative_to(ROOT)
+    assert stat.S_IMODE(export.stat().st_mode) == 0o600
+    manifest = json.loads((work / "move-manifest.json").read_text())
+    data = json.loads(export.read_text())
+    assert data["run_id"] == manifest["run_id"]
+    assert data["src_id"] == manifest["src_id"]
+    assert data["dst_id"] == manifest["dst_id"]
+    assert manifest["recovery_exports"] == [export.name]
+    assert log.read_text().splitlines()[-1] == "delete"
+    assert export.stat().st_mtime_ns <= log.stat().st_mtime_ns
+
+
+def test_purge_refuses_before_delete_when_export_cannot_be_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    log = tmp_path / "calls.log"
+    env["STUB_LOG"] = str(log)
+    assert run(env, work, "--freeze").returncode == 0
+    mod = load_with_env(env, monkeypatch)
+    monkeypatch.setattr(
+        mod,
+        "write_recovery_export",
+        lambda *_: (_ for _ in ()).throw(mod.Failed("a database call failed")),
+    )
+    assert mod.main(main_args(work, "--purge")) == 3
+    assert "delete" not in log.read_text().splitlines()
+    assert src_rows(env) == 6
+
+
+def test_restore_from_export_restores_rows_and_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    first = purge(env, work)
+    assert first.returncode == 0, first.stderr
+    with closing(sqlite3.connect(env["STUB_SRC"])) as db:
+        db.execute("DROP TRIGGER IF EXISTS leads_frozen")
+        db.execute("DROP TRIGGER IF EXISTS kit_events_frozen")
+        db.commit()
+    restored = run(env, work, "--restore-from-export")
+    assert restored.returncode == 0, restored.stderr
+    assert src_rows(env) == 6
+    again = run(env, work, "--restore-from-export")
+    assert again.returncode == 0, again.stderr
+    assert "0 missing rows restored" in again.stdout
+    assert src_rows(env) == 6
+
+
+def test_restore_refuses_a_conflicting_source_row(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    assert purge(env, work).returncode == 0
+    export = json.loads(recovery_files(work)[0].read_text())
+    lead_row = next(item["row"] for item in export["rows"] if item["table"] == "leads")
+    with closing(sqlite3.connect(env["STUB_SRC"])) as db:
+        db.execute("DROP TRIGGER IF EXISTS leads_frozen")
+        db.execute("DROP TRIGGER IF EXISTS kit_events_frozen")
+        columns = tuple(lead_row)
+        changed = dict(lead_row)
+        changed["email"] = "conflict@example.test"
+        db.execute(
+            "INSERT INTO leads "
+            f"({', '.join(columns)}) "
+            f"VALUES ({', '.join('?' for _ in columns)})",
+            tuple(changed[column] for column in columns),
+        )
+        db.commit()
+    result = run(env, work, "--restore-from-export")
+    assert result.returncode == 3
+    assert "primary key but different data" in result.stderr
+
+
+def test_current_attempt_bookmark_is_printed_not_the_oldest(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    assert run(env, work, "--freeze").returncode == 0
+    assert run(env, work, "--copy").returncode == 0
+    manifest_path = work / "move-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    old = "00000001-00000002-00000003-" + "4" * 32
+    manifest["bookmarks"] = [old]
+    manifest["bookmark_attempts"] = [
+        {"bookmark": old, "timestamp": "2026-01-01T00:00:00Z"}
+    ]
+    manifest_path.write_text(json.dumps(manifest))
+    manifest_path.chmod(0o600)
+    result = run(env, work, "--purge")
+    assert result.returncode == 0, result.stderr
+    restore_lines = [
+        line for line in result.stdout.splitlines() if "--bookmark=" in line
+    ]
+    assert restore_lines == [
+        f"  npx wrangler d1 time-travel restore analytics-db --bookmark={BOOKMARK}"
+    ]
+    assert f"earlier recovery bookmark: {old}" in result.stdout
+
+
+def test_export_contents_never_appear_in_output(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    result = purge(env, work)
+    assert result.returncode == 0, result.stderr
+    output = result.stdout + result.stderr
+    assert "person1@example.test" not in output
+    assert format(1, "032x") not in output

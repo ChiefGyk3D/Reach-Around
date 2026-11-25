@@ -123,6 +123,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import stat
@@ -154,6 +155,7 @@ EVENT_LIST = ", ".join(EVENT_COLUMNS)
 TABLES = (("leads", LEAD_COLUMNS), ("kit_events", EVENT_COLUMNS))  # leads first
 COLUMNS = dict(TABLES)
 MANIFEST = "move-manifest.json"
+EXPORT_PREFIX = "lead-recovery-"
 EXISTS_SQL = (
     "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'leads' "
     "UNION ALL SELECT name FROM sqlite_master WHERE type = 'table' "
@@ -502,6 +504,9 @@ class Manifest:
         self.cursor: dict[str, Any] = {}
         self.digests: dict[str, dict[str, str]] = {t: {} for t, _ in TABLES}
         self.bookmarks: list[str] = []
+        self.bookmark_attempts: list[dict[str, str]] = []
+        self.recovery_exports: list[str] = []
+        self.run_id = secrets.token_hex(16)
         self.exists = False
 
     def load(self) -> None:
@@ -556,6 +561,24 @@ class Manifest:
         self.cursor = data["cursor"]
         self.digests = {t: dict(data["digests"][t]) for t, _ in TABLES}
         self.bookmarks = list(data["bookmarks"])
+        attempts = data.get("bookmark_attempts", [])
+        exports = data.get("recovery_exports", [])
+        run_id = data.get("run_id")
+        if not isinstance(attempts, list) or not all(
+            isinstance(a, dict)
+            and isinstance(a.get("bookmark"), str)
+            and BOOKMARK.fullmatch(a["bookmark"])
+            and isinstance(a.get("timestamp"), str)
+            for a in attempts
+        ):
+            raise Refused("the manifest is unreadable; resolve it by hand.")
+        if not isinstance(exports, list) or not all(
+            isinstance(x, str) for x in exports
+        ):
+            raise Refused("the manifest is unreadable; resolve it by hand.")
+        self.bookmark_attempts = list(attempts)
+        self.recovery_exports = list(exports)
+        self.run_id = run_id if isinstance(run_id, str) else self.run_id
         self.exists = True
 
     def save(self) -> None:
@@ -571,6 +594,9 @@ class Manifest:
                 "src_id": self.src_id,
                 "dst_id": self.dst_id,
                 "bookmarks": self.bookmarks,
+                "bookmark_attempts": self.bookmark_attempts,
+                "recovery_exports": self.recovery_exports,
+                "run_id": self.run_id,
                 "state": self.state,
                 "cursor": self.cursor,
                 "digests": self.digests,
@@ -885,22 +911,186 @@ def prove_quiet(w: Wrangler, args: argparse.Namespace) -> None:
     )
 
 
-def record_bookmark(w: Wrangler, args: argparse.Namespace, m: Manifest) -> None:
+def record_bookmark(w: Wrangler, args: argparse.Namespace, m: Manifest) -> str:
     """Take SOURCE's Time Travel bookmark, store it, say how to restore."""
     mark = take_bookmark(w, args.source)
+    timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     m.bookmarks.append(mark)
+    m.bookmark_attempts.append({"bookmark": mark, "timestamp": timestamp})
     m.save()
-    print(f"recovery point recorded in the manifest: {mark}")
+    for attempt in m.bookmark_attempts[:-1]:
+        print(
+            f"earlier recovery bookmark: {attempt['bookmark']} ({attempt['timestamp']})"
+        )
+    print(f"current attempt recovery bookmark: {mark} ({timestamp})")
     print(
-        "to undo a purge, restore SOURCE (it overwrites SOURCE in place and cancels "
-        "queries in flight), then run the copy again from the manifest:"
+        "last-resort full-database restore command (it rolls back every later write):"
     )
-    print(
-        f"  npx wrangler d1 time-travel restore {args.source} "
-        f"--bookmark={m.bookmarks[0]}"
+    print(f"  npx wrangler d1 time-travel restore {args.source} --bookmark={mark}")
+    return mark
+
+
+def recovery_rows(w: Wrangler, source: str, m: Manifest) -> list[dict[str, Any]]:
+    """Full SOURCE rows that currently match the manifest and may be deleted."""
+    result: list[dict[str, Any]] = []
+    have = present_tables(w, source)
+    for table, _ in TABLES:
+        after: object | None = None
+        while table in have:
+            rows = page(w, source, table, after, batch_size())
+            if not rows:
+                break
+            for row in rows:
+                row_digest = digest(table, row)
+                if m.digests[table].get(str(row.get("id"))) == row_digest:
+                    result.append({"table": table, "digest": row_digest, "row": row})
+            after = rows[-1].get("id")
+    return result
+
+
+def validate_export(data: object, m: Manifest) -> list[dict[str, Any]]:
+    """Validate an export without ever including its row values in an error."""
+    if (
+        not isinstance(data, dict)
+        or data.get("version") != 1
+        or data.get("run_id") != m.run_id
+        or data.get("src_id") != m.src_id
+        or data.get("dst_id") != m.dst_id
+        or not isinstance(data.get("rows"), list)
+    ):
+        raise Refused("the recovery export is not bound to this manifest.")
+    raw_rows = data["rows"]
+    rows: list[dict[str, Any]] = []
+    for item in raw_rows:
+        if (
+            not isinstance(item, dict)
+            or item.get("table") not in COLUMNS
+            or not isinstance(item.get("row"), dict)
+            or not isinstance(item.get("digest"), str)
+        ):
+            raise Refused("the recovery export is unreadable.")
+        table = item["table"]
+        row = item["row"]
+        key = str(row.get("id"))
+        if (
+            digest(table, row) != item["digest"]
+            or m.digests[table].get(key) != item["digest"]
+        ):
+            raise Refused("the recovery export does not match the manifest.")
+        rows.append(item)
+    return rows
+
+
+def write_recovery_export(
+    w: Wrangler, args: argparse.Namespace, work: Path, m: Manifest
+) -> Path:
+    """Create, fsync and re-read a private export before any DELETE is sent."""
+    rows = recovery_rows(w, args.source, m)
+    timestamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    name = f"{EXPORT_PREFIX}{timestamp}-{secrets.token_hex(6)}.json"
+    body = json.dumps(
+        {
+            "version": 1,
+            "run_id": m.run_id,
+            "src_id": m.src_id,
+            "dst_id": m.dst_id,
+            "rows": rows,
+        },
+        separators=(",", ":"),
     )
-    if m.bookmarks[0] != mark:
-        print(f"  (this run's own point, taken just before its first delete: {mark})")
+    dfd = os.open(work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        fd = os.open(name, flags, 0o600, dir_fd=dfd)
+        with os.fdopen(fd, "w+", encoding="utf-8") as fh:
+            fh.write(body)
+            fh.flush()
+            os.fsync(fh.fileno())
+            st = os.fstat(fh.fileno())
+            if (
+                not stat.S_ISREG(st.st_mode)
+                or st.st_uid != os.getuid()
+                or st.st_nlink != 1
+                or stat.S_IMODE(st.st_mode) != 0o600
+            ):
+                raise Refused("the recovery export is not a private regular file.")
+            fh.seek(0)
+            try:
+                validate_export(json.load(fh), m)
+            except ValueError as exc:
+                raise Refused("the recovery export is unreadable.") from exc
+        os.fsync(dfd)
+    except Exception:
+        try:
+            os.unlink(name, dir_fd=dfd)
+        except OSError:
+            pass
+        raise
+    finally:
+        os.close(dfd)
+    m.recovery_exports.append(name)
+    m.save()
+    print(f"private recovery export written: {work / name}")
+    return work / name
+
+
+def read_recovery_export(path: Path, m: Manifest) -> list[dict[str, Any]]:
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise Refused("a recorded recovery export cannot be opened.") from exc
+    with os.fdopen(fd, "r", encoding="utf-8") as fh:
+        st = os.fstat(fh.fileno())
+        if (
+            not stat.S_ISREG(st.st_mode)
+            or st.st_uid != os.getuid()
+            or st.st_nlink != 1
+            or stat.S_IMODE(st.st_mode) != 0o600
+        ):
+            raise Refused("a recovery export is not a private regular file.")
+        try:
+            return validate_export(json.load(fh), m)
+        except ValueError as exc:
+            raise Refused("the recovery export is unreadable.") from exc
+
+
+def restore_from_exports(
+    w: Wrangler, args: argparse.Namespace, work: Path, m: Manifest
+) -> int:
+    if not m.exists or not m.recovery_exports:
+        raise Refused("no recovery export is recorded in the manifest.")
+    restored = 0
+    for name in m.recovery_exports:
+        if Path(name).name != name or not name.startswith(EXPORT_PREFIX):
+            raise Refused("the manifest contains an invalid recovery export name.")
+        items = read_recovery_export(work / name, m)
+        for table, _ in TABLES:
+            table_rows = [item["row"] for item in items if item["table"] == table]
+            if not table_rows:
+                continue
+            existing = {
+                str(row.get("id")): row
+                for row in by_ids(
+                    w, args.source, table, [row.get("id") for row in table_rows]
+                )
+            }
+            missing: list[dict[str, Any]] = []
+            for row in table_rows:
+                got = existing.get(str(row.get("id")))
+                if got is None:
+                    missing.append(row)
+                elif digest(table, got) != digest(table, row):
+                    raise Refused(
+                        "a source row has an exported primary key but different data."
+                    )
+            if missing:
+                run_file(w, args.source, work, insert_sql(table, missing))
+                restored += len(missing)
+            back = by_ids(w, args.source, table, [row.get("id") for row in table_rows])
+            if missing_from(back, table_rows, COLUMNS[table]):
+                raise Failed("recovery export read-back verification failed")
+    print(f"recovery export verified; {restored} missing rows restored")
+    return 0
 
 
 def confirm_dest(
@@ -1009,6 +1199,12 @@ def purge_phase(
         check_dest(w, args.dest, m, batch_size())
         prove_quiet(w, args)
         record_bookmark(w, args, m)
+        try:
+            write_recovery_export(w, args, work, m)
+        except (Failed, OSError, UnicodeError) as exc:
+            raise Refused(
+                "the recovery export could not be written; nothing was deleted."
+            ) from exc
         purge_chunks(w, args, work, m, progress)
         left = counts(w, args.source)
         print(f"source now holds {left['leads']} leads, {left['kit_events']} events")
@@ -1052,6 +1248,11 @@ def run(args: argparse.Namespace) -> int:
         return freeze(w, args.source)
     if args.verify:
         return verify(w, args, work)
+
+    if args.restore_from_export:
+        manifest = new_manifest(work, args)
+        manifest.load()
+        return restore_from_exports(w, args, work, manifest)
 
     held = counts(w, args.source)
     print(f"source holds {held['leads']} leads and {held['kit_events']} kit events")
@@ -1106,6 +1307,11 @@ def main(argv: list[str]) -> int:
     modes.add_argument("--purge", action="store_true", help="copy, verify, delete")
     modes.add_argument("--freeze", action="store_true", help="refuse new rows (step 1)")
     modes.add_argument("--verify", action="store_true", help="the cutover check")
+    modes.add_argument(
+        "--restore-from-export",
+        action="store_true",
+        help="restore exported source rows and verify them",
+    )
     parser.add_argument(
         "--locked-window-confirmed",
         action="store_true",
