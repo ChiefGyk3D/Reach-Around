@@ -1820,3 +1820,264 @@ def test_an_export_made_before_a_row_was_re_moved_is_stale_not_foreign(
     lied = stale | {"row": forged_row}  # row text altered, digest kept
     with pytest.raises(mod.Refused):
         mod.validate_export(data | {"rows": [lied]}, m)
+
+
+# ---- interruption and atomic state writes (round 10, finding 4) -------------------
+
+HOLD = """#!{python}
+import os, sys
+args = sys.argv[1:]
+text = " ".join(args[:2])
+for a in args:
+    if a.startswith("--file="):
+        text += open(a.split("=", 1)[1]).read()
+if os.environ["HOLD_MATCH"] in text:
+    counter = os.environ["HOLD_COUNTER"]
+    n = int(open(counter).read()) if os.path.exists(counter) else 0
+    open(counter, "w").write(str(n + 1))
+    if n + 1 == int(os.environ["HOLD_NTH"]):
+        open(os.environ["HOLD_MARK"], "w").write("held")
+        for _ in range(300):
+            if os.path.exists(os.environ["HOLD_GO"]):
+                break
+            import time
+            time.sleep(0.1)
+os.execv(os.environ["STUB_REAL"], [os.environ["STUB_REAL"], *args])
+"""
+
+
+def held_env(tmp_path: Path, env: dict[str, str], match: str, nth: int) -> Path:
+    """Route wrangler through a wrapper that holds one named call until released."""
+    wrapper = tmp_path / "hold-wrapper"
+    wrapper.write_text(HOLD.format(python=sys.executable))
+    wrapper.chmod(0o700)
+    env["STUB_REAL"] = env["WRANGLER"]
+    env["WRANGLER"] = str(wrapper)
+    env["HOLD_MATCH"] = match
+    env["HOLD_NTH"] = str(nth)
+    env["HOLD_COUNTER"] = str(tmp_path / "hold-count")
+    env["HOLD_MARK"] = str(tmp_path / "hold-mark")
+    env["HOLD_GO"] = str(tmp_path / "hold-go")
+    return Path(env["HOLD_GO"])
+
+
+def start(env: dict[str, str], work: Path, *flags: str) -> subprocess.Popen[str]:
+    known = ids_of(env)
+    extra = ["--locked-window-confirmed"] if "--purge" in flags else []
+    return subprocess.Popen(  # noqa: S603 - fixed argv, synthetic input
+        [
+            sys.executable,
+            "-I",
+            str(SCRIPT),
+            "--source",
+            "analytics-db",
+            "--source-id",
+            known["analytics-db"],
+            "--dest",
+            "leads-db",
+            "--dest-id",
+            known["leads-db"],
+            "--workdir",
+            str(work),
+            *flags,
+            *extra,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+
+def signal_when_held(
+    proc: subprocess.Popen[str], env: dict[str, str], signum: int, *, kill: bool = False
+) -> tuple[int, str, str]:
+    """Wait until the held call is reached, signal the tool, release, collect."""
+    mark = Path(env["HOLD_MARK"])
+    for _ in range(300):
+        if mark.exists():
+            break
+        time.sleep(0.1)
+    assert mark.exists(), "the held call was never reached"
+    proc.send_signal(signum)
+    time.sleep(0.3)  # the handler has run; the held call is still in flight
+    Path(env["HOLD_GO"]).write_text("go")
+    out, err = proc.communicate(timeout=60)
+    return proc.returncode, out, err
+
+
+def saved_manifest(work: Path) -> dict[str, Any]:
+    path = work / "move-manifest.json"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    data: dict[str, Any] = json.loads(path.read_text())
+    return data
+
+
+def leftovers(work: Path) -> list[str]:
+    return sorted(
+        p.name
+        for p in work.iterdir()
+        if p.name.startswith("move-")
+        and p.name != "move-manifest.json"
+        or p.name.endswith(".tmp")
+    )
+
+
+@pytest.mark.parametrize("signum", [2, 15, 1])  # SIGINT, SIGTERM, SIGHUP
+def test_a_signal_during_copy_stops_at_a_safe_point_and_a_rerun_resumes(
+    tmp_path: Path, signum: int
+) -> None:
+    env = make(tmp_path, count=5)
+    env["MOVE_BATCH"] = "2"
+    held_env(tmp_path, env, "INSERT", 2)  # the second leads chunk
+    work = workdir(tmp_path)
+    code, out, err = signal_when_held(start(env, work, "--copy"), env, signum)
+    assert code == 6, (code, err)
+    assert "interrupted" in err and "Traceback" not in err
+    data = saved_manifest(work)  # whole, mode 600
+    assert data["state"] == "copying" and data["cursor"]["leads"]
+    assert leftovers(work) == []  # no scratch directory, no temporary file
+    assert count(env["STUB_SRC"], "leads") == 5  # nothing deleted
+    for key in ("HOLD_MATCH",):
+        env[key] = "no-such-text"
+    resumed = run(env, work, "--copy")
+    assert resumed.returncode == 0, resumed.stderr
+    assert "resuming an unfinished copy" in resumed.stdout
+    assert rows(env["STUB_SRC"], "leads") == rows(env["STUB_DEST"], "leads")
+    assert rows(env["STUB_SRC"], "kit_events") == rows(env["STUB_DEST"], "kit_events")
+
+
+@pytest.mark.parametrize("signum", [2, 15, 1])
+def test_a_signal_after_a_delete_exits_4_and_a_rerun_finishes(
+    tmp_path: Path, signum: int
+) -> None:
+    env = make(tmp_path, count=3)
+    env["MOVE_BATCH"] = "1"
+    assert run(env, workdir(tmp_path), "--freeze").returncode == 0
+    held_env(tmp_path, env, "DELETE FROM", 1)  # the first source delete
+    work = tmp_path / "work"
+    code, out, err = signal_when_held(start(env, work, "--purge"), env, signum)
+    assert code == 4, (code, err)
+    assert "partial purge" in err and "interrupted" in err
+    assert "Traceback" not in err
+    assert 0 < src_rows(env) < 6  # the in-flight delete finished, the rest did not
+    assert saved_manifest(work)["purge_open"] is True
+    env["HOLD_MATCH"] = "no-such-text"
+    again = run(env, work, "--purge")
+    assert again.returncode == 0, again.stderr
+    assert src_rows(env) == 0
+    assert saved_manifest(work)["purge_open"] is False  # the final verify cleared it
+
+
+def test_a_signal_before_the_first_delete_exits_6_and_deletes_nothing(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    assert run(env, work, "--freeze").returncode == 0
+    held_env(tmp_path, env, "time-travel", 1)  # after the settle reads
+    code, out, err = signal_when_held(start(env, work, "--purge"), env, 15)
+    assert code == 6, (code, err)
+    assert "deleted nothing" in err
+    assert src_rows(env) == 6
+    assert saved_manifest(work)["purge_open"] is False  # no delete was ever possible
+    env["HOLD_MATCH"] = "no-such-text"
+    assert run(env, work, "--purge").returncode == 0
+
+
+def test_a_killed_purge_leaves_a_durable_verify_first_marker(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    env["MOVE_BATCH"] = "1"
+    work = workdir(tmp_path)
+    assert run(env, work, "--freeze").returncode == 0
+    held_env(tmp_path, env, "DELETE FROM", 1)
+    proc = start(env, work, "--purge")
+    code, _out, _err = signal_when_held(proc, env, 9)  # SIGKILL: no handler can run
+    assert code == -9
+    assert saved_manifest(work)["purge_open"] is True
+    time.sleep(1)  # the orphaned statement finishes on its own
+    env["HOLD_MATCH"] = "no-such-text"
+    assert run(env, work, "--purge").returncode == 0
+    assert saved_manifest(work)["purge_open"] is False
+
+
+def test_the_manifest_write_is_atomic_durable_and_mode_set_before_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = load_script()
+    work = workdir(tmp_path)
+    uid = str(uuid.uuid4())
+    m = mod.Manifest(work, "src", "dst", uid, uid)
+    m.save()
+    before = (work / "move-manifest.json").read_text()
+    calls: list[str] = []
+    real_rename, real_fsync = mod.os.rename, mod.os.fsync
+
+    def rename(*a: Any, **k: Any) -> None:
+        calls.append("rename")
+        real_rename(*a, **k)
+
+    def fsync(fd: int) -> None:
+        calls.append("dir-fsync" if stat.S_ISDIR(os.fstat(fd).st_mode) else "fsync")
+        real_fsync(fd)
+
+    monkeypatch.setattr(mod.os, "rename", rename)
+    monkeypatch.setattr(mod.os, "fsync", fsync)
+    old = os.umask(0o277)  # would leave the file at mode 400 without an explicit chmod
+    try:
+        m.cursor = {"leads": "x"}
+        m.save()
+    finally:
+        os.umask(old)
+    assert calls == ["fsync", "rename", "dir-fsync"]  # file, rename, then the directory
+    assert stat.S_IMODE((work / "move-manifest.json").stat().st_mode) == 0o600
+    assert (work / "move-manifest.json").read_text() != before
+    # A failure at the rename leaves the old manifest whole and no temporary file.
+    monkeypatch.setattr(
+        mod.os, "rename", lambda *a, **k: (_ for _ in ()).throw(OSError())
+    )
+    m.cursor = {"leads": "y"}
+    with pytest.raises(OSError):
+        m.save()
+    assert json.loads((work / "move-manifest.json").read_text())["cursor"] == {
+        "leads": "x"
+    }
+    assert [p.name for p in work.iterdir()] == ["move-manifest.json"]
+
+
+def test_a_killed_runs_temporary_files_are_removed_by_the_next_write(
+    tmp_path: Path,
+) -> None:
+    mod = load_script()
+    work = workdir(tmp_path)
+    uid = str(uuid.uuid4())
+    for name in (".move-manifest.json.aaaa.tmp", ".lead-recovery-x.json.bbbb.tmp"):
+        (work / name).write_text("half")
+        (work / name).chmod(0o600)
+    mod.Manifest(work, "src", "dst", uid, uid).save()
+    names = sorted(p.name for p in work.iterdir())
+    assert names == [".lead-recovery-x.json.bbbb.tmp", "move-manifest.json"]
+    dfd = os.open(work, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        mod.sweep_stale(dfd, mod.EXPORT_PREFIX)
+    finally:
+        os.close(dfd)
+    assert [p.name for p in work.iterdir()] == ["move-manifest.json"]
+
+
+def test_a_recovery_export_never_exists_half_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = load_script()
+    work = workdir(tmp_path)
+    uid = str(uuid.uuid4())
+    m = mod.Manifest(work, "src", "dst", uid, uid)
+    monkeypatch.setattr(mod, "recovery_rows", lambda *a: [])
+    args = SimpleNamespace(source="src")
+    monkeypatch.setattr(
+        mod.os, "rename", lambda *a, **k: (_ for _ in ()).throw(OSError())
+    )
+    with pytest.raises(OSError):
+        mod.write_recovery_export(None, args, work, m)
+    assert list(work.iterdir()) == []  # not under the final name, no temporary file
+    assert m.recovery_exports == []

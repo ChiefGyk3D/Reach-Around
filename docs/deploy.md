@@ -546,7 +546,22 @@ Exit codes. 0 done or dry run; 1 a step failed and this run deleted nothing; 2 u
 precondition did not hold, nothing deleted by this run); 4 partial purge, some chunks were deleted and
 the rest were not, the copies and the manifest are intact, safe to run `--purge` again; 5 failure after
 a delete, a delete may have been applied (a call was lost, or the final verification failed): run
-`--verify` and compare the counts before anything else, recovery is the bookmark.
+`--verify` and compare the counts before anything else, recovery is the bookmark; 6 interrupted by a
+signal at a safe point before this run deleted anything, safe to run the same command again.
+
+Interruption. Ctrl-C (SIGINT), SIGTERM and SIGHUP are caught. The handler only notes the signal, so no
+manifest, cursor or export write is ever cut in half; the run stops between two chunks (or right after the
+settle wait, at most 60 seconds). A database call already running finishes first (it is bounded by `MOVE_TIMEOUT`), so the
+outcome of every statement is known. The exit code is then 6 when this run deleted nothing (a `--copy`
+resumes from its saved cursor, and a `--purge` simply starts again), or 4 (or 5 when an outcome is
+unknown) when it had already deleted. It never prints a traceback. The manifest, the cursor and the
+recovery export are each written to a temporary file with mode 600, fsynced, renamed into place, and the
+directory is fsynced, so a crash leaves the previous file or the new one. SIGKILL and power loss cannot
+be caught: the manifest records `purge_open` before the first delete of an attempt and it stays set
+until a `--verify` passes, so run `--verify` first after any purge that did not end with "done". A
+killed run can leave a `move-*` scratch directory or a `.*.tmp` file in the work directory; they may
+hold lead rows, so remove them by hand once no run is active (the next manifest or export write removes
+its own leftover temporary files). The tool takes no lock: run one instance at a time.
 
 The tool leaves exactly two objects in the analytics database, the freeze triggers `leads_frozen` and
 `kit_events_frozen`, and nothing in the leads database. `scripts/dump-schema.json` allows those two

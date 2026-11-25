@@ -108,11 +108,28 @@ Every wrangler call is bounded by MOVE_TIMEOUT seconds (default 120, 1 to 900). 
 names another command (a test stub); the default is `npx wrangler`. Run it from the
 folder whose wrangler config names both databases.
 
+Interruption. SIGINT (Ctrl-C), SIGTERM and SIGHUP are caught: the handler only notes
+the signal, so no manifest, cursor or export write is ever cut in half. The run stops
+at the next safe point, between two chunks (or right after the settle wait): a
+wrangler call already running finishes first (it runs in its own session, bounded by
+MOVE_TIMEOUT), so the outcome of every statement is known. Then it exits: 6 when this
+run deleted nothing
+(a copy resumes from its saved cursor, a purge starts over), 4 or 5 as below when it had
+already deleted. The manifest, the cursor and the recovery export are written to a
+temporary file, fsynced, and renamed (the directory is fsynced too), so a crash or
+SIGKILL leaves the previous file or the new one. SIGKILL and power loss cannot be
+caught: the manifest records `purge_open` before the first DELETE, which stays set
+until a --verify passes, so run --verify first after any purge that did not end
+cleanly. A killed run can leave scratch directories `move-*` and `.*.tmp` files in
+WORKDIR; they may hold lead rows: remove them by hand (the next manifest or export
+write removes its own leftovers). The tool takes no lock: run one instance at a time.
+
 Exit: 0 done or dry run, 1 a step failed and this run deleted nothing, 2 usage,
 3 refused (nothing deleted by this run), 4 partial purge (some chunks were deleted;
 the copies and the manifest are intact; safe to run --purge again), 5 failure after a
 delete (a delete may have been applied; run --verify and check the counts before
-anything else; recovery is the recorded bookmark).
+anything else; recovery is the recorded bookmark), 6 interrupted by a signal at a safe
+point before any delete of this run (safe to run the same command again).
 """
 
 from __future__ import annotations
@@ -126,6 +143,7 @@ import re
 import secrets
 import shlex
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -179,6 +197,28 @@ class VerifyRequired(Failed):
     """A delete may have been applied and the outcome is not proved (exit 5)."""
 
 
+class Interrupted(Failed):
+    """SIGINT, SIGTERM or SIGHUP arrived; the run stopped at a safe point (exit 6)."""
+
+
+# The handler only records the signal; nothing is written or raised from inside it, so
+# a signal can never cut a manifest, export or cursor write in half. The run looks at
+# the record at safe points (before each read page, each settle slice) and stops there.
+STOP: dict[str, int | None] = {"signal": None}
+STOP_SIGNALS = tuple(
+    getattr(signal, n) for n in ("SIGINT", "SIGTERM", "SIGHUP") if hasattr(signal, n)
+)
+
+
+def check_stop() -> None:
+    if STOP["signal"] is not None:
+        raise Interrupted("interrupted by a signal; stopped at a safe point")
+
+
+def note_signal(signum: int, _frame: object) -> None:
+    STOP["signal"] = signum
+
+
 def timeout_seconds() -> int:
     raw = os.environ.get("MOVE_TIMEOUT", "120")
     if not raw.isdigit() or not 1 <= int(raw) <= 900:
@@ -206,7 +246,11 @@ class Wrangler:
         self.limit = timeout_seconds()
 
     def call(self, args: list[str]) -> str:
-        """Run one bounded wrangler command and return its stdout (never printed)."""
+        """Run one bounded wrangler command and return its stdout (never printed).
+
+        It runs in its own session, so a Ctrl-C aimed at this tool does not also kill
+        a statement in flight: the call finishes (bounded by MOVE_TIMEOUT), its outcome
+        is known, and the tool stops at the next safe point."""
         try:
             done = subprocess.run(  # noqa: S603 - argv list, no shell
                 [*self.cmd, *args],
@@ -214,6 +258,7 @@ class Wrangler:
                 text=True,
                 timeout=self.limit,
                 check=False,
+                start_new_session=True,
             )
         except subprocess.TimeoutExpired as exc:
             raise Failed("a database call timed out") from exc
@@ -264,7 +309,11 @@ def counts(w: Wrangler, db: str) -> dict[str, int]:
 def page(
     w: Wrangler, db: str, table: str, after: object | None, limit: int
 ) -> list[dict[str, Any]]:
-    """The next `limit` rows of `table` after primary key `after`, in key order."""
+    """The next `limit` rows of `table` after primary key `after`, in key order.
+
+    Every chunk of every loop reads through here, so this is the safe point at which a
+    signal stops the run: between chunks, never inside a write."""
+    check_stop()
     cols = ", ".join(COLUMNS[table])
     cond = "" if after is None else f" WHERE id > {literal(after)}"
     return w.execute(
@@ -485,6 +534,50 @@ def take_bookmark(w: Wrangler, db: str) -> str:
     raise Failed("no usable Time Travel bookmark was returned")
 
 
+def write_private(dfd: int, name: str, body: str, check: Any = None) -> None:
+    """Write `name` in the directory `dfd` so it is whole or absent, never half.
+
+    A new file with a name of its own is created exclusively through the directory
+    descriptor (never through a symlink), its mode is set to 600 before any content
+    goes in, the content is written and fsynced, `check` (if any) reads it back, then
+    it is renamed over `name` and the directory is fsynced so the rename is durable.
+    A crash or a signal leaves either the old file or the new one; the temporary file
+    is removed on any failure."""
+    tmp = f".{name}.{secrets.token_hex(6)}.tmp"
+    try:
+        fd = os.open(
+            tmp, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dfd
+        )
+        with os.fdopen(fd, "w+", encoding="utf-8") as fh:
+            os.fchmod(fh.fileno(), 0o600)  # before the content, whatever the umask
+            fh.write(body)
+            fh.flush()
+            os.fsync(fh.fileno())
+            if check is not None:
+                check(fh)
+        os.rename(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)
+    except BaseException:
+        try:
+            os.unlink(tmp, dir_fd=dfd)
+        except OSError:
+            pass
+        raise
+    os.fsync(dfd)
+
+
+def sweep_stale(dfd: int, prefix: str) -> None:
+    """Remove temporary files a killed run left behind (`.<prefix>*.tmp`, plain files
+    only; a link goes, never its target)."""
+    for entry in os.listdir(dfd):
+        if entry.startswith(f".{prefix}") and entry.endswith(".tmp"):
+            try:
+                st = os.stat(entry, dir_fd=dfd, follow_symlinks=False)
+                if stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode):
+                    os.unlink(entry, dir_fd=dfd)
+            except OSError:
+                pass
+
+
 class Manifest:
     """The private record of what was copied: digests and cursors, never a row.
 
@@ -510,6 +603,10 @@ class Manifest:
         # an export made before the re-move is stale, not foreign.
         self.superseded: dict[str, dict[str, list[str]]] = {t: {} for t, _ in TABLES}
         self.run_id = secrets.token_hex(16)
+        # True from just before the first DELETE of an attempt until a --verify passes:
+        # a durable "a delete may have been applied; verify first" for a run that was
+        # killed (SIGKILL, power loss) and so could not say it itself.
+        self.purge_open = False
         self.exists = False
 
     def load(self) -> None:
@@ -595,13 +692,15 @@ class Manifest:
         self.bookmark_attempts = list(attempts)
         self.recovery_exports = list(exports)
         self.run_id = run_id if isinstance(run_id, str) else self.run_id
+        open_flag = data.get("purge_open", False)
+        if not isinstance(open_flag, bool):
+            raise Refused("the manifest is unreadable; resolve it by hand.")
+        self.purge_open = open_flag
         self.exists = True
 
     def save(self) -> None:
-        tmp = self.path.with_name(MANIFEST + ".tmp")
-        tmp.unlink(
-            missing_ok=True
-        )  # a crashed run's leftover (a link goes, not its target)
+        """Write the manifest whole or not at all (write_private): a signal or a crash
+        leaves the previous file or the new one, never half of either."""
         body = json.dumps(
             {
                 "version": 3,
@@ -614,17 +713,18 @@ class Manifest:
                 "recovery_exports": self.recovery_exports,
                 "superseded": self.superseded,
                 "run_id": self.run_id,
+                "purge_open": self.purge_open,
                 "state": self.state,
                 "cursor": self.cursor,
                 "digests": self.digests,
             }
         )
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(body)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, self.path)
+        dfd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            sweep_stale(dfd, MANIFEST)  # a killed run's leftover
+            write_private(dfd, MANIFEST, body)
+        finally:
+            os.close(dfd)
         self.exists = True
 
     def known(self, table: str, row: dict[str, Any]) -> str | None:
@@ -870,6 +970,9 @@ def verify(w: Wrangler, args: argparse.Namespace, work: Path) -> int:
         raise Failed("the manifest says a copy did not finish; run the move again")
     else:
         check_dest(w, source, dest, work, manifest, size)
+        if manifest.purge_open:  # the proof the earlier interrupted purge needed
+            manifest.purge_open = False
+            manifest.save()
     print("cutover verified: moved completely, and no older Worker can store a lead.")
     return 0
 
@@ -1016,7 +1119,8 @@ def prove_quiet(w: Wrangler, args: argparse.Namespace) -> None:
     (module docstring). A difference refuses the purge before any delete."""
     size = batch_size()
     first = (snapshot(w, args.source, size), snapshot(w, args.dest, size))
-    time.sleep(settle_seconds())
+    time.sleep(settle_seconds())  # a signal is acted on right after it (at most 60 s)
+    check_stop()
     second = (snapshot(w, args.source, size), snapshot(w, args.dest, size))
     if first != second:
         raise Refused(
@@ -1116,34 +1220,28 @@ def write_recovery_export(
         },
         separators=(",", ":"),
     )
+
+    def reread(fh: Any) -> None:
+        """Right after the fsync, before the rename: a private regular file whose
+        content parses and matches the manifest."""
+        st = os.fstat(fh.fileno())
+        if (
+            not stat.S_ISREG(st.st_mode)
+            or st.st_uid != os.getuid()
+            or st.st_nlink != 1
+            or stat.S_IMODE(st.st_mode) != 0o600
+        ):
+            raise Refused("the recovery export is not a private regular file.")
+        fh.seek(0)
+        try:
+            validate_export(json.load(fh), m)
+        except ValueError as exc:
+            raise Refused("the recovery export is unreadable.") from exc
+
     dfd = os.open(work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-        fd = os.open(name, flags, 0o600, dir_fd=dfd)
-        with os.fdopen(fd, "w+", encoding="utf-8") as fh:
-            fh.write(body)
-            fh.flush()
-            os.fsync(fh.fileno())
-            st = os.fstat(fh.fileno())
-            if (
-                not stat.S_ISREG(st.st_mode)
-                or st.st_uid != os.getuid()
-                or st.st_nlink != 1
-                or stat.S_IMODE(st.st_mode) != 0o600
-            ):
-                raise Refused("the recovery export is not a private regular file.")
-            fh.seek(0)
-            try:
-                validate_export(json.load(fh), m)
-            except ValueError as exc:
-                raise Refused("the recovery export is unreadable.") from exc
-        os.fsync(dfd)
-    except Exception:
-        try:
-            os.unlink(name, dir_fd=dfd)
-        except OSError:
-            pass
-        raise
+        sweep_stale(dfd, EXPORT_PREFIX)  # a killed run's half-written export
+        write_private(dfd, name, body, reread)
     finally:
         os.close(dfd)
     m.recovery_exports.append(name)
@@ -1190,6 +1288,7 @@ def restore_from_exports(
             == item["digest"]
         ]
         for table, _ in TABLES:
+            check_stop()  # between tables; the inserts are idempotent, rerun resumes
             table_rows = [item["row"] for item in items if item["table"] == table]
             if not table_rows:
                 continue
@@ -1326,10 +1425,15 @@ def purge_phase(
         record_bookmark(w, args, m)
         try:
             write_recovery_export(w, args, work, m)
+        except Interrupted:
+            raise
         except (Failed, OSError, UnicodeError) as exc:
             raise Refused(
                 "the recovery export could not be written; nothing was deleted."
             ) from exc
+        check_stop()
+        m.purge_open = True  # durable before the first DELETE; --verify clears it
+        m.save()
         purge_chunks(w, args, work, m, progress)
         left = counts(w, args.source)
         print(f"source now holds {left['leads']} leads, {left['kit_events']} events")
@@ -1346,7 +1450,7 @@ def purge_phase(
             raise Failed(rows_left)
         try:
             verify(w, args, work)  # the final check, in this same run
-        except (Failed, Refused, OSError) as exc:
+        except (Failed, Refused, OSError) as exc:  # Interrupted is a Failed
             if sum(left.values()) < before:
                 raise VerifyRequired(
                     "the purge ran but the final verification failed: run --verify "
@@ -1473,6 +1577,13 @@ def main(argv: list[str]) -> int:
         return 3
     if args.purge:
         settle_seconds()  # a bad MOVE_SETTLE stops the run before any copy
+    previous: dict[int, Any] = {}
+    try:
+        for signum in STOP_SIGNALS:
+            previous[signum] = signal.signal(signum, note_signal)
+    except ValueError:  # not the main thread: no handlers, the default applies
+        previous.clear()
+    STOP["signal"] = None
     try:
         return run(args)
     except Refused as exc:
@@ -1484,6 +1595,9 @@ def main(argv: list[str]) -> int:
     except VerifyRequired as exc:
         print(f"failed: {exc}", file=sys.stderr)
         return 5
+    except Interrupted as exc:
+        print(f"interrupted: {exc}; this run deleted nothing.", file=sys.stderr)
+        return 6
     except Failed as exc:
         print(f"failed: {exc}", file=sys.stderr)
         return 1
@@ -1494,6 +1608,9 @@ def main(argv: list[str]) -> int:
             file=sys.stderr,
         )
         return 1
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
 
 
 if __name__ == "__main__":
