@@ -520,9 +520,7 @@ def check_no_private_values(
 # --- the build binding ------------------------------------------------------------
 
 
-def _digest_file(
-    path: Path, limit: int, what: str, lock_fd: int | None = None
-) -> str:
+def _digest_file(path: Path, limit: int, what: str, lock_fd: int | None = None) -> str:
     try:
         data = read_anchored(path, limit, lock_fd)
     except AnchoredReadError as exc:

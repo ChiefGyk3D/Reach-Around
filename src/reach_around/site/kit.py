@@ -115,7 +115,6 @@ from reach_around.funnel.floor import UNDER_FLOOR as UNDER_FLOOR
 from reach_around.kit.binding import (
     BINDING_FILE,
     PENDING_FILE,
-    STAGING_NAME,
     acquire_gated_lock,
     leftover_names,
     open_locked_dir,
@@ -959,7 +958,8 @@ def stage_gated(
         gated_out, None, policy, binding, acquire_gated_lock(gated_out, exclusive=True)
     )
     try:
-        assert staged.lock is not None
+        if staged.lock is None:  # unreachable: the lock was taken just above
+            raise ValueError("the gated directory lock was not taken")
         _remove_stale_staging(gated_out, staged.lock)
         if page is not None:
             temp = _stage_text(gated_out, target, page)

@@ -77,11 +77,11 @@ from reach_around.config.trust import (
 )
 from reach_around.funnel.floor import shown_count
 from reach_around.kit.binding import (
-    GatedLockError,
     AnchoredReadError,
+    GatedLockError,
     check_no_pending_commit,
-    read_anchored,
     gated_lock,
+    read_anchored,
 )
 from reach_around.kit.output import check_name, confine_out_dir, write_private
 from reach_around.kit.pdftext import PdfTextError, extract_pages
@@ -1030,9 +1030,7 @@ def build_kit_pdf(
                 check_no_pending_commit(gated_dir, lock_fd)
             except ValueError as exc:
                 raise PdfError(str(exc)) from exc
-            check_policy_record(
-                gated_dir / GATED_POLICY_FILE, "gated page", lock_fd
-            )
+            check_policy_record(gated_dir / GATED_POLICY_FILE, "gated page", lock_fd)
             staged = stage_page(gated_dir, site_dir)
     except GatedLockError as exc:
         raise PdfError(str(exc)) from exc
