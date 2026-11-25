@@ -315,7 +315,11 @@ def _deploy_local_fixture(
 ) -> tuple[Path, Path, subprocess.CompletedProcess[str]]:
     engine = tmp_path / "engine"
     (engine / "worker" / "migrations").mkdir(parents=True)
-    (engine / "worker" / "migrations" / "0007_x.sql").write_text(
+    # The migrations must end where the shipped manifest says, whatever it is now.
+    schema = json.loads((INSTANCE / "engine.release.json").read_text("utf-8"))[
+        "d1_schema"
+    ]
+    (engine / "worker" / "migrations" / f"{schema}_x.sql").write_text(
         "select 1;", encoding="utf-8"
     )
     (engine / "worker" / "wrangler.toml").write_text("name = 'x'\n", encoding="utf-8")
