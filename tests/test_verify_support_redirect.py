@@ -78,8 +78,14 @@ def sites() -> Iterator[list[Site]]:
         s.close()
 
 
-def run(src: Site, dst: Site, **env: str) -> subprocess.CompletedProcess[str]:
-    return run_hosts(src.host, dst.host, **env)
+def run(
+    src: Site,
+    dst: Site,
+    *,
+    script: Path = SCRIPT,
+    **env: str,
+) -> subprocess.CompletedProcess[str]:
+    return run_hosts(src.host, dst.host, script=script, **env)
 
 
 def run_hosts(
