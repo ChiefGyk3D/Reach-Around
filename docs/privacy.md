@@ -1,5 +1,7 @@
 # Privacy: lead retention and deletion requests
 
+> **Stale in parts (state STALE, issue #801). Covers lead retention and deletion only. The 2026-11-24 privacy decisions supersede it where they differ: region-only raw rows, hour-rounded raw events, masked alert emails by default, and the operator duties still to be written. The wording tested in this page is unchanged. See the ADR index in `docs/wiki/adr/` once merged (PR #835).**
+
 For the analytics boundary that applies across tables, logs, caches, queues and
 exports, see the [Audience-analysis do-not-collect list](audience-analysis-privacy.md).
 
