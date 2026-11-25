@@ -160,16 +160,27 @@ describe("session checks (the same rules as the view route)", () => {
   });
   it("answers 503 and delivers nothing when the session read fails", async () => {
     const lim = limiter();
+    const sql: string[] = [];
     const boom = new Proxy(testEnv.DB, {
       get(target, prop) {
-        if (prop === "prepare") return () => { throw new Error("d1 down"); };
+        if (prop === "prepare") {
+          return (q: string) => {
+            sql.push(q);
+            // Only the session lookup fails; every other query would succeed.
+            if (/FROM leads WHERE id/.test(q)) throw new Error("d1 down");
+            return target.prepare(q);
+          };
+        }
         const v = Reflect.get(target, prop) as unknown;
         return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
       },
     }) as D1Database;
-    const { res, f } = await post({}, baseEnv({ DB: boom, INQUIRY_LIMITER: lim }));
+    const { res, f } = await post({ cookie: await sessionCookie() }, baseEnv({ DB: boom, INQUIRY_LIMITER: lim }));
     expect(res.status).toBe(503);
     expect(f.calls).toHaveLength(0);
+    // The session lookup was the failing statement and nothing was prepared after it.
+    expect(sql.filter((q) => /FROM leads WHERE id/.test(q))).toHaveLength(1);
+    expect(/FROM leads WHERE id/.test(sql[sql.length - 1]!)).toBe(true);
     const row = await testEnv.DB.prepare("SELECT COALESCE(SUM(count), 0) AS n FROM counters WHERE key = 'inquiry'").first<{ n: number }>();
     expect(row?.n).toBe(0);
   });

@@ -41,7 +41,12 @@ describe("authorizeSession: malformed floors fail closed", () => {
       expect(await authorizeSession(fakeDb({ value: bad }), [KEY], claims({ lid }))).toBe("error");
     }
   });
-  it("still accepts a null floor and a valid older floor", async () => {
+  it("a malformed floor is refused where a comparison alone would open the session", async () => {
+    // Without the shape check, NaN and a negative compare as "not newer" and the session would be ok.
+    for (const bad of [Number.NaN, -1, "invalid"]) {
+      expect(await authorizeSession(fakeDb({ id: LEAD_ID, session_floor_ts: bad }), [KEY], claims())).toBe("error");
+    }
+    // Compatibility baseline: a null floor and a valid older floor stay ok.
     expect(await authorizeSession(testEnv.DB, [KEY], claims())).toBe("ok");
     await testEnv.DB.prepare("UPDATE leads SET session_floor_ts = ? WHERE id = ?").bind(T0 - 120_000, LEAD_ID).run();
     expect(await authorizeSession(testEnv.DB, [KEY], claims())).toBe("ok");
@@ -54,19 +59,49 @@ describe("authorizeSession: malformed floors fail closed", () => {
   });
 });
 
-describe("schema refuses a malformed floor at write time", () => {
-  it("rejects text, a fraction and a negative in leads.session_floor_ts", async () => {
-    for (const bad of ["invalid", 1.5, -1]) {
-      await expect(testEnv.DB.prepare("UPDATE leads SET session_floor_ts = ? WHERE id = ?").bind(bad, LEAD_ID).run()).rejects.toThrow();
-    }
-  });
-  it("rejects text and a negative for the kit-wide floor, on insert and on update", async () => {
-    for (const bad of ["invalid", -1]) {
-      await expect(testEnv.DB.prepare("INSERT INTO kit_meta (key, value) VALUES (?, ?)").bind(UNSTORED_FLOOR_KEY, bad).run()).rejects.toThrow();
-    }
-    await testEnv.DB.prepare("INSERT INTO kit_meta (key, value) VALUES (?, ?)").bind(UNSTORED_FLOOR_KEY, 5).run();
+describe("migration 0021: negative kit-wide floor", () => {
+  const mig = () => testEnv.TEST_MIGRATIONS.find((m) => m.name.includes("0021"))!;
+  async function dropTriggers() {
+    await testEnv.DB.prepare("DROP TRIGGER IF EXISTS kit_meta_floor_insert").run();
+    await testEnv.DB.prepare("DROP TRIGGER IF EXISTS kit_meta_floor_update").run();
+  }
+  async function reapply() {
+    await dropTriggers();
+    for (const q of mig().queries) await testEnv.DB.prepare(q).run();
+  }
+  const floor = () => testEnv.DB.prepare("SELECT value FROM kit_meta WHERE key = ?").bind(UNSTORED_FLOOR_KEY).first<{ value: number }>();
+
+  it("refuses a negative insert and a negative update", async () => {
+    await expect(testEnv.DB.prepare("INSERT INTO kit_meta (key, value) VALUES (?, -1)").bind(UNSTORED_FLOOR_KEY).run()).rejects.toThrow();
+    await testEnv.DB.prepare("INSERT INTO kit_meta (key, value) VALUES (?, 5)").bind(UNSTORED_FLOOR_KEY).run();
     await expect(testEnv.DB.prepare("UPDATE kit_meta SET value = -1 WHERE key = ?").bind(UNSTORED_FLOOR_KEY).run()).rejects.toThrow();
-    // Other heartbeat keys are untouched by the guard.
+  });
+  it("refuses renaming a negative row's key into the floor key", async () => {
     await testEnv.DB.prepare("INSERT INTO kit_meta (key, value) VALUES ('last_purge_ts', -1)").run();
+    await expect(testEnv.DB.prepare("UPDATE kit_meta SET key = ? WHERE key = 'last_purge_ts'").bind(UNSTORED_FLOOR_KEY).run()).rejects.toThrow();
+  });
+  it("leaves other heartbeat keys alone", async () => {
+    await testEnv.DB.prepare("INSERT INTO kit_meta (key, value) VALUES ('last_purge_ts', -1)").run();
+  });
+  it("repairs a negative floor that exists before the migration, and the session is then judged by it", async () => {
+    await dropTriggers();
+    await testEnv.DB.prepare("INSERT INTO kit_meta (key, value) VALUES (?, -1)").bind(UNSTORED_FLOOR_KEY).run();
+    const lid = await mintUnstoredId(KEY);
+    expect(await authorizeSession(testEnv.DB, [KEY], claims({ lid }))).toBe("error"); // the pre-migration outage
+    const before = Date.now();
+    await reapply();
+    const v = (await floor())!.value;
+    expect(v).toBeGreaterThanOrEqual(Math.floor(before / 1000) * 1000);
+    expect(v).toBeLessThanOrEqual(Date.now());
+    // An unlock issued before the migration is revoked, not an error; a later one is accepted.
+    const nowSec = Math.floor(Date.now() / 1000);
+    expect(await authorizeSession(testEnv.DB, [KEY], claims({ lid, iat: nowSec - 60 }))).toBe("expired");
+    expect(await authorizeSession(testEnv.DB, [KEY], claims({ lid, iat: nowSec + 5 }))).toBe("ok");
+  });
+  it("leaves a valid existing floor unchanged", async () => {
+    await dropTriggers();
+    await testEnv.DB.prepare("INSERT INTO kit_meta (key, value) VALUES (?, 12345)").bind(UNSTORED_FLOOR_KEY).run();
+    await reapply();
+    expect((await floor())!.value).toBe(12345);
   });
 });
