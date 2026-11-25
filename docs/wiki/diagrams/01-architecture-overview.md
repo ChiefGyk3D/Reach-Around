@@ -56,7 +56,7 @@ flowchart LR
   static -.-> frameDom
 ```
 
-## Text description
+Text description of this diagram, for readers who cannot see it.
 
 The diagram has three groups and a set of arrows between them.
 
