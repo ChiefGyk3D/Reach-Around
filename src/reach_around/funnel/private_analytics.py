@@ -34,7 +34,6 @@ import re
 import unicodedata
 from datetime import date
 from typing import Any
-from urllib.parse import urlsplit
 
 from reach_around.config.era import classify_era, era_text
 from reach_around.config.zones import format_instant
@@ -194,27 +193,45 @@ UNRECOGNIZED_PLATFORM = ""
 _HOSTLIKE = re.compile(r"^[a-z0-9][a-z0-9.-]*$")
 
 
+_SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*://")
+_PORT = re.compile(r"^[0-9]{1,5}$")
+
+
 def canonical_platform(name: object) -> str:
     """The one canonical platform name, or UNRECOGNIZED_PLATFORM.
 
-    Accepts a plain name, a handle with a leading @, or a URL or host with any
-    scheme, www or m subdomain, port, path, query, fragment and trailing slash.
-    The text is NFKC-normalized first; any non-ASCII character left over (a
-    lookalike letter) makes the identifier unrecognized, never a different
-    platform that reads like Twitch or Kick.
+    Supported forms, and only these: a plain name, a handle with a leading @,
+    a bare host, a host:port, a protocol-relative //host, and scheme://host
+    (any scheme), each with an optional www or m subdomain, one trailing dot,
+    path, query, fragment and trailing slash. The text is NFKC-normalized
+    first; any non-ASCII character left over (a lookalike letter) makes the
+    identifier unrecognized. Every malformed authority is unrecognized too: an
+    empty, non-numeric or out-of-range (1 to 65535) port, userinfo or any
+    other @, brackets (IPv6 literals), percent-encoding, backslashes, more
+    than one colon, empty labels and several trailing dots. A scheme without
+    // (such as ftp:twitch.tv) is not a supported form and is unrecognized.
     """
     text = unicodedata.normalize("NFKC", str(name)).strip().casefold()
     text = text.lstrip("@").strip()
     if not text or not text.isascii() or any(c.isspace() or c < " " for c in text):
         return UNRECOGNIZED_PLATFORM
-    host = text
-    if any(c in text for c in "/:?#@"):
-        try:
-            host = urlsplit(text if "//" in text else "//" + text).hostname or ""
-        except ValueError:
-            return UNRECOGNIZED_PLATFORM
-    host = host.rstrip(".")
-    if not _HOSTLIKE.match(host):
+    if any(c in text for c in "\\%[]"):
+        return UNRECOGNIZED_PLATFORM
+    rest = text
+    scheme = _SCHEME.match(rest)
+    if scheme:
+        rest = rest[scheme.end() :]
+    elif rest.startswith("//"):
+        rest = rest[2:]
+    authority = re.split(r"[/?#]", rest, maxsplit=1)[0]
+    if "@" in authority:
+        return UNRECOGNIZED_PLATFORM
+    host, colon, port = authority.partition(":")
+    if colon and (not _PORT.match(port) or not 1 <= int(port) <= 65535):
+        return UNRECOGNIZED_PLATFORM
+    if host.endswith("."):
+        host = host[:-1]  # one trailing dot (an absolute name) is accepted
+    if ".." in host or not _HOSTLIKE.match(host):
         return UNRECOGNIZED_PLATFORM
     for known, canonical in _PLATFORM_HOSTS.items():
         if host == known or host.endswith("." + known):

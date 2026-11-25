@@ -660,6 +660,12 @@ _TWITCH_FORMS = [
     "https://m.twitch.tv/example?x=1#top",
     "https://www.twitch.tv:443/example",
     "twitch.tv.",
+    "//twitch.tv/example",
+    "twitch.tv:443/example",
+    "twitch.tv:1",
+    "twitch.tv:65535",
+    "ftp://twitch.tv/x",
+    "wss://www.twitch.tv:8443/x",
     _fullwidth("twitch.tv"),
 ]
 _KICK_FORMS = [
@@ -719,3 +725,44 @@ def test_non_ascii_lookalikes_are_unrecognized_and_not_shown(name: str) -> None:
     assert b["sections"] == []
     assert b["unrecognized"] == 1
     assert [e["platform"] for e in b["not_available"]] == ["Twitch", "Kick"]
+
+
+_MALFORMED = [
+    "https://twitch.tv:notaport/x",
+    "https://www.twitch.tv:-1/",
+    "twitch.tv:99999/x",
+    "twitch.tv:65536",
+    "twitch.tv:0",
+    "twitch.tv:",
+    "https://twitch.tv:/x",
+    "twitch.tv:80:80",
+    "https://user:pass@twitch.tv/x",
+    "https://user@twitch.tv/x",
+    "https://a@b@twitch.tv/x",
+    "https://[::1]/twitch.tv",
+    "https://[twitch.tv]/x",
+    "https://twitch.tv%2eevil.com/x",
+    "https://%74witch.tv/x",
+    "https:\\\\twitch.tv\\x",
+    "twitch.tv\\@evil.com",
+    "twitch.tv..",
+    "twitch..tv",
+    "https:///x",
+    "ftp:twitch.tv/x",
+    "https:twitch.tv/x",
+]
+
+
+@pytest.mark.parametrize("bad", _MALFORMED)
+@pytest.mark.parametrize("good", ["twitch.tv", "kick.com"])
+def test_malformed_authorities_are_unrecognized_never_a_platform(
+    bad: str, good: str
+) -> None:
+    name = bad.replace("twitch.tv", good)
+    assert canonical_platform(name) == UNRECOGNIZED_PLATFORM, name
+    b = block([rec("fdemo_age_18_24", 50, platform=name, provider=YT)])
+    assert b["sections"] == []
+    assert b["unrecognized"] == 1
+    # a malformed record cannot make a platform look available
+    assert [e["platform"] for e in b["not_available"]] == ["Twitch", "Kick"]
+    assert name not in repr(b) and name not in "\n".join(private_lines(b))
