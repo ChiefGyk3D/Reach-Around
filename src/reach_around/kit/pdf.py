@@ -48,18 +48,27 @@ from pathlib import Path
 from types import FrameType
 from typing import Literal, NoReturn
 
+from reach_around.config.blocks import platform_name
+from reach_around.config.channels import PEOPLE_KEYS
 from reach_around.config.cutover import cutover_label, live_since, utc_today
+from reach_around.config.engagement import percent_text
 from reach_around.config.imported_history import ImportedHistory, expected_text
 from reach_around.config.kit import (
+    DISPLAY_POLICY,
     KitConfig,
-    counts_in_summary,
     enforce_display_policy,
     pdf_excluded_values,
-    resolve_metrics,
-    unified_total,
+    policy_fingerprint,
+    summary_total,
+)
+from reach_around.config.measures import (
+    REGISTRY,
+    Measure,
+    compile_measures,
+    visible,
 )
 from reach_around.config.models import SiteConfig
-from reach_around.config.numbers import Numbers
+from reach_around.config.numbers import Numbers, source_platforms
 from reach_around.config.trust import (
     LEGEND_HEADING,
     LEGEND_SENTENCES,
@@ -71,10 +80,14 @@ from reach_around.kit.output import check_name, confine_out_dir, write_private
 from reach_around.kit.pdftext import PdfTextError, extract_pages
 from reach_around.kit.stage import stage_page, valid_as_of_text
 from reach_around.site.kit import (
+    GATED_POLICY_FILE,
     GUARD_MIN_LENGTH,
+    POLICY_FILE,
     _analytics_rows,
     _case_rows,
+    _change_text,
     _community,
+    _compact_number,
     _engagement_rows,
     _gated_strings,
     _imported_block,
@@ -86,7 +99,9 @@ from reach_around.site.kit import (
     audience_bases,
     canonical,
     demographic_withheld,
+    live_block,
     platform_counts,
+    section_cards,
     text_fields,
 )
 
@@ -380,6 +395,135 @@ def scrub_pdf(data: bytes, *, title: str, created: date) -> bytes:
 # --- the checks on the text -------------------------------------------------------
 
 
+_FIELD_OF_BLOCK = {
+    "headline": "metrics",
+    "tile": "analytics",
+    "derived": "engagement",
+    "live": "live",
+    "fediverse": "fediverse",
+    "channels": "channels",
+}
+
+
+def private_measure_strings(kit: KitConfig, numbers: Numbers | None) -> dict[str, str]:
+    """The text a page would print for every figure of a private measure, keyed
+    by the field it came from (the key starts with that field's name). Private
+    measures are never expected; these must be absent from the PDF text.
+
+    The forms are the ones the templates render: a headline row (platform, label,
+    value), an analytics panel (the sync line, "Followers" with its compact value
+    and the real 30-day text, each tile's label with its compact value), an
+    engagement row (measure name and value), a live card row (label and
+    value) and a fediverse card row (label and figure). A labeled form is specific
+    enough to search for whatever its length; a bare number is searched for only
+    from ``GUARD_MIN_LENGTH`` characters. Owner-defined labels are searched for alone
+    unless a visible measure prints the same word."""
+    measures = compile_measures(kit, numbers, None)
+    shown_labels = {m.label.casefold() for m in measures if m.visibility != "private"}
+    shown_labels |= {entry.label.casefold() for entry in REGISTRY.values()}
+    followers = {
+        m.platform: m.value
+        for m in measures
+        if m.block == "tile" and m.key == "followers" and m.value is not None
+    }
+    found: dict[str, str] = {}
+    for m in measures:
+        if m.visibility != "private":
+            continue
+        field = _FIELD_OF_BLOCK[m.block]
+        # the platform is part of the key: two platforms may share a key and a label
+        key = f"{field}.{m.platform}.{m.key}.{m.label}"
+        name = platform_name(m.platform)
+        if m.value is not None:
+            text = ""
+            if m.block == "derived":
+                text = (
+                    percent_text(m.value)
+                    if m.unit == "percent"
+                    else shown_count(m.value)
+                )
+                found[f"{key} (row)"] = m.label + text
+                found[f"{key} (platform row)"] = name + m.label + text
+                # the row exactly as printed: the owner-supplied mark and the
+                # interactions note sit between the measure name and the value
+                lead = f"{m.provenance}." if m.provenance else ""
+                note = f"{m.note}." if m.note else ""
+                found[f"{key} (printed row)"] = name + m.label + lead + note + text
+            elif m.block == "live":
+                # a live card row prints the label and the shown count
+                text = shown_count(m.value)
+                found[f"{key} (live row)"] = m.label + text
+            elif m.block == "fediverse":
+                # a fediverse card row prints the label and the figure: the
+                # follower count keeps the floor, a post count or per-post
+                # median/mean prints as it is
+                text = shown_count(m.value) if m.key == "followers" else f"{m.value:,}"
+                found[f"{key} (fediverse row)"] = m.label + text
+            elif m.block == "channels":
+                # a channel card row prints the label and the figure: a count of
+                # people keeps the floor, the rest prints as typed
+                text = shown_count(m.value) if m.key in PEOPLE_KEYS else f"{m.value:,}"
+                found[f"{key} (channel row)"] = m.label + text
+            elif m.block == "tile" and m.key == "followers_change_30d":
+                change = _change_text(followers.get(m.platform, 0), m.value)
+                if change:
+                    found[f"{key} (change)"] = change
+            elif m.block == "tile":
+                text = _compact_number(m.value)
+                found[f"{key} (tile)"] = m.label + text
+            else:
+                text = shown_count(m.value)
+                found[f"{key} (platform row)"] = name + m.label + text
+                found[f"{key} (row)"] = m.label + text
+            if m.key != "followers_change_30d":
+                for bare in {f"{m.value:,}", str(m.value), text}:
+                    if len(bare) >= GUARD_MIN_LENGTH:
+                        found[f"{key} ({bare})"] = bare
+        if m.block == "tile" and m.key == "followers" and m.as_of is not None:
+            found[f"{key} (sync line)"] = (
+                f"Synced with {m.source_note} on {m.as_of.isoformat()}"
+            )
+            found[f"{key} (source)"] = f"Typed by the owner from {m.source_note}"
+        owner_label = m.block == "headline" or m.key == "analytics_stat"
+        if (
+            owner_label
+            and len(m.label) >= GUARD_MIN_LENGTH
+            and m.label.casefold() not in shown_labels
+        ):
+            found[f"{key} (label)"] = m.label
+    return found
+
+
+def check_policy_record(record: Path, what: str) -> None:
+    """Refuse a staged page whose policy record is missing or differs from the
+    current policy: the page was built before the display policy changed, so it
+    may still hold figures the policy now keeps out. Rebuild, then print."""
+    try:
+        if record.is_symlink() or not record.is_file():
+            recorded = None
+        else:
+            recorded = record.read_bytes()[:256].decode("ascii", errors="replace")
+    except OSError:
+        recorded = None
+    if recorded is None or recorded.strip() != policy_fingerprint():
+        raise PdfError(
+            f"the {what} was built under a different display policy, or has no "
+            "policy record; nothing was written. Rebuild the site first "
+            f"(reach-around build{' --gated-out' if what == 'gated page' else ''}), "
+            "then print the PDF"
+        )
+
+
+def _measures(
+    kit: KitConfig, numbers: Numbers | None, config: SiteConfig | None, public: bool
+) -> list[Measure]:
+    """The measures the page for this audience prints. With a config each carries
+    its trust label; without one the page is expected to print none."""
+    api = source_platforms(config) if config is not None else None
+    allowed = frozenset({"public"} if public else {"public", "gated"})
+    return visible(compile_measures(kit, numbers, api), allowed)
+
+
 def _expected_text(
     kit: KitConfig,
     numbers: Numbers | None,
@@ -402,7 +546,7 @@ def _expected_text(
         found.append(("kit.contact", kit.contact))
     for index, tag in enumerate(kit.tags):
         found.append((f"kit.tags[{index}]", tag))
-    resolved = resolve_metrics(kit, numbers)
+    measures = _measures(kit, numbers, config, public)
     # With the config the provenance of every number is known, and so is the
     # label the page must print beside it (#626). Without it none is expected.
     labeled = False
@@ -423,8 +567,8 @@ def _expected_text(
         if exact is not None:
             exact.append((where, text))
 
-    shown = [m for m in resolved if m.value is not None]
-    for m, row in zip(shown, _metric_rows(resolved, config), strict=True):
+    shown = [m for m in measures if m.block == "headline" and m.value is not None]
+    for m, row in zip(shown, _metric_rows(measures, config), strict=True):
         text = _trust_text(row["trust"])
         labeled = labeled or bool(text)
         where = f"the metric row {row['platform'] or row['label']!r}"
@@ -436,10 +580,10 @@ def _expected_text(
                 exact.append((where, row["value"] + text))
             if is_old(m.as_of, m.platform):
                 put(where, row["as_of"] + "UTC" + OUT_OF_DATE)
-    for number, row in enumerate(
-        () if public else _engagement_rows(kit.engagement, config, None)
+    derived = [m for m in measures if m.block == "derived"]
+    for entry, row in zip(
+        derived, _engagement_rows(measures, config, None), strict=True
     ):
-        entry = kit.engagement[number // 2]
         where = f"the engagement row {row['platform']!r} {row['measure']!r}"
         found.append((where, row["platform"] + row["measure"]))
         if row["provenance"]:
@@ -453,9 +597,9 @@ def _expected_text(
             old = OUT_OF_DATE if is_old(entry.as_of, entry.platform) else ""
             put(where, row["as_of"] + "UTC" + text + old)
     total = _total(
-        unified_total(resolved), resolved, None, config, None, kit.audience_summary
+        summary_total(measures), measures, None, config, None, kit.audience_summary
     )
-    community = _community(resolved)
+    community = _community(measures)
     if community is not None:
         found.append(
             ("the community members line", community["text"] + " " + community["note"])
@@ -489,9 +633,7 @@ def _expected_text(
             labeled = True
             old = (
                 OUT_OF_DATE
-                if any(
-                    is_old(m.as_of, m.platform) for m in shown if counts_in_summary(m)
-                )
+                if any(is_old(m.as_of, m.platform) for m in shown if m.in_summary)
                 else ""
             )
             put("the metric total label", text + old)
@@ -499,7 +641,7 @@ def _expected_text(
     # beside them, and each stat. Anchored on the sync line, which no headline
     # number row prints, so an unrelated row cannot satisfy them. A count under
     # the privacy floor is expected as "Under 5".
-    for card in _analytics_rows(kit.analytics, None):
+    for card in _analytics_rows(measures, None):
         where = f"the analytics row {card['platform_name']!r}"
         change = (
             f"{card['delta']} last 30 days"
@@ -529,6 +671,43 @@ def _expected_text(
                 else ""
             )
             put(where, tile + _trust_text(card["trust"]) + old)
+    # The platform cards (#628): each card's name, its "No numbers yet" line or
+    # its numbers with their labels, from the same measures the page was built from.
+    for card in section_cards(
+        kit.sections, measures, config, None, live_day, kit.fediverse, kit.channels
+    ):
+        where = f"the platform card {card['name']!r}"
+        found.append((where, card["name"] + (card["account"] or "")))
+        if card["empty"]:
+            found.append((where, card["no_numbers"]))
+        else:
+            labeled = labeled or config is not None
+            lead = card["headline"]
+            found.append((where, lead["value"] + lead["label"]))
+            for row in card["rows"]:
+                found.append((where, row["label"] + row["value"]))
+        # The fediverse lines (#630): the server note, the re-check link as a
+        # plain URL (a PDF is read on paper) and each "not provided" line.
+        if card["server_note"]:
+            found.append((where, card["server_note"]))
+        lead_link = card["headline"]["recheck"] if card["headline"] else ""
+        for url in {r["recheck"] for r in card["rows"] if r["recheck"]} | {
+            link for link in (card["recheck"], lead_link) if link
+        }:
+            found.append((where, url))
+        for line in card["not_provided"]:
+            found.append((where, line))
+    # The live block (#629): each platform's seven fields, or its empty line.
+    live = live_block(kit.live, measures, config, None, live_day)
+    for card in live["cards"] if live else []:
+        where = f"the live block {card['name']!r}"
+        found.append((where, card["name"]))
+        if card["empty"]:
+            found.append((where, card["no_numbers"]))
+            continue
+        labeled = labeled or config is not None
+        for row in card["rows"]:
+            found.append((where, row["label"] + row["value"]))
     # Only the public page prints recent posts; the gated page has no such section.
     if config is not None and public:
         for platform, trust in _post_trust(kit.recent_posts).items():
@@ -554,13 +733,15 @@ def _expected_text(
         "testimonials",
         "demographics",
     ):
+        # Policy-aware: a field the table no longer gives the gated page is not
+        # expected (a private engagement figure is checked as absent instead).
+        if DISPLAY_POLICY[name] != "gated":
+            continue
         for index, item in enumerate(getattr(kit, name)):
             withheld = (
                 demographic_withheld(
                     item,
-                    audience_bases(
-                        item.platform, resolved, kit.analytics, platform_counts
-                    ),
+                    audience_bases(item.platform, measures, platform_counts),
                 )
                 if name == "demographics"
                 else frozenset()
@@ -685,12 +866,12 @@ def _contains_exact(text: str, value: str) -> bool:
 def _public_pdf_values(kit: KitConfig, numbers: Numbers | None) -> set[str]:
     """Public values, including the resolved figures rendered in this PDF."""
     allowed = _public_values(kit)
-    resolved = resolve_metrics(kit, numbers)
-    for row in _metric_rows(resolved):
+    measures = _measures(kit, numbers, None, True)
+    for row in _metric_rows(measures):
         allowed.add(canonical(row["value"]))
         if row["as_of"]:
             allowed.add(canonical(row["as_of"]))
-    total = _total(unified_total(resolved), resolved)
+    total = _total(summary_total(measures), measures)
     if total is not None:
         allowed.add(canonical(total["value"]))
         allowed.add(canonical(total["sum"]))
@@ -723,6 +904,12 @@ def check_text(
             raise PdfLeakError(
                 f"the private field {field} appears in the PDF text; nothing was "
                 "written"
+            )
+    for field, value in private_measure_strings(kit, numbers).items():
+        if _flat(value) in flat:
+            raise PdfLeakError(
+                f"a figure of the private field {field} appears in the PDF text; "
+                "nothing was written"
             )
     if public:
         allowed = _public_pdf_values(kit, numbers)
@@ -806,13 +993,19 @@ def build_kit_pdf(
     """Make the private PDF; see the module doc. ``protect`` lists more
     directories the output may not be in (the config's directory)."""
     kit = config.kit
-    if kit is None or (not kit.has_gated_content and not kit.engagement):
+    if kit is None or (
+        not kit.has_gated_content
+        and not any(
+            m.block == "derived" for m in _measures(kit, numbers, config, False)
+        )
+    ):
         raise PdfError(
             "the config has no gated media kit content (partners, case studies, "
             "packages, rates, engagement, testimonials, demographics or a "
             "disclosure statement); there is nothing private to print"
         )
     enforce_display_policy(kit)
+    check_policy_record(gated_dir / GATED_POLICY_FILE, "gated page")
     check_name(name)
     target_dir = confine_out_dir(out_dir, [gated_dir, site_dir, *protect])
     staged = stage_page(gated_dir, site_dir)
@@ -853,6 +1046,7 @@ def build_public_kit_pdf(
     if kit is None:
         raise PdfError("the config has no media kit; there is nothing to print")
     enforce_display_policy(kit)
+    check_policy_record(site_dir / POLICY_FILE, "public page")
     check_name(name)
     target_dir = confine_out_dir(out_dir, [site_dir, *protect])
     staged = stage_page(site_dir, site_dir, public=True, valid_as_of=created)

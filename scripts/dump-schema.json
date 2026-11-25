@@ -170,6 +170,16 @@
       "name",
       "seq"
     ],
+    "view_city_daily": [
+      "site",
+      "day",
+      "country",
+      "region",
+      "city",
+      "bot_class",
+      "views",
+      "uniques"
+    ],
     "view_daily": [
       "site",
       "day",
@@ -351,6 +361,8 @@
     "leads.session_floor_ts": "ms_or_small",
     "leads.verified_ts": "ms_or_small",
     "sqlite_sequence.seq": "small",
+    "view_city_daily.uniques": "small",
+    "view_city_daily.views": "small",
     "view_daily.uniques": "small",
     "view_daily.views": "small",
     "view_dim_daily.uniques": "small",

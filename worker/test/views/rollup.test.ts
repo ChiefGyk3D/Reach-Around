@@ -8,7 +8,7 @@ import {
   rollupClosedDays,
 } from "../../src/viewrollup";
 import { handleView } from "../../src/view";
-import { CHROME_UA, DB, IP4, SECRET, beacon, clearAll, dumpDatabase, fakeLimiter, makeEnv, spyDb } from "./helpers";
+import { CHROME_UA, DB, IP4, SECRET, beacon, clearAll, dumpDatabase, fakeLimiter, makeEnv, moveCityToCounters, spyDb } from "./helpers";
 
 const DAY = 86_400_000;
 const NOW = Date.parse("2027-03-14T12:00:30Z"); // day 2027-03-14 is open
@@ -44,7 +44,8 @@ const DEFAULTS: Required<Raw> = {
   os: "linux", device: "desktop", lang: "en", vp: "l", net: "residential", bot_class: "h", reason: "ok", first: 0,
 };
 
-async function insert(list: Raw[]) {
+async function insert(wanted: Raw[]) {
+  const list = await moveCityToCounters(wanted);
   for (let i = 0; i < list.length; i += 20) {
     await DB.batch(
       list.slice(i, i + 20).map((r) => {
@@ -264,11 +265,49 @@ describe("rollup geography", () => {
   it("a_city_with_four_views_folds_into_its_region_and_a_small_region_into_its_country", async () => {
     const mk = (city: string, region: string, n: number): Raw[] => Array.from({ length: n }, (_, i) => ({ ts: D13 + i, country: "US", region, city }));
     await insert([...mk("A", "R1", 4), ...mk("B", "R1", 5), ...mk("C", "R2", 2)]);
-    await rollupClosedDays(envOf(), NOW);
+    await rollupClosedDays(envOf({ GEO_LEVEL: "city" }), NOW);
     const out = await q<{ region: string; city: string; views: number }>("SELECT * FROM view_geo_daily");
     const keys = out.map((r) => `${r.region}/${r.city}/${r.views}`).sort();
     // A (4) folds into R1, which then has 4 < 5 and folds into the country with C (2); B (5) stays.
     expect(keys).toEqual(["//6", "R1/B/5"].sort());
+  });
+});
+
+describe("rollup city counters (#778)", () => {
+  it("city_rows_come_from_the_counter_and_are_cut_out_of_the_region_count", async () => {
+    const rows12 = Array.from({ length: 12 }, (_, i) => ({ ts: D13 + i, country: "US", region: "CA", city: "Sentinelville", first: i < 3 ? 1 : 0 }));
+    const rest = Array.from({ length: 5 }, (_, i) => ({ ts: D13 + 99 + i, country: "US", region: "CA", first: i === 0 ? 1 : 0 }));
+    await insert([...rows12, ...rest]);
+    await rollupClosedDays(envOf({ GEO_LEVEL: "city" }), NOW);
+    const out = await q<{ region: string; city: string; views: number; uniques: number }>("SELECT region, city, views, uniques FROM view_geo_daily ORDER BY city");
+    expect(out).toEqual([
+      { region: "CA", city: "", views: 5, uniques: 1 },
+      { region: "CA", city: "Sentinelville", views: 12, uniques: 3 },
+    ]);
+    // No raw row holds the city.
+    expect(await q("SELECT city FROM view_events WHERE city <> ''")).toEqual([]);
+  });
+
+  it("below_the_floor_the_city_folds_into_its_region", async () => {
+    const small = Array.from({ length: 4 }, (_, i) => ({ ts: D13 + i, country: "US", region: "CA", city: "Sentinelville" }));
+    const rest = Array.from({ length: 5 }, (_, i) => ({ ts: D13 + 50 + i, country: "US", region: "CA" }));
+    await insert([...small, ...rest]);
+    await rollupClosedDays(envOf({ GEO_LEVEL: "city" }), NOW);
+    expect(await q("SELECT region, city, views FROM view_geo_daily")).toEqual([{ region: "CA", city: "", views: 9 }]);
+    expect(await dumpAggregates()).not.toContain("Sentinelville");
+  });
+
+  it("a_counter_larger_than_its_raw_count_is_ignored_not_subtracted_below_zero", async () => {
+    await insert(Array.from({ length: 6 }, (_, i) => ({ ts: D13 + i, country: "US", region: "CA" })));
+    await DB.prepare("INSERT INTO view_city_daily VALUES ('links', '2027-03-13', 'US', 'CA', 'Sentinelville', 'h', 9, 0)").run();
+    await rollupClosedDays(envOf({ GEO_LEVEL: "city" }), NOW);
+    expect(await q("SELECT region, city, views FROM view_geo_daily")).toEqual([{ region: "CA", city: "", views: 6 }]);
+  });
+
+  it("counters_are_not_read_below_level_city", async () => {
+    await insert(Array.from({ length: 8 }, (_, i) => ({ ts: D13 + i, country: "US", region: "CA", city: "Sentinelville" })));
+    await rollupClosedDays(envOf({ GEO_LEVEL: "region" }), NOW);
+    expect(await q("SELECT region, city, views FROM view_geo_daily")).toEqual([{ region: "CA", city: "", views: 8 }]);
   });
 });
 

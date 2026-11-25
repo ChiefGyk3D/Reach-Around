@@ -67,6 +67,7 @@ from reach_around.site.frames import (
 from reach_around.site.inventory import InventoryEntry, build_inventory
 from reach_around.site.kit import (
     GATED_FILE,
+    POLICY_FILE,
     check_gated_requests,
     check_no_gated_text,
     check_private_root,
@@ -83,7 +84,12 @@ from reach_around.site.overrides import (
     warn_about_javascript,
 )
 from reach_around.site.platforms import platform_rows
-from reach_around.site.privacy import collected_items, intro_text, sets_cookies
+from reach_around.site.privacy import (
+    collected_items,
+    intro_text,
+    notice_blocks,
+    sets_cookies,
+)
 from reach_around.site.qr import BORDER as QR_BORDER
 from reach_around.site.qr import qr_file_name, qr_matrix, qr_svg
 from reach_around.site.redirects import render_redirects
@@ -580,6 +586,7 @@ def _render_smart_stack_page(
         featured=featured,
         creator=config.creator,
         tab=tab,
+        watch_title=next(t.title for t in config.tabs if t.intent == "watch"),
         blocks=every,
         groups=groups,
         watch=[links[ident] for ident in config.page.watch],
@@ -801,6 +808,7 @@ def _render_privacy(
         single_page=config.page_layout == "sections",
         intro=intro_text(config),
         items=collected_items(config),
+        notice=notice_blocks(config),
         contact=config.privacy.contact,
         custom_css=custom_css,
     )
@@ -1223,6 +1231,8 @@ def build_site(
     files.update(
         {page: html.encode("utf-8") for page, html in kit_render.public.items()}
     )
+    if kit_render.policy:
+        files[POLICY_FILE] = kit_render.policy.encode("ascii")
     files.update(named.files)
     check_frames(
         {
@@ -1335,7 +1345,7 @@ def build_site(
         # exist and compare the two roots again by identity now that both do.
         out.mkdir(parents=True, exist_ok=True)
         check_roots(out, gated_root)
-        staged = stage_gated(gated_root, kit_render.gated)
+        staged = stage_gated(gated_root, kit_render.gated, kit_render.policy or None)
     try:
         _empty(out)
         _write(out, files)

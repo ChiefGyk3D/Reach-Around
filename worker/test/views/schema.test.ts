@@ -21,6 +21,7 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     "site",
     "day", "day_tz", "country", "region", "city", "bot_class", "views", "uniques",
   ],
+  view_city_daily: ["site", "day", "country", "region", "city", "bot_class", "views", "uniques"],
   view_rollup_log: [
     "site",
     "day", "day_tz", "raw_views", "views", "uniques", "rows_core", "rows_dim", "rows_geo",

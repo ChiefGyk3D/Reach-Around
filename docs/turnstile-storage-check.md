@@ -31,11 +31,11 @@ script loads. It never uses a production key.
 
 ```sh
 python3 -m venv .venv-storage-check
-.venv-storage-check/bin/pip install -r requirements.txt playwright
+.venv-storage-check/bin/pip install --require-hashes -r requirements-dev.txt
 .venv-storage-check/bin/playwright install chromium firefox
 ```
 
-Any venv location works (use `.venv-storage-check/bin/python` in the commands below).
+`requirements-dev.txt` is the hash-locked file that includes Playwright, so the install passes `--require-hashes`. Any venv location works (use `.venv-storage-check/bin/python` in the commands below).
 
 ## Procedure
 

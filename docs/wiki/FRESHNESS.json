@@ -1,0 +1,12 @@
+{
+  "pages": {
+    "Costs.md": {
+      "verified": "2026-11-24",
+      "sources": ["scripts/cost_estimate.py", "worker/wrangler.toml"]
+    },
+    "Costs-Worksheet.md": {
+      "verified": "2026-11-24",
+      "sources": ["scripts/cost_estimate.py"]
+    }
+  }
+}

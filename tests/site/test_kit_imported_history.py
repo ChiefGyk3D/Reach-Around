@@ -835,6 +835,10 @@ def write_instance(root: Path, kit: dict[str, Any], **extra: Any) -> Path:
             }
         ],
         "features": {"kit_gate": True},
+        "privacy": {
+            "controller_name": "Example Creator",
+            "contact": "example.com/contact",
+        },
         "kit": kit,
         "cutover_date": CUTOVER.isoformat(),
     }
