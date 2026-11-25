@@ -31,6 +31,9 @@ from reach_around.kit.binding import (
     read_anchored,
     require_absent,
 )
+from reach_around.kit.binding import (
+    STAGING_NAME as STAGING,
+)
 from reach_around.kit.measures_file import (
     MeasuresFileError,
     build_measures_file,
@@ -154,10 +157,18 @@ def test_the_reader_still_reads_an_ordinary_file(tmp_path: Path) -> None:
 # --- the commit is one recoverable set ------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "step",
-    ["staged", "marker", "kit.html", "kit-policy.txt", "kit-binding.json", "done"],
-)
+ROLLED_BACK = [
+    "staged",
+    "marker",
+    "prepared",
+    "kit.html",
+    "kit-policy.txt",
+    "kit-binding.json",
+    "applied",
+]
+
+
+@pytest.mark.parametrize("step", ROLLED_BACK)
 def test_a_failure_after_any_commit_step_restores_the_previous_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str
 ) -> None:
@@ -186,10 +197,18 @@ def test_a_failure_after_any_commit_step_restores_the_previous_build(
     assert not (gated / PENDING_FILE).exists()
 
 
-@pytest.mark.parametrize(
-    "step",
-    ["staged", "marker", "kit.html", "kit-policy.txt", "kit-binding.json", "done"],
-)
+ROLLED_BACK = [
+    "staged",
+    "marker",
+    "prepared",
+    "kit.html",
+    "kit-policy.txt",
+    "kit-binding.json",
+    "applied",
+]
+
+
+@pytest.mark.parametrize("step", ROLLED_BACK)
 def test_a_failure_while_removing_the_page_keeps_the_old_deployment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str
 ) -> None:
@@ -254,6 +273,191 @@ def test_a_crash_mid_commit_is_detected_by_every_reader_and_a_rebuild_recovers(
     assert load_measures_for_build(rebuilt, gated)
 
 
+ALL_STEPS = [*ROLLED_BACK, "cleaned", "done"]
+
+
+class Disk:
+    """A pessimistic model of the gated directory on a disk that loses what was
+    not synced: ``synced`` is the directory as of its last fsync, and a crash
+    keeps that plus the one first target rename (a rename may reach the disk
+    ahead of the entries that were never synced)."""
+
+    def __init__(self, gated: Path) -> None:
+        self.gated = gated
+        self.synced = snapshot(gated)
+        self.events: list[str] = []
+
+    def hook(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        real_fsync, real_replace = os.fsync, os.replace
+        ino = self.gated.stat().st_ino
+
+        def fsync(fd: int) -> None:
+            info = os.fstat(fd)
+            if stat.S_ISDIR(info.st_mode) and info.st_ino == ino:
+                self.synced = snapshot(self.gated)
+                self.events.append("dirsync")
+            real_fsync(fd)
+
+        def replace(src: Any, dst: Any, **kw: Any) -> None:
+            real_replace(src, dst, **kw)
+            self.events.append(f"rename:{Path(dst).name}")
+
+        monkeypatch.setattr(os, "fsync", fsync)
+        monkeypatch.setattr(os, "replace", replace)
+        monkeypatch.setattr(
+            site_kit,
+            "_after_commit_step",
+            lambda name: self.events.append(f"step:{name}"),
+        )
+
+    def after_crash(self, into: Path) -> Path:
+        """The directory a restart finds: the last synced state plus the page
+        rename, if it had happened, even though nothing else was synced."""
+        state = dict(self.synced)
+        if "rename:kit.html" in self.events:
+            state["kit.html"] = (self.gated / "kit.html").read_bytes()
+        into.mkdir(mode=0o700)
+        for name, data in state.items():
+            (into / name).write_bytes(data)
+            (into / name).chmod(0o600)
+        return into
+
+
+@pytest.mark.parametrize("step", ALL_STEPS)
+def test_a_crash_at_any_step_never_leaves_an_accepted_mixed_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str
+) -> None:
+    """After a crash at any step, with every unsynced directory change lost
+    except the page rename, the directory is either the whole old set or is
+    refused by the readers; never a new page beside the old binding."""
+    config, site, gated = build_instance(tmp_path, make_config(kit_doc()))
+    before = snapshot(gated)
+    disk = Disk(gated)
+    disk.hook(monkeypatch)
+
+    def crash(name: str) -> None:
+        disk.events.append(f"step:{name}")
+        if name == step:
+            raise KeyboardInterrupt  # the process dies: no rollback runs
+
+    monkeypatch.setattr(site_kit, "_after_commit_step", crash)
+    monkeypatch.setattr(site_kit.StagedGated, "_rollback", lambda *a, **k: None)
+    with pytest.raises(KeyboardInterrupt):
+        rebuild(make_config(changed_doc()), site, gated, tmp_path / "assets")
+    monkeypatch.undo()
+
+    found = disk.after_crash(tmp_path / "restart")
+    try:
+        binding_module.check_no_pending_commit(found)
+    except ValueError:
+        pass  # refused: the next build recovers
+    else:
+        got = snapshot(found)
+        names = [n for n in SET]
+        if step == "done":
+            assert got == snapshot(gated)  # finished: the whole new set
+        else:
+            assert {n: got.get(n) for n in names} == {n: before[n] for n in names}
+
+
+def test_the_marker_and_backups_are_synced_before_the_first_target_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, site, gated = build_instance(tmp_path, make_config(kit_doc()))
+    disk = Disk(gated)
+    disk.hook(monkeypatch)
+    rebuild(make_config(changed_doc()), site, gated, tmp_path / "assets")
+    ev = disk.events
+    marker = ev.index("step:marker")
+    first_target = ev.index("rename:kit.html")
+    assert "dirsync" in ev[marker:first_target]
+    # a sync after the renames, one after the backups are removed, one after
+    # the marker is removed, in that order
+    applied, cleaned, done = (
+        ev.index(f"step:{n}") for n in ("applied", "cleaned", "done")
+    )
+    assert "dirsync" in ev[ev.index("rename:kit-binding.json") : applied]
+    assert "dirsync" in ev[applied:cleaned]
+    assert "dirsync" in ev[cleaned:done]
+    assert ev.index("rename:kit-binding.json") == max(
+        i for i, e in enumerate(ev) if e.startswith("rename:kit")
+    )
+
+
+def test_a_crash_after_the_set_is_complete_leaves_the_marker_not_backups(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Backups are removed (and that synced) before the marker, so a crash can
+    leave a marker without backups, never private backups under a clean
+    directory."""
+    config, site, gated = build_instance(tmp_path, make_config(kit_doc()))
+    disk = Disk(gated)
+    disk.hook(monkeypatch)
+    rebuild(make_config(changed_doc()), site, gated, tmp_path / "assets")
+    ev = disk.events
+    # the marker is the last thing removed: the sync after the backups' removal
+    # comes before the step that removes the marker
+    assert ev.index("step:cleaned") < ev.index("step:done")
+    assert not any(STAGING.fullmatch(p.name) for p in gated.iterdir())
+    assert not (gated / PENDING_FILE).exists()
+
+
+@pytest.mark.parametrize("kind", ["bak", "tmp"])
+def test_readers_refuse_leftover_backups_and_a_rebuild_removes_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    config, site, gated = build_instance(tmp_path, make_config(kit_doc()))
+    path = measures(tmp_path, config, site, gated)
+    monkeypatch.setattr(binding_module, "LOCK_WAIT_SECONDS", 0.3)
+    leftover = gated / f".kit.html.{'ab' * 8}.{kind}"
+    leftover.write_bytes(b"an old private page")
+    leftover.chmod(0o600)
+    with pytest.raises(MeasuresFileError, match="not in a finished state"):
+        load_measures_for_build(path, gated)
+    with pytest.raises(MeasuresFileError, match="not in a finished state"):
+        build_measures_file(
+            config,
+            site_dir=site,
+            gated_dir=gated,
+            out_dir=tmp_path / "private2",
+            generated=date(2027, 3, 10),
+        )
+    rebuild(make_config(kit_doc()), site, gated, tmp_path / "assets")
+    assert not leftover.exists()
+    assert {p.name for p in gated.iterdir()} == {*SET, LOCK_FILE.name}
+    assert load_measures_for_build(measures(tmp_path, config, site, gated), gated)
+
+
+def test_a_lookalike_name_is_not_a_leftover(tmp_path: Path) -> None:
+    gated = tmp_path / "g"
+    gated.mkdir(mode=0o700)
+    for name in (".kit.html.zz.bak", "kit.html.bak", f".other.{'ab' * 8}.bak"):
+        (gated / name).write_text("x")
+    binding_module.check_no_pending_commit(gated)  # not ours: not refused
+
+
+def test_a_failure_after_the_set_is_complete_keeps_the_new_set_and_the_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure while cleaning up cannot roll back (the new set is complete and
+    synced): the new files stay, the marker stays so readers refuse, and the
+    next build clears it."""
+    config, site, gated = build_instance(tmp_path, make_config(kit_doc()))
+
+    def boom(name: str) -> None:
+        if name == "cleaned":
+            raise OSError("injected after cleanup")
+
+    monkeypatch.setattr(site_kit, "_after_commit_step", boom)
+    with pytest.raises(OSError, match="injected"):
+        rebuild(make_config(changed_doc()), site, gated, tmp_path / "assets")
+    monkeypatch.setattr(site_kit, "_after_commit_step", None)
+    assert (gated / PENDING_FILE).exists()
+    assert not any(STAGING.fullmatch(p.name) for p in gated.iterdir())
+    rebuild(make_config(changed_doc()), site, gated, tmp_path / "assets")
+    assert not (gated / PENDING_FILE).exists()
+
+
 def test_the_binding_is_the_last_file_written(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -264,9 +468,12 @@ def test_the_binding_is_the_last_file_written(
     assert order == [
         "staged",
         "marker",
+        "prepared",
         "kit.html",
         "kit-policy.txt",
         "kit-binding.json",
+        "applied",
+        "cleaned",
         "done",
     ]
 

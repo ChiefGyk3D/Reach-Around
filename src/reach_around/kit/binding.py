@@ -265,6 +265,11 @@ def read_anchored(path: Path, limit: int) -> bytes:
 LOCK_FILE = Path(".kit-gated.lock")
 PENDING_FILE = Path(".kit-commit.pending")
 LOCK_WAIT_SECONDS = 30.0
+# The temporary and backup names a gated commit uses (never anything else).
+STAGING_NAME = re.compile(
+    r"\.(?:kit\.html|kit-policy\.txt|kit-binding\.json|\.kit-commit\.pending)"
+    r"\.[0-9a-f]{16}\.(?:tmp|bak)"
+)
 
 
 class GatedLockError(ValueError):
@@ -353,16 +358,30 @@ def gated_lock(gated_dir: Path, *, exclusive: bool) -> Iterator[None]:
 def check_no_pending_commit(gated_dir: Path) -> None:
     """Refuse a gated directory whose last build was interrupted while it
     replaced the gated files (the build leaves ``.kit-commit.pending`` until its
-    last step): the page, the policy record and the binding may be from
-    different builds. Rebuild to clear it."""
+    last step), or that still holds a backup or temporary copy of a gated file
+    (a crash after the files were replaced): the page, the policy record and the
+    binding may be from different builds, or a private copy may linger. Rebuild
+    to clear it."""
     try:
         require_absent(gated_dir / PENDING_FILE)
+        leftover = any(STAGING_NAME.fullmatch(name) for name in os.listdir(gated_dir))
     except AnchoredReadError as exc:
         raise ValueError(
             f"the gated directory is not in a finished state ({exc}); "
             "a build was interrupted. Rebuild the site first "
             "(reach-around build --gated-out)"
         ) from exc
+    except OSError as exc:
+        raise ValueError(
+            f"the gated directory cannot be listed ({exc.strerror}); "
+            "rebuild the site first (reach-around build --gated-out)"
+        ) from exc
+    if leftover:
+        raise ValueError(
+            "the gated directory is not in a finished state (a temporary or "
+            "backup copy of a gated file is left); a build was interrupted. "
+            "Rebuild the site first (reach-around build --gated-out)"
+        )
 
 
 def read_binding(path: Path) -> dict[str, str | None]:

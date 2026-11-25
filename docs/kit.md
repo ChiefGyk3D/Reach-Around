@@ -1033,12 +1033,23 @@ Where it may go, and what it holds:
   **One set, one lock.** The build writes `kit.html`, `kit-policy.txt` and
   `kit-binding.json` as one set: each new file is written and synced under a
   temporary name first, the old files are kept as hard-linked backups, a marker
-  `.kit-commit.pending` is written, the files are renamed into place with the
-  binding last, and the marker is removed after it. If any step fails, the
-  previous files are put back and the marker removed. If the process dies mid-way
-  (so nothing can roll back) the marker stays and `kit private-measures`,
-  `load_measures_for_build` and `kit pdf` refuse the directory until the next build, which
-  rewrites all three files and removes leftover temporary and backup names.
+  `.kit-commit.pending` is written, and the directory is synced (fsync on its
+  descriptor) before the first file is renamed, so a crash cannot keep a renamed
+  file while the marker and backups are lost. The files are then renamed into
+  place with the binding last and the directory synced again; the backups are
+  removed and that is synced; the marker is removed last and that is synced.
+  If any step before the set is complete fails, the previous files are put back
+  and the marker removed. If the process dies mid-way (so nothing can roll back)
+  the marker stays, or a backup or temporary copy stays (a backup is only ever
+  removed while the marker is still there), and `kit private-measures`,
+  `load_measures_for_build` and `kit pdf` refuse the directory until the next
+  build, which rewrites all three files and removes the leftover temporary and
+  backup names. Residual risk, stated plainly: in the window between the
+  backups' removal and the marker's removal a crash leaves the marker (readers
+  refuse; nothing private is left outside the set); and the durability rests on
+  the filesystem honoring `fsync` on a directory, which was tested here by a
+  model that drops unsynced directory changes, not on a real power cut on each
+  supported filesystem.
   While a build runs it holds an exclusive `flock` on `.kit-gated.lock` in the gated
   directory (kept there, empty); the measures file, its reader and the private PDF
   hold it shared while they check and read, so a build cannot add a gated page

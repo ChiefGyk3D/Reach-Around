@@ -114,6 +114,7 @@ from reach_around.funnel.floor import UNDER_FLOOR as UNDER_FLOOR
 from reach_around.kit.binding import (
     BINDING_FILE,
     PENDING_FILE,
+    STAGING_NAME,
     acquire_gated_lock,
     rows_digest,
 )
@@ -637,10 +638,13 @@ class StagedGated:
     recoverable set: every new file is first written (fsync) to a temporary name,
     the previous files are hard-linked as backups, ``.kit-commit.pending`` marks
     the work, the files are renamed into place in a fixed order with the binding
-    LAST, and the marker is removed after the binding. A failure rolls every step
-    back from the backups; a crash leaves the marker, which every reader refuses
-    (and the next build clears by writing all three files again), and a half
-    state is also caught by the binding, which holds the page's digest.
+    LAST, and the marker is removed last, after the backups. The directory is synced
+    (fsync of its descriptor) after the marker and backups exist and before the
+    first target is renamed, after the renames, and after each removal. A failure
+    rolls every step back from the backups; a crash leaves the marker, which
+    every reader refuses (and the next build clears by writing all three files
+    again), and a half state is also caught by the binding, which holds the
+    page's digest.
     ``discard`` removes the temp. The directory lock is released by either."""
 
     root: Path
@@ -702,6 +706,11 @@ class StagedGated:
                 _write_private_file(pending, "an interrupted build; rebuild\n")
                 made_marker = True
             _step("marker")
+            # the marker, the backups and the new temp names must be on disk
+            # before the first target changes: otherwise a crash could keep a
+            # renamed target while the marker (and the backups) are lost
+            _sync_dir(root)
+            _step("prepared")
             for target, source in plan:
                 if source is None:
                     target.unlink(missing_ok=True)
@@ -710,16 +719,24 @@ class StagedGated:
                 applied.append(target)
                 _step(target.name)
             _sync_dir(root)
-            if made_marker or os.path.lexists(pending):
-                pending.unlink(missing_ok=True)
-            _sync_dir(root)
-            _step("done")
+            _step("applied")
         except BaseException:
             self._rollback(plan, applied, backups, temps, pending, made_marker)
             raise
+        # The set is complete and durable. From here nothing rolls back: the
+        # marker stays until the backups are gone and that removal is durable,
+        # so a crash in this tail leaves the marker (readers refuse, the next
+        # build clears the leftovers), never leftover backups under a clean
+        # directory.
         self.temp = None
         for backup in backups.values():
             backup.unlink(missing_ok=True)
+        _sync_dir(root)
+        _step("cleaned")
+        if made_marker or os.path.lexists(pending):
+            pending.unlink(missing_ok=True)
+        _sync_dir(root)
+        _step("done")
 
     def _rollback(
         self,
@@ -745,7 +762,13 @@ class StagedGated:
         for leftover in (*temps, *backups.values()):
             leftover.unlink(missing_ok=True)
         if made_marker and clean:
-            pending.unlink(missing_ok=True)
+            try:
+                # the restored files must be durable before the marker goes
+                _sync_dir(self.root)
+                pending.unlink(missing_ok=True)
+                _sync_dir(self.root)
+            except OSError:
+                pass  # the marker stays or returns: readers refuse, rebuild clears
         self.discard()
 
     def discard(self) -> None:
@@ -776,22 +799,12 @@ def check_private_root(gated_out: Path) -> None:
         )
 
 
-_STAGING = re.compile(
-    r"\.(?:"
-    + "|".join(
-        re.escape(n.name)
-        for n in (GATED_FILE, GATED_POLICY_FILE, BINDING_FILE, PENDING_FILE)
-    )
-    + r")\.[0-9a-f]{16}\.(?:tmp|bak)"
-)
-
-
 def _remove_stale_staging(gated_out: Path) -> None:
     """Delete staging and backup files a crashed build left behind: regular files
     whose name is exactly the temporary or backup pattern, nothing else. Called
     with the gated lock held, so no other build's files are removed."""
     for entry in gated_out.iterdir():
-        if _STAGING.fullmatch(entry.name) and not entry.is_symlink():
+        if STAGING_NAME.fullmatch(entry.name) and not entry.is_symlink():
             if entry.is_file():
                 entry.unlink()
 
