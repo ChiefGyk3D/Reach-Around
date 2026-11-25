@@ -36,7 +36,7 @@ from reach_around.config import ConfigError, SiteConfig, load_site_config
 from reach_around.config.cutover import utc_today
 from reach_around.config.imported_history import parse_imported
 from reach_around.config.loader import _read
-from reach_around.config.numbers import load_numbers
+from reach_around.config.numbers import NumbersEntry, load_numbers
 from reach_around.config.stale import REMIND_DAYS, due_numbers
 from reach_around.counts.beacons import (
     IMPORT_NOTE,
@@ -65,6 +65,7 @@ from reach_around.counts.history import (
     PRIVATE_PROVIDERS,
     REASONS,
     HistoryError,
+    HistoryNotWritten,
     OldCopyRemainsError,
     Record,
     RedactDurabilityError,
@@ -92,6 +93,19 @@ from reach_around.counts.instagram_insights import (
 )
 from reach_around.counts.instagram_insights import (
     deletion_candidates as instagram_deletion_candidates,
+)
+from reach_around.counts.pending import (
+    Note,
+    clear_pending,
+    content_digest,
+    live_ids,
+    mark_pending,
+    numbers_identity,
+    pending_path,
+    read_note,
+    reconcile,
+    require_no_stranded,
+    withdraw_pending,
 )
 from reach_around.counts.refresh import (
     SUSPECT_KINDS,
@@ -344,6 +358,96 @@ def build_sinks(spec: DopplerSpec, transport: Transport | None) -> Sinks:
     return Sinks(PairStyleSink(sink), MetaStyleSink(sink))
 
 
+def _expected_digest(entries: Mapping[str, NumbersEntry]) -> str | None:
+    """Digest of the numbers text this run is about to write (None if it cannot
+    be made; the write would fail too, so the run can never count as committed)."""
+    try:
+        return content_digest(dump_numbers(entries))
+    except ConfigError:
+        return None
+
+
+@dataclass(frozen=True)
+class Staged:
+    """What ``_stage_history`` decided: the records to append and the note this
+    run wrote (its nonce), with what is needed to take the note back."""
+
+    records: list[Record]
+    nonce: str
+    previous: Note  # the note's live content before this run listed itself
+    history_before: tuple[int, ...] | None
+
+
+def _history_state(history: Path) -> tuple[int, ...] | None:
+    """Identity, size and modification time of the history file (``None`` when
+    absent). Equal before and after a failed append means it was not touched."""
+    try:
+        info = os.lstat(history)
+    except FileNotFoundError:
+        return None
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+
+
+def _withdraw(
+    paths: Paths, history: Path, staged: Staged, error: Exception | None = None
+) -> None:
+    """Take this run's id back out of the note after a failure, but only when
+    the history file is exactly as it was before (nothing of this run is in it).
+    When it is not, or that cannot be told, the id stays: it may be the only
+    way to correct a value that did land. A write that was rolled back
+    (``HistoryNotWritten``) put nothing in history, whatever its mtime says."""
+    try:
+        if (
+            isinstance(error, HistoryNotWritten)
+            or _history_state(history) == staged.history_before
+        ):
+            withdraw_pending(pending_path(paths.target), staged.nonce, staged.previous)
+    except (OSError, HistoryError):
+        pass  # the note stays; the next run compares its values
+
+
+def _stage_history(
+    history: Path,
+    paths: Paths,
+    records: list[Record],
+    run_id: str,
+    expect: str | None,
+) -> Staged:
+    """Note this run as pending, then settle days an earlier attempt recorded.
+
+    History is written before the numbers file; if a later write fails, the
+    pending note lets the next run replace the value that attempt left behind
+    (see ``counts/pending.py``). Raises ``OSError`` before history is touched,
+    and ``PendingError`` (a ``HistoryError``) when the note is there but cannot
+    be trusted; the note is then left as it is and nothing is written.
+    """
+    pending = pending_path(paths.target)
+    require_no_stranded(pending)
+    note = read_note(pending)
+    ids = live_ids(note, paths.target)  # [] when that run's numbers write landed
+    before = _history_state(history)
+    nonce = mark_pending(pending, ids, run_id, numbers_identity(paths.target), expect)
+    staged = Staged(
+        records, nonce, Note(ids, note.base, note.expect, note.nonce), before
+    )
+    if ids and history.exists():
+        try:
+            fixed = reconcile(read_history(history), ids, records)
+        except (OSError, HistoryError):
+            _withdraw(paths, history, staged)  # read only: history is untouched
+            raise
+        return Staged(fixed, nonce, staged.previous, before)
+    return staged
+
+
+def _settle_history(paths: Paths, nonce: str) -> None:
+    """The numbers file was written, so nothing is pending any more."""
+    try:
+        clear_pending(pending_path(paths.target), nonce)
+    except (OSError, HistoryError):
+        pass  # a stale note only makes the next run compare its values
+
+
 def _write_failed(exc: Exception) -> None:
     reason = exc.strerror if isinstance(exc, OSError) else str(exc)
     print(f"error: cannot write the result files: {reason}", file=sys.stderr)
@@ -425,9 +529,12 @@ def _retention_checks(
         return  # a missing or damaged file is reported by the history work itself
     _retention_notice_for(records, stamp)
     if policy is not None and policy.retain_days:
-        for warning in retention_warnings(
-            records, policy, stamp.astimezone(UTC).date()
-        ):
+        try:
+            warnings = retention_warnings(records, policy, stamp.astimezone(UTC).date())
+        except ValueError as exc:
+            print(f"history: {exc}; the retention check was skipped", file=sys.stderr)
+            return
+        for warning in warnings:
             print(warning.line(), file=sys.stderr)
 
 
@@ -493,6 +600,7 @@ def _cycle(
     # leave new numbers with no record of the run. If the numbers write fails, the
     # status is rewritten with ``committed: false`` (best effort) and the exit is 1.
     changed = any(outcome.status == "ok" for outcome in outcomes)
+    staged: Staged | None = None
     figures, insight_failures = _insights(
         sources, outcomes, environment, transport, now(), history
     )
@@ -541,8 +649,23 @@ def _cycle(
             print(f"{platform}: insights error (too_large)", file=sys.stderr)
             insight_failures.append(InsightFailure(platform, "too_large"))
         try:
+            staged = _stage_history(
+                history, paths, fetched, run_id, _expected_digest(numbers)
+            )
+            fetched = staged.records
+        except OSError as exc:
+            _write_failed(exc)
+            return EXIT_WRITE
+        except HistoryError as exc:
+            print(
+                f"error: history not written, nothing else was changed: {exc}",
+                file=sys.stderr,
+            )
+            return EXIT_WRITE
+        try:
             kept = append_records(history, fetched, now=stamp, skip_days=True)
         except HistoryError as exc:
+            _withdraw(paths, history, staged, exc)
             print(
                 f"error: history not written, nothing else was changed: {exc}",
                 file=sys.stderr,
@@ -573,6 +696,8 @@ def _cycle(
                 pass  # the numbers file is untouched either way
             _write_failed(exc)
             return EXIT_WRITE
+        if staged is not None:
+            _settle_history(paths, staged.nonce)
     failed = any(outcome.status == "error" for outcome in outcomes) or bool(
         insight_failures
     )
@@ -1053,14 +1178,17 @@ def run_import(
                     f"dry run: {len(rows)} number(s) would be imported; nothing written"
                 )
                 return EXIT_OK
+            merged = merge(previous, rows)
+            staged = None
             if history is not None:
                 # History first, as in refresh: if it cannot be written, the
                 # numbers file is left as it was. One value per platform, metric
                 # and UTC day; a retry the same day keeps the first.
                 stamp = datetime.now(UTC)
                 run_id = new_run_id(stamp)
-                append_records(
+                staged = _stage_history(
                     history,
+                    paths,
                     [
                         Record(
                             platform=row.key,
@@ -1072,10 +1200,17 @@ def run_import(
                         )
                         for row in rows
                     ],
-                    now=stamp,
-                    skip_days=True,
+                    run_id,
+                    _expected_digest(merged),
                 )
-            write_atomic(paths.target, dump_numbers(merge(previous, rows)))
+                try:
+                    append_records(history, staged.records, now=stamp, skip_days=True)
+                except (OSError, HistoryError) as failure:
+                    _withdraw(paths, history, staged, failure)
+                    raise
+            write_atomic(paths.target, dump_numbers(merged))
+            if staged is not None:
+                _settle_history(paths, staged.nonce)
     except ImportFailed as exc:
         print("error: the file was not imported; nothing was written", file=sys.stderr)
         for problem in exc.problems:

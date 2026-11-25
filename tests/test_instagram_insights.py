@@ -275,6 +275,21 @@ def test_activity_gives_one_window_total_per_metric() -> None:
     assert "UTC" in note and "2026-11-10" in note and "2026-11-16" in note
 
 
+def test_an_activity_reply_with_only_some_requested_metrics_is_not_a_report() -> None:
+    partial_reply = {"data": [{"name": "reach", "total_value": {"value": 100}}]}
+    transport = router(
+        activity=partial_reply,
+        age=fx("age.json"),
+        gender=fx("gender.json"),
+        country=fx("country.json"),
+    )
+    measures, words = run(transport)
+    assert "missing_field" in words
+    assert not [m for m in measures if m.metric.endswith("_7d")]  # nothing stored
+    # the other reports of the run are not discarded
+    assert [m for m in measures if m.metric.startswith("fdemo_")]
+
+
 def test_demographics_fold_cells_under_the_floor_into_other() -> None:
     assert FLOOR == 5
     measures, _ = run(ok_router())
