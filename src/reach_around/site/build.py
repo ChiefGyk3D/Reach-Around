@@ -34,7 +34,14 @@ from reach_around.config.blocks import (
 )
 from reach_around.config.footer import CREDIT_URL
 from reach_around.config.imported_history import ImportedHistory
-from reach_around.config.models import Block, Link, Section, SiteConfig, Tab
+from reach_around.config.models import (
+    SCREEN_PATHS,
+    Block,
+    Link,
+    Section,
+    SiteConfig,
+    Tab,
+)
 from reach_around.config.numbers import (
     Numbers,
     future_typed_dates,
@@ -206,11 +213,18 @@ def _page_path(tab_index: int, tab: Tab) -> Path:
     return Path(tab.id) / "index.html"
 
 
+def _screens(config: SiteConfig) -> list[str]:
+    """The extra compact screens that hold a group, in tab-bar order (#873)."""
+    used = {tab.screen for tab in config.tabs if tab.screen is not None}
+    return [name for name in SCREEN_PATHS if name in used]
+
+
 def _page_paths(config: SiteConfig, with_kit: bool = True) -> set[Path]:
     """Every HTML file the build writes (``with_kit`` adds the kit's pages)."""
     if config.page.layout == "stack":
         pages = {Path("index.html")}
         pages |= {Path(tab.id) / "index.html" for tab in config.tabs if tab.spoke}
+        pages |= {Path(name) / "index.html" for name in _screens(config)}
     elif config.page_layout == "sections":
         pages = {Path("index.html")}
     else:
@@ -296,6 +310,8 @@ def _internal_href(
                 if tab.spoke
                 else root
                 if tab.intent == "watch"
+                else f"{base}{tab.screen}/#group-{tab.intent}"
+                if tab.screen
                 else f"{base}#group-{tab.intent}"
             )
             for tab in config.tabs
@@ -565,14 +581,21 @@ def _render_smart_stack_page(
     shown: list[list[Block]],
     custom_css: bool,
     today: date,
+    screen: str | None = None,
 ) -> str:
-    """Render the production one-page smart stack."""
+    """Render the production smart stack: the home page, or one compact screen.
+
+    ``screen`` is ``None`` for the home page. With ``page.density: compact`` a
+    group may sit on its own screen (``/support/``, ``/contact/``, #873); the
+    home page then holds the groups with no screen and a tab bar links them.
+    """
     # The home page draws only the groups that are not spokes (those get one
     # card each), and a spoke's links cannot be featured (checked at load).
+    # A screen page draws only its own groups; the home page leaves them out.
     every = [
         block
         for tab, blocks in zip(config.tabs, shown, strict=True)
-        if not tab.spoke
+        if not tab.spoke and tab.screen == screen
         for block in blocks
     ]
     links = {link.id: link for link in _links_in(every)}
@@ -585,7 +608,7 @@ def _render_smart_stack_page(
     groups = [
         {"tab": tab, "links": [] if tab.spoke else shape(blocks)}
         for tab, blocks in zip(config.tabs, shown, strict=True)
-        if tab.intent != "watch"
+        if tab.intent != "watch" and tab.screen == screen
     ]
     if compact:
         # A group whose links are all outside their show_from / show_until window
@@ -598,10 +621,25 @@ def _render_smart_stack_page(
             if tab.intent == "watch"
             for link in shape(blocks)
         ]
-        if compact
+        if compact and screen is None
         else []
     )
     tab = config.tabs[0]
+    names = _screens(config)
+    screen_nav = (
+        [
+            {
+                "title": title,
+                "href": ("./" if screen is None else "../")
+                if name is None
+                else (f"{name}/" if screen is None else f"../{name}/"),
+                "current": name == screen,
+            }
+            for name, title in [(None, "Links"), *((n, n.title()) for n in names)]
+        ]
+        if names
+        else []
+    )
     pick = config.page.featured
     featured = None
     if (
@@ -611,8 +649,11 @@ def _render_smart_stack_page(
         and (pick.show_until is None or today <= pick.show_until)
     ):
         featured = {"link": links[pick.link], "kicker": pick.kicker}
+    root = "" if screen is None else "../"
     return env.get_template("smart_stack.html").render(
         compact=compact,
+        screen=screen,
+        screen_nav=screen_nav,
         smart_compact=compact,
         watch_all=watch_all,
         watch_columns=next(t.columns for t in config.tabs if t.intent == "watch"),
@@ -622,12 +663,16 @@ def _render_smart_stack_page(
         watch_title=next(t.title for t in config.tabs if t.intent == "watch"),
         blocks=every,
         groups=groups,
-        watch=[links[ident] for ident in config.page.watch],
+        watch=[links[ident] for ident in config.page.watch] if screen is None else [],
         page=config.page,
         nav=[],
-        tab_href=_internal_href(config, "./", shown),
-        root="",
-        page_title=page_title(config, tab.title, home=True, own=tab.page_title),
+        tab_href=_internal_href(config, "./" if screen is None else "../", shown),
+        root=root,
+        page_title=(
+            page_title(config, tab.title, home=True, own=tab.page_title)
+            if screen is None
+            else page_title(config, screen.title(), home=False, own=None)
+        ),
         disclosure=_disclosure_line(config),
         show_disclosure=_show_disclosure(
             config, any(link.affiliate for link in _links_in(every))
@@ -639,7 +684,7 @@ def _render_smart_stack_page(
         footer_credit_url=CREDIT_URL,
         page_views=config.analytics.page_views,
         beacon_frame=beacon_frame_on(config),
-        page_id=tab.id,
+        page_id=tab.id if screen is None else screen,
         view_route=config.analytics.route,
         beacon_token=config.analytics.beacon_token,
         has_crypto=False,
@@ -647,8 +692,8 @@ def _render_smart_stack_page(
         has_email_script=False,
         has_platforms=False,
         has_live=False,
-        has_live_script=config.page.live_badges,
-        canonical=_canonical(config, ""),
+        has_live_script=config.page.live_badges and screen is None,
+        canonical=_canonical(config, "" if screen is None else f"{screen}/"),
         smart_stack=True,
         profile_card=_profile_card(config),
         cookie_text=intro_text(config),
@@ -968,6 +1013,10 @@ def _render_pages(
                 pages[Path(tab.id) / "index.html"] = _render_spoke_page(
                     env, config, i, shown[i], custom_css
                 )
+        for name in _screens(config):
+            pages[Path(name) / "index.html"] = _render_smart_stack_page(
+                env, config, shown, custom_css, today, screen=name
+            )
     elif config.page_layout == "sections":
         pages = {
             Path("index.html"): _render_sections_page(env, config, shown, custom_css)
@@ -1322,6 +1371,8 @@ def build_site(
                 if tab.spoke
                 else "/"
                 if tab.intent == "watch"
+                else f"/{tab.screen}/#group-{tab.intent}"
+                if tab.screen
                 else f"/#group-{tab.intent}"
             )
             if config.page.layout == "stack"

@@ -9,10 +9,14 @@
 .smart-compact { --smart-reserve: 21rem; gap: var(--ra-space-2); }
 /* The optional schedule line takes up to two lines: tiles give that back. */
 .smart-compact.smart-has-schedule { --smart-reserve: 23.5rem; }
+/* The tab bar (a Support or Contact screen exists) takes one tap-size row and a gap. */
+.smart-compact.smart-has-tabs { --smart-reserve: 24.5rem; }
+.smart-compact.smart-has-tabs.smart-has-schedule { --smart-reserve: 27rem; }
 .smart-compact .smart-groups { gap: var(--ra-space-2); }
 .smart-compact .smart-group,
 .smart-compact.smart-stack .smart-onair { gap: var(--ra-space-1); padding: 0; border: 0; background: none; box-shadow: none; }
-.smart-compact .smart-group h2 { margin: 0; line-height: 1.2; }
+/* A heading is owner text of any length: it wraps inside its group (#873). */
+.smart-compact .smart-group h2 { margin: 0; line-height: 1.2; min-width: 0; overflow-wrap: anywhere; }
 .smart-compact .smart-status { gap: 0; }
 .smart-compact .smart-status-text,
 .smart-compact .smart-status-schedule { font-size: var(--ra-text-sm); line-height: 1.25; }
@@ -111,6 +115,63 @@
 @container (max-width: 6rem) {
   .smart-compact .smart-tiles a.link.smart-tile { grid-column: span 60; }
 }
+/* The tab bar of a site with Support or Contact screens (#873): a row of 44 px
+   targets above the groups, one per screen. The current one is filled amber. */
+.smart-screens ul { display: flex; gap: var(--ra-space-1); margin: 0; padding: 0; list-style: none; }
+.smart-screens li { flex: 1 1 0; min-width: 0; }
+.smart-screens a.smart-screen-tab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--ra-tap);
+  padding: 0 var(--ra-space-1);
+  border: var(--ra-rule-width) solid var(--ra-color-border);
+  border-radius: min(var(--ra-button-radius), var(--ra-card-radius));
+  background-color: var(--ra-color-surface);
+  color: var(--ra-color-text);
+  font-size: var(--ra-text-sm);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.smart-screens a.smart-screen-tab:is(:hover, :focus-visible) { border-color: var(--ra-color-accent); }
+.smart-screens a.smart-screen-tab[aria-current="page"] {
+  background-color: var(--ra-color-accent);
+  border-color: var(--ra-color-accent);
+  color: var(--ra-color-on-accent);
+  text-decoration: underline;
+  text-underline-offset: 0.25rem;
+}
+/* One plain line under a group heading (the affiliate line, the hire sentence). */
+.smart-compact .smart-note { margin: 0; font-size: var(--ra-text-sm); line-height: 1.25; color: var(--ra-color-muted); overflow-wrap: anywhere; }
+/* Support screen: the free group's tiles are outlined in amber, the paid group's
+   sit on the warm plate, so the two read as different asks. */
+.smart-compact .smart-group-free a.link.smart-tile { border-color: var(--ra-color-accent); }
+.smart-compact .smart-group-paid a.link.smart-tile { background-color: var(--ra-brand-plate); }
+/* The hire block (#873): a panel apart from the social tiles, with a thick amber
+   edge and one solid amber button, so it cannot be mistaken for a social link. */
+.smart-compact .smart-group.smart-hire {
+  gap: var(--ra-space-2);
+  padding: var(--ra-space-2) var(--ra-space-3);
+  border: var(--ra-rule-accent-width) solid var(--ra-color-accent);
+  border-inline-start-width: var(--ra-space-2);
+  border-radius: min(var(--ra-button-radius), var(--ra-card-radius));
+  background-color: var(--ra-brand-plate);
+}
+.smart-compact .smart-hire .smart-note { color: var(--ra-color-text); }
+.smart-compact .smart-hire a.link.smart-tile {
+  flex-direction: row;
+  gap: var(--ra-space-3);
+  min-height: 3.5rem;
+  background-color: var(--ra-color-accent);
+  border-color: var(--ra-color-accent);
+  color: var(--ra-color-on-accent);
+}
+.smart-compact .smart-hire .smart-tile .link-chip,
+.smart-compact .smart-hire .smart-tile .link-chip .icon { color: var(--ra-color-on-accent); }
+.smart-compact .smart-hire .smart-tile .link-title { font-size: var(--ra-text-md); }
+.smart-compact .smart-hire a.link.smart-tile:is(:hover, :focus-visible) { border-color: var(--ra-color-text); }
 /* One tight screen: the page header and footer give back their padding, and
    the privacy and credit links share a line, so the tiles stay on screen. */
 main.main-deck:has(.smart-compact) { min-height: 0; max-width: min(72rem, 100%); padding-bottom: var(--ra-space-1); }
@@ -146,6 +207,8 @@ main.main-deck:has(.smart-compact) > footer > .cookie-banner { flex: 0 0 100%; }
   .smart-compact .smart-groups { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--ra-space-3) var(--ra-space-5); }
   .smart-compact .smart-group { grid-column: auto; }
   .smart-compact .smart-group:has(.smart-cols-5, .smart-cols-6) { grid-column: span 2; }
+  .smart-compact .smart-screens { max-width: 44rem; }
+  .smart-compact.smart-screen .smart-groups { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .smart-compact .smart-tile .link-title,
   .smart-compact .smart-cols-5 .smart-tile .link-title,
   .smart-compact .smart-cols-6 .smart-tile .link-title { font-size: var(--ra-text-base); letter-spacing: 0; }

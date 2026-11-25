@@ -678,6 +678,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "room",
         "route",
         "schedule",
+        "screen",
         "sections",
         "services",
         "show",

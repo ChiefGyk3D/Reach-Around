@@ -482,8 +482,10 @@ def test_a_group_with_no_link_at_all_is_refused() -> None:
 
 # Each field of every model a compact page reads, and what it does to a link.
 # refused: the validator rejects it under compact density. window: a per-link
-# date filter (a legitimate one, tested above). inert: set it and every link
-# still draws. A new field must be classified here or this module fails.
+# date filter (a legitimate one, tested above). moved: the group draws on its own
+# screen (tested in test_smart_stack_screens.py: every link is on exactly one
+# page). inert: set it and every link still draws. A new field must be classified
+# here or this module fails.
 CLASSIFIED: dict[str, dict[str, str]] = {
     "Page": {
         "layout": "inert",
@@ -505,6 +507,8 @@ CLASSIFIED: dict[str, dict[str, str]] = {
         "style": "refused",
         "spoke": "refused",
         "columns": "inert",
+        "screen": "moved",
+        "note": "inert",
         "blocks": "inert",
     },
     "Section": {
@@ -590,6 +594,7 @@ def test_inert_keys_leave_every_link_on_the_page(tmp_path: Path) -> None:
         tab["page_title"] = "Another title"
         if tab["intent"] != "watch":
             tab["columns"] = 1
+            tab["note"] = "A plain note"
         for block in tab["blocks"]:
             for link in block["links"] if "links" in block else [block]:
                 link["featured"] = True

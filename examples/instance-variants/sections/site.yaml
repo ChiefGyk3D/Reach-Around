@@ -93,7 +93,7 @@ tabs:
             label: Monero
             address: 4ExampleExampleExampleExampleExampleExampleExampleExampleExampleExampleExampleExampleExampleExampleExample
   - id: recs
-    title: Product recs
+    title: Gear I Use
     blocks:
       - id: example-mic
         title: Example Microphone
