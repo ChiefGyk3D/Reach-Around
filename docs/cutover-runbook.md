@@ -282,13 +282,23 @@ is run on the staging host.
 - [ ] **Each link-out works (owner-only).** The owner opens each card on a phone
       and a laptop and confirms it lands on the right provider page. This
       navigation check is the whole requirement and needs no payment. A real
-      transaction is never required to complete this checklist. If the owner
-      chooses to test one, it is a single tip of the provider's minimum amount
-      on a tipping rail only (Patreon, StreamElements or Ko-fi; not merch, and
-      not cryptocurrency, because on-chain transfers cannot be refunded),
-      made by the owner personally with the owner's own payment method. The
-      owner cancels or refunds it from the provider's own dashboard afterwards
-      and notes that in the private record. An agent never makes a payment.
+      transaction is never required to complete this checklist, and the
+      default is to make none. The provider help pages for refunds were not
+      readable by an agent on 2026-11-25 (HTTP 403 for the StreamElements
+      "Tipping FAQ for viewers", the Ko-fi "Supporter payments FAQ" and the
+      Patreon "Why are there refunds I didn't initiate" pages), so what each
+      rail does on a refund, cancellation or chargeback is **UNVERIFIED** here.
+      Secondary indications only, not a source: StreamElements tips may be
+      final by default with refunds through support; a Ko-fi one-time payment
+      goes through the payment processor; cancelling a Patreon pledge stops
+      future charges but need not reverse one already taken. Therefore: check
+      the provider's help before tipping; the tip may not be refundable, and
+      processing fees may not be returned. If the owner still chooses to test,
+      it is one tip of the provider's minimum amount on a tipping rail only
+      (not merch, and not cryptocurrency, because on-chain transfers cannot be
+      refunded), made by the owner personally with the owner's own payment
+      method, after the owner has read that rail's current refund page and
+      noted in the private record what it says. An agent never makes a payment.
 - [ ] **OWNER DECISION: the tips host.** The tips host was reported to answer a
       301 to the StreamElements tip page. That state is UNVERIFIED here: no
       observation is recorded in this repository. Immediately before the
@@ -464,53 +474,83 @@ before relying on it), and how long a given browser keeps a 301 with no
    vendor docs before the edit, not this runbook.
 2. **Staging first, status 302.** Point the staging copy of the rule at
    `https://links-staging.example.com/support/` with status `302`.
-3. **Staging checks** (agent-ready, read-only). The first hop is requested with
-   `-I` and no `-L`, and the `Location` is asserted exactly; the target is then
-   requested separately:
+3. **Staging checks** (agent-ready, read-only). Run the verifier, which never
+   follows redirects and fails closed:
 
    ```sh
-   EXP_HOST="links-staging.example.com"
-   hdr="$(curl --proto '=https' -sSI --max-time 20 "https://support-staging.example.com/?x=1")"
-   printf '%s\n' "$hdr" | head -n 1
-   loc="$(printf '%s\n' "$hdr" | tr -d '\r' | awk 'tolower($1)=="location:"{print $2; exit}')"
-   [ "$loc" = "https://${EXP_HOST}/support/?x=1" ] && echo "first hop OK" || { echo "FAIL: Location is not exactly the expected URL"; exit 1; }
-   curl --proto '=https' -sSI --max-time 20 "https://support-staging.example.com/other-path" | head -n 1
-   curl --proto '=https' -sSI --max-time 20 "$loc" | head -n 1
+   SRC_HOST=support-staging.example.com EXP_HOST=links-staging.example.com \
+     scripts/verify-support-redirect.sh
+   echo "exit=$?"
    ```
 
-   Expect, in order: status `302` and a `Location` equal, character for
-   character, to `https://links-staging.example.com/support/?x=1` (scheme,
-   host, path and query; any other host, including one with the right path,
-   fails and stops the run); the other path unchanged (its normal status, no
-   redirect to the Support page); and `200` on the Support page.
+   Both hosts are required and must differ; nothing is defaulted. It exits `0`
+   only after every check ran and passed: two probe requests
+   (`?probe=a%2Fb&probe=two` and `?q=x%20y&utm_source=mail&empty=`) each return
+   status `302` and a `Location` equal, character for character, to
+   `https://links-staging.example.com/support/` plus the exact query sent (so a
+   rule that hard-codes a query fails); the other path (`OTHER_PATH`, default
+   `/other-path`) does not redirect to Support; and the Support page answers
+   `200`. A failed request, an unparsable status line or a missing `Location`
+   is a failure (exit `1`); a missing or equal host is a usage error (exit
+   `2`). It is tested against local servers in
+   `tests/test_verify_support_redirect.py`. It has not yet been run against a
+   real Cloudflare rule.
 4. **Cutover build, short-lived redirect first.** After the owner's cutover
    word, create the production rule with status `302`, not `301`, and (if the
    rule settings allow it, otherwise INFERRED unavailable) a short
    `Cache-Control: max-age` of 300 seconds or less on the redirect response.
-   Verify with the same script on the real hosts, with `EXP_HOST` set to the
-   production host: `302`, `Location` exactly
-   `https://links.example.com/support/?x=1`, other path unchanged, `200` on the
-   Support page.
-5. **Soak, then permanent.** Hold the `302` for a stated soak period of at
-   least 7 days (the owner may lengthen it) with no rollback decision. Only
-   then, on a second explicit word from the owner, switch the rule to `301`.
-   Record the soak start, end and the owner's word in the private cutover
-   record.
+   Verify with the same script on the real hosts, both set explicitly:
+
+   ```sh
+   SRC_HOST=support.example.com EXP_HOST=links.example.com \
+     scripts/verify-support-redirect.sh
+   echo "exit=$?"
+   ```
+5. **Soak, then permanent.** The owner decides the promotion; these health
+   gates must all hold first, and the evidence for each is recorded in the
+   private cutover record before the owner is asked for the second word:
+   - the verifier exits `0` on staging and, freshly (same day as the request),
+     on production;
+   - the Support page answers `200` and each card passes the 2.4a checks;
+   - the analytics report (or the host's error-rate view) shows no spike in
+     errors or in visitors landing on the old host, compared with before the
+     switch, and no unresolved incident is open;
+   - the stated soak of at least 7 days (the owner may lengthen it) has passed,
+     with the verifier run at least once a day and every run passing.
+   If any gate fails, the rule stays a `302` or is rolled back; time alone never
+   promotes it. Only then, on a second explicit word from the owner, switch the
+   rule to `301`. Record the soak start and end, the gate evidence and the
+   owner's word.
 6. **Rollback and client recovery.** While the rule is a `302`, deleting it (or
    restoring the written-down previous state) returns the old page once any
-   cached copy expires: at most the `Cache-Control` max-age if set, otherwise
-   the Cloudflare edge default of 20 minutes plus whatever a client keeps.
-   Purge the cached redirect for each affected URL with a single-file purge
-   (the real-host check URLs from step 4) right after the rule is removed.
+   cached copy is gone. Cloudflare's cache page gives a default edge TTL of 20
+   minutes for a `302` (read 2026-11-25, URL above), but that page frames it
+   around origin responses. **INFERRED, not established:** that a redirect
+   produced by a Single Redirect rule enters the cache under that default, and
+   how quickly a rule change or removal takes effect (the Single Redirects
+   page, https://developers.cloudflare.com/rules/url-forwarding/single-redirects/,
+   read 2026-11-25, states neither). Measure it on staging first: request the
+   staging redirect twice and record `CF-Cache-Status` and `Age`, remove the
+   rule, and record how long the old behavior takes to return.
+   After removing the rule, purge every cached redirect for the old host, not
+   only the probe URL. Cloudflare lists these purge options, available on all
+   plans (https://developers.cloudflare.com/cache/how-to/purge-cache/, read
+   2026-11-25): by single URL, by hostname, by prefix, by tag and purge
+   everything. Single-URL purge covers only the URLs given, and the page says
+   nothing about query-string variants (INFERRED: each variant is its own
+   URL), so it cannot enumerate unknown query variants. Use **purge by
+   hostname** for the old support host, which covers every variant under that
+   hostname, and then request `/` and one query variant and confirm `CF-Cache-Status` is not
+   `HIT` (the page notes a purge is not confirmed by Cloudflare, so verify).
    **A served `301` is not undone by removing the rule.** Browsers and
    intermediaries that cached it keep sending visitors to the new page until
    their cache expires or is cleared, and the runbook cannot reach those
    clients. After the switch to `301`, the recovery path is on the destination
    side: keep the Support page live and correct, disable individual cards
    without touching the rule, or serve a replacement redirect from the old
-   host's path only if the owner decides. Clients that still hold a cached
-   `301` recover by clearing the site's cache in the browser or by a
-   hard reload. This is why the `301` waits for the soak.
+   host's path only if the owner decides. A browser's cached `301` is cleared
+   by clearing the site's cache in that browser; a hard reload is not a
+   guaranteed way to drop it. This is why the `301` waits for the health gates.
 7. Record the rule, its status, the time, the owner's quoted words and the
    `curl` output lines (status and `Location` only, no cookies) in the private
    cutover record.
