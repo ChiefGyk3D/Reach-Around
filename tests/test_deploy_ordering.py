@@ -396,6 +396,9 @@ def test_refresh_counts_has_a_hard_deadline_and_refuses_a_larger_one() -> None:
 # ---- release tag grammar: vX.Y.Z or vX.Y.Z-rc.N, nothing else (#694) ----------
 
 
+TAG_REFUSED = "engine.release.json does not match engine.lock: tag has the wrong shape"
+
+
 def _with_tag(root: Path, tag: str) -> None:
     """Make the manifest, the lock comment and the image tag all name `tag`."""
     path = root / "engine.release.json"
@@ -432,6 +435,12 @@ def test_release_tags_of_the_allowed_grammar_are_accepted(
         "v1.2.3-beta.1",
         "v1.2.3-alpha",
         "v1.2.3-rc.1.2",
+        "v1.2.3-rc.1-rc.2",
+        "v1.2.3-rcx.1",
+        "v1.2.3-rc.1x",
+        "v1.2.3+build",
+        "vv1.2.3",
+        "v1.2.3.4",
         "v1.2.3-RC.1",
         "1.2.3",
         "v1.2.3;id",
@@ -457,7 +466,8 @@ def test_release_tags_outside_the_grammar_are_refused(tmp_path: Path, tag: str) 
     path.write_text(json.dumps(doc), encoding="utf-8")
     result = _release(root)
     assert result.returncode == 1, result.stdout
-    assert "tag has the wrong shape" in result.stderr or "tag missing" in result.stderr
+    # the grammar check itself refused it (not another check, not a missing tag)
+    assert TAG_REFUSED in result.stderr, result.stderr
 
 
 @pytest.mark.parametrize(
@@ -483,4 +493,66 @@ def test_a_malformed_tag_repeated_in_every_pin_is_refused_by_the_parser(
     _with_tag(root, tag)
     result = _release(root)
     assert result.returncode == 1, result.stdout
-    assert "wrong shape" in result.stderr or "tag missing" in result.stderr
+    assert TAG_REFUSED in result.stderr, result.stderr
+
+
+# Each loosened grammar below must let at least one of the refused tags through:
+# that is what makes the refusal tests depend on the anchored grammar line.
+LOOSER_GRAMMARS = {
+    "no end anchor": ("(-rc\\.[0-9]+)?$'", "(-rc\\.[0-9]+)?'"),
+    "any suffix": ("(-rc\\.[0-9]+)?$'", "(-[a-z0-9.]+)?$'"),
+    "repeated suffix": ("(-rc\\.[0-9]+)?$'", "(-rc\\.[0-9]+)*$'"),
+    "digits or dots": ("[0-9]+\\.[0-9]+\\.[0-9]+", "[0-9.]+"),
+    "no start anchor": ("tag_re='^v", "tag_re='v"),
+}
+REFUSED_BY_THE_GRAMMAR = [
+    "v1.2.3-rc.1.2",
+    "v1.2.3-rc.1-rc.2",
+    "v1.2.3-rcx.1",
+    "v1.2.3-rc.1x",
+    "v1.2.3+build",
+    "vv1.2.3",
+    "v1.2.3.4",
+    "v1.2.3-beta.1",
+]
+
+
+@pytest.mark.parametrize("label", sorted(LOOSER_GRAMMARS))
+def test_the_malformed_tag_cases_fail_when_the_grammar_is_loosened(
+    tmp_path: Path, label: str
+) -> None:
+    old, new = LOOSER_GRAMMARS[label]
+    accepted = []
+    for index, tag in enumerate(REFUSED_BY_THE_GRAMMAR):
+        root = _instance(tmp_path / f"probe-{index}")
+        script = root / "scripts" / "read-lock.sh"
+        text = script.read_text(encoding="utf-8")
+        line = next(ln for ln in text.splitlines() if ln.startswith("  tag_re="))
+        assert old in line, label
+        text = text.replace(line, line.replace(old, new, 1))
+        # the lock comment has its own strict pattern; set it aside so the
+        # manifest grammar is the only guard under test
+        comment = next(ln for ln in text.splitlines() if ln.startswith("  l_tag="))
+        text = text.replace(comment, '  l_tag="$m_tag"')
+        script.write_text(text, encoding="utf-8")
+        _with_tag(root, tag)
+        if _release(root).returncode == 0:
+            accepted.append(tag)
+    assert accepted, label
+
+
+@pytest.mark.parametrize(
+    "comment", ["v0.3.0-rc.6x", "v0.3.0-rc", "v0.3.0-beta.1", "v0.3", "0.3.0-rc.6"]
+)
+def test_a_lock_comment_outside_the_grammar_is_not_the_manifest_tag(
+    tmp_path: Path, comment: str
+) -> None:
+    root = _instance(tmp_path)
+    lock = root / "engine.lock"
+    text = lock.read_text(encoding="utf-8")
+    changed = re.sub(r"(ENGINE_REF=[0-9a-f]{40} # )\S+", rf"\g<1>{comment}", text)
+    assert changed != text
+    lock.write_text(changed, encoding="utf-8")
+    result = _release(root)
+    assert result.returncode == 1, result.stdout
+    assert "the tag comment on ENGINE_REF is not" in result.stderr, result.stderr

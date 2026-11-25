@@ -198,13 +198,33 @@ def test_workflow_hardening(path: Path) -> None:
 
 TIER_DOPPLER_CONFIG = {"staging": "dev", "production": "prd"}
 TIER_BRANCH = {"staging": "staging", "production": "main"}
-# What a `with:` value of a worker call may be: a literal, a repository
-# variable, or one of the two engine pin outputs of the validate job. Nothing
-# else (no secret, no event data, no input of the run).
-WITH_EXPRESSION = re.compile(
-    r"^\$\{\{ (vars\.[A-Z][A-Z0-9_]*"
-    r"|needs\.validate\.outputs\.engine_(repo|ref)) \}\}$"
+# What a `with:` value of a worker call may be: a literal or an output of the
+# validate job (the checked values). Never a repository variable read again,
+# a secret, event data or an input of the run.
+WITH_EXPRESSION = re.compile(r"^\$\{\{ needs\.validate\.outputs\.[a-z][a-z0-9_]* \}\}$")
+# The values check-tiers.sh writes as step outputs; the deploy jobs read only these.
+CHECKED_OUTPUTS = (
+    "staging_worker_name",
+    "production_worker_name",
+    "staging_pages_project",
+    "production_pages_project",
+    "staging_d1_database_id",
+    "production_d1_database_id",
+    "staging_ratelimit_namespace_id",
+    "production_ratelimit_namespace_id",
+    "staging_site_host",
+    "production_site_host",
+    "staging_zone_name",
+    "production_zone_name",
+    "doppler_identity_id_staging",
+    "doppler_identity_id_production",
+    "cloudflare_account_id",
+    "doppler_project",
+    "allow_staging_deploy",
+    "allow_production_deploy",
 )
+STAGING_SWITCH = "needs.validate.outputs.allow_staging_deploy"
+PRODUCTION_SWITCH = "needs.validate.outputs.allow_production_deploy"
 
 
 def _deploy_data() -> dict[Any, Any]:
@@ -231,7 +251,7 @@ def test_deploy_workflow_shape() -> None:
     assert list(jobs) == ["validate", *DEPLOY_JOBS]
     assert "environment" not in jobs["validate"]
     # the engine repository is a literal in the template
-    assert set(jobs["validate"]["outputs"]) == {"engine_ref"}
+    assert set(jobs["validate"]["outputs"]) == {"engine_ref", *CHECKED_OUTPUTS}
     for tier in ("staging", "production"):
         worker = jobs[f"worker-{tier}"]
         pages = jobs[f"pages-{tier}"]
@@ -275,8 +295,9 @@ def test_deploy_workflow_shape() -> None:
         assert doppler["with"]["required"] == "true"
         assert doppler["with"]["config"] == TIER_DOPPLER_CONFIG[tier]
         identity = "DOPPLER_IDENTITY_ID_" + tier.upper()
-        assert doppler["with"]["identity-id"] == f"${{{{ vars.{identity} }}}}"
-        assert call["doppler_identity_id"] == f"${{{{ vars.{identity} }}}}"
+        checked = f"${{{{ needs.validate.outputs.{identity.lower()} }}}}"
+        assert doppler["with"]["identity-id"] == checked
+        assert call["doppler_identity_id"] == checked
         publish_step = steps[publish]
         assert publish_step["env"][CF_ENV_VAR] == (
             "${{ fromJSON(steps.cf_doppler.outputs.secrets).CLOUDFLARE_KEY_VALUE }}"
@@ -636,8 +657,8 @@ def contexts(event: str) -> list[dict[str, str]]:
             "github.event_name": event,
             "github.ref": ref,
             "inputs.target": target,
-            "vars.ALLOW_PRODUCTION_DEPLOY": allow,
-            "vars.ALLOW_STAGING_DEPLOY": staging_allow,
+            PRODUCTION_SWITCH: allow,
+            STAGING_SWITCH: staging_allow,
         }
         for staging_allow in ("", "true", "false", "TRUE")
         for ref in ("refs/heads/main", "refs/heads/other", "refs/tags/v1")
@@ -665,7 +686,7 @@ def tier_problems(text: str) -> list[str]:
             "github.event_name": "workflow_dispatch",
             "github.ref": "refs/heads/main",
             "inputs.target": "production",
-            "vars.ALLOW_PRODUCTION_DEPLOY": "true",
+            PRODUCTION_SWITCH: "true",
         }
         if not evaluate(condition, on):
             found.append(f"{name}: never runs, even when asked for")
@@ -674,7 +695,7 @@ def tier_problems(text: str) -> list[str]:
             ("github.ref", "refs/heads/other"),
             ("github.event_name", "push"),
             ("inputs.target", "staging"),
-            ("vars.ALLOW_PRODUCTION_DEPLOY", ""),
+            (PRODUCTION_SWITCH, ""),
         ):
             if evaluate(condition, {**on, key: other}):
                 found.append(f"{name}: runs without {key}")
@@ -682,6 +703,7 @@ def tier_problems(text: str) -> list[str]:
         # The one place staging may name production: the Pages job compares its
         # project with the production project and refuses to publish into it.
         job_text = yaml.safe_dump(jobs[name]).replace("PRODUCTION_PAGES_PROJECT", "")
+        job_text = job_text.replace("production_pages_project", "")
         if "production" in job_text.lower():
             found.append(f"{name}: names production")
         condition = str(jobs[name].get("if", ""))
@@ -691,7 +713,7 @@ def tier_problems(text: str) -> list[str]:
             found.append(f"{name}: a condition this check cannot read")
             continue
         for ctx in contexts("push") + contexts("workflow_dispatch"):
-            allowed = ctx["vars.ALLOW_STAGING_DEPLOY"] == "true"
+            allowed = ctx[STAGING_SWITCH] == "true"
             if evaluate(condition, ctx) and not allowed:
                 found.append(f"{name}: runs without ALLOW_STAGING_DEPLOY")
                 break
@@ -709,20 +731,18 @@ def test_production_never_runs_on_a_push_and_staging_never_names_it() -> None:
     push = {
         "github.event_name": "push",
         "github.ref": "refs/heads/main",
-        "vars.ALLOW_STAGING_DEPLOY": "true",
+        STAGING_SWITCH: "true",
     }
     assert evaluate(str(jobs["worker-staging"]["if"]), push)
     # but not until the repository variable says the environments are ready
-    assert not evaluate(
-        str(jobs["worker-staging"]["if"]), {**push, "vars.ALLOW_STAGING_DEPLOY": ""}
-    )
+    assert not evaluate(str(jobs["worker-staging"]["if"]), {**push, STAGING_SWITCH: ""})
     assert evaluate(
         str(jobs["pages-staging"]["if"]),
         {
             "github.event_name": "workflow_dispatch",
             "github.ref": "refs/heads/main",
             "inputs.target": "staging",
-            "vars.ALLOW_STAGING_DEPLOY": "true",
+            STAGING_SWITCH: "true",
         },
     )
 
@@ -743,26 +763,29 @@ def test_the_tier_guard_bites() -> None:
     assert tier_problems(good.replace(cond, "contains(github.ref, 'main')"))
     # the staging condition is folded over two lines in the file
     first = (
-        "      github.ref == 'refs/heads/main' && vars.ALLOW_STAGING_DEPLOY == 'true'"
+        "      github.ref == 'refs/heads/main'"
+        " && needs.validate.outputs.allow_staging_deploy == 'true'"
         " && github.event_name == 'push'\n"
     )
     assert first in good
     assert tier_problems(good.replace(first, "      github.event_name != 'x'\n"))
     # without the staging switch a push would start the first, unprotected run
-    no_switch = first.replace(" && vars.ALLOW_STAGING_DEPLOY == 'true'", "")
+    no_switch = first.replace(
+        " && needs.validate.outputs.allow_staging_deploy == 'true'", ""
+    )
     assert tier_problems(good.replace(first, no_switch))
     # naming the production project anywhere but the one refusal is caught
     assert tier_problems(
         good.replace(
-            "${{ vars.STAGING_PAGES_PROJECT }}\n          # Only",
-            "${{ vars.PRODUCTION_WORKER_NAME }}\n          # Only",
+            "${{ needs.validate.outputs.staging_pages_project }}\n          # Only",
+            "${{ needs.validate.outputs.production_worker_name }}\n          # Only",
             1,
         )
     )
     assert tier_problems(
         good.replace(
-            "worker_name: ${{ vars.STAGING_WORKER_NAME }}",
-            "worker_name: ${{ vars.PRODUCTION_WORKER_NAME }}",
+            "worker_name: ${{ needs.validate.outputs.staging_worker_name }}",
+            "worker_name: ${{ needs.validate.outputs.production_worker_name }}",
             1,
         )
     )
@@ -1117,7 +1140,9 @@ def test_a_missing_pinned_commit_fails_under_ci_and_skips_elsewhere() -> None:
     assert yaml.safe_load(text)["name"] == "Deploy Worker"
 
 
-def test_the_version_comment_accepts_a_pre_release_and_refuses_a_bad_suffix() -> None:
+def test_a_workflow_pin_comment_accepts_a_pre_release_and_refuses_a_bad_suffix() -> (
+    None
+):
     sha = "a" * 40
     for ok in ("v1.2.3", "v0.3.0-rc.6", "v1.0.0-alpha", "v1.0.0-beta.2", "v7"):
         assert PINNED.match(f"x/y@{sha} # {ok}"), ok
@@ -3027,13 +3052,42 @@ TIER_ENV = {
     "PRODUCTION_ZONE_NAME": "example.invalid",
     "DOPPLER_IDENTITY_ID_STAGING": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
     "DOPPLER_IDENTITY_ID_PRODUCTION": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    "CLOUDFLARE_ACCOUNT_ID": "0" * 32,
+    "DOPPLER_PROJECT": "my-links",
+    "ALLOW_STAGING_DEPLOY": "true",
+    "ALLOW_PRODUCTION_DEPLOY": "true",
 }
 TIER_STEP = "Check the tier settings are distinct"
 PROD_D1 = TIER_ENV["PRODUCTION_D1_DATABASE_ID"]
+PRODUCTION_SETTINGS = (
+    "PRODUCTION_WORKER_NAME",
+    "PRODUCTION_PAGES_PROJECT",
+    "PRODUCTION_D1_DATABASE_ID",
+    "PRODUCTION_RATELIMIT_NAMESPACE_ID",
+    "PRODUCTION_SITE_HOST",
+    "PRODUCTION_ZONE_NAME",
+    "DOPPLER_IDENTITY_ID_PRODUCTION",
+    "ALLOW_PRODUCTION_DEPLOY",
+)
+PRODUCTION_OFF = dict.fromkeys(PRODUCTION_SETTINGS, "")
+STAGING_REQUIRED = (
+    "STAGING_WORKER_NAME",
+    "STAGING_PAGES_PROJECT",
+    "STAGING_D1_DATABASE_ID",
+    "STAGING_RATELIMIT_NAMESPACE_ID",
+    "STAGING_SITE_HOST",
+    "DOPPLER_IDENTITY_ID_STAGING",
+    "CLOUDFLARE_ACCOUNT_ID",
+    "DOPPLER_PROJECT",
+)
 
 
-def _tiers(root: Path, change: Mapping[str, str]) -> subprocess.CompletedProcess[str]:
+def _tiers(
+    root: Path, change: Mapping[str, str], out: Path | None = None
+) -> subprocess.CompletedProcess[str]:
     env = {"PATH": os.environ["PATH"], **TIER_ENV, **change}
+    if out is not None:
+        env["GITHUB_OUTPUT"] = str(out)
     return subprocess.run(  # noqa: S603 - fixed argv, a copy of the template
         [BASH, str(root / "scripts" / "check-tiers.sh")],
         capture_output=True,
@@ -3043,13 +3097,21 @@ def _tiers(root: Path, change: Mapping[str, str]) -> subprocess.CompletedProcess
     )
 
 
+def _outputs(path: Path) -> dict[str, str]:
+    pairs = (ln.split("=", 1) for ln in path.read_text(encoding="utf-8").splitlines())
+    return {k: v for k, v in pairs}
+
+
 def test_distinct_tier_settings_pass(tmp_path: Path) -> None:
     root = _copy_template(tmp_path)
     assert _tiers(root, {}).returncode == 0
-    # production off: its values are empty, nothing to compare
-    off = {k: "" for k in TIER_ENV if k.startswith("PRODUCTION_")}
-    off["DOPPLER_IDENTITY_ID_PRODUCTION"] = ""
-    assert _tiers(root, off).returncode == 0
+    # production off: none of its settings is set, nothing to compare
+    assert _tiers(root, PRODUCTION_OFF).returncode == 0
+    # the zone name is optional in both tiers
+    assert (
+        _tiers(root, {"STAGING_ZONE_NAME": "", "PRODUCTION_ZONE_NAME": ""}).returncode
+        == 0
+    )
 
 
 @pytest.mark.parametrize(
@@ -3091,9 +3153,153 @@ def test_each_tier_setting_pair_must_differ(
         assert value.strip() not in result.stdout + result.stderr
 
 
+@pytest.mark.parametrize(
+    ("label", "change"),
+    [
+        ("trailing dot", {"STAGING_SITE_HOST": "links.example.invalid."}),
+        (
+            "upper case and trailing dot",
+            {"STAGING_SITE_HOST": "LINKS.Example.invalid."},
+        ),
+        ("default https port", {"STAGING_SITE_HOST": "links.example.invalid:443"}),
+        ("default http port", {"STAGING_SITE_HOST": "links.example.invalid:80"}),
+        ("port and dot", {"STAGING_SITE_HOST": "links.example.invalid.:443"}),
+        (
+            "host is the other zone, with a dot",
+            {"STAGING_SITE_HOST": "EXAMPLE.invalid."},
+        ),
+        (
+            "production host equals the staging zone, with a dot",
+            {"STAGING_ZONE_NAME": "LINKS.example.invalid."},
+        ),
+        ("leading zeros", {"STAGING_RATELIMIT_NAMESPACE_ID": "01002"}),
+        ("many leading zeros", {"STAGING_RATELIMIT_NAMESPACE_ID": "0000001002"}),
+    ],
+)
+def test_equivalent_forms_of_a_shared_value_are_refused(
+    tmp_path: Path, label: str, change: dict[str, str]
+) -> None:
+    root = _copy_template(tmp_path)
+    result = _tiers(root, change)
+    assert result.returncode != 0, label
+    assert "::error::" in result.stdout, label
+
+
+def test_an_international_name_equals_its_punycode_form_only(tmp_path: Path) -> None:
+    root = _copy_template(tmp_path)
+    puny = "xn--bcher-kva.example.invalid"
+    both = {"STAGING_SITE_HOST": puny, "PRODUCTION_SITE_HOST": puny.upper() + "."}
+    assert _tiers(root, both).returncode != 0
+    # the Unicode spelling is refused, not guessed at
+    unicode_host = {"STAGING_SITE_HOST": "bücher.example.invalid"}
+    result = _tiers(root, unicode_host)
+    assert result.returncode != 0
+    assert "STAGING_SITE_HOST must be ASCII" in result.stdout
+    # a different punycode name is a different host
+    other = {"STAGING_SITE_HOST": puny, "PRODUCTION_SITE_HOST": "xn--fiq228c.invalid"}
+    assert _tiers(root, other).returncode == 0
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["１００２", "100٢", "1e3", "+1002", "-1", "0x3ea", "1 2", "1" * 13],
+)
+def test_a_namespace_id_is_ascii_digits_only(tmp_path: Path, value: str) -> None:
+    root = _copy_template(tmp_path)
+    result = _tiers(root, {"PRODUCTION_RATELIMIT_NAMESPACE_ID": value})
+    assert result.returncode != 0
+    assert "PRODUCTION_RATELIMIT_NAMESPACE_ID must be ASCII digits" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "links.example.invalid:8443",
+        "links.example.invalid/",
+        "http://links.example",
+        "-links.example.invalid",
+        "links..example.invalid",
+        "links.example.invalid..",
+        "*.example.invalid",
+        "[::1]",
+        "links_x.example.invalid",
+        "a" * 64 + ".example",
+    ],
+)
+def test_a_host_must_be_a_plain_name(tmp_path: Path, value: str) -> None:
+    root = _copy_template(tmp_path)
+    result = _tiers(root, {"PRODUCTION_SITE_HOST": value})
+    assert result.returncode != 0
+    assert "PRODUCTION_SITE_HOST" in result.stdout
+
+
+# A tier whose required setting is missing fails; it is never "distinct".
+@pytest.mark.parametrize("name", STAGING_REQUIRED)
+def test_a_missing_staging_setting_fails(tmp_path: Path, name: str) -> None:
+    root = _copy_template(tmp_path)
+    for production in (TIER_ENV, PRODUCTION_OFF):
+        result = _tiers(root, {**production, name: ""})
+        assert result.returncode != 0, name
+        assert f"{name} is" in result.stdout, name
+
+
+@pytest.mark.parametrize("name", PRODUCTION_SETTINGS[:5] + PRODUCTION_SETTINGS[6:7])
+def test_a_missing_production_setting_fails_once_production_is_set_up(
+    tmp_path: Path, name: str
+) -> None:
+    root = _copy_template(tmp_path)
+    # one other production setting is set, or the switch is on: production is
+    # being set up, so every required production setting must be there
+    assert _tiers(root, {name: ""}).returncode != 0, name
+    only_one = {**PRODUCTION_OFF, "PRODUCTION_PAGES_PROJECT": "other-pages"}
+    result = _tiers(root, only_one)
+    assert result.returncode != 0
+    assert "is required when production is set up" in result.stdout
+    # the switch alone, with nothing else configured
+    result = _tiers(root, {**PRODUCTION_OFF, "ALLOW_PRODUCTION_DEPLOY": "true"})
+    assert result.returncode != 0
+    assert "is required when production is set up" in result.stdout
+
+
+def test_a_switch_is_on_only_when_exactly_true(tmp_path: Path) -> None:
+    root = _copy_template(tmp_path)
+    for value in ("TRUE", "True", "1", "yes", " ", "false", ""):
+        out = tmp_path / f"out-{abs(hash(value))}"
+        change = {**PRODUCTION_OFF, "ALLOW_STAGING_DEPLOY": value.strip()}
+        assert _tiers(root, change, out).returncode == 0, value
+        assert _outputs(out)["allow_staging_deploy"] == "false", value
+    out = tmp_path / "out-true"
+    assert _tiers(root, {}, out).returncode == 0
+    assert _outputs(out)["allow_staging_deploy"] == "true"
+    assert _outputs(out)["allow_production_deploy"] == "true"
+
+
+def test_the_outputs_are_the_normalized_values(tmp_path: Path) -> None:
+    root = _copy_template(tmp_path)
+    out = tmp_path / "github-output"
+    change = {
+        "STAGING_SITE_HOST": "Staging.Links.Example.invalid.:443",
+        "STAGING_RATELIMIT_NAMESPACE_ID": "0001001",
+        "STAGING_PAGES_PROJECT": "My-Links-Staging",
+    }
+    assert _tiers(root, change, out).returncode == 0
+    got = _outputs(out)
+    assert set(got) == set(CHECKED_OUTPUTS)
+    assert got["staging_site_host"] == "staging.links.example.invalid"
+    assert got["staging_ratelimit_namespace_id"] == "1001"
+    assert got["staging_pages_project"] == "my-links-staging"
+    assert got["production_ratelimit_namespace_id"] == "1002"
+    assert got["doppler_project"] == "my-links"
+    # a failing check writes nothing for the deploy jobs to read
+    bad = tmp_path / "bad-output"
+    assert _tiers(root, {"STAGING_D1_DATABASE_ID": PROD_D1}, bad).returncode != 0
+    assert not bad.exists() or bad.read_text(encoding="utf-8") == ""
+
+
 def test_the_tier_check_runs_in_validate_with_every_value_it_reads() -> None:
     step = _step("validate", TIER_STEP)
     assert step["run"] == "scripts/check-tiers.sh"
+    assert step["id"] == "tiers"
     assert set(step["env"]) == set(TIER_ENV)
     for name, value in step["env"].items():
         assert value == "${{ vars." + name + " }}", name
@@ -3101,6 +3307,86 @@ def test_the_tier_check_runs_in_validate_with_every_value_it_reads() -> None:
     names = [s.get("name") for s in validate_steps]
     # before the build, so a failure stops before any deploy job starts
     assert names.index(TIER_STEP) < names.index("Build the site with the pinned engine")
+    # the plain-name checks read the checked values, not the raw variables
+    plain = _step("validate", NAMES_STEP)
+    for value in plain["env"].values():
+        assert str(value).startswith("${{ steps.tiers.outputs."), value
+
+
+def binding_problems(text: str) -> list[str]:
+    """The deploy jobs read the values the validate job checked, and nothing
+    else: no repository variable is read again after the check."""
+    jobs = yaml.safe_load(text)["jobs"]
+    found: list[str] = []
+    outputs = jobs["validate"]["outputs"]
+    for key in CHECKED_OUTPUTS:
+        want = "${{ steps.tiers.outputs." + key + " }}"
+        if outputs.get(key) != want:
+            found.append(f"validate output {key} is not the checked value")
+    allowed = {"engine_ref", *CHECKED_OUTPUTS}
+    for name in DEPLOY_JOBS:
+        job_text = yaml.safe_dump(jobs[name])
+        if "vars." in job_text:
+            found.append(f"{name}: reads a repository variable")
+        if "github.event.repository" in job_text or "secrets." in job_text:
+            found.append(f"{name}: reads something the check did not")
+        used = set(re.findall(r"needs\.validate\.outputs\.([A-Za-z0-9_]+)", job_text))
+        for key in used - allowed:
+            found.append(f"{name}: reads an unchecked output {key}")
+        if "validate" not in jobs[name]["needs"]:
+            found.append(f"{name}: does not need validate")
+    return found
+
+
+def test_the_deploy_jobs_read_only_the_checked_outputs() -> None:
+    assert binding_problems(deploy_text()) == []
+    # each job names the values of its own tier from the check
+    jobs = yaml.safe_load(deploy_text())["jobs"]
+    for name in DEPLOY_JOBS:
+        used = set(
+            re.findall(
+                r"needs\.validate\.outputs\.([A-Za-z0-9_]+)",
+                yaml.safe_dump(jobs[name]),
+            )
+        )
+        assert "cloudflare_account_id" in used or name.startswith("worker"), name
+        assert used, name
+
+
+def test_the_binding_guard_bites() -> None:
+    good = deploy_text()
+    worker = "worker_name: ${{ needs.validate.outputs.staging_worker_name }}"
+    assert worker in good
+    # a deploy job that reads the raw variable again
+    assert binding_problems(
+        good.replace(worker, "worker_name: ${{ vars.STAGING_WORKER_NAME }}")
+    )
+    page = "PAGES_PROJECT: ${{ needs.validate.outputs.production_pages_project }}"
+    assert page in good
+    assert binding_problems(
+        good.replace(page, "PAGES_PROJECT: ${{ vars.PRODUCTION_PAGES_PROJECT }}")
+    )
+    # the switch re-read in a condition
+    cond = "&& needs.validate.outputs.allow_production_deploy == 'true'"
+    assert cond in good
+    assert binding_problems(
+        good.replace(cond, "&& vars.ALLOW_PRODUCTION_DEPLOY == 'true'")
+    )
+    # an output that is not the checked value
+    out = (
+        "      staging_d1_database_id:"
+        " ${{ steps.tiers.outputs.staging_d1_database_id }}"
+    )
+    assert out in good
+    assert binding_problems(
+        good.replace(
+            out, "      staging_d1_database_id: ${{ vars.STAGING_D1_DATABASE_ID }}"
+        )
+    )
+    # an output the check never produced
+    assert binding_problems(
+        good.replace(worker, "worker_name: ${{ needs.validate.outputs.worker }}")
+    )
 
 
 def test_each_tier_uses_only_its_own_identity_and_environment() -> None:
@@ -3108,5 +3394,21 @@ def test_each_tier_uses_only_its_own_identity_and_environment() -> None:
     for tier, other in (("staging", "PRODUCTION"), ("production", "STAGING")):
         for name in (f"worker-{tier}", f"pages-{tier}"):
             job_text = yaml.safe_dump(jobs[name])
-            assert f"DOPPLER_IDENTITY_ID_{other}" not in job_text, name
-            assert f"DOPPLER_IDENTITY_ID_{tier.upper()}" in job_text, name
+            assert f"doppler_identity_id_{other.lower()}" not in job_text, name
+            assert f"doppler_identity_id_{tier}" in job_text, name
+
+
+ENGINE_TAG_GRAMMAR = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$")
+
+
+def test_the_engine_call_comment_is_the_release_tag_of_the_lock() -> None:
+    """The grammar read-lock.sh enforces (stable or -rc.N), not the broader
+    workflow pin comment grammar."""
+    lock = (TEMPLATE / "engine.lock").read_text(encoding="utf-8")
+    found = re.search(r"^ENGINE_REF=[0-9a-f]{40} # (\S+)$", lock, re.M)
+    assert found
+    assert ENGINE_TAG_GRAMMAR.match(found.group(1))
+    text = deploy_text()
+    calls = re.findall(rf"uses: {re.escape(CALLEE_PATH)}@[0-9a-f]{{40}} # (\S+)", text)
+    assert len(calls) == 2
+    assert set(calls) == {found.group(1)}

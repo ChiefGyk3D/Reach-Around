@@ -70,6 +70,24 @@ jobs:
     # No `environment` and no secrets here, on purpose.
     outputs:
       engine_ref: ${{ steps.lock.outputs.engine_ref }}
+      staging_worker_name: ${{ steps.tiers.outputs.staging_worker_name }}
+      production_worker_name: ${{ steps.tiers.outputs.production_worker_name }}
+      staging_pages_project: ${{ steps.tiers.outputs.staging_pages_project }}
+      production_pages_project: ${{ steps.tiers.outputs.production_pages_project }}
+      staging_d1_database_id: ${{ steps.tiers.outputs.staging_d1_database_id }}
+      production_d1_database_id: ${{ steps.tiers.outputs.production_d1_database_id }}
+      staging_ratelimit_namespace_id: ${{ steps.tiers.outputs.staging_ratelimit_namespace_id }}
+      production_ratelimit_namespace_id: ${{ steps.tiers.outputs.production_ratelimit_namespace_id }}
+      staging_site_host: ${{ steps.tiers.outputs.staging_site_host }}
+      production_site_host: ${{ steps.tiers.outputs.production_site_host }}
+      staging_zone_name: ${{ steps.tiers.outputs.staging_zone_name }}
+      production_zone_name: ${{ steps.tiers.outputs.production_zone_name }}
+      doppler_identity_id_staging: ${{ steps.tiers.outputs.doppler_identity_id_staging }}
+      doppler_identity_id_production: ${{ steps.tiers.outputs.doppler_identity_id_production }}
+      cloudflare_account_id: ${{ steps.tiers.outputs.cloudflare_account_id }}
+      doppler_project: ${{ steps.tiers.outputs.doppler_project }}
+      allow_staging_deploy: ${{ steps.tiers.outputs.allow_staging_deploy }}
+      allow_production_deploy: ${{ steps.tiers.outputs.allow_production_deploy }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -110,6 +128,7 @@ jobs:
       # The staging and production settings are distinct. Plain values only;
       # it prints only the NAME of a setting that is not distinct.
       - name: Check the tier settings are distinct
+        id: tiers
         env:
           STAGING_WORKER_NAME: ${{ vars.STAGING_WORKER_NAME }}
           PRODUCTION_WORKER_NAME: ${{ vars.PRODUCTION_WORKER_NAME }}
@@ -125,15 +144,19 @@ jobs:
           PRODUCTION_ZONE_NAME: ${{ vars.PRODUCTION_ZONE_NAME }}
           DOPPLER_IDENTITY_ID_STAGING: ${{ vars.DOPPLER_IDENTITY_ID_STAGING }}
           DOPPLER_IDENTITY_ID_PRODUCTION: ${{ vars.DOPPLER_IDENTITY_ID_PRODUCTION }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          DOPPLER_PROJECT: ${{ vars.DOPPLER_PROJECT }}
+          ALLOW_STAGING_DEPLOY: ${{ vars.ALLOW_STAGING_DEPLOY }}
+          ALLOW_PRODUCTION_DEPLOY: ${{ vars.ALLOW_PRODUCTION_DEPLOY }}
         run: scripts/check-tiers.sh
 
       - name: Check the plain configuration values
         env:
-          STAGING_WORKER_NAME: ${{ vars.STAGING_WORKER_NAME }}
-          PRODUCTION_WORKER_NAME: ${{ vars.PRODUCTION_WORKER_NAME }}
-          STAGING_PAGES_PROJECT: ${{ vars.STAGING_PAGES_PROJECT }}
-          PRODUCTION_PAGES_PROJECT: ${{ vars.PRODUCTION_PAGES_PROJECT }}
-          DOPPLER_PROJECT: ${{ vars.DOPPLER_PROJECT }}
+          STAGING_WORKER_NAME: ${{ steps.tiers.outputs.staging_worker_name }}
+          PRODUCTION_WORKER_NAME: ${{ steps.tiers.outputs.production_worker_name }}
+          STAGING_PAGES_PROJECT: ${{ steps.tiers.outputs.staging_pages_project }}
+          PRODUCTION_PAGES_PROJECT: ${{ steps.tiers.outputs.production_pages_project }}
+          DOPPLER_PROJECT: ${{ steps.tiers.outputs.doppler_project }}
         run: |
           set -eu
           pages_re='^[a-z0-9][a-z0-9-]{0,57}$'
@@ -195,8 +218,8 @@ jobs:
     name: Deploy the staging Worker
     needs: validate
     if: >-
-      github.ref == 'refs/heads/main' && vars.ALLOW_STAGING_DEPLOY == 'true' && github.event_name == 'push'
-      || github.ref == 'refs/heads/main' && vars.ALLOW_STAGING_DEPLOY == 'true' && github.event_name == 'workflow_dispatch' && inputs.target == 'staging'
+      github.ref == 'refs/heads/main' && needs.validate.outputs.allow_staging_deploy == 'true' && github.event_name == 'push'
+      || github.ref == 'refs/heads/main' && needs.validate.outputs.allow_staging_deploy == 'true' && github.event_name == 'workflow_dispatch' && inputs.target == 'staging'
     # The permissions are checked when this file is parsed, so the call needs
     # what the called workflow asks for even when the job is skipped.
     permissions:
@@ -209,25 +232,25 @@ jobs:
       environment: staging
       engine_repo: ChiefGyk3D/Reach-Around
       engine_ref: ${{ needs.validate.outputs.engine_ref }}
-      worker_name: ${{ vars.STAGING_WORKER_NAME }}
+      worker_name: ${{ needs.validate.outputs.staging_worker_name }}
       manifest_artifact: site-manifest
       manifest_file: manifest.json
       site_artifact: site-out
-      doppler_identity_id: ${{ vars.DOPPLER_IDENTITY_ID_STAGING }}
-      doppler_project: ${{ vars.DOPPLER_PROJECT }}
+      doppler_identity_id: ${{ needs.validate.outputs.doppler_identity_id_staging }}
+      doppler_project: ${{ needs.validate.outputs.doppler_project }}
       doppler_config: dev
-      cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      d1_database_id: ${{ vars.STAGING_D1_DATABASE_ID }}
-      ratelimit_namespace_id: ${{ vars.STAGING_RATELIMIT_NAMESPACE_ID }}
-      site_host: ${{ vars.STAGING_SITE_HOST }}
-      zone_name: ${{ vars.STAGING_ZONE_NAME }}
+      cloudflare_account_id: ${{ needs.validate.outputs.cloudflare_account_id }}
+      d1_database_id: ${{ needs.validate.outputs.staging_d1_database_id }}
+      ratelimit_namespace_id: ${{ needs.validate.outputs.staging_ratelimit_namespace_id }}
+      site_host: ${{ needs.validate.outputs.staging_site_host }}
+      zone_name: ${{ needs.validate.outputs.staging_zone_name }}
 
   pages-staging:
     name: Publish the staging site
     needs: [validate, worker-staging]
     if: >-
-      github.ref == 'refs/heads/main' && vars.ALLOW_STAGING_DEPLOY == 'true' && github.event_name == 'push'
-      || github.ref == 'refs/heads/main' && vars.ALLOW_STAGING_DEPLOY == 'true' && github.event_name == 'workflow_dispatch' && inputs.target == 'staging'
+      github.ref == 'refs/heads/main' && needs.validate.outputs.allow_staging_deploy == 'true' && github.event_name == 'push'
+      || github.ref == 'refs/heads/main' && needs.validate.outputs.allow_staging_deploy == 'true' && github.event_name == 'workflow_dispatch' && inputs.target == 'staging'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: staging
@@ -261,10 +284,10 @@ jobs:
       # No secret in this step: it only checks the shape of plain values.
       - name: Check configuration
         env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          PAGES_PROJECT: ${{ vars.STAGING_PAGES_PROJECT }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ needs.validate.outputs.cloudflare_account_id }}
+          PAGES_PROJECT: ${{ needs.validate.outputs.staging_pages_project }}
           # Only to refuse it: staging must never publish into this project.
-          PRODUCTION_PAGES_PROJECT: ${{ vars.PRODUCTION_PAGES_PROJECT }}
+          PRODUCTION_PAGES_PROJECT: ${{ needs.validate.outputs.production_pages_project }}
         run: |
           set -eu
           [[ "${CLOUDFLARE_ACCOUNT_ID:-}" =~ ^[0-9a-f]{32}$ ]] \
@@ -300,11 +323,11 @@ jobs:
         id: cf_doppler
         uses: ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@01f397834f7acc553593abefbba135b18f580730 # v1.34.0
         with:
-          project: ${{ vars.DOPPLER_PROJECT }}
+          project: ${{ needs.validate.outputs.doppler_project }}
           config: dev
           export: outputs
           names: CLOUDFLARE_KEY_VALUE
-          identity-id: ${{ vars.DOPPLER_IDENTITY_ID_STAGING }}
+          identity-id: ${{ needs.validate.outputs.doppler_identity_id_staging }}
           required: "true"
 
       # The only step that carries the Cloudflare token.
@@ -312,8 +335,8 @@ jobs:
         working-directory: engine/worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ fromJSON(steps.cf_doppler.outputs.secrets).CLOUDFLARE_KEY_VALUE }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          PAGES_PROJECT: ${{ vars.STAGING_PAGES_PROJECT }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ needs.validate.outputs.cloudflare_account_id }}
+          PAGES_PROJECT: ${{ needs.validate.outputs.staging_pages_project }}
           WRANGLER_SEND_METRICS: "false"
         run: >-
           npx --no-install wrangler pages deploy ../../site-out
@@ -330,7 +353,7 @@ jobs:
   worker-production:
     name: Deploy the production Worker
     needs: validate
-    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.target == 'production' && vars.ALLOW_PRODUCTION_DEPLOY == 'true'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.target == 'production' && needs.validate.outputs.allow_production_deploy == 'true'
     permissions:
       contents: read
       id-token: write # OIDC to the secret manager; only the four deploy jobs
@@ -339,23 +362,23 @@ jobs:
       environment: production
       engine_repo: ChiefGyk3D/Reach-Around
       engine_ref: ${{ needs.validate.outputs.engine_ref }}
-      worker_name: ${{ vars.PRODUCTION_WORKER_NAME }}
+      worker_name: ${{ needs.validate.outputs.production_worker_name }}
       manifest_artifact: site-manifest
       manifest_file: manifest.json
       site_artifact: site-out
-      doppler_identity_id: ${{ vars.DOPPLER_IDENTITY_ID_PRODUCTION }}
-      doppler_project: ${{ vars.DOPPLER_PROJECT }}
+      doppler_identity_id: ${{ needs.validate.outputs.doppler_identity_id_production }}
+      doppler_project: ${{ needs.validate.outputs.doppler_project }}
       doppler_config: prd
-      cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      d1_database_id: ${{ vars.PRODUCTION_D1_DATABASE_ID }}
-      ratelimit_namespace_id: ${{ vars.PRODUCTION_RATELIMIT_NAMESPACE_ID }}
-      site_host: ${{ vars.PRODUCTION_SITE_HOST }}
-      zone_name: ${{ vars.PRODUCTION_ZONE_NAME }}
+      cloudflare_account_id: ${{ needs.validate.outputs.cloudflare_account_id }}
+      d1_database_id: ${{ needs.validate.outputs.production_d1_database_id }}
+      ratelimit_namespace_id: ${{ needs.validate.outputs.production_ratelimit_namespace_id }}
+      site_host: ${{ needs.validate.outputs.production_site_host }}
+      zone_name: ${{ needs.validate.outputs.production_zone_name }}
 
   pages-production:
     name: Publish the production site
     needs: [validate, worker-production]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.target == 'production' && vars.ALLOW_PRODUCTION_DEPLOY == 'true'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.target == 'production' && needs.validate.outputs.allow_production_deploy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: production
@@ -385,8 +408,8 @@ jobs:
       # No secret in this step: it only checks the shape of plain values.
       - name: Check configuration
         env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          PAGES_PROJECT: ${{ vars.PRODUCTION_PAGES_PROJECT }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ needs.validate.outputs.cloudflare_account_id }}
+          PAGES_PROJECT: ${{ needs.validate.outputs.production_pages_project }}
         run: |
           set -eu
           [[ "${CLOUDFLARE_ACCOUNT_ID:-}" =~ ^[0-9a-f]{32}$ ]] \
@@ -408,19 +431,19 @@ jobs:
         id: cf_doppler
         uses: ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@01f397834f7acc553593abefbba135b18f580730 # v1.34.0
         with:
-          project: ${{ vars.DOPPLER_PROJECT }}
+          project: ${{ needs.validate.outputs.doppler_project }}
           config: prd
           export: outputs
           names: CLOUDFLARE_KEY_VALUE
-          identity-id: ${{ vars.DOPPLER_IDENTITY_ID_PRODUCTION }}
+          identity-id: ${{ needs.validate.outputs.doppler_identity_id_production }}
           required: "true"
 
       - name: Publish the site to Pages
         working-directory: engine/worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ fromJSON(steps.cf_doppler.outputs.secrets).CLOUDFLARE_KEY_VALUE }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          PAGES_PROJECT: ${{ vars.PRODUCTION_PAGES_PROJECT }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ needs.validate.outputs.cloudflare_account_id }}
+          PAGES_PROJECT: ${{ needs.validate.outputs.production_pages_project }}
           WRANGLER_SEND_METRICS: "false"
         run: >-
           npx --no-install wrangler pages deploy ../../site-out

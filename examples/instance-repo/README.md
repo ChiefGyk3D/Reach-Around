@@ -142,6 +142,16 @@ push start the first run.
 | `DOPPLER_IDENTITY_ID_PRODUCTION` | production | a different identity id |
 | `ALLOW_PRODUCTION_DEPLOY` | production | absent by default; exactly `true` turns production on |
 
+  The `validate` job checks these values once, with `scripts/check-tiers.sh`,
+  and the four deploy jobs read only the values it checked (its job outputs),
+  never the variables again. Staging settings are required (the zone name is
+  optional). Production settings are required together as soon as any one is set
+  or `ALLOW_PRODUCTION_DEPLOY` is `true`. Staging and production settings must
+  differ after normalization: names are lowercased, a host or zone loses one
+  trailing dot and a default port, a name with non-ASCII characters must be given
+  in its `xn--` form, and a namespace id is digits only and compared as a number
+  (`01002` equals `1002`).
+
   The two tiers must use different Worker names, and neither may be the
   engine's own test Worker (`reach-around-clicks`); the `validate` job fails the
   run otherwise. They must also use different Pages projects (the names are
