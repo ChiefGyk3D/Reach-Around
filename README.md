@@ -6,9 +6,9 @@
 
 **Reach Around. We've got your back.**
 
-> ## ⚠️ Alpha: early code, expect breaking changes
+> ## ⚠️ Alpha: expect breaking changes
 >
-> Reach Around is **alpha**. The first release (`v0.1.0`) is a container image that builds a static link page from a config file. There is no stable configuration format and no upgrade path between `0.x` releases. Interfaces and file layouts will change without notice, and some platform behavior described in the research notes is unverified. Do not depend on it yet. The source is public under the Apache-2.0 license so you can read it, use it and self-host it.
+> Reach Around is **alpha**. Every release is `0.x`, there is no stable configuration format, and there is no upgrade path promised between `0.x` releases. Interfaces and file layouts can change, and some platform behavior described in the research notes is unverified. The latest stable release is `v0.2.2`; `0.3.0` is in preview candidates (pre-releases) and is not final. See the [releases](https://github.com/ChiefGyk3D/Reach-Around/releases) and the [changelog](CHANGELOG.md). The source is public under the Apache-2.0 license so you can read it, use it and self-host it.
 
 An open-source (Apache-2.0) single pane for creator analytics: one place for your link page, your media kit and your numbers across every platform you publish on, built to be self-hosted with your own API keys. It is meant to replace Beacons.ai for creators, close to 1:1, and then go further.
 
@@ -24,10 +24,10 @@ An open-source (Apache-2.0) single pane for creator analytics: one place for you
 
 | Piece | State |
 |---|---|
-| Platform API research (16 platforms) | Merged as drafts with an independent review: [docs/research](docs/research/README.md) |
-| Design spec | In progress: [docs/superpowers/specs](docs/superpowers/specs/) |
-| Plan and roadmap | Drafts: [docs/superpowers/plans](docs/superpowers/plans/) |
-| Code | Early alpha: config loader, static link page builder, container image |
+| Platform API research | Notes for each platform, with unverified items marked: [docs/research](docs/research/README.md) |
+| Design spec (2026-10-23) | Historical draft. Later owner decisions supersede parts of it; see the [docs index](docs/README.md) |
+| Plan and roadmap | October drafts kept as history: [docs/superpowers/plans](docs/superpowers/plans/). A current roadmap is tracked in epic #795 |
+| Code | Alpha. Config loader, static link page and media kit builder, numbers collectors with history, click and analytics Worker, local editor, container image. Latest stable release `v0.2.2`; `0.3.0` preview candidates are pre-releases |
 
 The work is tracked on a GitHub Project board run with [Scrum Around and Find Out](https://github.com/ChiefGyk3D/scrum-around-and-find-out). Every task has an issue and a card before work starts.
 
@@ -45,9 +45,11 @@ podman run --rm --read-only --cap-drop ALL \
     --manifest /tmp/manifest.json --assets-inventory /tmp/assets.json
 ```
 
-Replace the example mount with your own instance directory. Once `v0.1.0` is published the image is `ghcr.io/chiefgyk3d/reach-around:0.1.0` (pull it by digest; the repository and its image are public, so no sign-in is needed). See [docs/containers.md](docs/containers.md), [docs/releasing.md](docs/releasing.md) and the [changelog](CHANGELOG.md).
+Replace the example mount with your own instance directory. Release images are published as `ghcr.io/chiefgyk3d/reach-around` (pull by digest; the repository and its image are public, so no sign-in is needed). See [docs/containers.md](docs/containers.md), [docs/releasing.md](docs/releasing.md) and the [changelog](CHANGELOG.md).
 
 ## Documentation
+
+Start with the [documentation index](docs/README.md), which groups every page by purpose and marks which are current, stale or internal. Highlights:
 
 - [docs/failure-modes.md](docs/failure-modes.md): analytics failure modes, kill switches, quota, restore and how gaps are shown
 - [docs/deploy.md](docs/deploy.md): deploying the site and click Worker to Cloudflare (Pages or Worker, production branch, token type, Doppler, route by hand, troubleshooting)
