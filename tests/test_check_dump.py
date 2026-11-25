@@ -438,7 +438,20 @@ def test_the_trigger_allowlist_equals_the_real_migrations() -> None:
     allow = {
         " ".join(v.split()) for v in json.loads(SCHEMA.read_text())["triggers"].values()
     }
-    assert real == allow
+    # The migrations' own triggers, plus the two freeze triggers the one-time move
+    # tool (scripts/move-legacy-leads.py --freeze) leaves in the analytics database.
+    assert real | move_tool_triggers() == allow
+
+
+def move_tool_triggers() -> set[str]:
+    import importlib.util
+
+    path = ROOT / "scripts" / "move-legacy-leads.py"
+    spec = importlib.util.spec_from_file_location("move_legacy_leads_t", path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return {" ".join(mod.create_sql(t).split()) for t in mod.FROZEN}
 
 
 def test_an_insert_into_an_unexpected_column_or_table_is_refused(

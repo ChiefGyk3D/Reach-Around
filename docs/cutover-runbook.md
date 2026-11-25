@@ -225,6 +225,23 @@ the result lines (no values) in #344. Do not start the DNS steps with a box open
          completed, in one command from the same clean checkout: `--var CLICKS_KILL:0 --var VIEWS_KILL:0 --var SCHEDULED_KILL:0`.
          Leave all three unset in the committed `wrangler.toml`. Retention,
          purges and rollups catch up on the next hourly run.
+- [ ] **Existing leads moved, in a locked window** (only for an installation
+      that collected leads in the analytics database; [deploy.md](deploy.md),
+      "The one-time move of existing leads"). Order: `--freeze`; engage
+      `KIT_KILL` and `SCHEDULED_KILL` in one deploy (the gate, the view and
+      inquiry routes and the hourly lead purge then write neither database;
+      the click and view switches above are separate) and confirm no older
+      Worker or script still writes either database; `--purge
+      --locked-window-confirmed`; `--verify` exits 0. The purge records a
+      Time Travel bookmark of the analytics database in its manifest and
+      prints the restore command: keep that line in the change record. The
+      tool cannot prove the window is locked, it only checks what it can (the
+      freeze, the destination, two equal reads some seconds apart), so the
+      locked window is the operator's word. The tool's own ids are checked
+      against `npx wrangler d1 info <NAME> --json` for both databases.
+      Recovery is a restore of the analytics database to that bookmark, then
+      `--copy` again from the manifest. Exit 4 means a partial purge (safe to
+      run again), exit 5 means verify first.
 - [ ] The `/e/*` route exists on the production host (zone route, or by hand,
       [deploy.md](deploy.md), "Adding the route by hand"). Without it clicks are
       not counted.

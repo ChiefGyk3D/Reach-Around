@@ -380,23 +380,33 @@ both databases. No application check can close that. It is closed only by the cu
 precondition, enforced at the database, not a best effort.
 
 **Ordered cutover (required before enabling `features.kit_gate`)**, from the folder whose wrangler
-config names both databases, with the private work directory from the move section:
+config names both databases, with the private work directory from the move section. Every command
+below names each database twice: its name and its platform id (`--source-id`, `--dest-id`), read in
+your own environment with `npx wrangler d1 info <NAME> --json` (the `uuid` field). The tool asks the
+platform again on every run and refuses unless the answer equals the id you passed; the id is never
+taken from a table inside the database, because a restore or a clone copies that along.
 
 1. Freeze the analytics lead tables. From this point the database itself aborts any INSERT into
    `leads` or `kit_events`, so an older Worker cannot store a lead there whatever version is deployed:
-   `python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --dest reach-around-leads --workdir ~/lead-move-work --freeze`
-2. Move (dry run, `--copy`, `--purge`; see below).
-3. Verify. Exit 0 only when the analytics lead tables hold no row and are frozen (or are gone), AND
+   `python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --freeze`
+2. Lock the window: deploy the Worker with the kill switches that stop every write to either
+   database (`KIT_KILL`, so the gate, the view route and the inquiry route are closed, and
+   `SCHEDULED_KILL`, so the hourly lead purge does not run; see the quiet deploy in this file and
+   [cutover-runbook.md](cutover-runbook.md) section 2.3), and make sure no older Worker or other
+   script still writes the analytics lead tables or the leads database. This is your statement, not
+   something the tool can prove (see below).
+3. Move (dry run, `--copy`, then `--purge --locked-window-confirmed`; see below).
+4. Verify. Exit 0 only when the analytics lead tables hold no row and are frozen (or are gone), AND
    the leads database holds exactly the rows the move recorded: the same count and the same digest of
    every column, none missing, none different, none extra (run it before the gate is enabled, while
    the leads database holds nothing but the moved rows). It reads the move's manifest from the work
    directory (`move-manifest.json`, digests only, kept after the move); without it, it passes only if
    the leads database holds no lead row either. A non-zero exit blocks enabling the gate:
-   `python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --dest reach-around-leads --workdir ~/lead-move-work --verify`
-4. Only then deploy the new Worker and enable `features.kit_gate`.
+   `python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --verify`
+5. Only then deploy the new Worker and enable `features.kit_gate`.
 
 This repository does not run the freeze or the verification from CI (they act on live databases and need
-your login); step 3 is the gate on step 4 and its output belongs in the change record. Until the freeze
+your login); step 4 is the gate on step 5 and its output belongs in the change record. Until the freeze
 has been applied, the window above is open. The kit gate ships OFF at the cutover (`features.kit_gate`),
 so a deployment that has not created the second database loses nothing it was using.
 
@@ -432,7 +442,7 @@ checks it is deployed; until then the Worker refuses the lead paths (closed, not
 
 ### The one-time move of existing leads
 
-This is step 2 of the ordered cutover above (the freeze and the verification are never skipped; the
+This is step 3 of the ordered cutover above (the freeze, the locked window and the verification are never skipped; the
 dry run tells you whether there is anything to move). Run it once, after creating and migrating the leads database and before
 enabling the kit gate. It copies every lead and kit event to the leads database, reads them back, and
 only then deletes the analytics copies. Run it from the folder whose wrangler config names both
@@ -446,27 +456,75 @@ and running it again is safe:
 
 ```bash
 mkdir -m 700 ~/lead-move-work
+# Read both platform ids first, and compare them with what you expect (they are not secret).
+npx wrangler d1 info <ANALYTICS DATABASE> --json
+npx wrangler d1 info reach-around-leads --json
 # 1. Dry run: counts only, identity of both databases checked, nothing written or deleted.
-python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --dest reach-around-leads --workdir ~/lead-move-work
+python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work
 # 2. Copy and verify (still deletes nothing). Read the "not in dest" line: it must say 0 and 0.
-python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --dest reach-around-leads --workdir ~/lead-move-work --copy
-# 3. Delete the analytics copies. It refuses (exit 3) unless the freeze of step 1 is in place, before
-#    any copy or delete. It then repeats the copy and the read-back, proves from the manifest that the
-#    leads database holds exactly the recorded rows, and deletes only rows whose id and every column
-#    match a recorded digest (a lead only once it has no event left), never the whole table. A row
-#    added or changed after the copy survives; the script then exits 1 and says to run it again.
-#    Last, in the same run, it runs the --verify check and fails unless that passes.
-python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --dest reach-around-leads --workdir ~/lead-move-work --purge
+python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --copy
+# 3. Delete the analytics copies, inside the locked window of step 2 of the cutover.
+python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --purge --locked-window-confirmed
 ```
 
+What `--purge` does, in this order. It refuses (exit 3), before any copy or delete, without
+`--locked-window-confirmed` and unless the freeze of step 1 is in place. It repeats the copy and the
+read-back (a row that changed in analytics since the manifest recorded it is copied again and its
+digest replaced, never skipped), proves from the manifest that the leads database holds exactly the
+recorded rows, reads both databases twice `MOVE_SETTLE` seconds apart (default 5, 0 to 60) and refuses
+if either changed, records a Time Travel bookmark of the analytics database in the manifest (it
+refuses without one) and prints the exact restore command, and only then deletes rows whose id and
+every column match a recorded digest (a lead only once it has no event left), never the whole table.
+A row added or changed after the copy survives; the script then exits 4 and says to run it again. Last,
+in the same run, it runs the `--verify` check and fails unless that passes.
+
+What the locked window can and cannot prove. D1 has no transaction across two databases, so the
+re-read of the leads database and the delete in the analytics database can never be one atomic step,
+and this procedure does not pretend they are. The tool can check that the freeze triggers are exactly
+present, that the leads database holds exactly the recorded rows, and that both databases read the same
+twice some seconds apart. It cannot prove that no writer is running: a writer that is quiet for those
+seconds, or an older Worker that updates or deletes (the freeze blocks inserts only), is not seen. That
+part is your statement (`--locked-window-confirmed`), backed by the kill switches. The per-chunk
+re-read of the leads database and the freeze check inside each DELETE statement are kept as defense in
+depth; they narrow the window and are not an atomic proof. The safety net is recovery, not prevention:
+the bookmark.
+
+Recovery. The restore command the tool prints is `npx wrangler d1 time-travel restore <ANALYTICS
+DATABASE> --bookmark=<BOOKMARK>`. It overwrites the analytics database in place (and cancels queries in
+flight), so run it only with the window still locked; Time Travel keeps bookmarks 30 days on the
+Workers Paid plan and 7 on Free (Cloudflare D1 Time Travel page, read 2026-11-25). Then run the copy
+again from the manifest (`--copy`): the leads database keeps its copies and the manifest still lists
+them. The bookmark of the leads database (`npx wrangler d1 time-travel info <LEADS DATABASE>`) is a
+second, separate recovery point; take it before step 3.
+
+Exit codes. 0 done or dry run; 1 a step failed and this run deleted nothing; 2 usage; 3 refused (a
+precondition did not hold, nothing deleted by this run); 4 partial purge, some chunks were deleted and
+the rest were not, the copies and the manifest are intact, safe to run `--purge` again; 5 failure after
+a delete, a delete may have been applied (a call was lost, or the final verification failed): run
+`--verify` and compare the counts before anything else, recovery is the bookmark.
+
+The tool leaves exactly two objects in the analytics database, the freeze triggers `leads_frozen` and
+`kit_events_frozen`, and nothing in the leads database. `scripts/dump-schema.json` allows those two
+triggers, so the dump check in [backup-restore.md](backup-restore.md) passes before and after the
+move. They go when the legacy tables are dropped in the later contract migration.
+
 It prints counts and fixed messages only. It refuses (exit 3) unless the source answers `analytics` and
-the destination answers `leads`, so swapped or aliased names stop it before anything happens. If a
+the destination answers `leads` (from their own `db_identity` tables) and each name has the platform id
+you passed, so swapped or aliased names stop it before anything happens. Residual limit: the ids are
+checked at the start of each run, and the later calls address the databases by name through the
+wrangler config of the folder you run from; read the two ids you pass against that config. If a
 lead's address is already in the leads database under a different id, the read-back fails and nothing is
-deleted: resolve that lead by hand, then run it again (the copy never overwrites). Take a Time Travel
-bookmark of both databases first (`npx wrangler d1 time-travel info <DATABASE>`). Until the analytics
+deleted: resolve that lead by hand, then run it again (the copy never overwrites a row it did not
+write). Until the analytics
 tables are empty, the Worker serves no lead path, and erasure and export requests in
 [privacy.md](privacy.md) must cover both databases. After a successful move the old empty tables can go
 in a later, annotated contract migration.
+
+The statement file is written into a fresh directory that is held open by descriptor, created
+exclusively and checked again (owner, mode, same inode) right before wrangler runs it. wrangler opens
+it by path, so a process of your own user that swaps it in that instant is not stopped; the work
+directory is mode 700 and outside any git work tree, and anything that can write there can already
+read the manifest.
 
 Which database each tool acts on:
 
@@ -475,7 +533,7 @@ Which database each tool acts on:
 | The Worker: gate, view route, lead purge | `LEADS_DB` | leads, kit events, purge heartbeat (`kit_meta last_purge_ts`) |
 | The Worker: everything else | `DB` | clicks, views, rollups, counters, health, alert dedup |
 | `scripts/backup-d1.sh DATABASE DEST` | the analytics database | with `--apply` reads the database's own `db_identity` and refuses unless it says `analytics` (name and id do not matter); never exports lead tables |
-| `scripts/move-legacy-leads.py` | both, once | moves lead rows from analytics to the leads database in chunks, verifies against a digest manifest, then deletes the analytics copies (only when frozen); `--verify` proves the leads database complete |
+| `scripts/move-legacy-leads.py` | both, once | moves lead rows from analytics to the leads database in chunks, verifies against a digest manifest, then deletes the analytics copies (only frozen, in a locked window, after a recorded Time Travel bookmark); `--verify` proves the leads database complete |
 | The lead export and erasure steps in [privacy.md](privacy.md) | `reach-around-leads` | name it in every `wrangler d1 execute` |
 
 Not done here: the deploy workflows (`deploy-worker.yml`, `deploy-test.yml`) do not write the binding or

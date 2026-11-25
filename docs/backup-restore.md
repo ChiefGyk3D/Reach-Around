@@ -65,6 +65,15 @@ Nothing is written before that. The leads database has no export script on purpo
 Time Travel on that database is its recovery path, with its own bookmark
 (`npx wrangler d1 time-travel info <LEADS DATABASE>`).
 
+The one-time lead move ([deploy.md](deploy.md), "The one-time move of existing
+leads") uses Time Travel as its recovery point: before any delete it records a
+bookmark of the analytics database in its private manifest and prints the restore
+command. To undo a purge, run that command with the window still locked (it
+overwrites the analytics database in place), then run the move's `--copy` again
+from the manifest. The move leaves two triggers in the analytics database
+(`leads_frozen`, `kit_events_frozen`); `scripts/dump-schema.json` allows exactly
+those, so the dump check passes before and after the move.
+
 After the export the script runs `scripts/check-dump.py` over everything it
 wrote, against the allowlist minus those four tables. It fails, and deletes the
 run, if it finds an unknown table or column, an address or a user agent. It

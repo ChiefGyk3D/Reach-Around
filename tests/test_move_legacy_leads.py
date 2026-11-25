@@ -10,12 +10,17 @@ the Worker's own migration folders (analytics and leads). Everything is syntheti
 from __future__ import annotations
 
 import itertools
+import json
+import os
+import shutil
 import sqlite3
 import stat
 import subprocess
 import sys
+import uuid
 from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -26,10 +31,36 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "move-legacy-leads.py"
 HOUR = 3_600_000
 
+BOOKMARK = "00000085-0000024c-00004c6d-8e61117bf38d7adb71b934ebbf891683"
+
 STUB = """#!{python}
 import json, os, sqlite3, sys
 args = sys.argv[1:]
-name = args[2]
+name = args[2] if args[:2] != ["d1", "time-travel"] else args[3]
+log = os.environ.get("STUB_LOG")
+if args[:2] == ["d1", "info"]:
+    if os.environ.get("STUB_INFO_BAD"):
+        print("not json")
+        sys.exit(0)
+    ids = {{
+        "analytics-db": os.environ["STUB_SRC_ID"],
+        "leads-db": os.environ["STUB_DEST_ID"],
+    }}
+    print(json.dumps({{"uuid": ids[name], "name": name, "version": "production"}}))
+    sys.exit(0)
+if args[:2] == ["d1", "time-travel"]:
+    if log:
+        open(log, "a").write("bookmark\\n")
+    if os.environ.get("STUB_BOOKMARK_FAIL"):
+        sys.exit(1)
+    text = os.environ.get("STUB_BOOKMARK_TEXT")
+    if text == "plain":
+        print("The current bookmark is '" + "{bookmark}" + "'")
+    elif text:
+        print(text)
+    else:
+        print(json.dumps({{"bookmark": "{bookmark}"}}))
+    sys.exit(0)
 paths = {{"analytics-db": "STUB_SRC", "leads-db": "STUB_DEST"}}
 path = os.environ[paths[name]]
 db = sqlite3.connect(path)
@@ -44,6 +75,8 @@ if os.environ.get("CRASH_AT") and any(a.startswith("--file=") for a in args):
         sys.exit(1)
 if any(a.startswith("--file=") for a in args):
     sql = open([a for a in args if a.startswith("--file=")][0].split("=", 1)[1]).read()
+    if log and name == "analytics-db" and "DELETE FROM" in sql:
+        open(log, "a").write("delete\\n")
     inject = os.environ.get("STUB_INJECT")
     done = db.execute("SELECT 1 FROM leads WHERE id = '" + "f" * 32 + "'").fetchone()
     if inject and name == "analytics-db" and "DELETE FROM" in sql and not done:
@@ -77,6 +110,9 @@ if any(a.startswith("--file=") for a in args):
         db.commit()
     db.executescript(sql)
     db.commit()
+    lost = os.environ.get("STUB_DELETE_THEN_FAIL")
+    if lost and name == "analytics-db" and "DELETE FROM" in sql:
+        sys.exit(1)  # applied, but the caller never hears it
     rows = []
 else:
     sql = args[args.index("--command") + 1]
@@ -127,13 +163,16 @@ def make(tmp_path: Path, count: int = 3) -> dict[str, str]:
             lead(db, n)
         db.commit()
     stub = tmp_path / "wrangler-stub"
-    stub.write_text(STUB.format(python=sys.executable))
+    stub.write_text(STUB.format(python=sys.executable, bookmark=BOOKMARK))
     stub.chmod(0o700)
     return {
         "PATH": "/usr/bin:/bin",
         "WRANGLER": str(stub),
         "STUB_SRC": str(src),
         "STUB_DEST": str(dest),
+        "STUB_SRC_ID": str(uuid.uuid4()),
+        "STUB_DEST_ID": str(uuid.uuid4()),
+        "MOVE_SETTLE": "0",
     }
 
 
@@ -144,13 +183,22 @@ def workdir(tmp_path: Path) -> Path:
     return d
 
 
+def ids_of(env: dict[str, str]) -> dict[str, str]:
+    return {"analytics-db": env["STUB_SRC_ID"], "leads-db": env["STUB_DEST_ID"]}
+
+
 def run(
     env: dict[str, str],
     work: Path,
     *flags: str,
     source: str = "analytics-db",
     dest: str = "leads-db",
+    window: bool = True,
+    source_id: str | None = None,
+    dest_id: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    known = ids_of(env)
+    extra = ["--locked-window-confirmed"] if window and "--purge" in flags else []
     return subprocess.run(  # noqa: S603 - fixed argv, synthetic input
         [
             sys.executable,
@@ -158,11 +206,16 @@ def run(
             str(SCRIPT),
             "--source",
             source,
+            "--source-id",
+            source_id or known.get(source, str(uuid.uuid4())),
             "--dest",
             dest,
+            "--dest-id",
+            dest_id or known.get(dest, str(uuid.uuid4())),
             "--workdir",
             str(work),
             *flags,
+            *extra,
         ],
         capture_output=True,
         text=True,
@@ -270,7 +323,8 @@ def test_rows_added_or_changed_after_the_copy_survive_and_are_reported(
     env = make(tmp_path)
     env["STUB_INJECT"] = inject
     r = purge(env, workdir(tmp_path))
-    assert r.returncode == 1
+    assert r.returncode == 4  # some chunks were deleted, the rest were not
+    assert "partial purge" in r.stderr
     assert "stop older Workers and run again" in r.stderr
     late = "f" * 32
     with closing(sqlite3.connect(env["STUB_SRC"])) as db:
@@ -295,7 +349,7 @@ def test_rows_added_or_changed_after_the_copy_survive_and_are_reported(
 def test_a_second_run_moves_what_the_first_left(tmp_path: Path) -> None:
     env = make(tmp_path)
     env["STUB_INJECT"] = "insert"
-    assert purge(env, workdir(tmp_path)).returncode == 1
+    assert purge(env, workdir(tmp_path)).returncode == 4
     del env["STUB_INJECT"]
     again = purge(env, tmp_path / "work")  # freezes again, then moves what was left
     assert again.returncode == 0, again.stderr
@@ -515,8 +569,6 @@ class RecordingWrangler:
 def test_the_statement_file_is_opened_exclusive_nofollow_and_private(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import os
-
     mod = load_script()
     opened: list[tuple[int, int]] = []
     real_open = os.open
@@ -768,11 +820,7 @@ def test_purge_refuses_before_any_delete_when_dest_lost_a_row_after_the_copy(
         dest_exec(env, f"DELETE FROM leads WHERE id = '{i}'")
 
     monkeypatch.setattr(mod, "copy_chunks", lossy)
-    code = mod.main(
-        ["--source", "analytics-db", "--dest", "leads-db", "--workdir", str(work)]
-        + ["--purge"]
-    )
-    assert code == 1
+    assert mod.main(main_args(work, "--purge")) == 1
     assert src_rows(env) == 6  # nothing was deleted
 
 
@@ -790,11 +838,9 @@ def test_purge_runs_the_final_verification_in_the_same_run(
         raise mod.Failed("final check failed")
 
     monkeypatch.setattr(mod, "verify", bad_verify)
-    code = mod.main(
-        ["--source", "analytics-db", "--dest", "leads-db", "--workdir", str(work)]
-        + ["--purge"]
-    )
-    assert code == 1  # never "done" unless the final check passed
+    # Everything was deleted, then the final check failed: a delete happened and the
+    # outcome is not proved, so this is its own exit code (5), never "done".
+    assert mod.main(main_args(work, "--purge")) == 5
 
 
 def test_bounded_chunks_copy_and_purge_everything(tmp_path: Path) -> None:
@@ -854,14 +900,20 @@ def load_with_env(env: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> Any:
 
 
 def main_args(work: Path, *flags: str) -> list[str]:
+    extra = ["--locked-window-confirmed"] if "--purge" in flags else []
     return [
         "--source",
         "analytics-db",
+        "--source-id",
+        os.environ["STUB_SRC_ID"],
         "--dest",
         "leads-db",
+        "--dest-id",
+        os.environ["STUB_DEST_ID"],
         "--workdir",
         str(work),
         *flags,
+        *extra,
     ]
 
 
@@ -909,7 +961,7 @@ def test_a_dest_row_altered_between_chunks_stops_the_purge_there(
                 )
 
     monkeypatch.setattr(mod, "run_file", spy)
-    assert mod.main(main_args(work, "--purge")) == 1
+    assert mod.main(main_args(work, "--purge")) == 4  # partial, safe to resume
     assert len(deletes) == 1  # no delete was sent after the change
     assert count(env["STUB_SRC"], "kit_events") == 2  # the second chunk survives
     assert count(env["STUB_SRC"], "leads") == 4
@@ -1001,29 +1053,7 @@ def test_a_manifest_from_another_run_or_database_is_refused(tmp_path: Path) -> N
     (wa / "move-manifest.json").chmod(0o600)
     r = run(ea, wa, "--verify")
     assert r.returncode == 3
-    assert "another run or other databases" in r.stderr
-
-
-def test_a_manifest_whose_run_id_the_databases_do_not_hold_is_refused(
-    tmp_path: Path,
-) -> None:
-    env = make(tmp_path)
-    work = workdir(tmp_path)
-    frozen_and_moved(env, work)
-    dest_exec(env, "UPDATE move_identity SET run_id = '" + "0" * 32 + "'")
-    r = run(env, work, "--verify")
-    assert r.returncode == 3
-    assert "another run" in r.stderr
-
-
-def test_a_manifest_with_no_identity_in_the_databases_is_refused(
-    tmp_path: Path,
-) -> None:
-    env = make(tmp_path)
-    work = workdir(tmp_path)
-    frozen_and_moved(env, work)
-    dest_exec(env, "DROP TABLE move_identity")
-    assert run(env, work, "--verify").returncode == 3
+    assert "platform ids differ" in r.stderr
 
 
 # ---- round 9: manifest file and directory ownership --------------------------------
@@ -1063,15 +1093,15 @@ def test_a_manifest_that_is_a_symlink_or_a_hard_link_is_refused(
 def test_a_manifest_owned_by_another_user_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import os
-
     env = make(tmp_path)
     work = workdir(tmp_path)
     frozen_and_moved(env, work)
     mod = load_script()
     uid = os.getuid()
     monkeypatch.setattr(mod.os, "getuid", lambda: uid + 1)
-    m = mod.Manifest(work, "analytics-db", "leads-db")
+    m = mod.Manifest(
+        work, "analytics-db", "leads-db", str(uuid.uuid4()), str(uuid.uuid4())
+    )
     with pytest.raises(mod.Refused, match="not owned by you"):
         m.load()
 
@@ -1107,11 +1137,429 @@ def test_a_workdir_reached_through_a_symlinked_parent_is_refused(
 def test_a_workdir_under_a_parent_owned_by_another_user_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import os
-
     mod = load_script()
     work = workdir(tmp_path)
     uid = os.getuid()
     monkeypatch.setattr(mod.os, "getuid", lambda: uid + 12345)
     with pytest.raises(mod.Refused, match="owned by another user"):
         mod.check_ancestors(str(work))
+
+
+# ---- round 10: a locked, recoverable cutover -------------------------------------
+
+
+def manifest_of(work: Path) -> dict[str, Any]:
+    data: dict[str, Any] = json.loads((work / "move-manifest.json").read_text())
+    return data
+
+
+def test_purge_refuses_without_the_locked_window_flag_before_any_write(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    assert run(env, work, "--freeze").returncode == 0
+    r = run(env, work, "--purge", window=False)
+    assert r.returncode == 3
+    assert "--locked-window-confirmed" in r.stderr
+    assert src_rows(env) == 6
+    assert count(env["STUB_DEST"], "leads") == 0  # not even the copy ran
+    assert list(work.iterdir()) == []
+
+
+def test_the_window_flag_is_for_purge_only(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    r = run(env, workdir(tmp_path), "--copy", "--locked-window-confirmed")
+    assert r.returncode == 2
+    assert count(env["STUB_DEST"], "leads") == 0
+
+
+def test_a_bookmark_is_recorded_before_the_first_delete_and_the_restore_is_printed(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    env["STUB_LOG"] = str(tmp_path / "calls.log")
+    work = workdir(tmp_path)
+    r = purge(env, work)
+    assert r.returncode == 0, r.stderr
+    calls = (tmp_path / "calls.log").read_text().split()
+    assert calls[0] == "bookmark" and calls.count("bookmark") == 1
+    assert "delete" in calls[1:]
+    assert manifest_of(work)["bookmarks"] == [BOOKMARK]
+    assert (
+        f"npx wrangler d1 time-travel restore analytics-db --bookmark={BOOKMARK}"
+        in r.stdout
+    )
+    assert "example.test" not in r.stdout + r.stderr
+
+
+def test_the_bookmark_is_read_from_plain_text_output_too(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    env["STUB_BOOKMARK_TEXT"] = "plain"
+    work = workdir(tmp_path)
+    assert purge(env, work).returncode == 0
+    assert manifest_of(work)["bookmarks"] == [BOOKMARK]
+
+
+@pytest.mark.parametrize("case", ["fails", "garbage", "two"])
+def test_no_usable_bookmark_means_nothing_is_deleted(tmp_path: Path, case: str) -> None:
+    env = make(tmp_path)
+    if case == "fails":
+        env["STUB_BOOKMARK_FAIL"] = "1"
+    elif case == "garbage":
+        env["STUB_BOOKMARK_TEXT"] = "no bookmark here"
+    else:
+        env["STUB_BOOKMARK_TEXT"] = BOOKMARK + " " + BOOKMARK.replace("85", "86", 1)
+    work = workdir(tmp_path)
+    r = purge(env, work)
+    assert r.returncode == 1
+    assert "partial" not in r.stderr  # nothing was deleted: the plain exit
+    assert src_rows(env) == 6
+    assert manifest_of(work)["bookmarks"] == []
+
+
+def test_the_purge_itself_refuses_without_a_recorded_bookmark(tmp_path: Path) -> None:
+    mod = load_script()
+    work = workdir(tmp_path)
+    m = mod.Manifest(
+        work, "analytics-db", "leads-db", str(uuid.uuid4()), str(uuid.uuid4())
+    )
+
+    class Boom:
+        def execute(self, *a: Any, **k: Any) -> list[dict[str, Any]]:
+            raise AssertionError(
+                "a purge without a bookmark must not touch the database"
+            )
+
+    with pytest.raises(mod.Refused, match="bookmark"):
+        mod.purge_chunks(Boom(), object(), work, m, mod.Progress())
+
+
+def test_the_settle_wait_is_taken_between_two_reads_and_is_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env = make(tmp_path)
+    env["MOVE_SETTLE"] = "7"
+    work = workdir(tmp_path)
+    assert run(env, work, "--freeze").returncode == 0
+    mod = load_with_env(env, monkeypatch)
+    waits: list[float] = []
+    monkeypatch.setattr(mod, "time", SimpleNamespace(sleep=waits.append))
+    assert mod.main(main_args(work, "--purge")) == 0
+    assert waits == [7]
+    for bad in ("61", "x", "-1", ""):
+        env["MOVE_SETTLE"] = bad
+        r = run(env, tmp_path / "work", "--purge")
+        assert r.returncode != 0 and "MOVE_SETTLE" in r.stderr, bad
+
+
+@pytest.mark.parametrize("which", ["src", "dest"])
+def test_a_database_that_changes_during_the_settle_wait_stops_the_purge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, which: str
+) -> None:
+    env = make(tmp_path)
+    env["STUB_LOG"] = str(tmp_path / "calls.log")
+    work = workdir(tmp_path)
+    assert run(env, work, "--freeze").returncode == 0
+    mod = load_with_env(env, monkeypatch)
+    one = format(1, "032x")
+
+    def writer(_: float) -> None:
+        # The freeze blocks inserts, not an UPDATE by an older Worker.
+        target = env["STUB_SRC"] if which == "src" else env["STUB_DEST"]
+        with closing(sqlite3.connect(target)) as db:
+            db.execute(f"UPDATE leads SET last_seen_ts = 31337 WHERE id = '{one}'")
+            db.commit()
+
+    # Only the script's own sleep: subprocess polls with time.sleep too.
+    monkeypatch.setattr(mod, "time", SimpleNamespace(sleep=writer))
+    assert mod.main(main_args(work, "--purge")) == 3  # refused, nothing deleted
+    assert src_rows(env) == 6
+    assert not (tmp_path / "calls.log").exists()  # no bookmark, no delete either
+
+
+def test_a_source_row_changed_after_the_manifest_is_moved_by_the_rerun(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    env["STUB_INJECT"] = "edit"
+    work = workdir(tmp_path)
+    first = purge(env, work)
+    assert first.returncode == 4
+    two = format(2, "032x")
+    with closing(sqlite3.connect(env["STUB_SRC"])) as db:
+        assert db.execute("SELECT last_seen_ts FROM leads").fetchall() == [(99999,)]
+    del env["STUB_INJECT"]
+    again = purge(env, work)  # the documented rerun
+    assert again.returncode == 0, again.stderr
+    assert "re-copied 1 rows that changed" in again.stdout
+    assert src_rows(env) == 0
+    with closing(sqlite3.connect(env["STUB_DEST"])) as db:
+        got = db.execute(
+            "SELECT last_seen_ts FROM leads WHERE id = ?", (two,)
+        ).fetchone()
+    assert got == (99999,)  # the destination row was updated, not skipped
+    assert count(env["STUB_DEST"], "leads") == 3
+    assert count(env["STUB_DEST"], "kit_events") == 3
+    assert "example.test" not in again.stdout + again.stderr
+
+
+def test_a_copy_rerun_updates_a_changed_row_and_its_digest(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    assert run(env, work, "--copy").returncode == 0
+    one = format(1, "032x")
+    with closing(sqlite3.connect(env["STUB_SRC"])) as db:
+        db.execute(f"UPDATE leads SET last_seen_ts = 5555 WHERE id = '{one}'")
+        db.commit()
+    assert run(env, work, "--copy").returncode == 0
+    assert rows(env["STUB_SRC"], "leads") == rows(env["STUB_DEST"], "leads")
+    assert run(env, work, "--freeze").returncode == 0
+    moved_rows = run(env, work, "--purge")
+    assert moved_rows.returncode == 0, moved_rows.stderr
+
+
+def test_a_destination_row_that_is_not_the_recorded_one_is_never_overwritten(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    assert run(env, work, "--copy").returncode == 0
+    one = format(1, "032x")
+    dest_exec(env, f"UPDATE leads SET last_seen_ts = 777 WHERE id = '{one}'")
+    with closing(sqlite3.connect(env["STUB_SRC"])) as db:
+        db.execute(f"UPDATE leads SET last_seen_ts = 5555 WHERE id = '{one}'")
+        db.commit()
+    r = run(env, work, "--copy")
+    assert r.returncode == 1
+    assert "recorded version" in r.stderr
+    with closing(sqlite3.connect(env["STUB_DEST"])) as db:
+        got = db.execute("SELECT last_seen_ts FROM leads WHERE id = ?", (one,))
+        assert got.fetchone() == (777,)  # left for a hand decision
+
+
+# ---- round 10: identity is read from the platform, never from the data --------------
+
+
+def test_no_identity_table_is_left_in_either_database(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    assert purge(env, workdir(tmp_path)).returncode == 0
+    for path in (env["STUB_SRC"], env["STUB_DEST"]):
+        with closing(sqlite3.connect(path)) as db:
+            names = {r[0] for r in db.execute("SELECT name FROM sqlite_master")}
+        assert "move_identity" not in names
+
+
+def test_a_cloned_database_cannot_borrow_the_recorded_identity(
+    tmp_path: Path,
+) -> None:
+    # A clone carries every row and table of the original, but the platform gives it
+    # an id of its own: the manifest of the original run does not apply to it.
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    frozen_and_moved(env, work)
+    clone = tmp_path / "clone.sqlite"
+    shutil.copy(env["STUB_DEST"], clone)
+    cloned = dict(env, STUB_DEST=str(clone), STUB_DEST_ID=str(uuid.uuid4()))
+    r = run(cloned, work, "--verify")
+    assert r.returncode == 3
+    assert "platform ids differ" in r.stderr
+    same = run(env, work, "--verify")  # the original still verifies
+    assert same.returncode == 0, same.stderr
+
+
+@pytest.mark.parametrize("side", ["source", "dest"])
+def test_an_id_that_is_not_the_platforms_answer_is_refused(
+    tmp_path: Path, side: str
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    wrong = str(uuid.uuid4())
+    r = run(
+        env,
+        work,
+        "--copy",
+        source_id=wrong if side == "source" else None,
+        dest_id=wrong if side == "dest" else None,
+    )
+    assert r.returncode == 3
+    assert "not the database you named" in r.stderr
+    assert count(env["STUB_DEST"], "leads") == 0
+    assert list(work.iterdir()) == []
+
+
+def test_two_names_with_one_platform_id_are_refused(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    env["STUB_DEST_ID"] = env["STUB_SRC_ID"]
+    r = run(env, workdir(tmp_path), "--copy")
+    assert r.returncode == 3
+    assert "same platform id" in r.stderr
+
+
+def test_an_unreadable_platform_answer_and_a_bad_id_argument_fail_closed(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    bad = dict(env, STUB_INFO_BAD="1")
+    assert run(bad, work, "--copy").returncode == 1
+    assert run(env, work, "--copy", source_id="not-a-uuid").returncode == 2
+    assert count(env["STUB_DEST"], "leads") == 0
+
+
+# ---- round 10: the backup dump check passes before and after the move -------------
+
+
+def dump_check(env: dict[str, str], tmp_path: Path) -> subprocess.CompletedProcess[str]:
+    # The backup never exports the lead tables, so their rows are left out; the schema
+    # (and so every trigger the tool added) is checked as it stands.
+    with closing(sqlite3.connect(env["STUB_SRC"])) as db:
+        keep = [
+            ln
+            for ln in db.iterdump()
+            if not ln.startswith(('INSERT INTO "leads"', 'INSERT INTO "kit_events"'))
+        ]
+    f = tmp_path / "analytics-dump.sql"
+    f.write_text("\n".join(keep) + "\n")
+    return subprocess.run(  # noqa: S603 - fixed argv, synthetic input
+        [sys.executable, "-I", str(ROOT / "scripts" / "check-dump.py"), str(f)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
+def test_the_backup_dump_check_passes_before_and_after_the_move(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    before = dump_check(env, tmp_path)
+    assert before.returncode == 0, before.stdout
+    assert run(env, work, "--freeze").returncode == 0
+    frozen = dump_check(env, tmp_path)
+    assert frozen.returncode == 0, frozen.stdout
+    assert "leads_frozen" in "".join(
+        r[0] or ""
+        for r in sqlite3.connect(env["STUB_SRC"]).execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger'"
+        )
+    )
+    assert run(env, work, "--purge").returncode == 0
+    after = dump_check(env, tmp_path)
+    assert after.returncode == 0, after.stdout
+
+
+# ---- round 10: distinct exit codes for a purge that stops part way ------------------
+
+
+def test_a_delete_whose_answer_is_lost_requires_verification_not_a_retry(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    env["STUB_DELETE_THEN_FAIL"] = "1"
+    r = purge(env, workdir(tmp_path))
+    assert r.returncode == 5
+    assert "failure after a delete" in r.stderr and "--verify" in r.stderr
+    assert src_rows(env) < 6  # the delete was applied although the call failed
+    assert "example.test" not in r.stdout + r.stderr
+
+
+def test_each_failure_has_its_own_exit_code_and_message(tmp_path: Path) -> None:
+    # 1: nothing deleted. 4: some chunks deleted, safe to resume. 5: verify required.
+    env = make(tmp_path)
+    env["STUB_BOOKMARK_FAIL"] = "1"
+    nothing = purge(env, workdir(tmp_path))
+    assert nothing.returncode == 1 and "partial" not in nothing.stderr
+    assert src_rows(env) == 6
+
+
+# ---- round 10: the scratch file is checked again right before wrangler runs it -------
+
+
+class SwapSpy:
+    """Runs `act` once, right after the statement file was written."""
+
+    def __init__(self, mod: Any, act: Any) -> None:
+        self.real = mod.os.fsync
+        self.act = act
+        self.done = False
+
+    def __call__(self, fd: int) -> None:
+        self.real(fd)
+        if not self.done:
+            self.done = True
+            self.act()
+
+
+def test_a_statement_file_swapped_before_wrangler_runs_is_not_executed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = load_script()
+    work = workdir(tmp_path)
+    seen: list[Path] = []
+    real_mkdtemp = mod.tempfile.mkdtemp
+
+    def mk(**k: Any) -> str:
+        made = real_mkdtemp(**k)
+        seen.append(Path(made))
+        return str(made)
+
+    monkeypatch.setattr(mod.tempfile, "mkdtemp", mk)
+
+    def swap() -> None:
+        target = seen[0] / "statements.sql"
+        target.unlink()
+        target.write_text("DROP TABLE leads;\n")  # another file at the same name
+
+    monkeypatch.setattr(mod.os, "fsync", SwapSpy(mod, swap))
+    w = RecordingWrangler()
+    with pytest.raises(mod.Refused, match="changed before it ran"):
+        mod.run_file(w, "db", work, "SELECT 1;\n")
+    assert w.seen == []  # nothing was executed
+    assert list(work.iterdir()) == []  # and the scratch directory is gone
+
+
+def test_a_scratch_directory_swapped_before_wrangler_runs_is_not_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = load_script()
+    work = workdir(tmp_path)
+    seen: list[Path] = []
+    real_mkdtemp = mod.tempfile.mkdtemp
+
+    def mk(**k: Any) -> str:
+        made = real_mkdtemp(**k)
+        seen.append(Path(made))
+        return str(made)
+
+    monkeypatch.setattr(mod.tempfile, "mkdtemp", mk)
+
+    def swap() -> None:
+        d = seen[0]
+        d.rename(tmp_path / "moved-away")  # the directory the file lives in
+        d.mkdir(mode=0o700)
+        (d / "statements.sql").write_text("DROP TABLE leads;\n")
+        (d / "statements.sql").chmod(0o600)
+
+    monkeypatch.setattr(mod.os, "fsync", SwapSpy(mod, swap))
+    w = RecordingWrangler()
+    with pytest.raises(mod.Refused, match="changed before it ran"):
+        mod.run_file(w, "db", work, "SELECT 1;\n")
+    assert w.seen == []
+
+
+def test_a_scratch_directory_that_is_not_private_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = load_script()
+    work = workdir(tmp_path)
+    open_dir = work / "open-scratch"
+    open_dir.mkdir()
+    open_dir.chmod(0o755)
+    monkeypatch.setattr(mod.tempfile, "mkdtemp", lambda **_: str(open_dir))
+    w = RecordingWrangler()
+    with pytest.raises(mod.Refused, match="not a private directory"):
+        mod.run_file(w, "db", work, "SELECT 1;\n")
+    assert w.seen == []
