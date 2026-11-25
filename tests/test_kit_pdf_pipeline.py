@@ -469,7 +469,9 @@ CONFIG_YAML = (
     "version: 1\ncreator: {name: Example Creator}\n"
     "tabs:\n- id: start\n  title: Start\n  blocks:\n"
     "  - {id: one, title: One, url: 'https://example.com/1'}\n"
-    "features: {kit_gate: true}\nkit:\n"
+    "features: {kit_gate: true}\n"
+    "privacy: {controller_name: Example Creator, contact: example.com/contact}\n"
+    "kit:\n"
     "  title: Example Creator media kit\n  about: Fake.\n"
     "  rates:\n  - {item: Sponsored video fake, price_text: Ask me}\n"
 )

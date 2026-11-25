@@ -435,6 +435,7 @@ def test_policy_classifies_every_field() -> None:
         "about",
         "photo",
         "contact",
+        "consulting_url",
         "tags",
         "metrics",
         "analytics",
@@ -446,6 +447,7 @@ def test_policy_classifies_every_field() -> None:
         "sections",
         "live",
         "fediverse",
+        "channels",
         "measures",
     }
     for name in ("partners", "case_studies", "rates", "demographics"):
@@ -493,6 +495,7 @@ def test_public_projection_has_only_header_and_headline_numbers() -> None:
         "about",
         "photo",
         "contact",
+        "consulting_url",
         "tags",
         "metrics",
         "analytics",
@@ -504,6 +507,7 @@ def test_public_projection_has_only_header_and_headline_numbers() -> None:
         "sections",
         "live",
         "fediverse",
+        "channels",
         "measures",
     }
     assert CANARY not in json.dumps(out, default=str)
@@ -705,7 +709,11 @@ def test_gated_content_needs_the_kit_gate_feature(extra: dict[str, Any]) -> None
     with pytest.raises(ValidationError, match=r"features\.kit_gate"):
         SiteConfig.model_validate(site_doc(kit=kit_doc(**extra)))
     cfg = SiteConfig.model_validate(
-        site_doc(kit=kit_doc(**extra), features={"kit_gate": True})
+        site_doc(
+            kit=kit_doc(**extra),
+            features={"kit_gate": True},
+            privacy={"controller_name": "Example", "contact": "example.com/contact"},
+        )
     )
     assert cfg.features.kit_gate
 

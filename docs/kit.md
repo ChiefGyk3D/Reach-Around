@@ -17,6 +17,9 @@ Add a `kit` section to `site.yaml`. The full field list is in the
 ```yaml
 features:
   kit_gate: true
+privacy:
+  controller_name: Example Creator LLC
+  contact: privacy@example.com
 kit:
   title: Example Creator media kit
   about: A fake creator who streams games and talks about gear.
@@ -214,6 +217,15 @@ known one. Each key has a unit, a definition, and a default audience.
 | `mean_boosts_30d` | interactions | The average count of boosts across the public posts of the last 30 days, shown only beside the median and only when the owner turns it on; one viral post can pull it far above the median. | everyone |
 | `mean_favorites_30d` | interactions | The average count of favorites across the public posts of the last 30 days, shown only beside the median and only when the owner turns it on; one viral post can pull it far above the median. | everyone |
 | `mean_replies_30d` | interactions | The average count of replies across the public posts of the last 30 days, shown only beside the median and only when the owner turns it on; one viral post can pull it far above the median. | everyone |
+| `subscribers` | follows | The number of accounts subscribed to a PeerTube channel, a Lemmy community or a newsletter, as the instance or the sending service reports it and the owner typed it. A subscriber is not a follower, so it never enters the audience range. | everyone |
+| `lemmy_active_users_month` | count | The number of active users the Lemmy community reports for the last month, as the instance reports it and the owner typed it. | everyone |
+| `peertube_watch_time_30d` | hours | The hours watched across the channel's videos in the last 30 days, in whole hours, as the instance's video statistics report it and the owner typed it. | everyone |
+| `peertube_avg_watch_time` | seconds | The average time one view of the channel's videos lasted, in whole seconds, as the instance's video statistics report it and the owner typed it. | everyone |
+| `peertube_unique_viewers_30d` | viewers | The number of different viewers of the channel's videos in the last 30 days, as the instance's video statistics report it and the owner typed it. | everyone |
+| `downloads_30d` | downloads | The number of downloads of the podcast's episodes in the last 30 days, as the podcast host counts them and the owner typed it. | everyone |
+| `newsletter_delivered` | emails | The number of newsletter emails delivered in the last 30 days, as the sending service reports it and the owner typed it. | everyone |
+| `newsletter_clicks` | clicks | The number of clicks on links in the newsletter in the last 30 days, as the sending service reports it and the owner typed it. Clicks are shown instead of opens, which are unreliable. | everyone |
+| `blog_views_30d` | views | The number of page views of the blog in the last 30 days, as the site's own analytics report them and the owner typed it. | everyone |
 | `avg_views_per_item` | views | Views divided by posts in the period, worked out by the build from figures the owner typed. | after the gate |
 | `engagement_rate` | percent | Interactions divided by views in the period, as a percent, worked out by the build from figures the owner typed. | after the gate |
 
@@ -255,7 +267,8 @@ kit:
 | --- | --- |
 | live | twitch, kick |
 | video | youtube, tiktok, instagram, threads |
-| open | mastodon, bluesky, pixelfed |
+| open | mastodon, bluesky, pixelfed, peertube, lemmy |
+| audio | podcast, newsletter, blog |
 | community | discord, matrix |
 | other | every other platform |
 
@@ -263,7 +276,8 @@ kit:
 | --- | --- |
 | live | `followers`, `followers_change_30d`, `analytics_stat`, `avg_views_per_item`, `engagement_rate` |
 | video | `followers`, `followers_change_30d`, `analytics_stat`, `avg_views_per_item`, `engagement_rate` |
-| open | `followers`, `posts_total`, `followers_change_30d`, `median_boosts_30d`, `median_favorites_30d`, `median_replies_30d`, `mean_boosts_30d`, `mean_favorites_30d`, `mean_replies_30d`, `analytics_stat`, `avg_views_per_item`, `engagement_rate` |
+| open | `followers`, `subscribers`, `posts_total`, `followers_change_30d`, `median_boosts_30d`, `median_favorites_30d`, `median_replies_30d`, `mean_boosts_30d`, `mean_favorites_30d`, `mean_replies_30d`, `peertube_watch_time_30d`, `peertube_avg_watch_time`, `peertube_unique_viewers_30d`, `lemmy_active_users_month`, `analytics_stat`, `avg_views_per_item`, `engagement_rate` |
+| audio | `subscribers`, `downloads_30d`, `newsletter_delivered`, `newsletter_clicks`, `blog_views_30d` |
 | community | `members` |
 | other | `followers`, `followers_change_30d`, `analytics_stat`, `avg_views_per_item`, `engagement_rate` |
 
@@ -351,6 +365,58 @@ kit:
   those and any insights on Pixelfed.
 - A card shows these only when its platform has an entry. All of it is public
   (spec decision 6) and prints on the public page, the gated page and both PDFs.
+
+### The channel block
+
+PeerTube, Lemmy, a podcast, a newsletter and a blog each publish figures somewhere
+other than a platform API this kit reads. `kit.channels` holds what that place
+shows, typed by you on a date, one entry per platform (#633). It is hand-kept:
+nothing is fetched, and a collector for any of them has its own design issue (and a
+recorded terms read where a platform's terms apply) before any collector code.
+
+```yaml
+kit:
+  channels:
+    - platform: peertube
+      url: https://video.example/c/example
+      as_of: 2027-03-08
+      subscribers: 340
+      watch_time_hours: 1250
+      avg_watch_seconds: 95
+      unique_viewers: 8200
+    - platform: lemmy
+      url: https://lemmy.example/c/example
+      as_of: 2027-03-08
+      subscribers: 77
+      active_users_month: 21
+    - {platform: podcast, as_of: 2027-03-08, downloads: 5400}
+    - {platform: newsletter, as_of: 2027-03-08, subscribers: 2400, delivered: 2300, clicks: 190}
+    - {platform: blog, url: "https://blog.example/", as_of: 2027-03-08, views: 12345}
+```
+
+- **Each platform takes its own fields.** PeerTube: `subscribers`, `watch_time_hours`,
+  `avg_watch_seconds`, `unique_viewers`. Lemmy: `subscribers`, `active_users_month`
+  (community fields only; post-level fields are not read). Podcast: `downloads`.
+  Newsletter: `subscribers`, `delivered`, `clicks`. Blog: `views`. A field a
+  platform does not take is refused, and an entry needs at least one figure.
+- **Who reported it.** A card with an entry says so: "as reported by the instance"
+  (PeerTube, Lemmy), "as reported by the podcast host", "as reported by the sending
+  service" or "as reported by the site's own analytics". PeerTube's federated-view
+  completeness is not verified, so the card never claims it.
+- **Clicks, not opens.** The newsletter shows delivered emails and clicks. Opens
+  are unreliable since Apple Mail Privacy Protection, so the card says it does not
+  provide them.
+- **Re-check link.** `url` (https) is required for PeerTube and Lemmy, which have a
+  public page, and optional for the rest. It prints beside every count as a plain
+  URL. A podcast or newsletter with no public page has no link.
+- **Not provided, never zero.** A figure you did not type prints in one "Not
+  provided" line. A real 0 is typed. The 30-day figures cover the 30 days ending on
+  `as_of` and print that period.
+- A count of people (`subscribers`, Lemmy active users, PeerTube unique viewers)
+  keeps the privacy floor. `subscribers` is not a follower count and never enters
+  the audience range.
+- A card shows these only when its platform has an entry and a `sections` item. All
+  of it is public and prints on the public page, the gated page and both PDFs.
 
 ### Structured demographics
 
@@ -705,7 +771,7 @@ cannot reach a gated field, and the two pages go to two separate directories.
 
 | Field | Visibility | Owner-report marker |
 | --- | --- | --- |
-| title, about, photo, contact, tags, metrics, analytics, unified_total, turnstile_site_key | public | no |
+| title, about, photo, contact, consulting_url, tags, metrics, analytics, unified_total, turnstile_site_key | public | no |
 | partners, case_studies, services, rates, testimonials, demographics, inquiry, disclosure | gated | no |
 | engagement | gated | `owner_report_only`; YouTube figures require `owner_supplied: true` |
 | imported_history | gated by default; public when `imported_history_public: true` | no |
@@ -818,6 +884,12 @@ It prints the path of the file and nothing else on standard output. It needs a
 Chromium or Chrome binary (the one the visual tests already use): pass
 `--chromium PATH`, set `RA_CHROMIUM`, or have `chromium` on `PATH`. It adds no
 Python dependency.
+
+Both PDFs print dark, like the screen (decision D9): the page background, text,
+link and table-rule colors are the site's own design tokens, so nothing is
+invented for print, and the text stays selectable. The browser command line is
+unchanged; the print sheet sets `print-color-adjust: exact`, which is what makes
+Chromium paint the dark background in the PDF.
 
 | Option | Meaning |
 | --- | --- |
@@ -947,6 +1019,17 @@ the same removal of the work directory. Differences:
 Defaults the owner may change: the "Valid as of" day is the creation date, not
 the day the numbers were read (each row keeps its own "as of" date). The dated
 "valid as of" line for the deeper kit request flow is separate work (#426).
+
+## Consulting line
+
+`kit.consulting_url` is one optional https URL (checked like `kit.public_pdf`). When
+set, the public page and the gated page print the fixed line "Consulting
+instead? Visit my consulting site." right after the contact block (or after the
+buttons when there is no contact line), with "consulting site" as a link to the
+URL. The field is public. Without it no line is printed. Neither PDF prints the
+line: it is a web-page line only, and the PDF builds drop it from the public and
+the gated print. The consulting site itself is not changed by this; it carries no
+line pointing back to the kit.
 
 ## Contact line
 

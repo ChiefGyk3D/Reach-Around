@@ -23,6 +23,21 @@
 {% else %}
 <p id="cookies">This site collects nothing about you.</p>
 {% endif %}
+<section class="privacy-notice" id="privacy-notice" aria-label="Privacy notice">
+{% for block in notice %}
+{% if block.kind == "h" %}
+<h3>{{ block.text }}</h3>
+{% elif block.kind == "ul" %}
+<ul>
+{% for entry in block.items %}
+<li>{{ entry }}</li>
+{% endfor %}
+</ul>
+{% else %}
+<p>{{ block.text }}</p>
+{% endif %}
+{% endfor %}
+</section>
 {% if contact %}
 <p>Questions: {{ contact }}</p>
 {% endif %}
