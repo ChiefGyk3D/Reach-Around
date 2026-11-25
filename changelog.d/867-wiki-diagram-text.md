@@ -1,1 +1,0 @@
-- Wiki diagrams 1, 3 and 4: the plain-text description now starts right after the Mermaid block, so `check-wiki-scrub.py` stops reporting `mermaid-text` (#867). Documentation only.
