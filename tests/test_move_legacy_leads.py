@@ -13,6 +13,7 @@ import subprocess
 import sys
 from contextlib import closing
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -155,7 +156,7 @@ def count(path: str, table: str) -> int:
         return int(db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])  # noqa: S608 - fixed names
 
 
-def rows(path: str, table: str) -> list[tuple]:
+def rows(path: str, table: str) -> list[tuple[Any, ...]]:
     with closing(sqlite3.connect(path)) as db:
         return db.execute(f"SELECT * FROM {table} ORDER BY id").fetchall()  # noqa: S608 - fixed names
 
@@ -417,7 +418,7 @@ def test_freeze_and_verify_refuse_a_database_that_is_not_analytics(
 # ---- the temporary file guarantees, proved at the call (round 3) ----------------
 
 
-def load_script():  # noqa: ANN201
+def load_script() -> Any:
     import importlib.util
 
     spec = importlib.util.spec_from_file_location("move_legacy_leads", SCRIPT)
@@ -433,7 +434,9 @@ class RecordingWrangler:
     def __init__(self) -> None:
         self.seen: list[tuple[int, int, str]] = []
 
-    def execute(self, db: str, *, command: str | None = None, file: Path | None = None):
+    def execute(
+        self, db: str, *, command: str | None = None, file: Path | None = None
+    ) -> list[dict[str, Any]]:
         assert file is not None
         self.seen.append(
             (
@@ -454,7 +457,7 @@ def test_the_statement_file_is_opened_exclusive_nofollow_and_private(
     opened: list[tuple[int, int]] = []
     real_open = os.open
 
-    def spy(path, flags, mode=0o777, *a, **k):  # noqa: ANN001, ANN002, ANN003, ANN202
+    def spy(path: Any, flags: int, mode: int = 0o777, *a: Any, **k: Any) -> int:
         if str(path).endswith("statements.sql"):
             opened.append((flags, mode))
         return real_open(path, flags, mode, *a, **k)
@@ -492,3 +495,61 @@ def test_a_file_or_symlink_already_at_the_target_is_refused_untouched(
         mod.run_file(w, "db", work, "DROP TABLE x;\n")
     assert w.seen == []  # nothing was executed
     assert victim.read_text() == "keep me"
+
+
+# ---- round 4: the freeze is proved by definition, never by name -----------------
+
+HOSTILE = (
+    "CREATE TRIGGER {name} BEFORE DELETE ON {table} "
+    "BEGIN SELECT 1; END"  # same name, does not refuse an insert
+)
+
+
+def plant(env: dict[str, str], name: str, table: str) -> None:
+    with closing(sqlite3.connect(env["STUB_SRC"])) as db:
+        db.execute(HOSTILE.format(name=name, table=table))
+        db.commit()
+
+
+@pytest.mark.parametrize(
+    ("name", "table"), [("leads_frozen", "leads"), ("kit_events_frozen", "kit_events")]
+)
+def test_a_same_name_trigger_that_does_not_refuse_is_not_a_freeze(
+    tmp_path: Path, name: str, table: str
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    plant(env, name, table)
+    assert run(env, work, "--purge").returncode == 0
+    frozen = run(env, work, "--freeze")
+    assert frozen.returncode == 1  # fails closed, does not claim a freeze
+    assert "differs" in frozen.stderr
+    checked = run(env, work, "--verify")
+    assert checked.returncode == 1
+    assert "older Worker" in checked.stderr
+    with closing(sqlite3.connect(env["STUB_SRC"])) as db:  # an insert still lands
+        db.execute(
+            "INSERT INTO leads (id, email, created_ts, last_seen_ts, source)"
+            " VALUES (?, 'old@example.test', 1, 1, 'gate')",
+            ("d" * 32,),
+        )
+
+
+def test_a_same_name_trigger_on_another_table_is_not_a_freeze(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    plant(env, "leads_frozen", "kit_events")  # right names, swapped tables
+    plant(env, "kit_events_frozen", "leads")
+    assert run(env, work, "--purge").returncode == 0
+    assert run(env, work, "--verify").returncode == 1
+
+
+def test_a_local_file_error_prints_a_fixed_message_only(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    canary = "canary-secret-dir"
+    env["WRANGLER"] = str(tmp_path / canary / "missing-wrangler")  # FileNotFoundError
+    r = run(env, workdir(tmp_path), "--freeze")
+    assert r.returncode == 1
+    assert "Traceback" not in r.stderr
+    assert canary not in r.stdout + r.stderr
+    assert "local file or process error" in r.stderr

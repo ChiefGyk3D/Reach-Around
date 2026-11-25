@@ -66,6 +66,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 LEAD_COLUMNS = (
@@ -118,7 +119,7 @@ class Wrangler:
 
     def execute(
         self, db: str, *, command: str | None = None, file: Path | None = None
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         args = [*self.cmd, "d1", "execute", db, "--remote", "--json"]
         args += ["--command", command] if command is not None else [f"--file={file}"]
         try:
@@ -133,7 +134,7 @@ class Wrangler:
             data = json.loads(done.stdout)
         except ValueError as exc:
             raise Failed("unexpected answer from the database") from exc
-        rows: list[dict] = []
+        rows: list[dict[str, Any]] = []
         for block in data if isinstance(data, list) else [data]:
             if not isinstance(block, dict) or block.get("success") is False:
                 raise Failed("the database refused a statement")
@@ -149,7 +150,7 @@ def roles(w: Wrangler, db: str) -> list[str]:
     return [str(r.get("role")) for r in rows]
 
 
-def read_all(w: Wrangler, db: str) -> tuple[list[dict], list[dict]]:
+def read_all(w: Wrangler, db: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Every lead and kit event in `db`; a table that is not there holds none."""
     have = {r.get("name") for r in w.execute(db, command=EXISTS_SQL)}
     leads = w.execute(db, command=SELECT_LEADS) if "leads" in have else []
@@ -169,22 +170,22 @@ def literal(value: object) -> str:
     raise Failed("unexpected value type")
 
 
-def row_sql(prefix: str, columns: tuple[str, ...], row: dict) -> str:
+def row_sql(prefix: str, columns: tuple[str, ...], row: dict[str, Any]) -> str:
     return prefix + "(" + ", ".join(literal(row.get(c)) for c in columns) + ");"
 
 
-def insert_sql(leads: list[dict], events: list[dict]) -> str:
+def insert_sql(leads: list[dict[str, Any]], events: list[dict[str, Any]]) -> str:
     out = [row_sql(INSERT_LEAD, LEAD_COLUMNS, r) for r in leads]
     out += [row_sql(INSERT_EVENT, EVENT_COLUMNS, r) for r in events]
     return "\n".join(out) + "\n"
 
 
-def where(columns: tuple[str, ...], row: dict) -> str:
+def where(columns: tuple[str, ...], row: dict[str, Any]) -> str:
     """Match a row by id and every column (IS, so a NULL column matches NULL)."""
     return " AND ".join(f"{c} IS {literal(row.get(c))}" for c in columns)
 
 
-def delete_sql(leads: list[dict], events: list[dict]) -> str:
+def delete_sql(leads: list[dict[str, Any]], events: list[dict[str, Any]]) -> str:
     """Delete exactly the verified rows; a lead goes only with no event left."""
     out = [
         "DELETE FROM kit_events WHERE " + where(EVENT_COLUMNS, r) + ";" for r in events
@@ -213,7 +214,9 @@ def run_file(w: Wrangler, db: str, work: Path, sql: str) -> None:
 
 
 def missing_from(
-    dest_rows: list[dict], source_rows: list[dict], columns: tuple[str, ...]
+    dest_rows: list[dict[str, Any]],
+    source_rows: list[dict[str, Any]],
+    columns: tuple[str, ...],
 ) -> int:
     have = {row.get("id"): tuple(row.get(c) for c in columns) for row in dest_rows}
     return sum(
@@ -249,29 +252,48 @@ def check_workdir(path: str) -> Path:
     return work
 
 
-FREEZE_SQL = {
-    "leads": "CREATE TRIGGER IF NOT EXISTS leads_frozen BEFORE INSERT ON leads "
-    "BEGIN SELECT RAISE(ABORT, 'leads moved to the leads database'); END",
-    "kit_events": "CREATE TRIGGER IF NOT EXISTS kit_events_frozen "
-    "BEFORE INSERT ON kit_events "
-    "BEGIN SELECT RAISE(ABORT, 'leads moved to the leads database'); END",
+# The exact definition each trigger must have. A name proves nothing: an unrelated
+# trigger of the same name (one that does not refuse, or only refuses some inserts)
+# would otherwise pass for the freeze. No IF NOT EXISTS: a name taken by another
+# definition makes the CREATE fail instead of silently keeping the impostor.
+FREEZE_BODY = "BEGIN SELECT RAISE(ABORT, 'leads moved to the leads database'); END"
+FROZEN = {
+    "leads": ("leads_frozen", "BEFORE INSERT ON leads " + FREEZE_BODY),
+    "kit_events": ("kit_events_frozen", "BEFORE INSERT ON kit_events " + FREEZE_BODY),
 }
-FROZEN_NAMES = {"leads": "leads_frozen", "kit_events": "kit_events_frozen"}
 TRIGGERS_SQL = (
-    "SELECT name FROM sqlite_master WHERE type = 'trigger' "
+    "SELECT name, tbl_name, sql FROM sqlite_master WHERE type = 'trigger' "
     "AND name IN ('leads_frozen', 'kit_events_frozen')"
 )
+
+
+def create_sql(table: str) -> str:
+    name, rest = FROZEN[table]
+    return f"CREATE TRIGGER {name} {rest}"
 
 
 def present_tables(w: Wrangler, db: str) -> set[str]:
     return {str(r.get("name")) for r in w.execute(db, command=EXISTS_SQL)}
 
 
+def frozen_tables(w: Wrangler, db: str) -> set[str]:
+    """Tables whose freeze trigger has exactly the expected name, table and text."""
+    rows = w.execute(db, command=TRIGGERS_SQL)
+    got = {(r.get("name"), r.get("tbl_name"), r.get("sql")) for r in rows}
+    return {t for t in FROZEN if (FROZEN[t][0], t, create_sql(t)) in got}
+
+
 def freeze(w: Wrangler, db: str) -> int:
     """Make the database refuse a new lead row: an older Worker's INSERT fails."""
     tables = present_tables(w, db)
-    for table in sorted(tables):
-        w.execute(db, command=FREEZE_SQL[table])
+    done = frozen_tables(w, db)
+    taken = {str(r.get("name")) for r in w.execute(db, command=TRIGGERS_SQL)}
+    if any(FROZEN[t][0] in taken for t in tables - done):
+        raise Failed("a freeze trigger is missing or differs; resolve it by hand")
+    for table in sorted(tables - done):
+        w.execute(db, command=create_sql(table))  # fails if the name is taken
+    if tables - frozen_tables(w, db):  # read back, by definition, not by name
+        raise Failed("a freeze trigger is missing or differs; resolve it by hand")
     if not tables:
         print("nothing to freeze: the analytics database has no lead tables")
         return 0
@@ -283,8 +305,7 @@ def verify(w: Wrangler, db: str) -> int:
     """The cutover check: exit 0 only when no older writer can store a lead there."""
     tables = present_tables(w, db)
     leads, events = read_all(w, db)
-    have = {str(r.get("name")) for r in w.execute(db, command=TRIGGERS_SQL)}
-    unfrozen = [t for t in sorted(tables) if FROZEN_NAMES[t] not in have]
+    unfrozen = sorted(tables - frozen_tables(w, db))
     print(f"analytics holds {len(leads)} leads and {len(events)} kit events")
     print(f"lead tables not frozen against inserts: {len(unfrozen)}")
     if leads or events:
@@ -373,6 +394,13 @@ def main(argv: list[str]) -> int:
         return 3
     except Failed as exc:
         print(f"failed: {exc}", file=sys.stderr)
+        return 1
+    except (OSError, UnicodeError):
+        # A local file or process error: its text can hold a path or data. Fixed only.
+        print(
+            "failed: a local file or process error; nothing more is shown",
+            file=sys.stderr,
+        )
         return 1
 
 
