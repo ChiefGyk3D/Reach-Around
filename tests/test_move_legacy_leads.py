@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
+# ruff: noqa: S608
+# S608: statements are built from fixed names and synthetic ids only.
 """scripts/move-legacy-leads.py: the one-time move of lead rows out of analytics.
 
 A stub stands in for ``wrangler`` and answers from two local SQLite files built from
@@ -34,20 +36,31 @@ db = sqlite3.connect(path)
 db.execute("PRAGMA foreign_keys = ON")
 if os.environ.get("STUB_FAIL_FILE") and any(a.startswith("--file=") for a in args):
     sys.exit(1)
+if os.environ.get("CRASH_AT") and any(a.startswith("--file=") for a in args):
+    counter = os.environ["STUB_COUNTER"]
+    n = int(open(counter).read()) if os.path.exists(counter) else 0
+    open(counter, "w").write(str(n + 1))
+    if n + 1 == int(os.environ["CRASH_AT"]):
+        sys.exit(1)
 if any(a.startswith("--file=") for a in args):
     sql = open([a for a in args if a.startswith("--file=")][0].split("=", 1)[1]).read()
     inject = os.environ.get("STUB_INJECT")
-    if inject and name == "analytics-db" and "DELETE FROM" in sql:
-        # An older Worker writes analytics between the copy and the delete.
-        db.execute(
-            "INSERT INTO leads (id, email, created_ts, last_seen_ts, source) "
-            "VALUES ('" + "f" * 32 + "', 'late@example.test', 1, 1, 'gate')"
-        )
-        db.execute(
-            "INSERT INTO kit_events (ts, lead_id, kind) VALUES (7200000, '"
-            + format(1, "032x")
-            + "', 'view')"
-        )
+    done = db.execute("SELECT 1 FROM leads WHERE id = '" + "f" * 32 + "'").fetchone()
+    if inject and name == "analytics-db" and "DELETE FROM" in sql and not done:
+        # An older Worker writes analytics between the copy and the delete. The freeze
+        # would refuse an insert, so "insert" stands for a freeze someone removed.
+        if inject == "insert":
+            db.execute("DROP TRIGGER IF EXISTS leads_frozen")
+            db.execute("DROP TRIGGER IF EXISTS kit_events_frozen")
+            db.execute(
+                "INSERT INTO leads (id, email, created_ts, last_seen_ts, source) "
+                "VALUES ('" + "f" * 32 + "', 'late@example.test', 1, 1, 'gate')"
+            )
+            db.execute(
+                "INSERT INTO kit_events (ts, lead_id, kind) VALUES (7200000, '"
+                + format(1, "032x")
+                + "', 'view')"
+            )
         if inject == "edit":
             db.execute(
                 "UPDATE leads SET last_seen_ts = 99999 WHERE id = '"
@@ -152,6 +165,21 @@ def run(
     )
 
 
+def purge(env: dict[str, str], work: Path) -> subprocess.CompletedProcess[str]:
+    """--purge needs the freeze first (it refuses otherwise)."""
+    assert run(env, work, "--freeze").returncode == 0
+    return run(env, work, "--purge")
+
+
+def moved(env: dict[str, str], work: Path) -> None:
+    """Copy through the script, then empty analytics by hand (a purge's end state)."""
+    assert run(env, work, "--copy").returncode == 0
+    with closing(sqlite3.connect(env["STUB_SRC"])) as db:
+        db.execute("DELETE FROM kit_events")
+        db.execute("DELETE FROM leads")
+        db.commit()
+
+
 def count(path: str, table: str) -> int:
     with closing(sqlite3.connect(path)) as db:
         return int(db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])  # noqa: S608 - fixed names
@@ -187,19 +215,24 @@ def test_purge_moves_every_row_then_empties_analytics(tmp_path: Path) -> None:
     env = make(tmp_path)
     before_leads = rows(env["STUB_SRC"], "leads")
     before_events = rows(env["STUB_SRC"], "kit_events")
-    r = run(env, workdir(tmp_path), "--purge")
+    r = purge(env, workdir(tmp_path))
     assert r.returncode == 0, r.stderr
+    assert "cutover verified" in r.stdout  # the final check ran in the same run
     assert count(env["STUB_SRC"], "leads") == 0
     assert count(env["STUB_SRC"], "kit_events") == 0
     assert rows(env["STUB_DEST"], "leads") == before_leads
     assert rows(env["STUB_DEST"], "kit_events") == before_events
     assert "example.test" not in r.stdout + r.stderr  # counts only, never an address
-    assert list((tmp_path / "work").iterdir()) == []  # the private file is gone
+    # The statement file is gone; only the digest manifest stays, private, no address.
+    (kept,) = (tmp_path / "work").iterdir()
+    assert kept.name == "move-manifest.json"
+    assert stat.S_IMODE(kept.stat().st_mode) == 0o600
+    assert "example.test" not in kept.read_text()
 
 
 def test_a_second_run_finds_nothing_to_move(tmp_path: Path) -> None:
     env = make(tmp_path)
-    assert run(env, workdir(tmp_path), "--purge").returncode == 0
+    assert purge(env, workdir(tmp_path)).returncode == 0
     again = run(env, tmp_path / "work", "--purge")
     assert again.returncode == 0
     assert "nothing to move" in again.stdout
@@ -215,7 +248,7 @@ def test_an_address_dest_already_holds_under_another_id_stops_before_any_delete(
             db, 99, email="person1@example.test"
         )  # the same address as source lead 1, another id
         db.commit()
-    r = run(env, workdir(tmp_path), "--purge")
+    r = purge(env, workdir(tmp_path))
     assert r.returncode == 1
     assert "nothing was deleted" in r.stderr
     assert count(env["STUB_SRC"], "leads") == 3
@@ -229,7 +262,7 @@ def test_rows_added_or_changed_after_the_copy_survive_and_are_reported(
     # Round 2: an unconditional delete removed rows that were never copied.
     env = make(tmp_path)
     env["STUB_INJECT"] = inject
-    r = run(env, workdir(tmp_path), "--purge")
+    r = purge(env, workdir(tmp_path))
     assert r.returncode == 1
     assert "stop older Workers and run again" in r.stderr
     late = "f" * 32
@@ -238,10 +271,11 @@ def test_rows_added_or_changed_after_the_copy_survive_and_are_reported(
         events = db.execute("SELECT lead_id, kind FROM kit_events").fetchall()
     # The lead added after the copy is still there, and so is its (never copied) event
     # on lead 1, which keeps lead 1 too.
-    assert late in ids
     one, two, three = (format(n, "032x") for n in (1, 2, 3))
-    assert (one, "view") in events
-    assert one in ids
+    if inject == "insert":
+        assert late in ids
+        assert (one, "view") in events
+        assert one in ids
     if inject == "edit":
         assert two in ids  # changed after the copy: not the verified row
     else:
@@ -254,9 +288,9 @@ def test_rows_added_or_changed_after_the_copy_survive_and_are_reported(
 def test_a_second_run_moves_what_the_first_left(tmp_path: Path) -> None:
     env = make(tmp_path)
     env["STUB_INJECT"] = "insert"
-    assert run(env, workdir(tmp_path), "--purge").returncode == 1
+    assert purge(env, workdir(tmp_path)).returncode == 1
     del env["STUB_INJECT"]
-    again = run(env, tmp_path / "work", "--purge")
+    again = purge(env, tmp_path / "work")  # freezes again, then moves what was left
     assert again.returncode == 0, again.stderr
     assert count(env["STUB_SRC"], "leads") == 0
     assert count(env["STUB_DEST"], "leads") == 4
@@ -271,11 +305,12 @@ def test_the_temporary_file_is_never_a_fixed_name_a_symlink_can_hijack(
     victim.write_text("keep me")
     (work / "move-legacy-leads.sql").symlink_to(victim)
     (work / "statements.sql").symlink_to(victim)
-    r = run(env, work, "--purge")
+    r = purge(env, work)
     assert r.returncode == 0, r.stderr
     assert victim.read_text() == "keep me"
     assert sorted(p.name for p in work.iterdir()) == [
         "move-legacy-leads.sql",
+        "move-manifest.json",
         "statements.sql",
     ]  # only the planted links remain: the script's own directory is gone
 
@@ -286,17 +321,17 @@ def test_the_statement_file_is_private_and_removed_when_a_step_fails(
     env = make(tmp_path)
     env["STUB_FAIL_FILE"] = "1"
     work = workdir(tmp_path)
-    assert run(env, work, "--purge").returncode == 1
-    assert list(work.iterdir()) == []
+    assert purge(env, work).returncode == 1
+    assert [p.name for p in work.iterdir()] == ["move-manifest.json"]  # no sql file
 
 
 def test_a_failed_copy_deletes_nothing(tmp_path: Path) -> None:
     env = make(tmp_path)
     env["STUB_FAIL_FILE"] = "1"
-    r = run(env, workdir(tmp_path), "--purge")
+    r = purge(env, workdir(tmp_path))
     assert r.returncode == 1
     assert count(env["STUB_SRC"], "leads") == 3
-    assert list((tmp_path / "work").iterdir()) == []
+    assert [p.name for p in (tmp_path / "work").iterdir()] == ["move-manifest.json"]
 
 
 def test_identity_is_read_from_the_databases_not_from_their_names(
@@ -408,8 +443,8 @@ def test_verify_passes_only_when_empty_and_frozen(tmp_path: Path) -> None:
     rows = run(env, work, "--verify")
     assert rows.returncode == 1
     assert "lead rows remain" in rows.stderr
-    assert run(env, work, "--purge").returncode == 0
-    open_ = run(env, work, "--verify")  # empty, but an older Worker could still insert
+    moved(env, work)  # empty and complete, but an older Worker could still insert
+    open_ = run(env, work, "--verify")
     assert open_.returncode == 1
     assert "older Worker" in open_.stderr
     assert run(env, work, "--freeze").returncode == 0
@@ -542,7 +577,7 @@ def test_a_same_name_trigger_that_does_not_refuse_is_not_a_freeze(
     env = make(tmp_path)
     work = workdir(tmp_path)
     plant(env, name, table)
-    assert run(env, work, "--purge").returncode == 0
+    moved(env, work)
     frozen = run(env, work, "--freeze")
     assert frozen.returncode == 1  # fails closed, does not claim a freeze
     assert "differs" in frozen.stderr
@@ -562,7 +597,7 @@ def test_a_same_name_trigger_on_another_table_is_not_a_freeze(tmp_path: Path) ->
     work = workdir(tmp_path)
     plant(env, "leads_frozen", "kit_events")  # right names, swapped tables
     plant(env, "kit_events_frozen", "leads")
-    assert run(env, work, "--purge").returncode == 0
+    moved(env, work)
     assert run(env, work, "--verify").returncode == 1
 
 
@@ -575,3 +610,228 @@ def test_a_local_file_error_prints_a_fixed_message_only(tmp_path: Path) -> None:
     assert "Traceback" not in r.stderr
     assert canary not in r.stdout + r.stderr
     assert "local file or process error" in r.stderr
+
+
+# ---- round 8: --verify proves the destination, --purge needs a freeze, chunks ----
+
+
+def src_rows(env: dict[str, str]) -> int:
+    return count(env["STUB_SRC"], "leads") + count(env["STUB_SRC"], "kit_events")
+
+
+def frozen_and_moved(env: dict[str, str], work: Path) -> None:
+    moved(env, work)
+    assert run(env, work, "--freeze").returncode == 0
+    assert run(env, work, "--verify").returncode == 0  # the baseline the tests break
+
+
+def dest_exec(env: dict[str, str], *statements: str) -> None:
+    with closing(sqlite3.connect(env["STUB_DEST"])) as db:
+        db.execute("PRAGMA foreign_keys = ON")
+        for sql in statements:
+            db.execute(sql)
+        db.commit()
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("missing", "2 missing"),
+        ("changed", "1 different"),
+        ("extra", "2 extra"),
+    ],
+)
+def test_verify_fails_unless_dest_holds_exactly_the_moved_rows(
+    tmp_path: Path, case: str, message: str
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    frozen_and_moved(env, work)
+    one = format(1, "032x")
+    if case == "missing":
+        # kit_events cascades with the lead, so the lead's one event goes as well.
+        dest_exec(env, f"DELETE FROM kit_events WHERE lead_id = '{one}'")
+        dest_exec(env, f"DELETE FROM leads WHERE id = '{one}'")
+    elif case == "changed":
+        dest_exec(env, f"UPDATE leads SET last_seen_ts = 424242 WHERE id = '{one}'")
+    else:
+        with closing(sqlite3.connect(env["STUB_DEST"])) as db:
+            lead(db, 50)
+            db.commit()
+    r = run(env, work, "--verify")
+    assert r.returncode == 1
+    assert "does not hold exactly the moved rows" in r.stderr
+    assert message in r.stdout  # a lead and its event each count
+    assert "example.test" not in r.stdout + r.stderr
+
+
+def test_verify_fails_when_only_part_was_copied_then_analytics_emptied(
+    tmp_path: Path,
+) -> None:
+    # The round 7 attack: copy some rows, empty analytics by hand, then verify.
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    moved(env, work)
+    for n in (2, 3):
+        i = format(n, "032x")
+        dest_exec(env, f"DELETE FROM kit_events WHERE lead_id = '{i}'")
+        dest_exec(env, f"DELETE FROM leads WHERE id = '{i}'")
+    assert run(env, work, "--freeze").returncode == 0
+    r = run(env, work, "--verify")
+    assert r.returncode == 1
+    assert "4 missing" in r.stdout
+    assert count(env["STUB_DEST"], "leads") == 1
+
+
+def test_verify_with_no_manifest_cannot_prove_a_filled_dest(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    with closing(sqlite3.connect(env["STUB_SRC"])) as db:
+        db.execute("DELETE FROM kit_events")
+        db.execute("DELETE FROM leads")
+        db.commit()
+    with closing(sqlite3.connect(env["STUB_DEST"])) as db:
+        lead(db, 60)
+        db.commit()
+    assert run(env, work, "--freeze").returncode == 0
+    r = run(env, work, "--verify")
+    assert r.returncode == 1
+    assert "no manifest" in r.stderr
+
+
+def test_verify_refuses_a_manifest_that_is_unfinished_or_for_other_names(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    frozen_and_moved(env, work)
+    manifest = work / "move-manifest.json"
+    good = manifest.read_text()
+    manifest.write_text(good.replace('"state": "copied"', '"state": "copying"'))
+    r = run(env, work, "--verify")
+    assert r.returncode == 1
+    assert "did not finish" in r.stderr
+    manifest.write_text(good.replace('"source": "analytics-db"', '"source": "other"'))
+    other = run(env, work, "--verify")
+    assert other.returncode == 3
+    manifest.write_text("not json")
+    assert run(env, work, "--verify").returncode == 3
+
+
+def test_purge_refuses_unless_the_source_is_frozen_before_any_write(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    r = run(env, work, "--purge")
+    assert r.returncode == 3
+    assert "--freeze first" in r.stderr
+    assert src_rows(env) == 6
+    assert count(env["STUB_DEST"], "leads") == 0  # not even the copy ran
+    assert list(work.iterdir()) == []  # no manifest either
+
+
+def test_purge_refuses_when_only_one_table_is_frozen_or_the_freeze_is_fake(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    plant(env, "leads_frozen", "leads")  # right name, does not refuse an insert
+    r = run(env, work, "--purge")
+    assert r.returncode == 3
+    assert src_rows(env) == 6
+    assert count(env["STUB_DEST"], "leads") == 0
+
+
+def test_purge_refuses_before_any_delete_when_dest_lost_a_row_after_the_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = load_script()
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    assert run(env, work, "--freeze").returncode == 0
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    real = mod.copy_chunks
+
+    def lossy(*a: Any, **k: Any) -> None:
+        real(*a, **k)
+        i = format(1, "032x")
+        dest_exec(env, f"DELETE FROM kit_events WHERE lead_id = '{i}'")
+        dest_exec(env, f"DELETE FROM leads WHERE id = '{i}'")
+
+    monkeypatch.setattr(mod, "copy_chunks", lossy)
+    code = mod.main(
+        ["--source", "analytics-db", "--dest", "leads-db", "--workdir", str(work)]
+        + ["--purge"]
+    )
+    assert code == 1
+    assert src_rows(env) == 6  # nothing was deleted
+
+
+def test_purge_runs_the_final_verification_in_the_same_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = load_script()
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    assert run(env, work, "--freeze").returncode == 0
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+    def bad_verify(*a: Any, **k: Any) -> int:
+        raise mod.Failed("final check failed")
+
+    monkeypatch.setattr(mod, "verify", bad_verify)
+    code = mod.main(
+        ["--source", "analytics-db", "--dest", "leads-db", "--workdir", str(work)]
+        + ["--purge"]
+    )
+    assert code == 1  # never "done" unless the final check passed
+
+
+def test_bounded_chunks_copy_and_purge_everything(tmp_path: Path) -> None:
+    env = make(tmp_path, count=7)
+    env["MOVE_BATCH"] = "2"
+    work = workdir(tmp_path)
+    r = purge(env, work)
+    assert r.returncode == 0, r.stderr
+    assert src_rows(env) == 0
+    assert count(env["STUB_DEST"], "leads") == 7
+    assert count(env["STUB_DEST"], "kit_events") == 7
+    assert run(env, work, "--verify").returncode == 0
+
+
+@pytest.mark.parametrize("bad", ["0", "1001", "x", ""])
+def test_the_batch_size_is_bounded(tmp_path: Path, bad: str) -> None:
+    env = make(tmp_path)
+    env["MOVE_BATCH"] = bad
+    r = run(env, workdir(tmp_path), "--copy")
+    assert r.returncode != 0
+    assert "MOVE_BATCH" in r.stderr
+    assert count(env["STUB_DEST"], "leads") == 0
+
+
+def test_a_crash_mid_copy_resumes_from_the_cursor_and_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path, count=5)
+    env["MOVE_BATCH"] = "2"
+    work = workdir(tmp_path)
+    # Crash: the stub fails on its 2nd statement file (the second leads chunk).
+    env["STUB_COUNTER"] = str(tmp_path / "calls")
+    env["CRASH_AT"] = "2"
+    r = run(env, work, "--copy")
+    assert r.returncode == 1
+    manifest = (work / "move-manifest.json").read_text()
+    assert '"copying"' in manifest
+    assert count(env["STUB_DEST"], "leads") == 2  # one chunk landed
+    del env["CRASH_AT"]
+    again = run(env, work, "--copy")
+    assert again.returncode == 0, again.stderr
+    assert "resuming" in again.stdout
+    assert rows(env["STUB_SRC"], "leads") == rows(env["STUB_DEST"], "leads")
+    assert rows(env["STUB_SRC"], "kit_events") == rows(env["STUB_DEST"], "kit_events")
+    once = run(env, work, "--copy")  # idempotent: a third run changes nothing
+    assert once.returncode == 0
+    assert count(env["STUB_DEST"], "leads") == 5

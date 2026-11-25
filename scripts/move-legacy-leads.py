@@ -12,7 +12,7 @@ credential.
 
     move-legacy-leads.py --source ANALYTICS_DB --dest LEADS_DB --workdir DIR
     move-legacy-leads.py ... --copy     # copy and verify, delete nothing
-    move-legacy-leads.py ... --purge    # copy, verify, then delete the analytics rows
+    move-legacy-leads.py ... --purge    # (frozen only) copy, verify, delete, verify
 
 With neither flag it is a dry run: it reads and counts, writes and deletes nothing.
 
@@ -25,25 +25,46 @@ gate. Both take the same --source, --dest and --workdir arguments as the move.
 
 Steps. 1 Identity: SOURCE must answer 'analytics' and DEST 'leads' from their own
 db_identity tables (a name proves nothing), else it refuses (exit 3). 2 Count what
-SOURCE holds. 3 (--copy or --purge) write every lead and kit event to DEST with
-INSERT OR IGNORE, so a DEST row is never overwritten, then read DEST back and require
-every SOURCE row to be there with every column equal. A lead that DEST already holds
-under another id (same address) does not match, so the check fails and nothing is
-deleted: decide that one by hand. 4 (--purge, and only after step 3 passed in this
-same run) delete from SOURCE exactly the rows that were read back from DEST in this
-run: each kit event by id and every column, then each lead by id and every column, and
-only a lead that has no event left. Never "delete everything": a row inserted or
-changed in SOURCE after the copy (an older Worker is still writing there) does not
-match, survives, and is counted; the script then exits 1 and says to run it again.
-Stop every older Worker that writes the analytics database first.
+SOURCE holds. 3 (--copy or --purge) in bounded chunks (MOVE_BATCH rows, default 200,
+1 to 1000), in primary key order: write the chunk to DEST with INSERT OR IGNORE, so a
+DEST row is never overwritten, read it back and require every SOURCE row of the chunk
+to be there with every column equal, then record a digest of each row and the cursor in
+a manifest. A lead that DEST already holds under another id (same address) does not
+match, so the check fails and nothing is deleted: decide that one by hand. 4 (--purge)
+REFUSES (exit 3) unless every present analytics lead table is frozen (--freeze first),
+before any copy or delete. It then proves, from the manifest, that DEST holds exactly
+the recorded rows (see Manifest) and only then deletes from SOURCE, in chunks, exactly
+the rows whose id and every column match a recorded digest: each kit event, then each
+lead that has no event left. Never "delete everything": a row inserted or changed in
+SOURCE after the copy does not match, survives, and is counted; the script then exits 1
+and says to run it again. Last, in the same run, it runs the --verify check below and
+fails unless that passes. Stop every older Worker that writes the analytics database
+first.
 
-No data is lost: the delete is reachable only after the read-back check, in the same
-run, and the script stops at the first error. Re-running after a failure is safe.
+Manifest. WORKDIR/move-manifest.json (mode 600, written atomically): the two database
+names, the state ("copying" or "copied"), a cursor per table, and one SHA-256 digest
+per row ever copied (the table and id as the key; no address, no column value). It is
+the only record that survives the delete, so it is what lets --verify prove DEST still
+holds every lead after the analytics rows are gone. A crash mid-copy resumes from the
+cursor; running again is idempotent. Rows are digested, never kept: memory is one
+chunk plus about 100 bytes per row of manifest. Keep the file until cutover is done;
+it is not removed when the script ends. --verify refuses without it when DEST holds
+any lead row. A manifest for other database names is refused.
 
-Privacy. Rows are held in memory and in one file inside a fresh private directory made
-under WORKDIR (an existing directory you own, mode 700, outside any git work tree);
-the file is created exclusively, never through a symlink, and removed with its
-directory when the script ends.
+--verify exits 0 only when: SOURCE holds no lead rows and every present lead table is
+frozen against inserts; and DEST holds exactly the manifest's rows, compared by count
+and by digest of every column: none missing, none different, none extra (run it before
+the gate is enabled, while DEST holds nothing but the moved rows). With no manifest it
+passes only if DEST also holds no lead row (nothing was ever moved).
+
+No data is lost: the delete is reachable only after the read-back check and the
+manifest proof, in the same run, and the script stops at the first error. Re-running
+after a failure is safe.
+
+Privacy. Rows are held in memory one chunk at a time and in one file inside a fresh
+private directory made under WORKDIR (an existing directory you own, mode 700, outside
+any git work tree); the file is created exclusively, never through a symlink, and
+removed with its directory when the chunk is done. The manifest holds digests only.
 It prints counts and fixed messages only, never a row or wrangler's own output. Every
 wrangler call is bounded by MOVE_TIMEOUT seconds (default 120, 1 to 900). WRANGLER
 names another command (a test stub); the default is `npx wrangler`. Run it from the
@@ -56,6 +77,7 @@ Exit: 0 done or dry run, 1 a step failed (nothing deleted unless it says so), 2 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -86,15 +108,14 @@ EVENT_COLUMNS = ("id", "ts", "lead_id", "kind")
 # Fixed statements: no table or column name is ever built from input.
 LEAD_LIST = ", ".join(LEAD_COLUMNS)
 EVENT_LIST = ", ".join(EVENT_COLUMNS)
-SELECT_LEADS = "SELECT " + LEAD_LIST + " FROM leads ORDER BY id"
-SELECT_EVENTS = "SELECT " + EVENT_LIST + " FROM kit_events ORDER BY id"
+TABLES = (("leads", LEAD_COLUMNS), ("kit_events", EVENT_COLUMNS))  # leads first
+COLUMNS = dict(TABLES)
+MANIFEST = "move-manifest.json"
 EXISTS_SQL = (
     "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'leads' "
     "UNION ALL SELECT name FROM sqlite_master WHERE type = 'table' "
     "AND name = 'kit_events'"
 )
-INSERT_LEAD = "INSERT OR IGNORE INTO leads (" + LEAD_LIST + ") VALUES "
-INSERT_EVENT = "INSERT OR IGNORE INTO kit_events (" + EVENT_LIST + ") VALUES "
 
 
 class Failed(Exception):
@@ -109,6 +130,13 @@ def timeout_seconds() -> int:
     raw = os.environ.get("MOVE_TIMEOUT", "120")
     if not raw.isdigit() or not 1 <= int(raw) <= 900:
         raise SystemExit("error: MOVE_TIMEOUT must be a whole number from 1 to 900")
+    return int(raw)
+
+
+def batch_size() -> int:
+    raw = os.environ.get("MOVE_BATCH", "200")
+    if not raw.isdigit() or not 1 <= int(raw) <= 1000:
+        raise SystemExit("error: MOVE_BATCH must be a whole number from 1 to 1000")
     return int(raw)
 
 
@@ -150,12 +178,35 @@ def roles(w: Wrangler, db: str) -> list[str]:
     return [str(r.get("role")) for r in rows]
 
 
-def read_all(w: Wrangler, db: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Every lead and kit event in `db`; a table that is not there holds none."""
-    have = {r.get("name") for r in w.execute(db, command=EXISTS_SQL)}
-    leads = w.execute(db, command=SELECT_LEADS) if "leads" in have else []
-    events = w.execute(db, command=SELECT_EVENTS) if "kit_events" in have else []
-    return leads, events
+def count_rows(w: Wrangler, db: str, table: str) -> int:
+    rows = w.execute(db, command=f"SELECT COUNT(*) AS n FROM {table}")
+    n = rows[0].get("n") if rows else None
+    if not isinstance(n, int) or isinstance(n, bool):
+        raise Failed("unexpected answer from the database")
+    return n
+
+
+def counts(w: Wrangler, db: str) -> dict[str, int]:
+    """Rows per lead table; a table that is not there holds none."""
+    have = present_tables(w, db)
+    return {t: count_rows(w, db, t) if t in have else 0 for t, _ in TABLES}
+
+
+def page(
+    w: Wrangler, db: str, table: str, after: object | None, limit: int
+) -> list[dict[str, Any]]:
+    """The next `limit` rows of `table` after primary key `after`, in key order."""
+    cols = ", ".join(COLUMNS[table])
+    cond = "" if after is None else f" WHERE id > {literal(after)}"
+    return w.execute(
+        db, command=f"SELECT {cols} FROM {table}{cond} ORDER BY id LIMIT {limit}"
+    )
+
+
+def by_ids(w: Wrangler, db: str, table: str, ids: list[object]) -> list[dict[str, Any]]:
+    cols = ", ".join(COLUMNS[table])
+    listed = ", ".join(literal(i) for i in ids)
+    return w.execute(db, command=f"SELECT {cols} FROM {table} WHERE id IN ({listed})")
 
 
 def literal(value: object) -> str:
@@ -174,10 +225,10 @@ def row_sql(prefix: str, columns: tuple[str, ...], row: dict[str, Any]) -> str:
     return prefix + "(" + ", ".join(literal(row.get(c)) for c in columns) + ");"
 
 
-def insert_sql(leads: list[dict[str, Any]], events: list[dict[str, Any]]) -> str:
-    out = [row_sql(INSERT_LEAD, LEAD_COLUMNS, r) for r in leads]
-    out += [row_sql(INSERT_EVENT, EVENT_COLUMNS, r) for r in events]
-    return "\n".join(out) + "\n"
+def insert_sql(table: str, rows: list[dict[str, Any]]) -> str:
+    cols = COLUMNS[table]
+    head = f"INSERT OR IGNORE INTO {table} ({', '.join(cols)}) VALUES "
+    return "\n".join(row_sql(head, cols, r) for r in rows) + "\n"
 
 
 def where(columns: tuple[str, ...], row: dict[str, Any]) -> str:
@@ -185,18 +236,20 @@ def where(columns: tuple[str, ...], row: dict[str, Any]) -> str:
     return " AND ".join(f"{c} IS {literal(row.get(c))}" for c in columns)
 
 
-def delete_sql(leads: list[dict[str, Any]], events: list[dict[str, Any]]) -> str:
+def delete_sql(table: str, rows: list[dict[str, Any]]) -> str:
     """Delete exactly the verified rows; a lead goes only with no event left."""
-    out = [
-        "DELETE FROM kit_events WHERE " + where(EVENT_COLUMNS, r) + ";" for r in events
-    ]
-    out += [
-        "DELETE FROM leads WHERE "
-        + where(LEAD_COLUMNS, r)
-        + " AND NOT EXISTS (SELECT 1 FROM kit_events e WHERE e.lead_id = leads.id);"
-        for r in leads
-    ]
-    return "\n".join(out) + "\n"
+    tail = ";"
+    if table == "leads":
+        tail = (
+            " AND NOT EXISTS (SELECT 1 FROM kit_events e WHERE e.lead_id = leads.id);"
+        )
+    return (
+        "\n".join(
+            f"DELETE FROM {table} WHERE " + where(COLUMNS[table], r) + tail
+            for r in rows
+        )
+        + "\n"
+    )
 
 
 def run_file(w: Wrangler, db: str, work: Path, sql: str) -> None:
@@ -224,6 +277,86 @@ def missing_from(
         for r in source_rows
         if have.get(r.get("id")) != tuple(r.get(c) for c in columns)
     )
+
+
+def digest(table: str, row: dict[str, Any]) -> str:
+    """SHA-256 over every column of a row, in a fixed order and type-tagged."""
+    parts = [[type(row.get(c)).__name__, row.get(c)] for c in COLUMNS[table]]
+    return hashlib.sha256(json.dumps(parts, separators=(",", ":")).encode()).hexdigest()
+
+
+class Manifest:
+    """The private record of what was copied: digests and cursors, never a row."""
+
+    def __init__(self, work: Path, source: str, dest: str) -> None:
+        self.path = work / MANIFEST
+        self.source = source
+        self.dest = dest
+        self.state = "copying"
+        self.cursor: dict[str, Any] = {}
+        self.digests: dict[str, dict[str, str]] = {t: {} for t, _ in TABLES}
+        self.exists = False
+
+    def load(self) -> None:
+        try:
+            fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            return
+        with os.fdopen(fd, "r", encoding="utf-8") as fh:
+            if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                raise Refused("the manifest is not a regular file.")
+            try:
+                data = json.load(fh)
+            except ValueError as exc:
+                raise Refused(
+                    "the manifest is unreadable; resolve it by hand."
+                ) from exc
+        ok = (
+            isinstance(data, dict)
+            and data.get("version") == 1
+            and data.get("state") in ("copying", "copied")
+            and isinstance(data.get("cursor"), dict)
+            and isinstance(data.get("digests"), dict)
+            and all(isinstance(data["digests"].get(t), dict) for t, _ in TABLES)
+        )
+        if not ok:
+            raise Refused("the manifest is unreadable; resolve it by hand.")
+        if data.get("source") != self.source or data.get("dest") != self.dest:
+            raise Refused("the manifest belongs to other databases; resolve by hand.")
+        self.state = data["state"]
+        self.cursor = data["cursor"]
+        self.digests = {t: dict(data["digests"][t]) for t, _ in TABLES}
+        self.exists = True
+
+    def save(self) -> None:
+        tmp = self.path.with_name(MANIFEST + ".tmp")
+        tmp.unlink(
+            missing_ok=True
+        )  # a crashed run's leftover (a link goes, not its target)
+        body = json.dumps(
+            {
+                "version": 1,
+                "source": self.source,
+                "dest": self.dest,
+                "state": self.state,
+                "cursor": self.cursor,
+                "digests": self.digests,
+            }
+        )
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(body)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, self.path)
+        self.exists = True
+
+    def record(self, table: str, row: dict[str, Any]) -> None:
+        key, new = str(row.get("id")), digest(table, row)
+        if self.digests[table].setdefault(key, new) != new:
+            raise Failed(
+                "a row differs from what an earlier run recorded; decide by hand"
+            )
 
 
 def check_workdir(path: str) -> Path:
@@ -301,19 +434,123 @@ def freeze(w: Wrangler, db: str) -> int:
     return 0
 
 
-def verify(w: Wrangler, db: str) -> int:
-    """The cutover check: exit 0 only when no older writer can store a lead there."""
-    tables = present_tables(w, db)
-    leads, events = read_all(w, db)
-    unfrozen = sorted(tables - frozen_tables(w, db))
-    print(f"analytics holds {len(leads)} leads and {len(events)} kit events")
+def check_dest(w: Wrangler, dest: str, manifest: Manifest, size: int) -> None:
+    """DEST must hold exactly the manifest's rows: counts, then a digest of each row."""
+    have = present_tables(w, dest)
+    missing = different = extra = 0
+    for table, _ in TABLES:
+        want = dict(manifest.digests[table])
+        seen = 0
+        after: object | None = None
+        while table in have:
+            rows = page(w, dest, table, after, size)
+            if not rows:
+                break
+            for r in rows:
+                seen += 1
+                got = want.pop(str(r.get("id")), None)
+                if got is None:
+                    extra += 1
+                elif got != digest(table, r):
+                    different += 1
+            after = rows[-1].get("id")
+        missing += len(want)
+        print(f"dest {table}: {seen} rows, manifest {len(manifest.digests[table])}")
+    print(
+        f"dest check: {missing} missing, {different} different, {extra} extra "
+        "against the manifest"
+    )
+    if missing or different or extra:
+        raise Failed("the leads database does not hold exactly the moved rows")
+
+
+def check_frozen(w: Wrangler, db: str) -> None:
+    if present_tables(w, db) - frozen_tables(w, db):
+        raise Refused("SOURCE is not frozen against inserts; run --freeze first.")
+
+
+def verify(w: Wrangler, source: str, dest: str, work: Path) -> int:
+    """The cutover check: exit 0 only when the move is complete and final."""
+    size = batch_size()
+    tables = present_tables(w, source)
+    held = counts(w, source)
+    unfrozen = sorted(tables - frozen_tables(w, source))
+    print(f"analytics holds {held['leads']} leads and {held['kit_events']} kit events")
     print(f"lead tables not frozen against inserts: {len(unfrozen)}")
-    if leads or events:
+    if any(held.values()):
         raise Failed("lead rows remain in the analytics database; run the move")
     if unfrozen:
         raise Failed("a lead table can still take inserts from an older Worker; freeze")
-    print("cutover verified: empty, and no older Worker can store a lead there.")
+    manifest = Manifest(work, source, dest)
+    manifest.load()
+    if not manifest.exists:
+        if any(counts(w, dest).values()):
+            raise Failed("no manifest: the leads database cannot be proved complete")
+        print("no manifest and no lead rows anywhere: nothing was ever moved")
+    elif manifest.state != "copied":
+        raise Failed("the manifest says a copy did not finish; run the move again")
+    else:
+        check_dest(w, dest, manifest, size)
+    print("cutover verified: moved completely, and no older Worker can store a lead.")
     return 0
+
+
+def copy_chunks(w: Wrangler, args: argparse.Namespace, work: Path, m: Manifest) -> None:
+    """Copy and read back in bounded chunks, recording each chunk before the next."""
+    size = batch_size()
+    if m.state == "copying" and m.exists:
+        print("resuming an unfinished copy from the recorded cursor")
+    else:
+        m.state, m.cursor = "copying", {}
+    m.save()
+    total = {t: 0 for t, _ in TABLES}
+    for table, cols in TABLES:
+        after = m.cursor.get(table)
+        while True:
+            rows = page(w, args.source, table, after, size)
+            if not rows:
+                break
+            run_file(w, args.dest, work, insert_sql(table, rows))
+            back = by_ids(w, args.dest, table, [r.get("id") for r in rows])
+            short = missing_from(back, rows, cols)
+            if short:
+                print(
+                    f"verify: {short} {table} rows are not in dest exactly as in source"
+                )
+                raise Failed("copy does not match; nothing was deleted from analytics")
+            for r in rows:
+                m.record(table, r)
+            after = rows[-1].get("id")
+            m.cursor[table] = after
+            m.save()
+            total[table] += len(rows)
+    m.state = "copied"
+    m.save()
+    print(
+        f"copied {total['leads']} leads and {total['kit_events']} kit events; "
+        "verify: 0 leads and 0 kit events are not in dest exactly as in source"
+    )
+
+
+def purge_chunks(
+    w: Wrangler, args: argparse.Namespace, work: Path, m: Manifest
+) -> None:
+    """Delete only rows whose every column matches a recorded digest, in chunks."""
+    size = batch_size()
+    for table in ("kit_events", "leads"):  # events first: a lead goes with none left
+        after: object | None = None
+        while True:
+            rows = page(w, args.source, table, after, size)
+            if not rows:
+                break
+            after = rows[-1].get("id")
+            known = [
+                r
+                for r in rows
+                if m.digests[table].get(str(r.get("id"))) == digest(table, r)
+            ]
+            if known:
+                run_file(w, args.source, work, delete_sql(table, known))
 
 
 def run(args: argparse.Namespace) -> int:
@@ -327,43 +564,39 @@ def run(args: argparse.Namespace) -> int:
     if args.freeze:
         return freeze(w, args.source)
     if args.verify:
-        return verify(w, args.source)
+        return verify(w, args.source, args.dest, work)
 
-    leads, events = read_all(w, args.source)
-    print(f"source holds {len(leads)} leads and {len(events)} kit events")
-    if not leads and not events:
+    held = counts(w, args.source)
+    print(f"source holds {held['leads']} leads and {held['kit_events']} kit events")
+    if not any(held.values()):
         print("nothing to move: the analytics database holds no lead rows")
         return 0
     if not (args.copy or args.purge):
         print("dry run: nothing was written or deleted.")
         print("run again with --copy, or --purge to also delete the analytics rows.")
         return 0
+    if args.purge:
+        check_frozen(w, args.source)  # before any copy or delete
 
-    run_file(w, args.dest, work, insert_sql(leads, events))
-
-    dest_leads, dest_events = read_all(w, args.dest)
-    short_leads = missing_from(dest_leads, leads, LEAD_COLUMNS)
-    short_events = missing_from(dest_events, events, EVENT_COLUMNS)
-    print(f"dest now holds {len(dest_leads)} leads and {len(dest_events)} kit events")
-    print(
-        f"verify: {short_leads} leads and {short_events} kit events "
-        "are not in dest exactly as in source"
-    )
-    if short_leads or short_events:
-        raise Failed("copy does not match; nothing was deleted from analytics")
+    manifest = Manifest(work, args.source, args.dest)
+    manifest.load()
+    copy_chunks(w, args, work, manifest)
     if not args.purge:
         print("copied and verified. Nothing was deleted; --purge deletes the copies.")
         return 0
 
-    # Only the rows verified above, by id and every column: never the whole table.
-    run_file(w, args.source, work, delete_sql(leads, events))
-    left_leads, left_events = read_all(w, args.source)
-    print(f"source now holds {len(left_leads)} leads and {len(left_events)} kit events")
-    if left_leads or left_events:
+    # Frozen again and DEST proved complete from the manifest, right before the delete.
+    check_frozen(w, args.source)
+    check_dest(w, args.dest, manifest, batch_size())
+    purge_chunks(w, args, work, manifest)
+    left = counts(w, args.source)
+    print(f"source now holds {left['leads']} leads and {left['kit_events']} kit events")
+    if any(left.values()):
         raise Failed(
             "rows remain in the analytics database (added or changed after the "
             "copy, so never verified); stop older Workers and run again"
         )
+    verify(w, args.source, args.dest, work)  # the final check, in this same run
     print("done: the lead rows live only in the leads database now.")
     return 0
 

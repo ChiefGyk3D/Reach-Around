@@ -386,8 +386,12 @@ config names both databases, with the private work directory from the move secti
    `leads` or `kit_events`, so an older Worker cannot store a lead there whatever version is deployed:
    `python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --dest reach-around-leads --workdir ~/lead-move-work --freeze`
 2. Move (dry run, `--copy`, `--purge`; see below).
-3. Verify. Exit 0 only when the analytics lead tables hold no row and are frozen (or are gone). A
-   non-zero exit blocks enabling the gate:
+3. Verify. Exit 0 only when the analytics lead tables hold no row and are frozen (or are gone), AND
+   the leads database holds exactly the rows the move recorded: the same count and the same digest of
+   every column, none missing, none different, none extra (run it before the gate is enabled, while
+   the leads database holds nothing but the moved rows). It reads the move's manifest from the work
+   directory (`move-manifest.json`, digests only, kept after the move); without it, it passes only if
+   the leads database holds no lead row either. A non-zero exit blocks enabling the gate:
    `python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --dest reach-around-leads --workdir ~/lead-move-work --verify`
 4. Only then deploy the new Worker and enable `features.kit_gate`.
 
@@ -433,8 +437,12 @@ dry run tells you whether there is anything to move). Run it once, after creatin
 enabling the kit gate. It copies every lead and kit event to the leads database, reads them back, and
 only then deletes the analytics copies. Run it from the folder whose wrangler config names both
 databases, with a private directory outside any git work tree (mode 700); the script makes a fresh
-directory inside it for its one temporary file (created exclusively, never through a symlink, removed
-at the end):
+directory inside it for each temporary statement file (created exclusively, never through a symlink,
+removed when its chunk is done). The work directory also keeps `move-manifest.json` (mode 600, a digest
+per copied row and a cursor, no address): do not delete it before `--verify` has passed. The copy and
+the delete run in chunks of 200 rows (`MOVE_BATCH`, 1 to 1000), so memory and each statement file stay
+bounded (the manifest costs about 100 bytes per row); a run that stops midway resumes from the cursor
+and running it again is safe:
 
 ```bash
 mkdir -m 700 ~/lead-move-work
@@ -442,10 +450,12 @@ mkdir -m 700 ~/lead-move-work
 python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --dest reach-around-leads --workdir ~/lead-move-work
 # 2. Copy and verify (still deletes nothing). Read the "not in dest" line: it must say 0 and 0.
 python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --dest reach-around-leads --workdir ~/lead-move-work --copy
-# 3. Delete the analytics copies. This repeats the copy and the read-back first, in the same run,
-#    and deletes only the rows it just read back from the leads database, each by id and every
-#    column (a lead only once it has no event left), never the whole table. A row an older Worker
+# 3. Delete the analytics copies. It refuses (exit 3) unless the freeze of step 1 is in place, before
+#    any copy or delete. It then repeats the copy and the read-back, proves from the manifest that the
+#    leads database holds exactly the recorded rows, and deletes only rows whose id and every column
+#    match a recorded digest (a lead only once it has no event left), never the whole table. A row
 #    added or changed after the copy survives; the script then exits 1 and says to run it again.
+#    Last, in the same run, it runs the --verify check and fails unless that passes.
 python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --dest reach-around-leads --workdir ~/lead-move-work --purge
 ```
 
@@ -465,7 +475,7 @@ Which database each tool acts on:
 | The Worker: gate, view route, lead purge | `LEADS_DB` | leads, kit events, purge heartbeat (`kit_meta last_purge_ts`) |
 | The Worker: everything else | `DB` | clicks, views, rollups, counters, health, alert dedup |
 | `scripts/backup-d1.sh DATABASE DEST` | the analytics database | with `--apply` reads the database's own `db_identity` and refuses unless it says `analytics` (name and id do not matter); never exports lead tables |
-| `scripts/move-legacy-leads.py` | both, once | moves lead rows from analytics to the leads database, verifies, then deletes the analytics copies |
+| `scripts/move-legacy-leads.py` | both, once | moves lead rows from analytics to the leads database in chunks, verifies against a digest manifest, then deletes the analytics copies (only when frozen); `--verify` proves the leads database complete |
 | The lead export and erasure steps in [privacy.md](privacy.md) | `reach-around-leads` | name it in every `wrangler d1 execute` |
 
 Not done here: the deploy workflows (`deploy-worker.yml`, `deploy-test.yml`) do not write the binding or
