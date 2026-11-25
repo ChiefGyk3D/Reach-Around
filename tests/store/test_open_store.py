@@ -19,13 +19,13 @@ def test_open_store_migrates_by_default(tmp_path: Path) -> None:
     config = StoreConfig(path=str(tmp_path / "d" / "s.db"))
     store = open_store(config, {})
     assert store.migration_status().pending == ()
-    assert store.migration_status().applied == (1,)
+    assert store.migration_status().applied == (1, 2)
 
 
 def test_open_store_can_skip_migrating(tmp_path: Path) -> None:
     store = open_store(StoreConfig(path=str(tmp_path / "s.db")), {}, migrate=False)
     assert store.migration_status().applied == ()
-    assert store.migration_status().pending == (1,)
+    assert store.migration_status().pending == (1, 2)
 
 
 def test_postgres_is_a_seam_not_yet_built() -> None:
@@ -81,13 +81,13 @@ def test_cli_store_status_then_migrate(
     config = _config_with_store(tmp_path, tmp_path / "data" / "s.db")
     assert main(["store", "status", "--config", str(config)]) == 0
     out = capsys.readouterr().out
-    assert "applied: none" in out and "pending: 0001" in out
+    assert "applied: none" in out and "pending: 0001, 0002" in out
     assert not (tmp_path / "data").exists()  # status never creates the database
     assert main(["store", "migrate", "--config", str(config)]) == 0
-    assert "schema at 0001" in capsys.readouterr().out
+    assert "schema at 0002" in capsys.readouterr().out
     assert main(["store", "status", "--config", str(config)]) == 0
     out = capsys.readouterr().out
-    assert "applied: 0001" in out and "pending: none" in out
+    assert "applied: 0001, 0002" in out and "pending: none" in out
 
 
 def test_cli_store_bad_config_is_exit_1(
