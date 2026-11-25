@@ -1494,6 +1494,9 @@ never stored.
 ```yaml
 features:
   kit_gate: true
+privacy:
+  controller_name: Example Creator LLC
+  contact: privacy@example.com
 kit:
   title: Example Creator media kit
   about: A fake creator used to show the settings.
@@ -1794,7 +1797,10 @@ Wording and retention for the generated privacy page. Unknown keys are refused.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `contact` | text, 1-200 characters | none | How visitors can reach you about privacy. Shown as plain text. |
+| `controller_name` | text, 1-200 characters | none | Who the fixed privacy notice names as the controller. Required, with `contact`, when `features.kit_gate` is on or alerts are on (channels and events both set); the config is refused otherwise, and the error names the field, never a value. |
+| `contact` | text, 1-200 characters | none | How visitors can reach you about privacy. Shown as plain text, in the privacy notice and next to the kit gate form. Required with `controller_name` when the gate or alerts are on. |
+| `dpa_note` | text, up to 500 characters | empty | Optional sentences added after the processor statement in the fixed notice. |
+| `turnstile_storage_note` | text, up to 500 characters | empty | Optional sentences added at the end of the bot check section of the fixed notice. |
 | `intro` | text, 1-2000 characters | neutral default | Replaces the opening text of the privacy page and the cookie notice. Escaped, never treated as HTML. |
 | `retention_days` | integer, exactly `90` | `90` | How long the hourly click records are kept. The Worker deletes them at one fixed 90-day window and no deploy variable changes it, so the only value accepted is 90; any other number is refused because the privacy page would promise what the Worker does not do. |
 | `lead_retention_days` | integer, 1-365 | `30` | How long a kit email address is kept. This is the one lead retention setting: the privacy page prints it and the deploy gives the same number to the Worker as `LEAD_RETENTION_DAYS`. The range and default are the Worker's own. Quoted numbers and booleans are refused. A value above 365 (allowed before this change, up to 3650) is now an error, because the Worker deletes leads after at most 365 days. |
@@ -1804,6 +1810,7 @@ features:
   click_tracking: true
   kit_gate: true
 privacy:
+  controller_name: Example Creator LLC
   contact: privacy@example.com
   intro: Here is exactly what this site collects.
   retention_days: 90
@@ -1811,7 +1818,13 @@ privacy:
 ```
 
 The privacy page at `/privacy/` and the cookie notice are generated from the
-enabled features, so they cannot claim less than the site does. See
+enabled features, so they cannot claim less than the site does. The page also
+carries a fixed privacy notice that cannot be turned off: controller, what is
+measured, retention, legal basis, recipients, bot checks, rights and a complaint
+route. Its retention numbers come from the same constants the Worker tests pin
+(`analytics.raw_keep_days`, the click window, the daily and monthly totals); the
+alert services are the names of the configured `alerts.channels`, and the sentence
+that names them is left out when alerts are off. See
 [privacy by construction](education/privacy-by-construction.md).
 
 ## `alerts`

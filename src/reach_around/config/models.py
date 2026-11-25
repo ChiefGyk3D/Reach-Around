@@ -48,7 +48,7 @@ from reach_around.config.kit import KitConfig, _iso_date
 from reach_around.config.loader import ConfigError, load_yaml
 from reach_around.config.numbers_sources import NumbersConfig
 from reach_around.config.page_title import PageDescription, PageTitle, TitleTemplate
-from reach_around.config.privacy import Features, Privacy
+from reach_around.config.privacy import Features, Privacy, missing_notice_fields
 from reach_around.config.profile_card import (
     MAX_TAGS,
     MEDIA_KIT_ID,
@@ -811,6 +811,21 @@ class SiteConfig(_Model):
             raise ValueError(
                 "analytics.turnstile_beacon needs page_views or "
                 "features.click_tracking: with neither there is nothing to protect"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _notice_needs_a_controller_and_contact(self) -> SiteConfig:
+        missing = missing_notice_fields(
+            self.privacy,
+            kit_gate=self.features.kit_gate,
+            alerts_enabled=self.alerts.enabled,
+        )
+        if missing:
+            raise ValueError(
+                "the privacy notice needs "
+                + " and ".join(missing)
+                + " when features.kit_gate or alerts are on"
             )
         return self
 
