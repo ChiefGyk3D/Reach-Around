@@ -243,6 +243,9 @@ def _activity(reader: _Reader, first: date, last: date) -> Report:
             "unique count, not a sum of days; UNVERIFIED, #552)"
         )
         out.append(Measure(metric, value, note))
+    if not set(ACTIVITY_METRICS) <= seen:
+        # A reply that leaves out a requested metric is not a full report.
+        raise InstagramInsightsError("missing_field")
     out.sort(key=lambda m: m.metric)
     return out, skipped
 

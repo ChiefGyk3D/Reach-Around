@@ -72,6 +72,38 @@ mark a fetched record with a correction (below).
   `git checkout` or `git pull` in the same folder) replaced the file in
   between, the append reports it instead of claiming success, and the file that
   was swapped in is left as it was.
+  The same check covers the file's size: it is read to exactly the size it had
+  when first looked at, and looked at again just before the write. A write by
+  something that ignores the lock (it grows or shortens the locked file while
+  the scan runs) is refused with "changed while it was read". The lock is
+  advisory. The SHA-256 of the bytes that were validated is kept, and after the
+  write the same range is hashed again. The check and the write cannot be one
+  step against a writer that ignores the lock, so a change in the short gap
+  between them (growth, truncation, or bytes changed in place at the same size)
+  is not prevented; it is detected right after the write and reported
+  as "changed while it was written" instead of success. Nothing is rolled back
+  then, because the bytes on disk are not all ours: run `counts history-verify`
+  and restore from git if it reports damage.
+* A refresh or import that stops after history was written leaves a small
+  `.<numbers file>.pending` note (run ids, the identity of the numbers file
+  (device, inode, time, size), a random nonce and a digest of the text the run was about to
+  write, never values). If that note exists but cannot be read or is not valid,
+  the next run
+  stops before touching anything, prints a fixed message, and leaves the note
+  as it is; inspect or remove it, then run again. A note left behind after the
+  numbers file was written is recognized (the numbers file now holds exactly
+  the text that run was to write, and is a different file than before, even if
+  its bytes are the same) and ignored, so a committed day is never rewritten.
+  A numbers file put in place by other means (a checkout or a copy of an older
+  version) holds other content, proves nothing, and the attempt stays pending.
+  The note lists at most 16 attempts and never drops one: a 17th stops the run
+  with a fixed message and the note is left as it is; check that history
+  matches the numbers file, remove the note, then run again. An attempt that
+  fails while history is provably untouched (the file is exactly as it was)
+  takes its id back out of the note, so repeated failures do not fill it. A
+  run removes only the note it wrote (it carries a random nonce); if another
+  process put a different note in its place, that note is kept and the run
+  says so.
 * It refuses a file that is already damaged, a duplicate
   (`platform`, `metric`, UTC day, `source`), a future time, and bad fields.
   A batch is all or nothing.
@@ -227,10 +259,9 @@ before the tag existed have none, so for an older file also run
    Run the same command with `--confirm` again: it removes that old copy at once,
    whatever its age, because its marker proves what it is. If that fails too,
    remove the named file by hand.
-   Where the system cannot do that, the name is checked once more and the new
-   file is renamed over it; a replacement in the very short gap between that
-   check and the rename cannot be detected there, so do not run `git pull` or
-   `git checkout` in that folder while a redaction runs.
+   Where the system cannot do that, the redaction is refused and nothing is
+   changed, because a plain rename cannot replace a file only while it is still
+   the locked one. Run it on a system with `renameat2` support.
    The new file is mode 0600 and keeps the old owner and group where the
    system permits (a notice says when it could not), whatever the umask. ACLs, extended attributes
    and security labels are not copied. Redaction needs a path with no symlinks: every
