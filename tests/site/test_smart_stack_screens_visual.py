@@ -286,7 +286,7 @@ GRID = EXAMPLE.parent / "site-link-grid.yaml"
 def test_the_tab_bar_gives_its_row_back_on_a_tall_phone_with_eight_rows(
     tmp_path_factory: pytest.TempPathFactory, browser: Browser
 ) -> None:
-    """The 26-tile home grid of #879 plus one Contact screen: the tab bar costs a
+    """The 27-tile home grid of #879 plus one Contact screen: the tab bar costs a
     row, and the tiles give it back at 390x844 instead of scrolling."""
     out = tmp_path_factory.mktemp("screenseight") / "out"
     doc = yaml.safe_load(GRID.read_text(encoding="utf-8"))
@@ -315,7 +315,7 @@ def test_the_tab_bar_gives_its_row_back_on_a_tall_phone_with_eight_rows(
         url = f"http://127.0.0.1:{server.server_address[1]}/"
         page, _foreign = open_page(browser, url, (390, 844))
         got = page.evaluate(MEASURE)
-        assert len(got["tiles"]) == 26 and len(got["tabs"]) == 2
+        assert len(got["tiles"]) == 27 and len(got["tabs"]) == 2
         assert got["scrollH"] <= got["h"], (got["scrollH"], got["h"])
         page.context.close()
     finally:

@@ -34,7 +34,7 @@ EXAMPLE = (
 )
 PHONES = [(390, 844), (390, 664), (360, 640)]
 SIZES = [*PHONES, (1920, 930)]
-TILES = 26
+TILES = 27
 
 
 class _Quiet(http.server.SimpleHTTPRequestHandler):
@@ -263,6 +263,7 @@ def test_nothing_is_collapsed_or_behind_a_tab(browser: Browser, base_url: str) -
         "chat",
         "support",
         "gear i use",
+        "services i use",
         "more",
     ]
     page.context.close()
