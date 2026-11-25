@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -390,3 +391,81 @@ def test_refresh_counts_has_a_hard_deadline_and_refuses_a_larger_one() -> None:
     )
     assert result.returncode == 2
     assert "REFRESH_TIMEOUT_SECONDS must be digits, 30 to 480" in result.stderr
+
+
+# ---- release tag grammar: vX.Y.Z or vX.Y.Z-rc.N, nothing else (#694) ----------
+
+
+def _with_tag(root: Path, tag: str) -> None:
+    """Make the manifest, the lock comment and the image tag all name `tag`."""
+    path = root / "engine.release.json"
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    old_image_tag = doc["image"].split(":", 1)[1].split("@", 1)[0]
+    doc["tag"] = tag
+    doc["image"] = doc["image"].replace(f":{old_image_tag}@", f":{tag[1:]}@")
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    lock = root / "engine.lock"
+    text = lock.read_text(encoding="utf-8")
+    text = text.replace(f":{old_image_tag}@", f":{tag[1:]}@")
+    text = re.sub(r"(ENGINE_REF=[0-9a-f]{40} # )\S+", rf"\g<1>{tag}", text)
+    lock.write_text(text, encoding="utf-8")
+
+
+@pytest.mark.parametrize("tag", ["v0.3.0-rc.6", "v1.2.3", "v10.20.30-rc.12"])
+def test_release_tags_of_the_allowed_grammar_are_accepted(
+    tmp_path: Path, tag: str
+) -> None:
+    root = _instance(tmp_path)
+    _with_tag(root, tag)
+    result = _release(root)
+    assert result.returncode == 0, result.stderr
+    assert tag in result.stdout
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        "v1.2",
+        "v1.2.3-rc",
+        "v1.2.3-rc.",
+        "v1.2.3-rc.x",
+        "v1.2.3-beta.1",
+        "v1.2.3-alpha",
+        "v1.2.3-rc.1.2",
+        "v1.2.3-RC.1",
+        "1.2.3",
+        "v1.2.3;id",
+        "v1.2.3$(id)",
+        "v1.2.3`id`",
+        "v1.2.3|x",
+        " v1.2.3",
+        "v1.2.3 ",
+        "v1.2.3\n",
+        "v1.2.3\nv4.5.6",
+        "v1.2.3-rc.1\n",
+        "../v1.2.3",
+        "/etc/passwd",
+        "v1.2.3/../x",
+        "",
+    ],
+)
+def test_release_tags_outside_the_grammar_are_refused(tmp_path: Path, tag: str) -> None:
+    root = _instance(tmp_path)
+    path = root / "engine.release.json"
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["tag"] = tag
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    result = _release(root)
+    assert result.returncode == 1, result.stdout
+    assert "tag has the wrong shape" in result.stderr or "tag missing" in result.stderr
+
+
+def test_a_lock_comment_with_another_suffix_is_refused(tmp_path: Path) -> None:
+    root = _instance(tmp_path)
+    lock = root / "engine.lock"
+    text = lock.read_text(encoding="utf-8")
+    lock.write_text(
+        re.sub(r"(ENGINE_REF=[0-9a-f]{40} # )\S+", r"\g<1>v0.3.0-rc.6-x", text),
+        encoding="utf-8",
+    )
+    assert _release(root).returncode == 1
