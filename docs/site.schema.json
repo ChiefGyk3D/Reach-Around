@@ -39,6 +39,32 @@
     },
     "Alerts": {
       "additionalProperties": false,
+      "anyOf": [
+        {
+          "properties": {
+            "channels": {
+              "maxItems": 0
+            },
+            "events": {
+              "maxItems": 0
+            }
+          }
+        },
+        {
+          "properties": {
+            "channels": {
+              "minItems": 1
+            },
+            "events": {
+              "minItems": 1
+            }
+          },
+          "required": [
+            "channels",
+            "events"
+          ]
+        }
+      ],
       "description": "Which channels receive which owner alerts. Everything off by default.",
       "properties": {
         "channels": {

@@ -30,13 +30,13 @@ def test_default_is_off() -> None:
     "one_sided",
     [{"channels": ["discord"]}, {"events": ["kit_unlocked"]}],
 )
-def test_channels_without_events_or_the_reverse_is_refused(
+def test_one_sided_alerts_validator_message_names_no_value(
     one_sided: dict[str, object],
 ) -> None:
     with pytest.raises(ValidationError) as err:
         Alerts(**one_sided)  # type: ignore[arg-type]
-    # The message itself names no value (pydantic's own repr of the input is
-    # the loader's concern; it reports loc and msg only).
+    # Only the validator's own message is checked here. Pydantic's error dicts
+    # carry the rejected input; the loader tests below check what is shown.
     text = " ".join(e["msg"] for e in err.value.errors())
     assert "channels and events" in text
     assert "discord" not in text and "kit_unlocked" not in text
@@ -174,17 +174,95 @@ def test_build_manifest_carries_alerts_only_when_on() -> None:
     ]
 
 
+SENTINEL_HOST = "customer-9f31.example.org"
+CREDENTIAL_LIKE_HOST = "tok-live-9f31a7c2d4e8b6c0.example.org"
+ONE_SIDED_ALERTS = (
+    "\nalerts:\n  channels: [discord]\n  matrix:\n    allowed_hosts:\n"
+    f"      - {SENTINEL_HOST}\n      - {CREDENTIAL_LIKE_HOST}\n"
+)
+
+
+def _one_sided_config(tmp_path: Path) -> Path:
+    base = ROOT / "examples/instance-variants/minimal"
+    text = (base / "site.yaml").read_text(encoding="utf-8")
+    cfg = tmp_path / "site.yaml"
+    cfg.write_text(text + ONE_SIDED_ALERTS, encoding="utf-8")
+    return cfg
+
+
+def _assert_no_input_shown(shown: str) -> None:
+    for value in (SENTINEL_HOST, CREDENTIAL_LIKE_HOST, "discord", "allowed_hosts'"):
+        assert value not in shown
+    assert "input_value" not in shown and "input=" not in shown
+    assert "{'channels'" not in shown
+
+
 def test_loader_error_for_one_sided_alerts_shows_no_input_values(
     tmp_path: Path,
 ) -> None:
     from reach_around.config import ConfigError, load_site_config
 
-    base = Path(__file__).resolve().parents[2] / "examples/instance-variants/minimal"
-    text = (base / "site.yaml").read_text(encoding="utf-8")
-    cfg = tmp_path / "site.yaml"
-    cfg.write_text(text + "\nalerts:\n  channels: [discord]\n", encoding="utf-8")
     with pytest.raises(ConfigError) as err:
-        load_site_config(cfg)
+        load_site_config(_one_sided_config(tmp_path))
     shown = str(err.value)
     assert "channels and events" in shown
-    assert "discord" not in shown
+    _assert_no_input_shown(shown)
+
+
+def test_build_error_for_one_sided_alerts_shows_no_input_values(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from reach_around.cli import main
+
+    out = tmp_path / "out"
+    cfg = _one_sided_config(tmp_path)
+    assert main(["build", "--config", str(cfg), "--out", str(out)]) == 1
+    seen = capsys.readouterr()
+    assert "channels and events" in seen.err
+    _assert_no_input_shown(seen.err + seen.out)
+
+
+def _branch_accepts(branch: dict[str, object], doc: dict[str, list[str]]) -> bool:
+    props = branch.get("properties", {})
+    assert isinstance(props, dict)
+    for name, rule in props.items():
+        if name not in doc:
+            continue
+        n = len(doc[name])
+        if n < rule.get("minItems", 0) or n > rule.get("maxItems", n):
+            return False
+    required = branch.get("required", [])
+    assert isinstance(required, list)
+    return all(name in doc for name in required)
+
+
+@pytest.mark.parametrize(
+    ("doc", "ok"),
+    [
+        ({}, True),
+        ({"channels": [], "events": []}, True),
+        ({"channels": ["discord"], "events": ["kit_unlocked"]}, True),
+        ({"channels": ["discord"]}, False),
+        ({"events": ["kit_unlocked"]}, False),
+        ({"channels": ["discord"], "events": []}, False),
+        ({"channels": [], "events": ["kit_unlocked"]}, False),
+    ],
+)
+def test_json_schema_refuses_one_sided_alerts(
+    doc: dict[str, list[str]], ok: bool
+) -> None:
+    from reach_around.schema import build_schema
+
+    # the schema made now, and the committed copy (test_schema checks they match)
+    published = json.loads(
+        (ROOT / "docs" / "site.schema.json").read_text(encoding="utf-8")
+    )
+    for schema in (build_schema(), published):
+        branches = schema["$defs"]["Alerts"]["anyOf"]
+        assert any(_branch_accepts(b, doc) for b in branches) is ok
+    # the Python model agrees with the schema on every case
+    if ok:
+        Alerts(**doc)  # type: ignore[arg-type]
+    else:
+        with pytest.raises(ValidationError):
+            Alerts(**doc)  # type: ignore[arg-type]

@@ -101,7 +101,11 @@ describe("Discord adapter", () => {
     expect(body.content).not.toContain("partner");
     expect(d.status().channels.discord?.sent).toBe(1);
   });
-  it("sends the full address only when visitor_email is set to full", async () => {
+  it("sends the full address when visitor_email is set to full, and masks it when not set", async () => {
+    const dflt = mockFetch();
+    await createDispatcher().notify({ ...BASE, ALERTS_CONFIG: '{"channels":["discord"],"events":["kit_unlocked"]}' }, unlock(), { fetchFn: dflt.fn, nowMs: T0 });
+    // not set: masked, so the whole local part is absent (fails if the default reverts to full)
+    expect(JSON.parse(String(dflt.calls[0]!.init.body)).content).not.toContain("partner");
     const m = mockFetch();
     const d = createDispatcher();
     await d.notify({ ...BASE, ALERTS_CONFIG: '{"channels":["discord"],"events":["kit_unlocked"],"visitor_email":"full"}' }, unlock(), { fetchFn: m.fn, nowMs: T0 });
@@ -126,7 +130,10 @@ describe("Matrix adapter", () => {
     expect(body.body).toContain("p***(at)example(dot)com");
     expect(body.body).not.toContain("partner");
   });
-  it("sends the full address to Matrix only when visitor_email is set to full", async () => {
+  it("sends the full address to Matrix when visitor_email is set to full, and masks it when not set", async () => {
+    const dflt = mockFetch(() => new Response("{}", { status: 200 }));
+    await createDispatcher().notify({ ...BASE, ALERTS_CONFIG: cfgMatrix }, unlock(), { fetchFn: dflt.fn, nowMs: T0 });
+    expect(JSON.parse(String(dflt.calls[0]!.init.body)).body).not.toContain("partner");
     const m = mockFetch(() => new Response("{}", { status: 200 }));
     const d = createDispatcher();
     const full = JSON.stringify({ ...JSON.parse(cfgMatrix), visitor_email: "full" });

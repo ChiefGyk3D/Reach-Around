@@ -98,7 +98,29 @@ class AlertsMatrix(BaseModel):
 class Alerts(BaseModel):
     """Which channels receive which owner alerts. Everything off by default."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # The validator below refuses a one-sided setup; the schema says so too:
+    # both lists empty (or absent), or both non-empty.
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={
+            "anyOf": [
+                {
+                    "properties": {
+                        "channels": {"maxItems": 0},
+                        "events": {"maxItems": 0},
+                    }
+                },
+                {
+                    "properties": {
+                        "channels": {"minItems": 1},
+                        "events": {"minItems": 1},
+                    },
+                    "required": ["channels", "events"],
+                },
+            ]
+        },
+    )
 
     channels: list[AlertChannel] = []
     events: list[AlertEventName] = []
