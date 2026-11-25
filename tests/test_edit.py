@@ -162,7 +162,7 @@ def test_add_link_duplicate_explicit_id_is_refused(
     assert run(*args) == 0
     original = cfg.read_bytes()
     assert run(*args) == 1
-    assert "duplicate id" in capsys.readouterr().err
+    assert "an id is used more than once" in capsys.readouterr().err
     assert cfg.read_bytes() == original
 
 

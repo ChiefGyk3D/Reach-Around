@@ -75,7 +75,7 @@ def test_valid_sources(tmp_path: Path, line: str) -> None:
 
 BAD = [
     ("- {platform: x, kind: kick, user: a}", "kind"),
-    ("- {platform: x, kind: bluesky, actor: a, extra: 1}", "extra"),
+    ("- {platform: x, kind: bluesky, actor: a, extra: 1}", "this field is not allowed"),
     ("- {platform: x, kind: bluesky}", "actor"),
     ("- {platform: X, kind: github, user: a}", "platform"),
     ("- {platform: x, kind: bluesky, actor: 'not a handle'}", "actor"),
@@ -120,7 +120,7 @@ BAD = [
             "- {platform: x, kind: youtube, channel_id: UCabcdefghijklmnopqrstuv, "
             "api_key: AIzaSECRET}"
         ),
-        "api_key",
+        "this field is not allowed",
     ),
     (
         (
@@ -134,21 +134,24 @@ BAD = [
             "- {platform: x, kind: twitch, login: some_user, "
             "client_id_env: TWITCH_SAME, client_secret_env: TWITCH_SAME}"
         ),
-        "Input should be",
+        "client_id_env",
     ),
     (
         (
             "- {platform: x, kind: twitch, login: some_user, client_id_env: TWITCH_A, "
             "client_secret: shh}"
         ),
-        "client_secret",
+        "this field is not allowed",
     ),
 ]
 
 
 @pytest.mark.parametrize(("line", "needle"), BAD)
 def test_invalid_sources_are_refused(tmp_path: Path, line: str, needle: str) -> None:
-    assert needle in fails(tmp_path, source(line))
+    message = fails(tmp_path, source(line))
+    assert needle in message
+    # An unknown key and a secret-looking value are never echoed back.
+    assert "AIzaSECRET" not in message and "shh" not in message
 
 
 def test_empty_sources_and_duplicate_platforms_refused(tmp_path: Path) -> None:
@@ -217,7 +220,8 @@ def test_a_source_that_matches_no_platforms_item_is_refused(
     with pytest.raises(ConfigError) as caught:
         config_with(tmp_path, ONE_PLATFORM, key)
     message = str(caught.value)
-    assert "numbers.sources[0].platform" in message and repr(key) in message
+    assert "numbers.sources[0].platform" in message
+    assert repr(key) not in message  # the value you wrote is not echoed
     assert "matches no platforms item" in message
 
 

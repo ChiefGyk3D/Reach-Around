@@ -39,6 +39,7 @@ from pydantic import (
     model_validator,
 )
 
+from reach_around.config.budget import Budget, check_budget, json_over_limit
 from reach_around.config.era import SPANS, classify_window, era_text
 from reach_around.config.loader import ConfigError, _read
 from reach_around.counts.beacons import IMPORT_NOTE, IMPORT_PLATFORM, IMPORT_SOURCE
@@ -47,6 +48,14 @@ from reach_around.funnel.floor import shown_count
 MAX_IMPORTED_BYTES = 256 * 1024
 MAX_PERIODS = 120
 MAX_VALUE = 10**12
+# The file is read only up to MAX_IMPORTED_BYTES, and ImportedHistory refuses an
+# over-budget document before any model is built, whoever calls it (the loader,
+# ImportedHistory(...) or ImportedHistory.model_validate). A real file is about
+# 11 nodes per period (a mapping, five keys, five values), so 120 periods is
+# about 1,350 nodes; the cap leaves room and still stops a million-node input.
+IMPORTED_BUDGET = Budget(
+    nodes=4_000, depth=6, scalar_chars=256, total_chars=32_768, what="file"
+)
 PLATFORM = IMPORT_PLATFORM
 SOURCE = IMPORT_SOURCE
 
@@ -83,11 +92,47 @@ class ImportedPeriod(_Model):
 
 
 class ImportedHistory(_Model):
+    # "always": an existing instance reaches the before validator and is refused
+    # (a model_construct instance would otherwise pass unchecked).
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, revalidate_instances="always"
+    )
+
     version: StrictInt
     source: StrictStr
     note: StrictStr
     platform: StrictStr
     periods: tuple[ImportedPeriod, ...] = Field(min_length=1, max_length=MAX_PERIODS)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _within_budget(cls, data: object) -> object:
+        check_budget(data, IMPORTED_BUDGET)
+        return data
+
+    @classmethod
+    def model_validate_json(
+        cls, json_data: str | bytes | bytearray, **kwargs: Any
+    ) -> ImportedHistory:
+        # Pydantic parses JSON before a before-validator runs, so the byte cap is
+        # applied here, ahead of the parse.
+        if json_over_limit(json_data, MAX_IMPORTED_BYTES):
+            raise ValidationError.from_exception_data(
+                cls.__name__,
+                [
+                    {
+                        "type": "value_error",
+                        "loc": (),
+                        "input": None,
+                        "ctx": {
+                            "error": ValueError(
+                                f"the file is larger than {MAX_IMPORTED_BYTES} bytes"
+                            )
+                        },
+                    }
+                ],
+            )
+        return super().model_validate_json(json_data, **kwargs)
 
     @field_validator("version")
     @classmethod
