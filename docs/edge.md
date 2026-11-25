@@ -87,7 +87,7 @@ experiment on an isolated zone proves that unrepresented fields are preserved.
 Because the staging site shares the zone with production, there is no safe zone
 to try it on today. Until then use `plan.sh` and the drift check only.
 
-### Rate rule on `/e/` (phase `http_ratelimit`): a MANUAL step
+### Rate rule on `/e/t` (phase `http_ratelimit`): a MANUAL step
 
 The desired rule is kept in `desired-state.json` and compared by the live
 check, but the module does not manage it. A rules resource owns the whole
@@ -100,20 +100,21 @@ and keep a copy.
 
 | Key | Value |
 |---|---|
-| `ref` | `reach_around_beacon_flood_cap` |
-| `description` | `Reach Around: edge flood cap on the /e/ analytics routes` |
-| `expression` | `starts_with(http.request.uri.path, "/e/")` (the regex `matches` operator is Business and up) |
+| `ref` | `reach_around_mint_cap` |
+| `description` | `Reach Around: edge cap on the beacon token path /e/t` |
+| `expression` | `http.request.uri.path eq "/e/t"` (the regex `matches` operator is Business and up) |
 | `action` | `block` (a beacon cannot solve a challenge) |
 | `characteristics` | `cf.colo.id`, `ip.src` |
 | `period` | `10` (the only Free value) |
-| `requests_per_period` | `30` |
+| `requests_per_period` | `4` |
 | `mitigation_timeout` | `10` (the only Free value) |
 
-The Worker already limits each client (20 clicks, 5 views, 6 tokens per 60
-seconds), so one client cannot legitimately send more than a few requests in 10
-seconds. 30 is a flood cap, not a fair-use cap. Counters are per data center and
-per address, so many visitors behind one shared address could reach it; measure
-before raising or lowering it. Free allows one rule in this phase, so if another
+The rule rate limits the beacon token path only: 4 requests per 10 seconds per
+client IP and edge location. Free cannot match on method, so it covers every
+method on that exact path. The other `/e/` paths are covered by the in-Worker
+limits, not by this rule. Counters are per data center and per address, so many
+visitors behind one shared address could reach the limit; measure before
+raising or lowering it. Free allows one rule in this phase, so if another
 site's rule is already there, this one cannot be added on a Free zone: read the
 plan limit first.
 
@@ -126,7 +127,7 @@ phase as someone else's: never drift.
 | Change | Reaches | Rollback |
 |---|---|---|
 | Bot management settings | Every host on the zone, including production and other sites. The managed `robots.txt` block is prepended to every host's `robots.txt` within seconds. | Restore the saved snapshot (`--save`), or set `ai_training` to `disabled` and `bot_preference_sync_enabled` to `false`; the managed block disappears within seconds. |
-| Rate rule (manual) | Every request to a path starting `/e/` on every host of the zone (Free cannot match on host). A blocked client gets Cloudflare's block page instead of the Worker's empty 204 for 10 seconds. | Delete only that rule in the dashboard. |
+| Rate rule (manual) | Every request to the exact path `/e/t` on every host of the zone (Free cannot match on host). A blocked client gets Cloudflare's block page instead of the Worker's empty 204 for 10 seconds. | Delete only that rule in the dashboard. |
 | Bot Fight Mode | Unchanged: the code asserts it is off. | Not applicable. |
 
 ## Token and calls (once, per zone)
@@ -211,5 +212,5 @@ are what the code assumes today.
 | 2 | Zone plan | Free assumed; the limits above depend on it. The real plan is read from the dashboard first. |
 | 3 | State location: local (git-ignored) or a Spacelift stack | Plan-only local runs, state git-ignored. |
 | 4 | Code location: this repository (`deploy/edge/`) or a private infrastructure repository | This repository. |
-| 5 | Rate threshold `requests_per_period` | 30; accept it or measure first. |
+| 5 | Rate threshold `requests_per_period` | 4; accept it or measure first. |
 | 6 | Is the zone shared with other sites? Then their `robots.txt` and `/e/` paths change too. | Assumed shared. |

@@ -103,7 +103,8 @@ def test_the_owner_decisions_are_pinned() -> None:
     assert bot["fight_mode"] is False  # Bot Fight Mode deferred
     assert bot["crawler_protection"] == "disabled"
     rule = desired()["rate_limit"]
-    assert rule["expression"] == 'starts_with(http.request.uri.path, "/e/")'
+    assert rule["expression"] == 'http.request.uri.path eq "/e/t"'
+    assert rule["requests_per_period"] == 4
     assert rule["action"] == "block"
     assert rule["period"] == 10 == rule["mitigation_timeout"]  # Free plan
 
@@ -139,6 +140,11 @@ BAD = {
         "expression", 'http.request.uri.path matches "^/e/"'
     ),
     "whole zone": mutate_rule("expression", "true"),
+    "old prefix expression": mutate_rule(
+        "expression", 'starts_with(http.request.uri.path, "/e/")'
+    ),
+    "cap too low": mutate_rule("requests_per_period", 1),
+    "cap too wide": mutate_rule("requests_per_period", 31),
     "challenge action": mutate_rule("action", "managed_challenge"),
     "longer period": mutate_rule("period", 60),
     "longer timeout": mutate_rule("mitigation_timeout", 600),

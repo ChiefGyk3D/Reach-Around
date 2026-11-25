@@ -9,7 +9,7 @@ Usage:
 
 --offline reads only files in this repository. It fails when the desired state
 breaks a rule the owner decided (AI training blocked, search and link previews
-not blocked, Bot Fight Mode off until it is measured, one flat rate rule on /e/
+not blocked, Bot Fight Mode off until it is measured, one flat rate rule on /e/t
 inside the Free plan limits), when a field the provider can send is neither given
 a value nor marked unmanaged, or when deploy/edge/main.tf, its provider pin and
 its lock file no longer match the desired state. CI runs this.
@@ -255,9 +255,9 @@ def rate_limit_problems(rl: dict[str, Any]) -> list[str]:
     expression = rl["expression"]
     if (
         not isinstance(expression, str)
-        or expression != 'starts_with(http.request.uri.path, "/e/")'
+        or expression != 'http.request.uri.path eq "/e/t"'
     ):
-        problems.append("rate_limit.expression must be exactly the /e/ path match")
+        problems.append("rate_limit.expression must be exactly the /e/t path match")
     if rl["action"] != "block":
         problems.append(
             "rate_limit.action must be block (a beacon cannot solve a challenge)"
@@ -271,9 +271,9 @@ def rate_limit_problems(rl: dict[str, Any]) -> list[str]:
             "rate_limit.period and mitigation_timeout must be 10 (Free plan)"
         )
     count = rl["requests_per_period"]
-    if not isinstance(count, int) or isinstance(count, bool) or not 10 <= count <= 200:
+    if not isinstance(count, int) or isinstance(count, bool) or not 2 <= count <= 30:
         problems.append(
-            "rate_limit.requests_per_period must be an integer from 10 to 200"
+            "rate_limit.requests_per_period must be an integer from 2 to 30"
         )
     for key in ("ref", "description"):
         if not isinstance(rl[key], str) or not rl[key]:

@@ -51,16 +51,16 @@
     }
   },
   "rate_limit": {
-    "ref": "reach_around_beacon_flood_cap",
-    "description": "Reach Around: edge flood cap on the /e/ analytics routes",
-    "expression": "starts_with(http.request.uri.path, \"/e/\")",
+    "ref": "reach_around_mint_cap",
+    "description": "Reach Around: edge cap on the beacon token path /e/t",
+    "expression": "http.request.uri.path eq \"/e/t\"",
     "action": "block",
     "characteristics": [
       "cf.colo.id",
       "ip.src"
     ],
     "period": 10,
-    "requests_per_period": 30,
+    "requests_per_period": 4,
     "mitigation_timeout": 10
   },
   "_comment": "rate_limit is a MANUAL step on a shared zone: add it to the existing http_ratelimit rules, never replace the phase (docs/edge.md). Fields marked {\"unmanaged\": true} are not configured or drift-checked by this repository; whether an apply sends them is unverified, so the apply path stays prohibited."
