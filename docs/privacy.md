@@ -67,9 +67,13 @@ address.
 
 ## How long it is kept
 
-The hourly scheduled job deletes every lead older than `LEAD_RETENTION_DAYS`,
-counted from the lead's `created_ts`. Seeing the same address again does not
-extend it.
+A lead becomes due for deletion `LEAD_RETENTION_DAYS` after its `created_ts`.
+Seeing the same address again does not extend it. The hourly scheduled job
+removes due leads in bounded batches, so the real deletion time is the due time
+plus however long the job needs to reach that lead; it is not an exact deadline.
+The bounds are below. The generated public privacy page states the number of
+days only and does not mention this lag, so do not promise a hard deadline in
+your own wording.
 
 | Setting | Range | Default | Meaning |
 |---|---|---|---|
@@ -97,8 +101,14 @@ The Worker reads the variable `LEAD_RETENTION_DAYS`:
 - Each run is one D1 query that deletes at most 80 kit events of expired leads
   and at most 20 expired leads. A lead is deleted only once its events are gone,
   so a lead with many events takes several runs, and a big backlog continues on
-  the next hourly runs: deletion can lag by hours or, with very many events,
-  days. This keeps the purge inside the D1 write allowance (docs/deploy.md,
+  the next hourly runs. The true window: when the job runs every hour, it
+  removes at most 20 leads and 80 events an hour (480 leads and 1,920 events a
+  day), so a lead that owns E events and sits behind N other due leads is gone
+  after at least about max(ceil(E / 80), ceil(N / 20)) runs, which is that many
+  hours. A normal day's expiries clear within the hour; a large backlog (an
+  import, or a long stretch with the job off) takes days, and a purge may not
+  run at all while `SCHEDULED_KILL` is on or, below `QUERY_BUDGET` 9, when the
+  rollup uses up the budget first, so check `last_purge_ts`. This keeps the purge inside the D1 write allowance (docs/deploy.md,
   "Kit limits and the daily write budget"). The same run records `last_purge_ts` in
   `kit_meta`; a stale value means the job is not running.
 - The job runs on the hourly cron only. The 2-minute live-poller cron never
@@ -232,68 +242,69 @@ erasure, the one-month answer and the Art. 11 position on page view rows.
 There is no web route that deletes a lead, on purpose: anyone could call it.
 You run a local command, and then apply the SQL it prints with `wrangler`.
 
-1. Make a fresh private working directory and export the `leads` table into it
-   (the files hold addresses; delete the directory when you are done). The
-   `umask` makes new files private, `mktemp -d` makes a new directory only you
-   can enter, and `noclobber` makes `>` refuse an existing file or symlink
-   instead of writing through it:
+The export holds every address, so the procedure below keeps it in a private
+temporary directory and removes it however the run ends: on success, on a
+failed step (an expired token, a dropped network, no matching lead), or on
+Ctrl-C. Run it as one block from your project directory. The steps inside are:
 
-   ```
-   umask 077
-   WORK=$(mktemp -d "$HOME/leads-request-XXXXXX") && cd "$WORK" && set -o noclobber
-   npx wrangler d1 execute reach-around-leads --remote --json \
-     --command "SELECT id, email FROM leads" > leads-export.json
-   ```
-
-2. Dry run. This is the default and changes nothing. Put the address on stdin
-   so it stays out of your shell history and the process list:
-
-   ```
-   read -r ADDR   # type the address, press Enter
-   printf '%s\n' "$ADDR" | reach-around leads delete --input leads-export.json --email - --database reach-around-leads
-   ```
-
-   It prints, for example, `dry run: 1 lead matches p***@***.test`. Exit 1 means
-   no lead has that address (it may already be gone, or the spelling differs).
-   More than one match refuses and prints nothing, because the table cannot
-   hold two.
-
-3. Print the delete SQL with `--yes`. The export is a local file and cannot be
-   trusted to say who owns an id, so every deleting statement names the lead's
-   random id and its address: the live database deletes the lead and its kit
-   events only if that row still pairs them. The file therefore holds the
-   address (step 5 deletes it). `--sql-out` creates the file itself, new, mode
-   0600, and refuses a path that already exists or whose last component is a
-   symlink. It does not check the parent directories for symlinks, so give it a
-   path inside the directory you just made. If the write fails, the tool
-   removes the partial file, or names it if it cannot, because it may hold the
-   address. Do not use a shell `>` redirect for this file; the tool also
-   refuses a name that starts with `-`:
-
-   ```
-   printf '%s\n' "$ADDR" | reach-around leads delete --input leads-export.json --email - --database reach-around-leads --yes --sql-out delete-lead.sql
-   ```
-
-4. Apply it, then read the result back. The last statement shows two numbers,
-   `leads_remaining` and `events_remaining`. `0` and `0` means no remaining
-   rows at that moment. It does not prove the erasure is complete: D1 offers no
-   transaction in a file, and the Worker can write an event after the read.
+1. Export the `leads` table to a file in the private directory (mode 700, files
+   mode 600). The database is `reach-around-leads`; the tool refuses an export
+   from any other database name, and `--database` is required on every call.
+2. Dry run. This is the default and changes nothing. The address goes on stdin
+   so it stays out of your shell history and the process list. It prints, for
+   example, `dry run: 1 lead matches p***@***.test`. Exit 1 means no lead has
+   that address (it may already be gone, or the spelling differs), and the block
+   stops and cleans up. More than one match refuses and prints nothing, because
+   the table cannot hold two.
+3. Ask you to confirm, then print the delete SQL with `--yes --sql-out`. The
+   export is a local file and cannot be trusted to say who owns an id, so every
+   deleting statement names the lead's random id and its address: the live
+   database deletes the lead and its kit events only if that row still pairs
+   them. The file therefore holds the address; the block removes it on exit.
+   `--sql-out` creates the file itself, new, mode 0600, and refuses a path that
+   already exists or whose last component is a symlink; give it a path inside
+   the private directory. Do not use a shell `>` redirect for this file.
+4. Apply it, wait a minute, apply it again (it is safe to repeat, and its
+   cleanup statement removes events left for a lead that is gone). Each run's
+   last statement shows two numbers, `leads_remaining` and `events_remaining`.
+   Treat the erasure as done only after two consecutive runs both read `0` and
+   `0`, and say in your reply that this is a point-in-time check: D1 offers no
+   transaction in a file and the Worker can write an event after the read.
    `leads_remaining` 1 means the id did not belong to that address in the live
    database (a stale or wrong export): nothing was deleted, stop and re-export.
-   `events_remaining` above 0 means events remain. In every case, run the same
-   file again (it is safe to repeat, and its cleanup statement removes events
-   left for a lead that is gone), wait a minute, and run it once more. Treat the
-   erasure as done only after two consecutive runs both read `0` and `0`, and
-   say in your reply that this is a point-in-time check. Whether the tables read
-   here are every place the Worker stores lead data is unverified against the
-   full schema:
+   `events_remaining` above 0 means events remain; run the block again. Whether
+   the tables read here are every place the Worker stores lead data is
+   unverified against the full schema.
 
-   ```
-   npx wrangler d1 execute reach-around-leads --remote --file delete-lead.sql
-   ```
+```
+(
+  set -eu
+  umask 077
+  WORK="$(mktemp -d)"
+  cleanup() { rm -rf -- "$WORK"; }
+  trap cleanup EXIT
+  trap 'exit 130' HUP INT TERM
+  echo "private work directory (removed on exit): $WORK" >&2
+  npx wrangler d1 execute reach-around-leads --remote --json \
+    --command "SELECT id, email FROM leads" > "$WORK/leads-export.json"
+  printf 'Address to delete: ' >&2
+  read -r ADDR
+  printf '%s\n' "$ADDR" | reach-around leads delete --input "$WORK/leads-export.json" --email - --database reach-around-leads
+  printf 'Print the delete SQL and apply it? Type yes: ' >&2
+  read -r OK
+  [ "$OK" = yes ]
+  printf '%s\n' "$ADDR" | reach-around leads delete --input "$WORK/leads-export.json" --email - --database reach-around-leads --yes --sql-out "$WORK/delete-lead.sql"
+  npx wrangler d1 execute reach-around-leads --remote --file "$WORK/delete-lead.sql"
+  sleep 60
+  npx wrangler d1 execute reach-around-leads --remote --file "$WORK/delete-lead.sql"
+)
+```
 
-5. Leave the directory, delete it with its two files, and `unset ADDR`:
-   `cd "$HOME" && rm -r -- "$WORK" && unset ADDR WORK`.
+The subshell ends the shell variables (`ADDR`) with it, so nothing is left to
+unset. A kill signal that cannot be trapped (`kill -9`, a power loss) skips the
+cleanup; the work directory is printed on the first line so you can remove it
+yourself, and you should check that it is gone before you report the request
+done.
 
 The command reads only the file you give it. It makes no network call, needs no
 token and writes no file except the `--sql-out` file. It refuses an address that
