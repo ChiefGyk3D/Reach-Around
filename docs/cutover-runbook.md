@@ -55,10 +55,10 @@ the results); **O+A** = the assistant prepares, the owner does the write.
 | 4 | Merge the instance PR, deploy to staging | O+A | the owner's merge |
 | 5 | Approve and run the production deploy (manual dispatch, then the reviewer click) | O | GitHub account, reviewer approval |
 | 6 | Set Worker secrets (`VIEW_HASH_SECRET` and the others) | O | Cloudflare login or a short-lived token from the secret manager; values never in chat |
-| 7 | Apply D1 migrations with the Worker quiet (all three switches on) | O+A | Cloudflare D1 write; a short-lived scoped token |
-| 8 | Take the backup and the Time Travel bookmark | O+A | D1 read for the export, D1 edit only for a restore |
-| 9 | Import the Beacons history (#376) | A | the private CSV, supplied by the owner |
-| 10 | Export the Beacons data (links list, analytics CSV, forms and leads) | O | Beacons login |
+| 7 | Take the backup and the Time Travel bookmark, then pass the restore drill on a scratch database ([backup-restore.md](backup-restore.md)); record the bookmark and the backup identifiers privately | O+A | D1 read for the export, D1 edit only for a restore |
+| 8 | Apply D1 migrations with the Worker quiet (all three switches on), only once step 7 is recorded | O+A | Cloudflare D1 write; a short-lived scoped token |
+| 9 | Export the Beacons data (links list, analytics CSV, forms and leads), the latest export before the import | O | Beacons login |
+| 10 | Import the Beacons history (#376) from that export, with its last date and digest recorded; import again from any newer export | A | the private CSV, supplied by the owner |
 | 11 | Lower the TTL to 300 seconds, at least 48 hours ahead | O | DNS write, explicit word |
 | 12 | Run the rollback rehearsal (#597) | O+A | DNS write on a throwaway hostname, explicit word |
 | 13 | The switch: change the production record | O | DNS write, explicit word, quoted |
@@ -190,7 +190,9 @@ the result lines (no values) in #344. Do not start the DNS steps with a box open
       alone do not do that: the hourly scheduled run (cron `5 * * * *`: lead
       retention, health, purges, rollups, funnel rollups, counter purges) keeps
       writing, so a third switch pauses it. Order, from the proven staging run:
-      1. Quiet the Worker: deploy with all three switches on,
+      0. Before anything else: the bookmark, the backup and the passed restore
+         drill (2.4) are recorded. Migrations do not start without them.
+      1. Quiet the Worker: from a clean checkout of the release tag, deploy with all three switches on,
          `npx wrangler deploy --var CLICKS_KILL:1 --var VIEWS_KILL:1 --var SCHEDULED_KILL:1`.
          `SCHEDULED_KILL` makes every scheduled trigger (the hourly jobs and
          the Live poller) return at once with no D1 read or write
@@ -211,7 +213,8 @@ the result lines (no values) in #344. Do not start the DNS steps with a box open
          either is on, the kit routes can still write to D1, so engage
          `KIT_KILL` (read in `worker/src/kit/env.ts`) before this step counts
          as quiet.
-      2. Take a Time Travel bookmark and a backup (2.4).
+      2. Take a fresh Time Travel bookmark and a backup (2.4) now that the
+         Worker is quiet, and record both before step 3.
       3. `npx wrangler d1 migrations list <DATABASE> --remote`, then apply.
          Migrations are forward only. Migration `0008` empties `visitor_seen`:
          apply it right after 00:05 UTC. Migration `0016` goes before the Worker
@@ -219,7 +222,7 @@ the result lines (no values) in #344. Do not start the DNS steps with a box open
          [deploy.md](deploy.md) first.
       4. Deploy the Worker (same configuration as staging).
       5. Smoke the route, then clear the switches once every migration has
-         completed: `--var CLICKS_KILL:0 --var VIEWS_KILL:0 --var SCHEDULED_KILL:0`.
+         completed, in one command from the same clean checkout: `--var CLICKS_KILL:0 --var VIEWS_KILL:0 --var SCHEDULED_KILL:0`.
          Leave all three unset in the committed `wrangler.toml`. Retention,
          purges and rollups catch up on the next hourly run.
 - [ ] The `/e/*` route exists on the production host (zone route, or by hand,
@@ -235,16 +238,23 @@ the result lines (no values) in #344. Do not start the DNS steps with a box open
 
 ### 2.4 Backups and history
 
-- [ ] A Time Travel bookmark is saved and a backup taken
-      (`scripts/backup-d1.sh <DATABASE> <BACKUPS> --apply`), then a restore
+- [ ] Done before any migration: a Time Travel bookmark is saved
+      (`npx wrangler d1 time-travel info <DATABASE>`; VERIFIED against
+      https://developers.cloudflare.com/d1/reference/time-travel/, read
+      2026-11-24, which also says a restore overwrites the database in place and
+      returns the previous bookmark), a backup is taken
+      (`scripts/backup-d1.sh <DATABASE> <BACKUPS> --apply`), and a restore
       drill on a scratch database passed ([backup-restore.md](backup-restore.md)).
-- [ ] The Beacons history import ran: `reach-around counts history-import-beacons`
+      The bookmark and the backup identifiers are in the private cutover record.
+- [ ] The Beacons history import ran from the latest export (step 9), with that
+      file's digest and last date written in the private cutover record; if a
+      newer export is taken later, the import and verify run again. `reach-around counts history-import-beacons`
       with `--dry-run`, then for real into its own file, then
       `reach-around counts history-verify --file beacons-pre-cutover-history.jsonl`.
       The record count is twice the daily-row count
       ([beacons-history-import.md](beacons-history-import.md)). The original CSV
       is in the private instance repository.
-- [ ] The full Beacons export (step 10 in the who-does-what table) is in the private instance
+- [ ] The full Beacons export (step 9 in the who-does-what table) is in the private instance
       repository before the switch, as a second copy of what week 1 requires (D1).
 
 ### 2.5 DNS inputs
@@ -376,10 +386,36 @@ If only analytics or the Worker misbehaves, do **not** roll back DNS: use the
 kill switches and leave the static page up
 ([operations.md](operations.md), "Roll back analytics"):
 
+Deploy both switches in one command, from a clean checkout of the exact
+release tag that is live (no local edits; `git status` is empty and the tag is
+the one the instance pins), so the deploy carries the released Worker code and
+nothing else:
+
 ```sh
-npx wrangler deploy --var CLICKS_KILL:1
-npx wrangler deploy --var VIEWS_KILL:1
+npx wrangler deploy --var CLICKS_KILL:1 --var VIEWS_KILL:1
 ```
+
+Every `wrangler deploy` replaces the Worker's plain variables with the ones in
+the committed config plus the `--var` values on that command line, unless
+`--keep-vars` is passed (VERIFIED against the Wrangler command reference,
+https://developers.cloudflare.com/workers/wrangler/commands/workers/, read
+2026-11-24: without the flag, variables changed in the dashboard are overridden
+on the next deploy; secrets are never deleted). So never run one switch per
+deploy: the second command would not carry the first. Check the live variable
+list in the Cloudflare dashboard (Worker, Settings, Variables) before and after
+and compare it with the config; any other variable that was set there by hand
+is passed on the same command line, or the deploy is run with `--keep-vars`.
+
+Verify remotely, not from the laptop's files: the dashboard variable list
+shows both `CLICKS_KILL` and `VIEWS_KILL` as `1`, `npx wrangler deployments list`
+shows the new deployment as the active one, and a test click and a test page
+view on the staging host are not counted in the next report (INFERRED; confirm
+on staging first).
+
+Rollback of this step: `npx wrangler rollback` returns the Worker to the
+previous deployment, and the dashboard variable list is checked again after it.
+To turn collection back on, repeat the one-command deploy from the same clean
+checkout with `--var CLICKS_KILL:0 --var VIEWS_KILL:0`.
 
 A bad site deploy is rolled back from the Pages deployments list (Rollback to
 this deployment) or by re-running the instance deploy from the previous good
@@ -412,8 +448,14 @@ done
 curl -s https://links.example.com/ | grep -i -c '<the Beacons page marker>'
 ```
 
-The record shows the old content on all three resolvers and the page is
-Beacons' page again, checked on the owner's phone on mobile data. Leads collected
+If the record is proxied, public `dig` returns the provider's own addresses
+whichever target the record holds, so it shows reachability and the TTL only.
+The record's content is read in the DNS provider's dashboard or API (read-only)
+and compared with the value written down in 2.5. What the `dig` loop shows for
+a record that is not proxied is the old content on all three resolvers. In both
+cases the served page is what proves the rollback: the marker count above is
+not zero, and the page is Beacons' page again, checked on the owner's phone on
+mobile data. Leads collected
 during the window are kept and exportable; rolling back deletes nothing.
 
 ### 4.3 After a rollback
@@ -489,39 +531,43 @@ echo "TTL as the first resolver sees it (second column):"
 dig +noall +answer "$HOST" @"${RESOLVERS[0]}" || true
 
 echo
-read -r -p "Step 1: owner edits the record to the NEW target, then presses Enter. " _
 T0=$(now)
-echo "switch edit at: $(date -u +%H:%M:%SZ)"
-SWITCH_SECONDS=$(wait_for "$NEW_MARK" "$T0") || true
-echo "switch visible after: ${SWITCH_SECONDS}s"
+read -r -p "Step 1: owner edits the record to the NEW target, then presses Enter. " _
+E0=$(now)
+echo "switch edit started at: $(date -u +%H:%M:%SZ), confirmed after $(( E0 - T0 ))s"
+SWITCH_SECONDS=$(wait_for "$NEW_MARK" "$E0") || { echo "switch TIMEOUT; stop"; exit 1; }
+SWITCH_TOTAL=$(( $(now) - T0 ))
+echo "switch visible ${SWITCH_SECONDS}s after the edit, ${SWITCH_TOTAL}s from the start of the edit"
 resolvers_show
 
 echo
 read -r -p "Step 2: check the owner's phone on mobile data shows ${NEW_MARK}, then press Enter. " _
 PHONE_SWITCH=$(( $(now) - T0 ))
-echo "phone confirmed ${PHONE_SWITCH}s after the edit"
+echo "phone confirmed ${PHONE_SWITCH}s from the start of the edit"
 
 echo
-read -r -p "Step 3: owner edits the record BACK to the OLD target, then presses Enter. " _
 R0=$(now)
-echo "rollback edit at: $(date -u +%H:%M:%SZ)"
-ROLLBACK_SECONDS=$(wait_for "$OLD_MARK" "$R0") || true
-echo "rollback visible after: ${ROLLBACK_SECONDS}s"
+read -r -p "Step 3: owner edits the record BACK to the OLD target, then presses Enter. " _
+RE0=$(now)
+echo "rollback edit started at: $(date -u +%H:%M:%SZ), confirmed after $(( RE0 - R0 ))s"
+ROLLBACK_SECONDS=$(wait_for "$OLD_MARK" "$RE0") || { echo "rollback TIMEOUT; stop"; exit 1; }
+ROLLBACK_TOTAL=$(( $(now) - R0 ))
+echo "rollback visible ${ROLLBACK_SECONDS}s after the edit, ${ROLLBACK_TOTAL}s from the start of the edit"
 resolvers_show
 
 echo
 read -r -p "Step 4: check the owner's phone on mobile data shows ${OLD_MARK}, then press Enter. " _
 PHONE_ROLLBACK=$(( $(now) - R0 ))
-echo "phone confirmed ${PHONE_ROLLBACK}s after the edit"
+echo "phone confirmed ${PHONE_ROLLBACK}s from the start of the edit"
 
 echo
 echo "=== Record this in #597 (times only) ==="
-echo "switch visible on laptop: ${SWITCH_SECONDS}s; on phone: ${PHONE_SWITCH}s"
-echo "rollback visible on laptop: ${ROLLBACK_SECONDS}s; on phone: ${PHONE_ROLLBACK}s"
+echo "switch visible on laptop: ${SWITCH_TOTAL}s; on phone: ${PHONE_SWITCH}s (both from the start of the edit)"
+echo "rollback visible on laptop: ${ROLLBACK_TOTAL}s; on phone: ${PHONE_ROLLBACK}s (both from the start of the edit)"
 echo "TTL used: 300s"
 ```
 
-Pass criteria: the switch and the rollback both show on the laptop within
+Pass criteria (times run from the start of each edit): the switch and the rollback both show on the laptop within
 about 600 seconds and on the phone within about 900 seconds; the bounded wait
 never times out; the edit-in-place worked with the pre-existing record
 (including the Pages custom-domain association, 3.1). If a figure is worse, the

@@ -1,0 +1,1 @@
+- Cutover runbook: steps put in the right order (backup, bookmark and restore drill before migrations; export before import), kill switches deployed together from a clean release with a check and a rollback, DNS rollback check and rehearsal timing and timeout handling corrected (#770). Docs only; nothing is deployed.
