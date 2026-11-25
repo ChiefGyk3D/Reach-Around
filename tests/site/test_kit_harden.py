@@ -28,7 +28,7 @@ from reach_around.cli import main
 from reach_around.site import build as build_module
 from reach_around.site import kit as kit_module
 from reach_around.site.build import build_site
-from reach_around.site.kit import GATED_FILE, KitLeakError
+from reach_around.site.kit import GATED_FILE, GATED_POLICY_FILE, KitLeakError
 
 PARTNER = f"Acme Fake Co {CANARY}"
 
@@ -161,7 +161,10 @@ def test_a_gated_write_failure_happens_before_the_public_tree_is_replaced(
     finally:
         gated.chmod(0o700)
     assert snapshot(out) == before
-    assert sorted(p.name for p in gated.iterdir()) == [GATED_FILE.name]
+    # the page and its policy record, and no temporary file
+    assert sorted(p.name for p in gated.iterdir()) == sorted(
+        [GATED_FILE.name, GATED_POLICY_FILE.name]
+    )
 
 
 def test_a_failed_publish_step_leaves_no_temporary_file(
@@ -194,6 +197,10 @@ def write_instance(tmp_path: Path, kit: dict[str, Any], gate: bool = True) -> Pa
             }
         ],
         "features": {"kit_gate": gate},
+        "privacy": {
+            "controller_name": "Example Creator",
+            "contact": "example.com/contact",
+        },
         "kit": kit,
     }
     path = tmp_path / "instance" / "site.yaml"

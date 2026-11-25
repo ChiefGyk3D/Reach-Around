@@ -161,8 +161,8 @@ class Measure:
 class _SilentSink:
     """The follower read already alerts about the token; this one stays quiet."""
 
-    def store(self, token: NewToken, name: str, source: str, expires_on: date) -> None:
-        return None
+    def store(self, token: NewToken, name: str, source: str, expires_on: date) -> bool:
+        return False  # nothing was kept
 
     def alert(self, alert: HealthAlert) -> None:
         return None

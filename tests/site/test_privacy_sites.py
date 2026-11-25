@@ -63,6 +63,9 @@ def views_text(config: SiteConfig) -> str:
 # one (owner decision 2026-11-19, issue #598), so it has no phrase. When a
 # network dataset ships (#412) it needs a real phrase on the page again, and
 # this entry must change with it.
+# "city" is likewise empty (#778): the raw row's city column is never filled, at any
+# level. A city is counted only in a daily total at level city, and the text for that
+# level is checked in test_city_level_says_where_the_city_is_kept_and_when_it_goes.
 PHRASES: dict[str, str] = {
     "ts": "and the hour",
     "page": "records the page",
@@ -70,7 +73,7 @@ PHRASES: dict[str, str] = {
     "src": "referring site",
     "country": "country",
     "region": "region",
-    "city": "city",
+    "city": "",
     "browser": "browser",
     "bmajor": "and version",
     "os": "operating system",
@@ -122,7 +125,9 @@ def test_the_guard_bites_a_new_column_with_no_disclosure() -> None:
     cols = view_event_columns(list(MIGRATIONS.glob("*.sql"))) + ["zodiac"]
     assert undisclosed(cols, views_text(make())) == ["zodiac"]
     # And a known column whose words were dropped from the text.
-    assert undisclosed(["city"], views_text(make()).replace("city", "town")) == ["city"]
+    assert undisclosed(["region"], views_text(make()).replace("region", "area")) == [
+        "region"
+    ]
 
 
 # -- the facts section 9 lists -------------------------------------------------
@@ -190,6 +195,30 @@ def test_text_states_the_retention_ceiling_the_worker_enforces(
     assert "never kept longer" not in text
     assert "{RAW_HARD_CAP_DAYS}" not in text
     assert "the records are kept longer so the totals are not lost" in text
+
+
+def test_location_statement_follows_geo_level_and_the_default_is_region() -> None:
+    # The Worker's default level is region (#778): a raw view holds at most the region.
+    view_ts = (ROOT / "worker" / "src" / "view.ts").read_text(encoding="utf-8")
+    assert '["country", "region", "city"], "region")' in view_ts
+    default = views_text(make())
+    assert "enabled: country and region." in default
+    assert "city" not in default.lower().replace("city totals", "")
+    assert "City totals" not in default
+    country = views_text(make(geo_level="country"))
+    assert "enabled: country only." in country
+    assert "region" not in country.split("enabled:")[1].split("It marks")[0]
+
+
+def test_city_level_says_where_the_city_is_kept_and_when_it_goes() -> None:
+    text = views_text(make(geo_level="city"))
+    assert "city only in a daily total that is not linked to any other detail" in text
+    assert "City totals are deleted on the same schedule as view records." in text
+    # The Worker purges the city counter (worker/src/viewretention.ts).
+    ret = (ROOT / "worker/src/viewretention.ts").read_text(encoding="utf-8")
+    assert "DELETE FROM view_city_daily" in ret
+    # No other level mentions a stored city.
+    assert "City totals" not in views_text(make(geo_level="region"))
 
 
 def test_ceiling_rule_matches_the_worker() -> None:

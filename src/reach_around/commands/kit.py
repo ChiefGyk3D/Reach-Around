@@ -9,6 +9,7 @@ import sys
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+from reach_around.commands import kit_measure
 from reach_around.config import ConfigError, SiteConfig, load_site_config
 from reach_around.config.imported_history import (
     ImportedHistory,
@@ -136,7 +137,7 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    kit = subparsers.add_parser("kit", help="media kit tools (PDF)")
+    kit = subparsers.add_parser("kit", help="media kit tools (PDF, hand-kept measures)")
     actions = kit.add_subparsers(dest="kit_command", required=True)
     pdf = actions.add_parser(
         "pdf",
@@ -208,4 +209,5 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "(the browser sandbox is off in netns mode)",
     )
     pdf.add_argument("--overwrite", action="store_true", help="replace an existing PDF")
-    kit.set_defaults(func=_run)
+    pdf.set_defaults(func=_run)
+    kit_measure.register(actions)

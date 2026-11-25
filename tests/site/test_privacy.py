@@ -20,6 +20,7 @@ from reach_around.site.privacy import Disclosure, collected_items, sets_cookies
 
 TODAY = date(2027, 3, 10)
 GOLDEN = Path(__file__).parent / "golden_privacy" / "privacy" / "index.html"
+NOTICE_FIELDS = {"controller_name": "Example Creator", "contact": "example.com/contact"}
 INTRO = "Cookies, sadly not the chocolate chip kind."
 
 
@@ -45,6 +46,9 @@ def make_config(**extra: Any) -> SiteConfig:
         ],
     }
     data.update(extra)
+    # The notice needs a controller and a contact when the gate or alerts are on;
+    # fill them unless a test sets its own.
+    data["privacy"] = {**NOTICE_FIELDS, **data.get("privacy", {})}
     return SiteConfig.model_validate(data)
 
 
@@ -458,7 +462,9 @@ def test_disabling_click_tracking_removes_the_click_item(tmp_path: Path) -> None
     assert collected_items(config) == []
     build_site(config, tmp_path, today=TODAY)
     page = (tmp_path / "privacy" / "index.html").read_text()
-    assert "click" not in page.lower()
+    # The fixed notice still talks about measurement; the per-item list does not.
+    assert 'class="collected"' not in page
+    assert "When you click a link" not in page
     assert "collects nothing" in page
 
 

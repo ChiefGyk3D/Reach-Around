@@ -403,6 +403,10 @@ def sentinel_config(root: Path) -> Path:
             }
         ],
         "features": {"kit_gate": True},
+        "privacy": {
+            "controller_name": "Example Creator",
+            "contact": "example.com/contact",
+        },
         "numbers": {
             "history_file": "history/social.jsonl",
             "sources": [
