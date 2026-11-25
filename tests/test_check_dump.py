@@ -390,9 +390,43 @@ def test_only_the_allowlisted_triggers_pass_and_a_changed_body_is_refused(
     assert "unexpected statement" in r.stdout
 
 
+def _trigger_variants() -> dict[str, str]:
+    one = SCHEMA_DUMP.index("CREATE TRIGGER kit_meta_floor_insert")
+    end = SCHEMA_DUMP.index("END;", one) + 4
+    good = SCHEMA_DUMP[one:end]
+    head = good[: -len("END;")]
+    return {
+        "good": good,
+        "second statement": head + "DROP TABLE kit_meta;\nEND;",
+        "second select": head + "SELECT 1;\nEND;",
+        "trailing comment": head + "END -- ok\n;",
+        "comment before end": head + "/* x */ END;",
+        "comment in body": good.replace("SELECT RAISE", "SELECT /* x */ RAISE"),
+        "keyword case": good.replace("BEFORE INSERT", "before insert"),
+        "begin case": good.replace("BEGIN", "begin"),
+    }
+
+
+def test_a_trigger_must_match_whole_and_a_changed_variant_is_refused(
+    tmp_path: Path,
+) -> None:
+    variants = _trigger_variants()
+    good = variants.pop("good")
+    assert good in SCHEMA_DUMP
+    for name, bad in variants.items():
+        assert bad != good, name
+        r = run(SCHEMA_DUMP.replace(good, bad, 1) + GOOD_ROW, tmp_path=tmp_path)
+        assert r.returncode == 1, name + r.stdout
+    # Whitespace runs are the only thing folded.
+    spaced = good.replace("\nBEGIN", "\n\n   BEGIN")
+    assert spaced != good
+    r = run(SCHEMA_DUMP.replace(good, spaced, 1) + GOOD_ROW, tmp_path=tmp_path)
+    assert r.returncode == 0, r.stdout
+
+
 def test_the_trigger_allowlist_equals_the_real_migrations() -> None:
     real = {
-        " ".join(sql.split()).removesuffix("; END")
+        " ".join(sql.split()).removesuffix(";")
         for (sql,) in real_db().execute(
             "SELECT sql FROM sqlite_master WHERE type='trigger'"
         )
