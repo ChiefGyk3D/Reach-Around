@@ -1,0 +1,1 @@
+- CI: pin the instance-repo example workflows and the harden-runner test to the same commits as the Dependabot actions bump (#882): git-your-ship-together v1.36.0 and step-security/harden-runner v2.23.0.
