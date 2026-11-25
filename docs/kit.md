@@ -98,10 +98,26 @@ because the number would be shown nowhere.
 numbers file holds one count per platform). Two metrics on one platform may not
 share a label once case, Unicode compatibility forms and spacing are ignored.
 
-**Size limits.** The site config file is refused above 256 KiB before it is parsed,
-and a parsed config with more than 20,000 values (every scalar, list, mapping and
-key counts as one) is refused before any of it is validated, on top of the per-list
-caps (50 tabs, 200 blocks per tab, 200 links per section, 50 socials).
+**Size limits.** The site config file is refused above 256 KiB before it is parsed.
+A parsed config is then checked before any of it is validated, and refused when it:
+
+- holds more than 20,000 values (every scalar, list, mapping and mapping key counts
+  as one, and a value reached twice, such as a YAML alias, counts each time),
+- is nested more than 64 levels deep,
+- holds anything but mappings with text keys, lists and plain values (a tuple or
+  a set is refused, so a container cannot hide its size from the count).
+
+The per-list caps still apply on top: 50 tabs, 200 blocks per tab, 200 links per
+section, 50 socials.
+
+**Error output.** At most 20 problems print, then a count of the rest. Pydantic
+builds every error before it can be sliced, so the list is only built when the
+config has at most 1,000 problems; a config with more prints one sentence with the
+count and nothing else. This bounds the memory the error list can use. The work of
+validating and counting the errors is bounded by the 20,000-value budget times the
+most errors one value can raise; a test measures that multiplier on the worst
+shapes we could build and fails if it grows past 8 per value. No message repeats a
+value from the file.
 
 ## What the build writes
 

@@ -6,26 +6,30 @@ Every name here is synthetic (fake brand, example.com).
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
 from pydantic import ValidationError
 
 from reach_around.config import SiteConfig, load_site_config
-from reach_around.config.kit import KitConfig
+from reach_around.config.blocks import KIT_PLATFORM_SLUGS
+from reach_around.config.kit import KitConfig, PlatformMetric
 from reach_around.config.loader import ConfigError
 from reach_around.config.models import (
     MAX_BLOCKS_PER_TAB,
     MAX_CONFIG_BYTES,
+    MAX_CONFIG_DEPTH,
     MAX_CONFIG_NODES,
     MAX_LINKS_PER_SECTION,
+    MAX_MATERIALIZED_PROBLEMS,
     MAX_REPORTED_PROBLEMS,
     MAX_SOCIALS,
     MAX_TABS,
     Link,
     check_config_budget,
+    problem_text,
 )
 
 
@@ -252,8 +256,6 @@ def test_error_formatting_stops_at_the_cap(
 
 
 def test_error_details_are_requested_without_input_or_context() -> None:
-    from reach_around.config.models import problem_text
-
     seen: dict[str, Any] = {}
 
     class Fake:
@@ -270,3 +272,215 @@ def test_error_details_are_requested_without_input_or_context() -> None:
         "include_input": False,
         "include_context": False,
     }
+
+
+# ---- container shapes that must not slip past the budget (round 3) ----------
+
+
+def _walk_count(node: object) -> int:
+    """Independent node count (values, containers, keys) for the ratio tests."""
+    total, stack = 0, [node]
+    while stack:
+        cur = stack.pop()
+        total += 1
+        if isinstance(cur, dict):
+            total += len(cur)
+            stack.extend(cur.values())
+        elif isinstance(cur, list):
+            stack.extend(cur)
+    return total
+
+
+def _deep(levels: int) -> object:
+    node: object = 1
+    for _ in range(levels):
+        node = [node]
+    return node
+
+
+_SHARED = list(range(500))
+_CYCLE: dict[str, Any] = {}
+_CYCLE["self"] = _CYCLE
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        pytest.param(tuple({"id": "x"} for _ in range(5)), id="tuple"),
+        pytest.param({1, 2, 3}, id="set"),
+        pytest.param(frozenset({1}), id="frozenset"),
+        pytest.param((i for i in range(3)), id="generator"),
+        pytest.param([(1,), (2,)], id="tuple-inside-list"),
+        pytest.param({"a": ((),)}, id="nested-tuple"),
+        pytest.param(OrderedDict(a=1), id="dict-subclass"),
+        pytest.param({1: "non-text key"}, id="non-text-key"),
+        pytest.param({("t",): 1}, id="tuple-key"),
+        pytest.param(b"bytes", id="bytes"),
+        pytest.param(object(), id="object"),
+    ],
+)
+def test_budget_refuses_shapes_the_models_would_expand(shape: object) -> None:
+    with pytest.raises(ValueError, match="not allowed|not text"):
+        check_config_budget(shape)
+
+
+def test_tuple_of_tabs_is_refused_with_one_error_not_one_per_tab() -> None:
+    # The round 3 reproduction: one tuple node, 100,000 entries inside it.
+    bad = tuple({"id": "BAD_", "title": "T", "blocks": ()} for _ in range(100_000))
+    with pytest.raises(ValidationError, match="not allowed") as exc:
+        SiteConfig.model_validate(site_doc(tabs=bad))
+    assert exc.value.error_count() == 1
+
+
+def test_deep_nesting_refused_at_the_depth_limit() -> None:
+    check_config_budget(_deep(MAX_CONFIG_DEPTH - 1))
+    with pytest.raises(ValueError, match="levels deep") as exc:
+        check_config_budget(_deep(MAX_CONFIG_DEPTH + 1))
+    assert "1" not in str(exc.value).replace(str(MAX_CONFIG_DEPTH), "")
+
+
+def test_very_deep_input_is_refused_without_recursion() -> None:
+    with pytest.raises(ValueError, match="levels deep"):
+        check_config_budget(_deep(50_000))
+
+
+def test_wide_list_and_wide_mapping_refused() -> None:
+    with pytest.raises(ValueError, match="more than"):
+        check_config_budget(list(range(MAX_CONFIG_NODES + 1)))
+    with pytest.raises(ValueError, match="more than"):
+        check_config_budget({f"k{i}": None for i in range(MAX_CONFIG_NODES + 1)})
+
+
+def test_alias_expansion_counts_each_reference() -> None:
+    # One 500-item list referenced 100 times is 50,000 values once expanded.
+    with pytest.raises(ValueError, match="more than"):
+        check_config_budget({f"k{i}": _SHARED for i in range(100)})
+    check_config_budget({f"k{i}": _SHARED for i in range(10)})
+
+
+def test_cycle_is_refused_not_looped() -> None:
+    with pytest.raises(ValueError, match="more than|levels deep"):
+        check_config_budget(_CYCLE)
+
+
+def test_dates_and_models_are_leaf_values() -> None:
+    from datetime import date
+
+    check_config_budget({"a": date(2027, 1, 1), "b": None, "c": 1.5, "d": True})
+    check_config_budget([Link(id="a", title="t", url="https://example.com/")])
+
+
+# ---- the error list is only built when it is short --------------------------
+
+
+class _Boom:
+    """A ValidationError stand-in whose errors() must never be called."""
+
+    def __init__(self, count: int) -> None:
+        self.count = count
+
+    def error_count(self) -> int:
+        return self.count
+
+    def errors(self, **_: Any) -> list[dict[str, Any]]:
+        raise AssertionError("errors() built a list that is over the cap")
+
+
+def test_problem_text_never_builds_an_oversized_error_list() -> None:
+    text = problem_text(_Boom(MAX_MATERIALIZED_PROBLEMS + 1))  # type: ignore[arg-type]
+    assert f"{MAX_MATERIALIZED_PROBLEMS + 1} problems" in text
+    assert "too many to list" in text
+    # At the limit the list is still built and capped at 20 entries.
+    with pytest.raises(AssertionError, match="over the cap"):
+        problem_text(_Boom(MAX_MATERIALIZED_PROBLEMS))  # type: ignore[arg-type]
+
+
+_MAX_ERRORS_PER_NODE = 8
+
+
+def _hostile_docs() -> dict[str, dict[str, Any]]:
+    empty_blocks: list[dict[str, Any]] = [{} for _ in range(MAX_BLOCKS_PER_TAB)]
+    bad_sections = [
+        {"id": f"s{i}", "links": [{} for _ in range(20)]}
+        for i in range(MAX_BLOCKS_PER_TAB)
+    ]
+
+    def bad_tabs(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        # As many tabs as fit in the node budget (the walker would refuse more).
+        for count in range(MAX_TABS, 0, -1):
+            tabs = [{"id": f"T_{i}", "blocks": list(blocks)} for i in range(count)]
+            if _walk_count(site_doc(tabs=tabs)) <= MAX_CONFIG_NODES:
+                return tabs
+        raise AssertionError("one tab is over the node budget")
+
+    kinds = [
+        {"id": "a", "markdown": 1},
+        {"id": "b", "src": 1},
+        {"id": "c", "coins": 1},
+        {"id": "d", "address": 1},
+        {"id": "e", "items": 1},
+        {"id": "f", "players": 1},
+        {"id": "g", "url": 1, "bogus": 1},
+    ]
+    return {
+        "empty-blocks": site_doc(tabs=bad_tabs(empty_blocks)),
+        "bad-sections": site_doc(tabs=bad_tabs(bad_sections)),
+        "every-kind-bad": site_doc(
+            tabs=bad_tabs([kinds[i % 7] for i in range(MAX_BLOCKS_PER_TAB)])
+        ),
+        "unknown-keys": site_doc(**{f"k{i}": 1 for i in range(9_000)}),
+        "bad-socials": site_doc(
+            creator={"name": "E", "socials": [{} for _ in range(MAX_SOCIALS)]}
+        ),
+    }
+
+
+@pytest.mark.parametrize("name", sorted(_hostile_docs()))
+def test_worst_case_error_count_is_bounded_by_the_node_budget(name: str) -> None:
+    # pydantic builds every error before anything can slice the list, so the
+    # work is bounded by (node budget) x (errors per node). Measure the
+    # multiplier on the worst shapes we can build, and refuse to let it grow.
+    doc = _hostile_docs()[name]
+    nodes = _walk_count(doc)
+    assert nodes <= MAX_CONFIG_NODES
+    with pytest.raises(ValidationError) as exc:
+        SiteConfig.model_validate(doc)
+    assert 0 < exc.value.error_count() <= nodes * _MAX_ERRORS_PER_NODE
+    assert exc.value.error_count() <= MAX_CONFIG_NODES * _MAX_ERRORS_PER_NODE
+
+
+def test_hostile_load_reports_a_count_not_a_list(tmp_path: Path) -> None:
+    lines = ["version: 1", "creator:", "  name: E", "tabs:"]
+    for i in range(MAX_TABS):
+        lines += [f"  - id: BAD_{i}", "    blocks:"]
+        lines += ["      - {}"] * MAX_BLOCKS_PER_TAB
+    path = tmp_path / "site.yaml"
+    path.write_text("\n".join(lines) + "\n")
+    assert path.stat().st_size < MAX_CONFIG_BYTES
+    with pytest.raises(ConfigError, match="too many to list") as exc:
+        load_site_config(path)
+    assert "BAD_" not in str(exc.value)
+    assert len(str(exc.value)) < 2000
+
+
+# ---- the duplicate-label message holds no platform ---------------------------
+
+
+def test_duplicate_label_message_is_fixed_text_for_every_platform() -> None:
+    for slug in sorted(KIT_PLATFORM_SLUGS):
+        pair = [manual(platform=slug), manual(platform=slug, label="followers")]
+        with pytest.raises(ValidationError) as exc:
+            KitConfig.model_validate(kit_doc(pair))
+        msgs = [e["msg"] for e in exc.value.errors(include_input=False)]
+        assert len(msgs) == 1
+        assert slug not in msgs[0]
+        assert "more than once" in msgs[0]
+
+
+def test_metric_platform_is_a_closed_set() -> None:
+    # The proof that no free-form platform text can reach the duplicate check:
+    # an unknown platform is refused by the field itself, with fixed text.
+    with pytest.raises(ValidationError) as exc:
+        PlatformMetric.model_validate(manual(platform="CANARY-PLATFORM"))
+    msgs = [e["msg"] for e in exc.value.errors(include_input=False)]
+    assert msgs and all("CANARY" not in m for m in msgs)

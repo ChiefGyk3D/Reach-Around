@@ -968,8 +968,8 @@ class KitConfig(_Model):
             key = (metric.platform, label.casefold())
             if key in seen:
                 raise ValueError(
-                    f"a metric for {metric.platform!r} with the same label "
-                    "(ignoring case and spacing) is listed more than once"
+                    "a metric label is listed more than once for a platform "
+                    "(ignoring case and spacing)"
                 )
             seen.add(key)
         return self

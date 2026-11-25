@@ -83,6 +83,12 @@ MAX_REPORTED_PROBLEMS = 20
 # few hundred nodes.
 MAX_CONFIG_BYTES = 262_144
 MAX_CONFIG_NODES = 20_000
+MAX_CONFIG_DEPTH = 64
+# Error details are only built (pydantic has no lazy form) for a list this
+# short. Counting the errors is cheap and builds nothing; a longer list is
+# reported as a count only.
+MAX_MATERIALIZED_PROBLEMS = 1_000
+_LEAVES = (str, int, float, bool, date, BaseModel)
 
 Title = Annotated[str, StringConstraints(min_length=1, max_length=200)]
 Subtitle = Annotated[str, StringConstraints(min_length=1, max_length=500)]
@@ -575,27 +581,55 @@ class SupportPage(_Model):
         return self
 
 
-def check_config_budget(raw: object, limit: int = MAX_CONFIG_NODES) -> None:
-    """Refuse a parsed document with more than ``limit`` nodes.
+def _refuse_config(message: str) -> None:
+    raise ValueError(message)
 
-    Iterative (no recursion), and it stops at the first node over the limit, so
-    the work is bounded by ``limit`` whatever the input. The message is fixed:
-    it never repeats a value from the document.
+
+def check_config_budget(raw: object, limit: int = MAX_CONFIG_NODES) -> None:
+    """Refuse a parsed document that is too big, too deep or of a wrong shape.
+
+    A document is built only from ``dict`` (with ``str`` keys), ``list`` and
+    plain scalars. Any other container (a tuple, a set, a generator, a mapping
+    subclass) is refused, because pydantic would accept it as a list or mapping
+    and validate every element while this count saw one node. Every value, every
+    container and every mapping key counts as one node; a value reachable
+    twice (a YAML alias, a shared list) is counted each time it is reached, so
+    an alias bomb is its expanded size. The walk is iterative (no recursion),
+    stops at the first node over ``limit`` or over ``MAX_CONFIG_DEPTH`` levels,
+    and cannot loop on a cycle (each visit is counted), so the work is bounded
+    by ``limit`` whatever the input. Messages are fixed: they never repeat a
+    value from the document.
     """
     seen = 0
-    stack: list[object] = [raw]
+    stack: list[tuple[object, int]] = [(raw, 1)]
     while stack:
-        node = stack.pop()
+        node, depth = stack.pop()
         seen += 1
-        if isinstance(node, dict):
-            seen += len(node)
-            stack.extend(node.values())
-        elif isinstance(node, list):
-            stack.extend(node)
-        if seen > limit:
-            raise ValueError(
-                f"the config holds more than {limit} values; split it or remove entries"
+        if depth > MAX_CONFIG_DEPTH:
+            _refuse_config(
+                f"the config is nested more than {MAX_CONFIG_DEPTH} levels deep"
             )
+        if type(node) is dict:
+            seen += len(node)
+            if seen > limit:
+                break
+            for key, value in node.items():
+                if type(key) is not str:
+                    _refuse_config("a mapping key in the config is not text")
+                stack.append((value, depth + 1))
+        elif type(node) is list:
+            if seen + len(node) > limit:
+                seen += len(node)
+                break
+            stack.extend((item, depth + 1) for item in node)
+        elif not (node is None or isinstance(node, _LEAVES)):
+            _refuse_config("the config holds a value of a type that is not allowed")
+        if seen > limit:
+            break
+    if seen > limit:
+        _refuse_config(
+            f"the config holds more than {limit} values; split it or remove entries"
+        )
 
 
 class SiteConfig(_Model):
@@ -628,9 +662,8 @@ class SiteConfig(_Model):
     @model_validator(mode="before")
     @classmethod
     def _within_budget(cls, data: object) -> object:
-        # Runs before any field is validated: an over-budget document never
-        # builds the models
-        # (or the error list that goes with them).
+        # Runs before any field is validated: an over-budget or odd-shaped
+        # document never builds the models (or the error list that goes with them).
         check_config_budget(data)
         return data
 
@@ -1005,13 +1038,21 @@ def _dotted(loc: tuple[int | str, ...]) -> str:
 
 
 def problem_text(exc: ValidationError) -> str:
-    """The capped, value-free problem list for a failed site config."""
+    """The capped, value-free problem list for a failed site config.
+
+    ``error_count()`` builds nothing, but ``errors()`` builds every entry and
+    pydantic has no lazy form. So the entries are only built when there are at
+    most ``MAX_MATERIALIZED_PROBLEMS`` of them; a longer list is a fixed
+    sentence with the count. The input and context are never requested, so no
+    printed entry holds a copy of the document.
+    """
+    total = exc.error_count()
+    if total > MAX_MATERIALIZED_PROBLEMS:
+        return (
+            f"the config has {total} problems, too many to list; "
+            "fix the first ones and run the check again"
+        )
     problems = []
-    # pydantic builds the whole error list (it has no lazy iterator), so the
-    # bound is the MAX_CONFIG_NODES budget checked before any model is built:
-    # at most one error per value. Drop the offending input and context so the
-    # list holds no copy of the document. Only the printed entries are
-    # formatted; the total comes from the count.
     for err in itertools.islice(
         exc.errors(include_url=False, include_input=False, include_context=False),
         MAX_REPORTED_PROBLEMS,
@@ -1019,7 +1060,7 @@ def problem_text(exc: ValidationError) -> str:
         where = _dotted(err["loc"])
         msg = err["msg"].removeprefix("Value error, ")
         problems.append(f"{where}: {msg}" if where else msg)
-    extra = exc.error_count() - len(problems)
+    extra = total - len(problems)
     text = "; ".join(problems)
     if extra > 0:
         text += f"; and {extra} more problems"
