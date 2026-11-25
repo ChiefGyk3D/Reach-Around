@@ -69,7 +69,6 @@ jobs:
       contents: read
     # No `environment` and no secrets here, on purpose.
     outputs:
-      engine_repo: ${{ steps.lock.outputs.engine_repo }}
       engine_ref: ${{ steps.lock.outputs.engine_ref }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -94,7 +93,10 @@ jobs:
           # The image, repository, commit and tag must describe one release.
           scripts/read-lock.sh --release
           {
-            echo "engine_repo=$(scripts/read-lock.sh ENGINE_REPO)"
+            # The script holds the upstream repository as a literal and fails
+            # on any other value. It is not passed on: the later jobs use the
+            # same literal.
+            scripts/read-lock.sh ENGINE_REPO > /dev/null
             echo "engine_ref=$(scripts/read-lock.sh ENGINE_REF)"
           } >> "$GITHUB_OUTPUT"
 
@@ -105,6 +107,26 @@ jobs:
       # The called workflow checks the Worker name again. Pages names are
       # compared after lowercasing, and [[ =~ ]] tests the whole value, so a
       # second line cannot hide behind a valid first one.
+      # The staging and production settings are distinct. Plain values only;
+      # it prints only the NAME of a setting that is not distinct.
+      - name: Check the tier settings are distinct
+        env:
+          STAGING_WORKER_NAME: ${{ vars.STAGING_WORKER_NAME }}
+          PRODUCTION_WORKER_NAME: ${{ vars.PRODUCTION_WORKER_NAME }}
+          STAGING_PAGES_PROJECT: ${{ vars.STAGING_PAGES_PROJECT }}
+          PRODUCTION_PAGES_PROJECT: ${{ vars.PRODUCTION_PAGES_PROJECT }}
+          STAGING_D1_DATABASE_ID: ${{ vars.STAGING_D1_DATABASE_ID }}
+          PRODUCTION_D1_DATABASE_ID: ${{ vars.PRODUCTION_D1_DATABASE_ID }}
+          STAGING_RATELIMIT_NAMESPACE_ID: ${{ vars.STAGING_RATELIMIT_NAMESPACE_ID }}
+          PRODUCTION_RATELIMIT_NAMESPACE_ID: ${{ vars.PRODUCTION_RATELIMIT_NAMESPACE_ID }}
+          STAGING_SITE_HOST: ${{ vars.STAGING_SITE_HOST }}
+          PRODUCTION_SITE_HOST: ${{ vars.PRODUCTION_SITE_HOST }}
+          STAGING_ZONE_NAME: ${{ vars.STAGING_ZONE_NAME }}
+          PRODUCTION_ZONE_NAME: ${{ vars.PRODUCTION_ZONE_NAME }}
+          DOPPLER_IDENTITY_ID_STAGING: ${{ vars.DOPPLER_IDENTITY_ID_STAGING }}
+          DOPPLER_IDENTITY_ID_PRODUCTION: ${{ vars.DOPPLER_IDENTITY_ID_PRODUCTION }}
+        run: scripts/check-tiers.sh
+
       - name: Check the plain configuration values
         env:
           STAGING_WORKER_NAME: ${{ vars.STAGING_WORKER_NAME }}
@@ -185,7 +207,7 @@ jobs:
     # environment's own variables). None is a secret, and no secret is passed.
     with:
       environment: staging
-      engine_repo: ${{ needs.validate.outputs.engine_repo }}
+      engine_repo: ChiefGyk3D/Reach-Around
       engine_ref: ${{ needs.validate.outputs.engine_ref }}
       worker_name: ${{ vars.STAGING_WORKER_NAME }}
       manifest_artifact: site-manifest
@@ -221,7 +243,7 @@ jobs:
       - name: Fetch the Worker source at the pinned commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ needs.validate.outputs.engine_repo }}
+          repository: ChiefGyk3D/Reach-Around
           ref: ${{ needs.validate.outputs.engine_ref }}
           path: engine
           sparse-checkout: worker
@@ -315,7 +337,7 @@ jobs:
     uses: ChiefGyk3D/Reach-Around/.github/workflows/deploy-worker.yml@16efbd68a535b0bdd3dc96b5d7684e61d82bf609 # v0.3.0-rc.6
     with:
       environment: production
-      engine_repo: ${{ needs.validate.outputs.engine_repo }}
+      engine_repo: ChiefGyk3D/Reach-Around
       engine_ref: ${{ needs.validate.outputs.engine_ref }}
       worker_name: ${{ vars.PRODUCTION_WORKER_NAME }}
       manifest_artifact: site-manifest
@@ -345,7 +367,7 @@ jobs:
       - name: Fetch the Worker source at the pinned commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ needs.validate.outputs.engine_repo }}
+          repository: ChiefGyk3D/Reach-Around
           ref: ${{ needs.validate.outputs.engine_ref }}
           path: engine
           sparse-checkout: worker

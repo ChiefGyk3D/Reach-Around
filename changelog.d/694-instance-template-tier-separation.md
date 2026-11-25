@@ -1,0 +1,1 @@
+- Instance template (#694): the engine repository is `ChiefGyk3D/Reach-Around` and the image path is `ghcr.io/chiefgyk3d/reach-around`. The deploy workflow and `scripts/read-lock.sh` use these fixed values, and a new `scripts/check-tiers.sh` runs in `validate` before any deploy job and requires the staging and production settings to differ. New tests cover each case.

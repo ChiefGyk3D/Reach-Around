@@ -214,6 +214,9 @@ def _deploy_data() -> dict[Any, Any]:
     return data
 
 
+UPSTREAM_REPO = "ChiefGyk3D/Reach-Around"
+
+
 def test_deploy_workflow_shape() -> None:
     data = _deploy_data()
     dispatch = data[True]["workflow_dispatch"]
@@ -227,7 +230,8 @@ def test_deploy_workflow_shape() -> None:
     jobs = data["jobs"]
     assert list(jobs) == ["validate", *DEPLOY_JOBS]
     assert "environment" not in jobs["validate"]
-    assert set(jobs["validate"]["outputs"]) == {"engine_repo", "engine_ref"}
+    # the engine repository is a literal in the template
+    assert set(jobs["validate"]["outputs"]) == {"engine_ref"}
     for tier in ("staging", "production"):
         worker = jobs[f"worker-{tier}"]
         pages = jobs[f"pages-{tier}"]
@@ -243,7 +247,7 @@ def test_deploy_workflow_shape() -> None:
         assert call["manifest_artifact"] == "site-manifest"
         assert call["site_artifact"] == "site-out"
         assert call["engine_ref"] == "${{ needs.validate.outputs.engine_ref }}"
-        assert call["engine_repo"] == "${{ needs.validate.outputs.engine_repo }}"
+        assert call["engine_repo"] == UPSTREAM_REPO
         for key, value in call.items():
             if "${{" in str(value):
                 assert WITH_EXPRESSION.match(str(value)), (tier, key, value)
@@ -2900,3 +2904,209 @@ def test_a_clean_repository_check_records_status_zero(
     done = run.run(steps["repo"], TRUSTED=trusted, RESULTS=results)
     assert done.returncode == 0, done.stderr
     assert run.outputs["repo.status"] == "0"
+
+
+# ---- the engine source is the upstream repository (#694) ---
+
+
+def engine_source_problems(text: str) -> list[str]:
+    """Every engine checkout and reusable call names the upstream literal."""
+    found: list[str] = []
+    jobs = yaml.safe_load(text)["jobs"]
+    seen = 0
+    for name, job in jobs.items():
+        if "with" in job and "engine_repo" in job["with"]:
+            seen += 1
+            if job["with"]["engine_repo"] != UPSTREAM_REPO:
+                found.append(f"{name}: engine_repo is not the upstream literal")
+        for step in job.get("steps", []):
+            args = step.get("with", {})
+            if "repository" in args:
+                seen += 1
+                if args["repository"] != UPSTREAM_REPO:
+                    found.append(f"{name}: checkout repository is not the literal")
+    if seen != len(DEPLOY_JOBS):
+        found.append(f"expected 4 engine sources, found {seen}")
+    return found
+
+
+def test_the_engine_source_is_the_upstream_literal_in_every_deploy_job() -> None:
+    assert engine_source_problems(deploy_text()) == []
+
+
+def test_the_engine_source_check_fails_on_a_changed_source() -> None:
+    text = deploy_text()
+    lock_value = "${{ needs.validate.outputs.engine_repo }}"
+    one_call = text.replace(
+        f"engine_repo: {UPSTREAM_REPO}", f"engine_repo: {lock_value}", 1
+    )
+    assert engine_source_problems(one_call)
+    one_checkout = text.replace(
+        f"repository: {UPSTREAM_REPO}", f"repository: {lock_value}", 1
+    )
+    assert engine_source_problems(one_checkout)
+    other = text.replace(f"repository: {UPSTREAM_REPO}", "repository: other/engine", 1)
+    assert engine_source_problems(other)
+
+
+REPO_LINE = "ENGINE_REPO=ChiefGyk3D/Reach-Around"
+IMAGE_HEAD = "ghcr.io/chiefgyk3d/reach-around:"
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "key"),
+    [
+        (REPO_LINE, "ENGINE_REPO=other/engine", "ENGINE_REPO"),
+        (REPO_LINE, "ENGINE_REPO=chiefgyk3d/reach-around", "ENGINE_REPO"),
+        (REPO_LINE, "ENGINE_REPO=ChiefGyk3D/Reach-Around-fork", "ENGINE_REPO"),
+        (IMAGE_HEAD, "ghcr.io/other/reach-around:", "ENGINE_IMAGE"),
+        (IMAGE_HEAD, "docker.io/chiefgyk3d/reach-around:", "ENGINE_IMAGE"),
+        (IMAGE_HEAD, "ghcr.io/chiefgyk3d/reach-around-x:", "ENGINE_IMAGE"),
+    ],
+)
+def test_read_lock_requires_the_upstream_source(
+    tmp_path: Path, old: str, new: str, key: str
+) -> None:
+    root = _copy_template(tmp_path)
+    lock = root / "engine.lock"
+    lock.write_text(
+        lock.read_text(encoding="utf-8").replace(old, new), encoding="utf-8"
+    )
+    assert _script(root, "read-lock.sh", key).returncode != 0
+    # --verify applies the same literal to a value handed in by another script
+    value = new.split("=", 1)[1] if "=" in new else new
+    if key == "ENGINE_REPO":
+        assert _script(root, "read-lock.sh", "--verify", key, value).returncode != 0
+
+
+def test_read_lock_verify_pins_the_upstream_repository(tmp_path: Path) -> None:
+    root = _copy_template(tmp_path)
+    ok = _script(root, "read-lock.sh", "--verify", "ENGINE_REPO", UPSTREAM_REPO)
+    assert ok.returncode == 0, ok.stderr
+    for bad in ("other/engine", "ChiefGyk3D/other", "chiefgyk3d/reach-around"):
+        res = _script(root, "read-lock.sh", "--verify", "ENGINE_REPO", bad)
+        assert res.returncode != 0, bad
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="jq not installed (runs on CI)")
+def test_a_release_naming_another_repository_is_refused_even_when_consistent(
+    tmp_path: Path,
+) -> None:
+    """Lock and manifest agree on another repository: still refused."""
+    root = _copy_template(tmp_path)
+    manifest = root / "engine.release.json"
+    doc = json.loads(manifest.read_text(encoding="utf-8"))
+    doc["repo"] = "other/engine"
+    manifest.write_text(json.dumps(doc), encoding="utf-8")
+    lock = root / "engine.lock"
+    lock.write_text(
+        lock.read_text(encoding="utf-8").replace(
+            "ENGINE_REPO=ChiefGyk3D/Reach-Around", "ENGINE_REPO=other/engine"
+        ),
+        encoding="utf-8",
+    )
+    res = _script(root, "read-lock.sh", "--release")
+    assert res.returncode != 0
+    assert "ENGINE_REPO" in res.stderr or "repo" in res.stderr
+
+
+# ---- the staging and production settings are distinct (#694) ----------------
+
+TIER_ENV = {
+    "STAGING_WORKER_NAME": "my-links-clicks-staging",
+    "PRODUCTION_WORKER_NAME": "my-links-clicks",
+    "STAGING_PAGES_PROJECT": "my-links-staging",
+    "PRODUCTION_PAGES_PROJECT": "my-links",
+    "STAGING_D1_DATABASE_ID": "11111111-1111-1111-1111-111111111111",
+    "PRODUCTION_D1_DATABASE_ID": "22222222-2222-2222-2222-222222222222",
+    "STAGING_RATELIMIT_NAMESPACE_ID": "1001",
+    "PRODUCTION_RATELIMIT_NAMESPACE_ID": "1002",
+    "STAGING_SITE_HOST": "staging.links.example.invalid",
+    "PRODUCTION_SITE_HOST": "links.example.invalid",
+    "STAGING_ZONE_NAME": "example.invalid",
+    "PRODUCTION_ZONE_NAME": "example.invalid",
+    "DOPPLER_IDENTITY_ID_STAGING": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    "DOPPLER_IDENTITY_ID_PRODUCTION": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+}
+TIER_STEP = "Check the tier settings are distinct"
+PROD_D1 = TIER_ENV["PRODUCTION_D1_DATABASE_ID"]
+
+
+def _tiers(root: Path, change: Mapping[str, str]) -> subprocess.CompletedProcess[str]:
+    env = {"PATH": os.environ["PATH"], **TIER_ENV, **change}
+    return subprocess.run(  # noqa: S603 - fixed argv, a copy of the template
+        [BASH, str(root / "scripts" / "check-tiers.sh")],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+
+def test_distinct_tier_settings_pass(tmp_path: Path) -> None:
+    root = _copy_template(tmp_path)
+    assert _tiers(root, {}).returncode == 0
+    # production off: its values are empty, nothing to compare
+    off = {k: "" for k in TIER_ENV if k.startswith("PRODUCTION_")}
+    off["DOPPLER_IDENTITY_ID_PRODUCTION"] = ""
+    assert _tiers(root, off).returncode == 0
+
+
+@pytest.mark.parametrize(
+    ("label", "change"),
+    [
+        ("d1", {"STAGING_D1_DATABASE_ID": TIER_ENV["PRODUCTION_D1_DATABASE_ID"]}),
+        (
+            "d1 case",
+            {"STAGING_D1_DATABASE_ID": TIER_ENV["PRODUCTION_D1_DATABASE_ID"].upper()},
+        ),
+        ("ratelimit", {"STAGING_RATELIMIT_NAMESPACE_ID": "1002"}),
+        ("worker (and its namespaces)", {"STAGING_WORKER_NAME": "my-links-clicks"}),
+        ("pages", {"STAGING_PAGES_PROJECT": "my-links"}),
+        ("pages case", {"STAGING_PAGES_PROJECT": "My-Links"}),
+        ("host (route)", {"STAGING_SITE_HOST": "links.example.invalid"}),
+        ("host case", {"STAGING_SITE_HOST": "LINKS.example.invalid"}),
+        ("host equals the production zone", {"STAGING_SITE_HOST": "example.invalid"}),
+        (
+            "production host is the staging zone",
+            {"STAGING_ZONE_NAME": "links.example.invalid"},
+        ),
+        (
+            "identity",
+            {"DOPPLER_IDENTITY_ID_STAGING": TIER_ENV["DOPPLER_IDENTITY_ID_PRODUCTION"]},
+        ),
+        ("second line", {"STAGING_D1_DATABASE_ID": "x\n" + PROD_D1}),
+        ("padded", {"STAGING_SITE_HOST": " staging.links.example.invalid"}),
+    ],
+)
+def test_each_tier_setting_pair_must_differ(
+    tmp_path: Path, label: str, change: dict[str, str]
+) -> None:
+    root = _copy_template(tmp_path)
+    result = _tiers(root, change)
+    assert result.returncode != 0, label
+    assert "::error::" in result.stdout, label
+    # only the name of a setting is printed, never a value
+    for value in change.values():
+        assert value.strip() not in result.stdout + result.stderr
+
+
+def test_the_tier_check_runs_in_validate_with_every_value_it_reads() -> None:
+    step = _step("validate", TIER_STEP)
+    assert step["run"] == "scripts/check-tiers.sh"
+    assert set(step["env"]) == set(TIER_ENV)
+    for name, value in step["env"].items():
+        assert value == "${{ vars." + name + " }}", name
+    validate_steps = yaml.safe_load(deploy_text())["jobs"]["validate"]["steps"]
+    names = [s.get("name") for s in validate_steps]
+    # before the build, so a failure stops before any deploy job starts
+    assert names.index(TIER_STEP) < names.index("Build the site with the pinned engine")
+
+
+def test_each_tier_uses_only_its_own_identity_and_environment() -> None:
+    jobs = yaml.safe_load(deploy_text())["jobs"]
+    for tier, other in (("staging", "PRODUCTION"), ("production", "STAGING")):
+        for name in (f"worker-{tier}", f"pages-{tier}"):
+            job_text = yaml.safe_dump(jobs[name])
+            assert f"DOPPLER_IDENTITY_ID_{other}" not in job_text, name
+            assert f"DOPPLER_IDENTITY_ID_{tier.upper()}" in job_text, name

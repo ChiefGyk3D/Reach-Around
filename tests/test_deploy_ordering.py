@@ -460,12 +460,27 @@ def test_release_tags_outside_the_grammar_are_refused(tmp_path: Path, tag: str) 
     assert "tag has the wrong shape" in result.stderr or "tag missing" in result.stderr
 
 
-def test_a_lock_comment_with_another_suffix_is_refused(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "tag",
+    [
+        "v0.3.0-rc.6-x",
+        "v0.3.0-RC.6",
+        "v0.3.0-rc.6/x",
+        "v0.3.0-rc.6/../x",
+        "v0.3.0-rc.6 x",
+        "v0.3.0-rc.6 ",
+        "v0.3.0-rc.6\n",
+        "v0.3.0-rc.6\nv9.9.9",
+        "v0.3.0-rc.6;id",
+    ],
+)
+def test_a_malformed_tag_repeated_in_every_pin_is_refused_by_the_parser(
+    tmp_path: Path, tag: str
+) -> None:
+    """The same bad tag in manifest, image and lock comment: only the grammar
+    can refuse it (the three values agree, so no mismatch check can)."""
     root = _instance(tmp_path)
-    lock = root / "engine.lock"
-    text = lock.read_text(encoding="utf-8")
-    lock.write_text(
-        re.sub(r"(ENGINE_REF=[0-9a-f]{40} # )\S+", r"\g<1>v0.3.0-rc.6-x", text),
-        encoding="utf-8",
-    )
-    assert _release(root).returncode == 1
+    _with_tag(root, tag)
+    result = _release(root)
+    assert result.returncode == 1, result.stdout
+    assert "wrong shape" in result.stderr or "tag missing" in result.stderr

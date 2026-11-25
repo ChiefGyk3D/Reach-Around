@@ -83,8 +83,11 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 lock="${2:-$here/engine.lock}"
 
 case "$key" in
-  ENGINE_IMAGE) shape='^[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$' ;;
-  ENGINE_REPO) shape='^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' ;;
+  # The engine repository and image path are fixed to the upstream project:
+  # the repository slug and the registry path are literals here, not values
+  # read from the lock.
+  ENGINE_IMAGE) shape='^ghcr\.io/chiefgyk3d/reach-around:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$' ;;
+  ENGINE_REPO) shape='^ChiefGyk3D/Reach-Around$' ;;
   ENGINE_REF) shape='^[0-9a-f]{40}$' ;;
   *)
     echo "usage: $0 ENGINE_IMAGE|ENGINE_REPO|ENGINE_REF" >&2
