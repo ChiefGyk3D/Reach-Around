@@ -1,12 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
+import socket
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
+from typing import cast
 
 import pytest
 
-from fakenet import FakeTransport, reply
+from fakenet import FakeSock, FakeTransport, http_answer, reply
 from reach_around import __version__
-from reach_around.net.egress import EgressBlocked, RawResponse, TransportRequest
+from reach_around.net.egress import (
+    EgressBlocked,
+    HttpsTransport,
+    RawResponse,
+    TransportRequest,
+)
 from reach_around.net.fetch import (
     FetchError,
     fetch_json,
@@ -15,6 +22,7 @@ from reach_around.net.fetch import (
 
 URL = "https://api.example.social/v1/thing?x=1"
 NOW = datetime(2026, 10, 24, 12, 0, 0, tzinfo=UTC)
+PUBLIC = "93.184.216.34"
 
 
 def _no_sleep(seconds: float) -> None:
@@ -147,6 +155,28 @@ def test_same_host_https_redirect_is_followed() -> None:
     )
     assert call(transport) == {"followers": 9}
     assert transport.calls[1].path == "/v2/thing"
+
+
+def test_every_redirect_hop_is_resolved_and_checked_again() -> None:
+    # hop one resolves to a public address; the same name then answers with a
+    # loopback address (DNS rebinding): the hop must be refused, not connected
+    answers = iter([[PUBLIC], ["127.0.0.1"]])
+    connected: list[str] = []
+    redirect = http_answer(b"", "302 Found", {"Location": "/v2/thing"})
+
+    def connector(address: str, port: int, timeout: float) -> socket.socket:
+        connected.append(address)
+        return cast(socket.socket, FakeSock(redirect))
+
+    transport = HttpsTransport(
+        resolver=lambda host, port: next(answers),
+        connector=connector,
+        wrapper=lambda sock, name: sock,
+    )
+    with pytest.raises(FetchError) as caught:
+        fetch_json(URL, transport=transport)
+    assert str(caught.value) == "egress_non_public_address"
+    assert connected == [PUBLIC]
 
 
 def test_redirect_loop_is_bounded() -> None:
