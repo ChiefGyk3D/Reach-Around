@@ -188,7 +188,21 @@ def _walk_parents(parts: tuple[str, ...]) -> list[int]:
     return held
 
 
-def require_absent(path: Path) -> None:
+def _require_locked(dir_fd: int, lock_fd: int) -> None:
+    """Refuse unless the directory held by ``dir_fd`` holds the very lock file
+    ``lock_fd`` holds (it is the locked gated directory)."""
+    mine = os.fstat(lock_fd)
+    try:
+        there = os.stat(LOCK_FILE.name, dir_fd=dir_fd, follow_symlinks=False)
+    except OSError as exc:
+        raise AnchoredReadError(
+            "the gated directory is not the one that was locked"
+        ) from exc
+    if (there.st_dev, there.st_ino) != (mine.st_dev, mine.st_ino):
+        raise AnchoredReadError("the gated directory is not the one that was locked")
+
+
+def require_absent(path: Path, lock_fd: int | None = None) -> None:
     """Refuse when anything is named ``path``: the last name is looked up in the
     held directory chain (never through a link), not by a fresh path walk. It
     says what is there now; keeping a builder from creating it a moment later is
@@ -198,6 +212,8 @@ def require_absent(path: Path) -> None:
         raise AnchoredReadError("the path is not a file")
     held = _walk_parents(parts)
     try:
+        if lock_fd is not None:
+            _require_locked(held[-1], lock_fd)
         try:
             os.stat(parts[-1], dir_fd=held[-1], follow_symlinks=False)
         except FileNotFoundError:
@@ -212,7 +228,7 @@ def require_absent(path: Path) -> None:
             os.close(left)
 
 
-def read_anchored(path: Path, limit: int) -> bytes:
+def read_anchored(path: Path, limit: int, lock_fd: int | None = None) -> bytes:
     """Read a regular file at ``path`` through a held chain of directory descriptors.
 
     The (absolute, not link-resolved) path is walked from ``/`` one component at a
@@ -228,12 +244,16 @@ def read_anchored(path: Path, limit: int) -> bytes:
     carry no group or other write bit and have one link (``check_file_owner``), so
     a file another user planted in a sticky directory is refused. At most
     ``limit`` bytes are returned; one more byte present means the file is too
-    large and it is refused."""
+    large and it is refused. With ``lock_fd`` the directory the file is in must be
+    the one holding that lock file (the locked gated directory), so a path swapped
+    after the lock was taken is refused."""
     parts = Path(os.path.abspath(path)).parts
     if len(parts) < 2:
         raise AnchoredReadError("the path is not a file")
     held = _walk_parents(parts)
     try:
+        if lock_fd is not None:
+            _require_locked(held[-1], lock_fd)
         try:
             fd = os.open(parts[-1], _FILE_FLAGS, dir_fd=held[-1])
         except OSError as exc:
@@ -346,51 +366,105 @@ def acquire_gated_lock(gated_dir: Path, *, exclusive: bool) -> int:
 
 
 @contextmanager
-def gated_lock(gated_dir: Path, *, exclusive: bool) -> Iterator[None]:
-    """``acquire_gated_lock`` for a ``with`` block."""
+def gated_lock(gated_dir: Path, *, exclusive: bool) -> Iterator[int]:
+    """``acquire_gated_lock`` for a ``with`` block; yields the lock descriptor."""
     fd = acquire_gated_lock(gated_dir, exclusive=exclusive)
     try:
-        yield
+        yield fd
     finally:
         os.close(fd)
 
 
-def check_no_pending_commit(gated_dir: Path) -> None:
+def open_locked_dir(gated_dir: Path, lock_fd: int) -> int:
+    """Open ``gated_dir`` as a held descriptor (every component ``O_NOFOLLOW``,
+    each directory owned by you or root and not group or other writable) and
+    require it to be the directory the lock was taken in: the lock file inside
+    it must be the very file ``lock_fd`` holds. A path swapped or linked after
+    the lock was taken is refused, so the checks that follow, made through the
+    returned descriptor with ``dir_fd=``, are about the locked directory. The
+    caller closes the descriptor."""
+    parts = Path(os.path.abspath(gated_dir)).parts + (".",)
+    held = _walk_parents(parts)
+    keep = held.pop()
+    for left in held:
+        os.close(left)
+    try:
+        _require_locked(keep, lock_fd)
+    except BaseException:
+        os.close(keep)
+        raise
+    return keep
+
+
+def leftover_names(dir_fd: int) -> list[str]:
+    """The names in the directory held by ``dir_fd`` that are a temporary or
+    backup copy of a gated file. The listing and the look at each name go through
+    the descriptor (never a path), so a swapped or linked path cannot redirect
+    them; a name that vanished meanwhile is not counted."""
+    found: list[str] = []
+    with os.scandir(dir_fd) as entries:
+        names = [entry.name for entry in entries]
+    for name in names:
+        if not STAGING_NAME.fullmatch(name):
+            continue
+        try:
+            os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        found.append(name)
+    return found
+
+
+def check_no_pending_commit(gated_dir: Path, lock_fd: int) -> None:
     """Refuse a gated directory whose last build was interrupted while it
     replaced the gated files (the build leaves ``.kit-commit.pending`` until its
     last step), or that still holds a backup or temporary copy of a gated file
     (a crash after the files were replaced): the page, the policy record and the
     binding may be from different builds, or a private copy may linger. Rebuild
-    to clear it."""
+    to clear it. The marker lookup, the listing and each name's look all go
+    through one held descriptor of the directory ``lock_fd`` locks
+    (``open_locked_dir``), not through the path."""
+    rebuild = "rebuild the site first (reach-around build --gated-out)"
     try:
-        require_absent(gated_dir / PENDING_FILE)
-        leftover = any(STAGING_NAME.fullmatch(name) for name in os.listdir(gated_dir))
+        dir_fd = open_locked_dir(gated_dir, lock_fd)
     except AnchoredReadError as exc:
         raise ValueError(
-            f"the gated directory is not in a finished state ({exc}); "
-            "a build was interrupted. Rebuild the site first "
-            "(reach-around build --gated-out)"
+            f"the gated directory is not in a finished state ({exc}); {rebuild}"
         ) from exc
+    try:
+        try:
+            os.stat(PENDING_FILE.name, dir_fd=dir_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            marker = False
+        else:
+            marker = True
+        leftover = bool(leftover_names(dir_fd))
     except OSError as exc:
         raise ValueError(
-            f"the gated directory cannot be listed ({exc.strerror}); "
-            "rebuild the site first (reach-around build --gated-out)"
+            f"the gated directory cannot be listed ({exc.strerror}); {rebuild}"
         ) from exc
+    finally:
+        os.close(dir_fd)
+    if marker:
+        raise ValueError(
+            "the gated directory is not in a finished state (the name is "
+            f"present); a build was interrupted. {rebuild}"
+        )
     if leftover:
         raise ValueError(
             "the gated directory is not in a finished state (a temporary or "
             "backup copy of a gated file is left); a build was interrupted. "
-            "Rebuild the site first (reach-around build --gated-out)"
+            f"{rebuild}"
         )
 
 
-def read_binding(path: Path) -> dict[str, str | None]:
+def read_binding(path: Path, lock_fd: int | None = None) -> dict[str, str | None]:
     """Read the binding record of a build, through ``read_anchored``. A missing,
     linked (in the last name or any ancestor), non-regular, oversized or malformed
     record is refused with a message that says to rebuild."""
     rebuild = "rebuild the site first (reach-around build --gated-out)"
     try:
-        raw = read_anchored(path, MAX_BINDING_BYTES)
+        raw = read_anchored(path, MAX_BINDING_BYTES, lock_fd)
     except AnchoredReadError as exc:
         raise ValueError(
             f"the build has no usable binding record ({exc}); {rebuild}"

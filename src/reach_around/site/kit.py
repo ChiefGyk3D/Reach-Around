@@ -35,6 +35,7 @@ import math
 import os
 import re
 import secrets
+import stat
 import unicodedata
 import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
@@ -116,6 +117,8 @@ from reach_around.kit.binding import (
     PENDING_FILE,
     STAGING_NAME,
     acquire_gated_lock,
+    leftover_names,
+    open_locked_dir,
     rows_digest,
 )
 from reach_around.site.platforms import platform_rows
@@ -799,14 +802,20 @@ def check_private_root(gated_out: Path) -> None:
         )
 
 
-def _remove_stale_staging(gated_out: Path) -> None:
+def _remove_stale_staging(gated_out: Path, lock_fd: int) -> None:
     """Delete staging and backup files a crashed build left behind: regular files
     whose name is exactly the temporary or backup pattern, nothing else. Called
-    with the gated lock held, so no other build's files are removed."""
-    for entry in gated_out.iterdir():
-        if STAGING_NAME.fullmatch(entry.name) and not entry.is_symlink():
-            if entry.is_file():
-                entry.unlink()
+    with the gated lock held, so no other build's files are removed. The listing
+    and each removal go through a held descriptor of the locked directory, so a
+    path swapped after the lock was taken cannot send the removal elsewhere."""
+    dir_fd = open_locked_dir(gated_out, lock_fd)
+    try:
+        for name in leftover_names(dir_fd):
+            info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+            if stat.S_ISREG(info.st_mode):
+                os.unlink(name, dir_fd=dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 class KitRemoteRequestError(ValueError):
@@ -950,7 +959,8 @@ def stage_gated(
         gated_out, None, policy, binding, acquire_gated_lock(gated_out, exclusive=True)
     )
     try:
-        _remove_stale_staging(gated_out)
+        assert staged.lock is not None
+        _remove_stale_staging(gated_out, staged.lock)
         if page is not None:
             temp = _stage_text(gated_out, target, page)
             staged.temp = temp

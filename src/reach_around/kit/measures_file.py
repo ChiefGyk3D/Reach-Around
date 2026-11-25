@@ -520,9 +520,11 @@ def check_no_private_values(
 # --- the build binding ------------------------------------------------------------
 
 
-def _digest_file(path: Path, limit: int, what: str) -> str:
+def _digest_file(
+    path: Path, limit: int, what: str, lock_fd: int | None = None
+) -> str:
     try:
-        data = read_anchored(path, limit)
+        data = read_anchored(path, limit, lock_fd)
     except AnchoredReadError as exc:
         raise MeasuresFileError(
             f"the {what} cannot be read ({exc}); rebuild the site first "
@@ -536,6 +538,7 @@ def check_binding(
     *,
     site_dir: Path,
     gated_dir: Path,
+    lock_fd: int,
     numbers: Numbers | None,
     imported: ImportedHistory | None,
 ) -> dict[str, str | None]:
@@ -547,8 +550,8 @@ def check_binding(
     if kit is None:
         raise MeasuresFileError("the config has no media kit")
     try:
-        check_no_pending_commit(gated_dir)
-        recorded = read_binding(gated_dir / BINDING_FILE)
+        check_no_pending_commit(gated_dir, lock_fd)
+        recorded = read_binding(gated_dir / BINDING_FILE, lock_fd)
     except ValueError as exc:
         raise MeasuresFileError(str(exc)) from exc
     shown = gated_projection(kit, numbers, imported, source_platforms(config))[
@@ -556,13 +559,15 @@ def check_binding(
     ]
     gated_page: str | None = None
     if recorded["gated_page"] is not None:
-        gated_page = _digest_file(gated_dir / GATED_FILE, MAX_PAGE_BYTES, "gated page")
+        gated_page = _digest_file(
+            gated_dir / GATED_FILE, MAX_PAGE_BYTES, "gated page", lock_fd
+        )
     else:
         # a kit with no gated page: the directory must hold none. The name is
         # looked up through the held directory chain, and the caller holds the
         # gated lock, so a build cannot add a page between this and the write
         try:
-            require_absent(gated_dir / GATED_FILE)
+            require_absent(gated_dir / GATED_FILE, lock_fd)
         except AnchoredReadError as exc:
             raise MeasuresFileError(
                 f"the build records no gated page but the gated directory is not "
@@ -620,6 +625,7 @@ def build_measures_file(
             protect=protect,
             numbers=numbers,
             imported=imported,
+            lock_fd=lock,
         )
     finally:
         os.close(lock)
@@ -637,6 +643,7 @@ def _build_locked(
     protect: Sequence[Path],
     numbers: Numbers | None,
     imported: ImportedHistory | None,
+    lock_fd: int,
 ) -> Path:
     """The checks and the write of ``build_measures_file``, with the shared lock
     of the gated directory held by the caller."""
@@ -644,6 +651,7 @@ def _build_locked(
         config,
         site_dir=site_dir,
         gated_dir=gated_dir,
+        lock_fd=lock_fd,
         numbers=numbers,
         imported=imported,
     )
@@ -880,8 +888,8 @@ def load_measures_for_build(path: Path, gated_dir: Path) -> dict[str, Any]:
         raise MeasuresFileError(str(exc)) from exc
     try:
         try:
-            check_no_pending_commit(gated_dir)
-            trusted = read_binding(gated_dir / BINDING_FILE)
+            check_no_pending_commit(gated_dir, lock)
+            trusted = read_binding(gated_dir / BINDING_FILE, lock)
         except ValueError as exc:
             raise MeasuresFileError(str(exc)) from exc
         return load_measures_file(path, expected_binding=trusted)

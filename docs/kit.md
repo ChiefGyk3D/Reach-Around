@@ -1059,6 +1059,16 @@ Where it may go, and what it holds:
   user, or you with another program, from writing into the directory (keep it
   owner-only). A crash can still leave the old page beside a new binding, which the
   digests catch; the lock and marker do not replace them.
+  **Documented assumption:** the gated directory and every directory above it are
+  controlled by you (owned by you or root, not writable by the group or others
+  unless sticky), as the reads already require. Within that, the readers and the
+  stale-file removal do not trust the path after the lock is taken: the marker
+  lookup, the listing of leftover temporary and backup names, the look at each
+  name, the binding, the policy record and the gated page are all read through
+  a held descriptor of the directory, and that directory must contain the very
+  lock file the process holds, so a path swapped or linked after the lock is
+  refused. The build's own renames and the page staging still use paths in a
+  directory it holds locked; they rely on this assumption, not on the lock.
   **What this defends against:** an edit of the measures file alone (accidental
   or deliberate, with or without recomputing its own binding), and a file made
   from another build. **What it does not defend against:** a party who can write

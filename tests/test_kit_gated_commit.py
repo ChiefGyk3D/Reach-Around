@@ -348,7 +348,8 @@ def test_a_crash_at_any_step_never_leaves_an_accepted_mixed_set(
 
     found = disk.after_crash(tmp_path / "restart")
     try:
-        binding_module.check_no_pending_commit(found)
+        with gated_lock(found, exclusive=False) as held:
+            binding_module.check_no_pending_commit(found, held)
     except ValueError:
         pass  # refused: the next build recovers
     else:
@@ -387,19 +388,27 @@ def test_the_marker_and_backups_are_synced_before_the_first_target_changes(
 def test_a_crash_after_the_set_is_complete_leaves_the_marker_not_backups(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Backups are removed (and that synced) before the marker, so a crash can
-    leave a marker without backups, never private backups under a clean
-    directory."""
+    """The tail fails (here: the marker cannot be removed) after the renames and
+    after the backups were removed: the marker stays so readers refuse, and no
+    backup is left under a clean-looking directory. Reverting the order (marker
+    removed before the backups) leaves backups here and fails this test."""
     config, site, gated = build_instance(tmp_path, make_config(kit_doc()))
-    disk = Disk(gated)
-    disk.hook(monkeypatch)
-    rebuild(make_config(changed_doc()), site, gated, tmp_path / "assets")
-    ev = disk.events
-    # the marker is the last thing removed: the sync after the backups' removal
-    # comes before the step that removes the marker
-    assert ev.index("step:cleaned") < ev.index("step:done")
+    real_unlink = Path.unlink
+
+    def unlink(self: Path, missing_ok: bool = False) -> None:
+        if self.name == PENDING_FILE.name:
+            raise OSError("injected: the marker cannot be removed")
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    with pytest.raises(OSError, match="injected"):
+        rebuild(make_config(changed_doc()), site, gated, tmp_path / "assets")
+    monkeypatch.undo()
+    assert (gated / PENDING_FILE).exists()
     assert not any(STAGING.fullmatch(p.name) for p in gated.iterdir())
-    assert not (gated / PENDING_FILE).exists()
+    with pytest.raises(ValueError, match="not in a finished state"):
+        with gated_lock(gated, exclusive=False) as held:
+            binding_module.check_no_pending_commit(gated, held)
 
 
 @pytest.mark.parametrize("kind", ["bak", "tmp"])
@@ -433,7 +442,8 @@ def test_a_lookalike_name_is_not_a_leftover(tmp_path: Path) -> None:
     gated.mkdir(mode=0o700)
     for name in (".kit.html.zz.bak", "kit.html.bak", f".other.{'ab' * 8}.bak"):
         (gated / name).write_text("x")
-    binding_module.check_no_pending_commit(gated)  # not ours: not refused
+    with gated_lock(gated, exclusive=False) as held:
+        binding_module.check_no_pending_commit(gated, held)  # not ours: not refused
 
 
 def test_a_failure_after_the_set_is_complete_keeps_the_new_set_and_the_marker(
@@ -621,3 +631,91 @@ def test_the_lock_file_must_be_a_private_regular_file(tmp_path: Path) -> None:
     (gated / LOCK_FILE.name).chmod(0o666)
     with pytest.raises(GatedLockError, match="refused"):
         gated_lock(gated, exclusive=True).__enter__()
+
+
+# --- the leftover scan and the reads are bound to the locked directory ---------
+
+
+def _leftover_dir(tmp_path: Path) -> tuple[Path, Path]:
+    gated = tmp_path / "gated"
+    gated.mkdir(mode=0o700)
+    (gated / f".kit.html.{'cd' * 8}.bak").write_text("private", encoding="utf-8")
+    decoy = tmp_path / "decoy"
+    decoy.mkdir(mode=0o700)
+    return gated, decoy
+
+
+def test_the_leftover_scan_refuses_a_directory_linked_after_the_lock(
+    tmp_path: Path,
+) -> None:
+    gated, decoy = _leftover_dir(tmp_path)
+    with gated_lock(gated, exclusive=False) as held:
+        os.rename(gated, tmp_path / "moved")
+        gated.symlink_to(decoy)  # a clean directory now answers to the path
+        with pytest.raises(ValueError, match="not in a finished state"):
+            binding_module.check_no_pending_commit(gated, held)
+
+
+def test_the_leftover_scan_refuses_another_directory_swapped_in(
+    tmp_path: Path,
+) -> None:
+    gated, _ = _leftover_dir(tmp_path)
+    with gated_lock(gated, exclusive=False) as held:
+        os.rename(gated, tmp_path / "moved")
+        gated.mkdir(mode=0o700)  # a clean directory with no lock file of ours
+        with pytest.raises(ValueError, match="not the one that was locked"):
+            binding_module.check_no_pending_commit(gated, held)
+        (gated / LOCK_FILE.name).write_text("")  # a lock file, but not the held one
+        (gated / LOCK_FILE.name).chmod(0o600)
+        with pytest.raises(ValueError, match="not the one that was locked"):
+            binding_module.check_no_pending_commit(gated, held)
+
+
+def test_the_leftover_scan_looks_at_the_directory_it_holds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The path is swapped for a link to a clean directory while the chain is
+    being held: the scan still reads the directory it holds and finds the
+    leftover."""
+    gated, decoy = _leftover_dir(tmp_path)
+    moved = tmp_path / "moved"
+    with gated_lock(gated, exclusive=False) as held:
+
+        def swap() -> None:
+            os.rename(gated, moved)
+            gated.symlink_to(decoy)
+
+        monkeypatch.setattr(binding_module, "_before_final_open", swap)
+        with pytest.raises(ValueError, match="backup copy"):
+            binding_module.check_no_pending_commit(gated, held)
+
+
+def test_the_stale_removal_never_follows_a_swapped_path(tmp_path: Path) -> None:
+    gated, decoy = _leftover_dir(tmp_path)
+    planted = decoy / f".kit.html.{'ef' * 8}.bak"
+    planted.write_text("not ours", encoding="utf-8")
+    with gated_lock(gated, exclusive=True) as held:
+        os.rename(gated, tmp_path / "moved")
+        gated.symlink_to(decoy)
+        with pytest.raises(ValueError):
+            site_kit._remove_stale_staging(gated, held)
+    assert planted.exists()
+    assert (tmp_path / "moved" / f".kit.html.{'cd' * 8}.bak").exists()
+
+
+def test_a_read_in_the_locked_directory_refuses_a_swapped_one(
+    tmp_path: Path,
+) -> None:
+    gated, _ = _leftover_dir(tmp_path)
+    (gated / "kit-policy.txt").write_text("policy", encoding="utf-8")
+    (gated / "kit-policy.txt").chmod(0o600)
+    with gated_lock(gated, exclusive=False) as held:
+        assert binding_module.read_anchored(gated / "kit-policy.txt", 100, held)
+        os.rename(gated, tmp_path / "moved")
+        gated.mkdir(mode=0o700)
+        (gated / "kit-policy.txt").write_text("other", encoding="utf-8")
+        (gated / "kit-policy.txt").chmod(0o600)
+        with pytest.raises(binding_module.AnchoredReadError, match="locked"):
+            binding_module.read_anchored(gated / "kit-policy.txt", 100, held)
+        with pytest.raises(binding_module.AnchoredReadError, match="locked"):
+            binding_module.require_absent(gated / "kit.html", held)
