@@ -1,10 +1,10 @@
-#!/usr/bin/env -S python3 -I
 # SPDX-License-Identifier: Apache-2.0
 """Check the zone's edge settings against deploy/edge/desired-state.json (#613).
 
-Usage:
-    python3 -I scripts/check-edge.py --offline
-    python3 -I scripts/check-edge.py --live --zone-id ID
+Usage (the file has no shebang and no executable bit, so nothing looks the
+interpreter up on PATH; name a reviewed interpreter path yourself):
+    /usr/bin/python3 -I scripts/check-edge.py --offline
+    /usr/bin/python3 -I scripts/check-edge.py --live --zone-id ID
         [--site-host HOST] [--save PATH]
 
 --offline reads only files in this repository. It fails when the desired state
@@ -40,7 +40,9 @@ import sys
 # under `python3 -I` ignores them; anything else is refused before the token is
 # read or any further module is imported.
 if __name__ == "__main__" and sys.flags.isolated != 1:
-    sys.stderr.write("REFUSED run this checker as: python3 -I scripts/check-edge.py\n")
+    sys.stderr.write(
+        "REFUSED run this checker as: /usr/bin/python3 -I scripts/check-edge.py\n"
+    )
     sys.exit(2)
 
 import argparse  # noqa: E402
@@ -52,6 +54,7 @@ import os  # noqa: E402
 import re  # noqa: E402
 import socket  # noqa: E402
 import ssl  # noqa: E402
+import stat  # noqa: E402
 import tempfile  # noqa: E402
 import time  # noqa: E402
 import urllib.error  # noqa: E402
@@ -228,6 +231,7 @@ def offline_problems(root: Path) -> list[str]:
     problems += module_problems(edge)
     problems += handoff_problems(edge)
     problems += repo_handoff_problems(root)
+    problems += entry_point_problems(root)
     if "NOT approved" not in main_tf:
         problems.append("main.tf header must say the apply path is NOT approved")
     if "desired-state.json" not in main_tf:
@@ -319,16 +323,25 @@ def handoff_problems(edge: Path) -> list[str]:
 
 # The read token's variable may be named only by the checker. Every other file in
 # the repository fails if its bytes contain the literal name, whatever its suffix:
-# only documentation (.md, .txt) may name it, and the test file may name it only
-# inside longer fixture strings, never as a value passed to code. Directories are
-# skipped by name at the repository root only (virtual environments, caches and
-# VCS data), never at depth, and symlinks are followed to their target. This is a
-# literal-name tripwire: a name built at run time ("CLOUDFLARE_" + "EDGE_...") is
-# out of scope, so the real control is that no other process is ever handed the
-# token (see docs/edge.md, "Structural controls").
+# only the reviewed documentation paths below may name it (a suffix proves
+# nothing, since a script can source a .txt file), and the test file may name it
+# only as a whole string element of a list or tuple of fixtures, never as a value
+# passed to code, an identifier, an f-string part or a piece of a concatenation.
+# Directories are skipped by name at the repository root only (virtual
+# environments, caches and VCS data), never at depth. A symlink to a directory is
+# reported, not followed; a symlink to a file is followed to its target and
+# refused if the target is outside the repository, missing or not a regular file.
+# A FIFO, socket or device is reported and never opened. Each file is opened
+# without following links and the opened descriptor must match the path before
+# and after the read, so a file replaced during its own scan is reported. That is
+# the whole race guarantee: a file already scanned can still be swapped later, so
+# run this on a checkout no other step is changing. It is also a literal-name
+# tripwire: a name built at run time ("CLOUDFLARE_" + "EDGE_...") is out of
+# scope, so the real control is that no other process is ever handed the token
+# (see docs/edge.md, "Structural controls").
 TOKEN_CHECKER = "scripts/check-edge.py"  # noqa: S105 (a path)
 TOKEN_TEST_FILE = "tests/test_edge_settings.py"  # noqa: S105 (a path)
-DOC_SUFFIXES = frozenset({".md", ".txt"})
+DOC_PATHS = frozenset({"docs/edge.md"})
 SKIP_SUFFIXES = frozenset({".pyc", ".pyo"})  # ignored bytecode, never tracked
 ROOT_SKIP_DIRS = frozenset(
     {".git", "node_modules", ".venv", "venv", ".terraform"}
@@ -337,31 +350,71 @@ ROOT_SKIP_DIRS = frozenset(
 SCAN_CHUNK = 1_048_576
 
 
+def _same_file(a: os.stat_result, b: os.stat_result) -> bool:
+    return (a.st_dev, a.st_ino, a.st_size, a.st_mtime_ns) == (
+        b.st_dev,
+        b.st_ino,
+        b.st_size,
+        b.st_mtime_ns,
+    )
+
+
 def _names_token(path: Path) -> bool | None:
-    """True when the file's bytes hold the variable name; None if unreadable."""
+    """True when the file's bytes hold the variable name; None if it cannot be
+    read as a regular file or changed while it was being read."""
     needle = TOKEN_ENV.encode()
     keep = b""
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
     try:
-        with path.open("rb") as handle:
+        fd = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or not _same_file(before, os.lstat(path)):
+            return None
+        found = False
+        with os.fdopen(fd, "rb", closefd=False) as handle:
             while chunk := handle.read(SCAN_CHUNK):
                 window = keep + chunk
                 if needle in window:
-                    return True
+                    found = True
+                    break
                 keep = window[-(len(needle) - 1) :]
+        after = os.fstat(fd)
+        if not _same_file(before, after) or not _same_file(after, os.lstat(path)):
+            return None
+        return found
     except OSError:
         return None
-    return False
+    finally:
+        os.close(fd)
+
+
+def _constant_text(node: ast.AST) -> str | None:
+    """The text of a string built only from literals, else None."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add | ast.Mod):
+        left, right = _constant_text(node.left), _constant_text(node.right)
+        return None if left is None or right is None else left + right
+    if isinstance(node, ast.JoinedStr):
+        parts = [_constant_text(v) for v in node.values]
+        return None if None in parts else "".join(p for p in parts if p is not None)
+    return None
 
 
 def fixture_file_problem(path: Path) -> str | None:
-    """The test file may hold the name only inside longer fixture strings."""
+    """The test file may hold the name only as a whole fixture string element."""
     try:
         tree = ast.parse(path.read_bytes())
     except (OSError, SyntaxError, ValueError):
         return "cannot be parsed, so its use of the read token name is unchecked"
+    parents: dict[int, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[id(child)] = parent
     for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and node.value == TOKEN_ENV:
-            return f"passes the read token name as a value (line {node.lineno})"
         if isinstance(node, ast.Name | ast.arg | ast.Attribute):
             ident = (
                 node.id
@@ -370,34 +423,63 @@ def fixture_file_problem(path: Path) -> str | None:
             )
             if TOKEN_ENV in ident:
                 return f"uses the read token name as an identifier (line {node.lineno})"
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if TOKEN_ENV in node.value and not isinstance(
+                parents.get(id(node)), ast.Tuple | ast.List
+            ):
+                return (
+                    f"uses the read token name outside a fixture (line {node.lineno})"
+                )
+        if isinstance(node, ast.BinOp | ast.JoinedStr):
+            text = _constant_text(node)
+            if text is not None and TOKEN_ENV in text:
+                return f"builds the read token name from pieces (line {node.lineno})"
+        if isinstance(node, ast.Tuple | ast.List):
+            texts = [_constant_text(e) for e in node.elts]
+            if all(t is not None for t in texts) and TOKEN_ENV in "".join(
+                t for t in texts if t is not None
+            ):
+                if not any(t is not None and TOKEN_ENV in t for t in texts):
+                    return f"joins pieces of the read token name (line {node.lineno})"
     return None
 
 
 def repo_handoff_problems(root: Path) -> list[str]:
     """Fail when anything outside the checker names the read token variable."""
     problems: list[str] = []
+    resolved_root = root.resolve()
     for current, dirs, files in os.walk(root):
         if Path(current) == root:
             dirs[:] = [d for d in dirs if d not in ROOT_SKIP_DIRS]
         dirs.sort()
+        for d in dirs:
+            if (Path(current) / d).is_symlink():
+                rel = (Path(current) / d).relative_to(root).as_posix()
+                problems.append(f"{rel}: directory symlink is not scanned; remove it")
         for name in sorted(files):
             path = Path(current) / name
             rel = path.relative_to(root).as_posix()
             if rel == TOKEN_CHECKER or path.suffix.lower() in SKIP_SUFFIXES:
                 continue
             scanned = path
-            if path.is_symlink():
-                try:
+            try:
+                kind = os.lstat(path).st_mode
+                if stat.S_ISLNK(kind):
                     scanned = path.resolve(strict=True)
-                    scanned.relative_to(root.resolve())
-                except (OSError, RuntimeError, ValueError):
-                    problems.append(
-                        f"{rel}: symlink that cannot be scanned inside the repository"
-                    )
-                    continue
-                if not scanned.is_file():
-                    continue
-            elif path.suffix.lower() in DOC_SUFFIXES:
+                    scanned.relative_to(resolved_root)
+                    kind = os.lstat(scanned).st_mode
+            except (OSError, RuntimeError, ValueError):
+                problems.append(
+                    f"{rel}: symlink that cannot be scanned inside the repository"
+                )
+                continue
+            if not stat.S_ISREG(kind):
+                problems.append(
+                    f"{rel}: not a regular file (FIFO, socket, device or the like), "
+                    "so it is not scanned; remove it"
+                )
+                continue
+            if rel in DOC_PATHS and scanned is path:
                 continue
             if rel == TOKEN_TEST_FILE and scanned is path:
                 bad = fixture_file_problem(path)
@@ -407,13 +489,35 @@ def repo_handoff_problems(root: Path) -> list[str]:
             hit = _names_token(scanned)
             if hit is None:
                 problems.append(
-                    f"{rel}: cannot be read, so it is not checked for the edge token"
+                    f"{rel}: cannot be read or changed while it was scanned, so it "
+                    "is not checked for the edge token"
                 )
             elif hit:
                 problems.append(
                     f"{rel}: names {TOKEN_ENV}; only scripts/check-edge.py may read "
                     "the edge token, no other file may hand it on"
                 )
+    return problems
+
+
+def entry_point_problems(root: Path) -> list[str]:
+    """The checker must have no shebang and no executable bit (no PATH lookup)."""
+    path = root / TOKEN_CHECKER
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return []  # a scratch tree without the checker; the real repo has it
+    problems: list[str] = []
+    if info.st_mode & 0o111:
+        problems.append(
+            f"{TOKEN_CHECKER}: must not be executable (pass it to an interpreter)"
+        )
+    try:
+        with open(path, "rb") as handle:
+            if handle.read(2) == b"#!":
+                problems.append(f"{TOKEN_CHECKER}: must not start with a shebang")
+    except OSError:
+        problems.append(f"{TOKEN_CHECKER}: cannot be read")
     return problems
 
 

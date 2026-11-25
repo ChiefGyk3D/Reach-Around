@@ -186,12 +186,19 @@ applied from here" is structural:
 - No file in this repository passes the API token to a program, and the offline
   check enforces the literal name repository-wide: every file except
   `scripts/check-edge.py` whose bytes contain `CLOUDFLARE_EDGE_READ_TOKEN` fails,
-  whatever its suffix, depth or encoding. Only `.md` and `.txt` files may name it;
-  `tests/test_edge_settings.py` may hold it only inside longer fixture strings,
-  never as a value or identifier. Directories are skipped by name at the
-  repository root only (`.git`, virtual environments, caches), symlinks are
-  followed to their target and refused if it is outside the repository or
-  missing, and files are read in full. There is no local launcher: no wrapper
+  whatever its suffix, depth or encoding. Only `docs/edge.md` (one reviewed path,
+  not a suffix, since a script can source a `.txt` file) may name it;
+  `tests/test_edge_settings.py` may hold it only as a whole string element of a
+  list or tuple of fixtures, never as a value, identifier, f-string part or piece
+  of a concatenation. Directories are skipped by name at the repository root only
+  (`.git`, virtual environments, caches). A symlink to a directory is reported, a
+  symlink to a file is followed to its target and refused if it is outside the
+  repository, missing or not a regular file, and a FIFO, socket or device is
+  reported and never opened. Files are read in full, opened without following
+  links, and the opened file must match its path before and after the read, so a
+  file replaced during its own scan is reported. That is the whole race guarantee:
+  a file already scanned can still be swapped afterwards, so run the check on a
+  checkout no other step is changing. There is no local launcher: no wrapper
   script, no CLI configuration file and no configurable path to a tool.
   `scripts/check-edge.py --offline` fails if `deploy/edge/` holds a launcher or
   CLI configuration, or any text that names a token variable, starts a subprocess
@@ -199,7 +206,11 @@ applied from here" is structural:
   `check-edge.py --live`, reads it from the environment itself and makes one HTTPS
   GET per call from Python: no subprocess and no executable lookup.
 - The checker refuses to run unless the interpreter is isolated
-  (`python3 -I scripts/check-edge.py`; the file's shebang says the same). A
+  (`/usr/bin/python3 -I scripts/check-edge.py`). The file has no shebang and no
+  executable bit, and the offline check fails if that changes, so no `env` or
+  `PATH` lookup happens before the guard: an attacker-controlled `python3` on
+  `PATH` is never handed the token. Name the interpreter by absolute path (the
+  one the deployment image provides) whenever the token is in the environment. A
   normal interpreter honors `PYTHONPATH`, `PYTHONHOME` and site files before any
   line of the script, so a planted module could read the token first. The refusal
   comes before the token is read or any other module is imported.
@@ -229,7 +240,7 @@ Plan output is read in the pipeline.
 
 1. Read the dashboard: the zone's plan, and which `http_ratelimit` rules and
    what `robots.txt` the zone already has.
-2. `python3 -I scripts/check-edge.py --live --zone-id ID --save snapshot.json`
+2. `/usr/bin/python3 -I scripts/check-edge.py --live --zone-id ID --save snapshot.json`
    with the read token in `CLOUDFLARE_EDGE_READ_TOKEN`, to record what is
    there. Keep the file private.
 3. Read the pipeline's plan. Changes planned are not an error.

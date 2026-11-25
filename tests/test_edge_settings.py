@@ -1507,7 +1507,7 @@ def test_the_launcher_files_are_absent_and_cannot_come_back(
 
 def test_no_file_in_deploy_edge_references_the_token_or_an_executable() -> None:
     pattern = re.compile(
-        r"TOFU_BIN|CLOUDFLARE_API_TOKEN|CLOUDFLARE_EDGE_READ_TOKEN"
+        rf"TOFU_BIN|CLOUDFLARE_API_TOKEN|{check.TOKEN_ENV}"
         r"|TF_CLI_CONFIG_FILE|subprocess|Popen|os\.system",
         re.I,
     )
@@ -1787,11 +1787,9 @@ def test_naming_the_read_token_outside_the_checker_fails_the_offline_check(
 
 def test_docs_and_the_checker_may_name_the_read_token(root: Path) -> None:
     (root / "docs").mkdir()
-    (root / "docs" / "edge.md").write_text("CLOUDFLARE_EDGE_READ_TOKEN\n")
+    (root / "docs" / "edge.md").write_text(f"{check.TOKEN_ENV}\n")
     (root / "scripts").mkdir()
-    (root / "scripts" / "check-edge.py").write_text(
-        "T = 'CLOUDFLARE_EDGE_READ_TOKEN'\n"
-    )
+    (root / "scripts" / "check-edge.py").write_text(f"T = '{check.TOKEN_ENV}'\n")
     assert check.offline_problems(root) == []
 
 
@@ -1873,8 +1871,35 @@ def test_an_isolated_run_ignores_pythonpath(tmp_path: Path) -> None:
     assert not (tmp_path / "stolen").exists()
 
 
-def test_the_entry_point_shebang_is_isolated() -> None:
-    assert CHECKER.read_text().splitlines()[0] == "#!/usr/bin/env -S python3 -I"
+def test_the_entry_point_has_no_shebang_and_no_executable_bit() -> None:
+    assert not CHECKER.read_bytes().startswith(b"#!")
+    assert not CHECKER.stat().st_mode & 0o111
+    assert check.entry_point_problems(REPO) == []
+
+
+def test_direct_execution_never_reaches_an_attacker_python3(tmp_path: Path) -> None:
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    marker = tmp_path / "stolen"
+    py = fake / "python3"
+    py.write_text(f"#!/bin/sh\ntouch {marker}\n")
+    py.chmod(0o755)
+    env = {"PATH": f"{fake}:/usr/bin:/bin", NAME: "secret"}
+    with pytest.raises(PermissionError):
+        subprocess.run([str(CHECKER), "--offline"], env=env, cwd=tmp_path)  # noqa: S603
+    assert not marker.exists()
+
+
+def test_the_offline_check_rejects_a_shebang_or_an_executable_entry_point(
+    root: Path,
+) -> None:
+    script = root / "scripts" / "check-edge.py"
+    script.parent.mkdir()
+    script.write_text("#!/usr/bin/env -S python3 -I\n")
+    script.chmod(0o755)
+    problems = check.entry_point_problems(root)
+    assert any("executable" in p for p in problems), problems
+    assert any("shebang" in p for p in problems), problems
 
 
 def scan(root: Path, rel: str, data: bytes) -> list[str]:
@@ -1910,11 +1935,11 @@ def test_the_handoff_scan_finds_a_name_split_across_read_chunks(
 
 def test_the_handoff_scan_follows_a_symlink_to_a_document(root: Path) -> None:
     (root / "docs").mkdir()
-    (root / "docs" / "notes.md").write_text(f"echo {NAME}\n")
+    (root / "docs" / "edge.md").write_text(f"echo {NAME}\n")
     (root / "bin").mkdir()
-    (root / "bin" / "run").symlink_to(root / "docs" / "notes.md")
+    (root / "bin" / "run").symlink_to(root / "docs" / "edge.md")
     assert [p for p in check.repo_handoff_problems(root) if "bin/run" in p]
-    assert not [p for p in check.repo_handoff_problems(root) if "notes.md" in p]
+    assert not [p for p in check.repo_handoff_problems(root) if "edge.md:" in p]
 
 
 def test_the_handoff_scan_refuses_a_symlink_it_cannot_scan(
@@ -1933,7 +1958,7 @@ def test_the_handoff_scan_skips_ignored_directories_only_at_the_root(
     root: Path,
 ) -> None:
     assert not scan(root, "node_modules/x.py", f"{NAME}\n".encode())
-    assert not scan(root, "docs/a.txt", f"{NAME}\n".encode())
+    assert not scan(root, "docs/edge.md", f"{NAME}\n".encode())
     assert not scan(root, "scripts/__pycache__/x.pyc", NAME.encode())
 
 
@@ -1956,13 +1981,6 @@ def test_the_real_test_file_passes_its_own_narrow_exemption() -> None:
 def test_the_test_file_exemption_does_not_cover_real_use(root: Path, body: str) -> None:
     problems = scan(root, check.TOKEN_TEST_FILE, body.encode())
     assert problems, body
-
-
-def test_the_test_file_may_hold_the_name_inside_a_longer_fixture_string(
-    root: Path,
-) -> None:
-    body = f"FIXTURE = 'x = os.environ[\"{NAME}\"]'\n"
-    assert not scan(root, check.TOKEN_TEST_FILE, body.encode())
 
 
 def test_a_failed_temp_cleanup_after_install_is_not_a_failed_save(
@@ -2017,3 +2035,118 @@ def test_the_snapshot_directory_is_synced_after_the_link(
     monkeypatch.setattr(check.os, "fsync", recording)
     check.write_new_file(tmp_path / "s.json", "{}")
     assert len(synced) == 2  # the file, then its directory
+
+
+# --- round 7: no PATH handoff, special files, races, docs, computed names -----
+
+
+def test_a_fifo_is_reported_and_never_opened(root: Path) -> None:
+    import os
+    import threading
+
+    os.mkfifo(root / "scan-hang")
+    box: list[list[str]] = []
+    worker = threading.Thread(
+        target=lambda: box.append(check.repo_handoff_problems(root)), daemon=True
+    )
+    worker.start()
+    worker.join(10)
+    assert not worker.is_alive(), "the scan blocked on a FIFO"
+    assert any(p.startswith("scan-hang:") and "regular" in p for p in box[0])
+
+
+def test_a_symlink_to_a_fifo_is_reported_and_never_opened(root: Path) -> None:
+    import os
+    import threading
+
+    os.mkfifo(root / "pipe")
+    (root / "link").symlink_to(root / "pipe")
+    box: list[list[str]] = []
+    worker = threading.Thread(
+        target=lambda: box.append(check.repo_handoff_problems(root)), daemon=True
+    )
+    worker.start()
+    worker.join(10)
+    assert not worker.is_alive()
+    assert any(p.startswith("link:") and "regular" in p for p in box[0])
+
+
+def test_a_directory_symlink_is_reported(
+    root: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    outside = tmp_path_factory.mktemp("outside-tree")
+    (outside / "leak.py").write_text(f"{NAME}\n")
+    (root / "repo-link").symlink_to(outside, target_is_directory=True)
+    inside = root / "real"
+    inside.mkdir()
+    (root / "inside-link").symlink_to(inside, target_is_directory=True)
+    problems = check.repo_handoff_problems(root)
+    assert any(
+        p.startswith("repo-link:") and "directory symlink" in p for p in problems
+    )
+    assert any(p.startswith("inside-link:") for p in problems)
+
+
+def test_a_file_replaced_during_its_own_scan_is_reported(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = root / "late.py"
+    target.write_text("x = 1\n")
+    other = root / "other.py"
+    other.write_text(f"print({NAME!r})\n")
+    real = check.os.lstat
+    calls: list[int] = []
+
+    def swapping(path: Any, *a: Any, **k: Any) -> Any:
+        if Path(path) == target:
+            calls.append(1)
+            if len(calls) == 2:  # the check after the read
+                check.os.replace(other, target)
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(check.os, "lstat", swapping)
+    assert check._names_token(target) is None
+
+
+def test_a_path_that_is_a_symlink_at_open_time_is_not_followed(root: Path) -> None:
+    (root / "real.py").write_text(f"{NAME}\n")
+    (root / "swapped.py").symlink_to(root / "real.py")
+    assert check._names_token(root / "swapped.py") is None
+
+
+@pytest.mark.parametrize("rel", ["docs/payload.txt", "docs/notes.md", "README.md"])
+def test_a_document_suffix_does_not_exempt_a_file(root: Path, rel: str) -> None:
+    assert scan(root, rel, f"curl $X/{NAME}\n".encode()), rel
+
+
+def test_only_the_reviewed_doc_path_may_name_the_token(root: Path) -> None:
+    assert not scan(root, "docs/edge.md", f"{NAME}\n".encode())
+    (root / "scripts").mkdir(exist_ok=True)
+    (root / "scripts" / "leak").write_text("#!/bin/sh\n. ../docs/payload.txt\n")
+    assert scan(root, "docs/payload.txt", f"echo {NAME}\n".encode())
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        f"import os\nname = 'x{NAME}'.removeprefix('x')\nprint(os.environ[name])\n",
+        f"import os\nprint(os.environ[getattr(m, 'KEY', '{NAME}')])\n",
+        f"import os\nprint(os.environ[f'{NAME}'])\n",
+        f"name = {NAME[:11]!r} + {NAME[11:]!r}\n",
+        f"name = ''.join([{NAME[:11]!r}, {NAME[11:]!r}])\n",
+        f"name = 'a' + '{NAME}'\n",
+        f"print('{NAME}'[0:])\n",
+        f"x = {{'{NAME}': 1}}\n",
+    ],
+)
+def test_the_test_file_exemption_rejects_computed_use_of_the_name(
+    root: Path, body: str
+) -> None:
+    assert scan(root, check.TOKEN_TEST_FILE, body.encode()), body
+
+
+def test_the_test_file_may_hold_the_name_only_as_a_fixture_list_element(
+    root: Path,
+) -> None:
+    body = f"CASES = [('a', 'echo {NAME}'), 'b {NAME}']\n"
+    assert not scan(root, check.TOKEN_TEST_FILE, body.encode())
