@@ -85,14 +85,14 @@ def test_valid_forms(tmp_path: Path, url: str) -> None:
 def test_unknown_tab_names_key_and_lists_ids(tmp_path: Path, url: str) -> None:
     message = refused(tmp_path, data(link_url=url))
     assert "tabs[0].blocks[0].url" in message
-    assert "'nope'" in message
-    assert "start, about, contact" in message
+    assert "unknown tab" in message
+    assert "nope" not in message  # the value you wrote is not echoed
 
 
 def test_unknown_tab_on_social_names_key(tmp_path: Path) -> None:
     message = refused(tmp_path, data(social_url="tab:nope"))
     assert "creator.socials[0].url" in message
-    assert "start, about, contact" in message
+    assert "unknown tab" in message and "nope" not in message
 
 
 def test_unknown_tab_in_section_names_key(tmp_path: Path) -> None:

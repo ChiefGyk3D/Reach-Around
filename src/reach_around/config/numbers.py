@@ -273,7 +273,7 @@ def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in pairs:
         if key in out:
-            raise _Bad(f"duplicate key {key!r}")
+            raise _Bad("duplicate key in the file")
         out[key] = value
     return out
 

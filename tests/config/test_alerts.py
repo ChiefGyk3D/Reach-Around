@@ -205,7 +205,7 @@ def test_loader_error_for_one_sided_alerts_shows_no_input_values(
     with pytest.raises(ConfigError) as err:
         load_site_config(_one_sided_config(tmp_path))
     shown = str(err.value)
-    assert "channels and events" in shown
+    assert "set both channels and events" in shown
     _assert_no_input_shown(shown)
 
 

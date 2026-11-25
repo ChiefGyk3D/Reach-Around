@@ -8,8 +8,10 @@ Every model refuses unknown keys and is frozen. Later phases extend
 
 from __future__ import annotations
 
+import functools
 import re
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -41,6 +43,11 @@ from reach_around.config.blocks import (
     Platforms,
     Text,
 )
+from reach_around.config.budget import (
+    Budget,
+    check_budget,
+    json_over_limit,
+)
 from reach_around.config.cutover import check_cutover_day
 from reach_around.config.disclosure import DisclosureField
 from reach_around.config.footer import Footer
@@ -67,6 +74,42 @@ from reach_around.site.theme import check_image_path
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _MAX_URL = 2048
+# Size limits on the owner-written lists, so one file cannot grow without bound.
+MAX_TABS = 50
+MAX_BLOCKS_PER_TAB = 200
+MAX_LINKS_PER_SECTION = 200
+MAX_SOCIALS = 50
+# At most this many problems are printed; the rest are only counted.
+MAX_REPORTED_PROBLEMS = 20
+# The per-list caps above multiply (50 tabs x 200 blocks x 200 links), so the
+# whole document is also held to one budget. The file is refused before it is
+# parsed when it is larger than MAX_CONFIG_BYTES; the parsed tree is refused
+# before any model is built when it holds more than MAX_CONFIG_NODES values
+# (every scalar, list, mapping and mapping key counts as one). A real site is a
+# few hundred nodes.
+MAX_CONFIG_BYTES = 262_144
+MAX_CONFIG_NODES = 20_000
+MAX_CONFIG_DEPTH = 64
+# Error details are only built (pydantic has no lazy form) for a list this
+# short. Counting the errors is cheap and builds nothing; a longer list is
+# reported as a count only.
+MAX_MATERIALIZED_PROBLEMS = 1_000
+# Scalar size. The node budget counts a value once however large it is, so the
+# text and numbers are also bounded: one scalar at most MAX_SCALAR_CHARS long,
+# and all text, mapping keys and integer digits together at most
+# MAX_CONFIG_SCALAR_CHARS (a value reached twice counts twice).
+MAX_SCALAR_CHARS = 65_536
+MAX_CONFIG_SCALAR_CHARS = 262_144
+SITE_BUDGET = Budget(
+    nodes=MAX_CONFIG_NODES,
+    depth=MAX_CONFIG_DEPTH,
+    scalar_chars=MAX_SCALAR_CHARS,
+    total_chars=MAX_CONFIG_SCALAR_CHARS,
+)
+# Error locations: a path segment can be a key the file's author typed, so it is
+# escaped and cut, and a long path shows only its first segments.
+MAX_LOC_SEGMENT_CHARS = 40
+MAX_LOC_SEGMENTS = 8
 
 Title = Annotated[str, StringConstraints(min_length=1, max_length=200)]
 Subtitle = Annotated[str, StringConstraints(min_length=1, max_length=500)]
@@ -296,7 +339,7 @@ class Section(_Model):
     subtitle: Subtitle | None = None
     collapsed: bool = True
     layout: Layout = "list"
-    links: list[Link]
+    links: list[Link] = Field(max_length=MAX_LINKS_PER_SECTION)
 
 
 _NEW_BLOCK_KEYS = {
@@ -374,7 +417,7 @@ class Tab(_Model):
     # Only read by ``page.density: compact``: tiles per row, 1 to 6. Unset, the
     # engine picks from the link count (a short last row is stretched).
     columns: Annotated[int, Field(strict=True, ge=1, le=6)] | None = None
-    blocks: list[Block]
+    blocks: list[Block] = Field(max_length=MAX_BLOCKS_PER_TAB)
 
 
 class Social(_Model):
@@ -396,7 +439,7 @@ class Creator(_Model):
     avatar: Annotated[str, Field(max_length=_MAX_URL)] | None = None
     favicon: str | None = None
     header: HeaderStyle = "compact"
-    socials: list[Social] = Field(default_factory=list)
+    socials: list[Social] = Field(default_factory=list, max_length=MAX_SOCIALS)
 
     @field_validator("avatar")
     @classmethod
@@ -555,7 +598,9 @@ class SupportPage(_Model):
     qr: StrictBool = False
     # The validator below refuses the other kinds; the schema says so too.
     blocks: list[Block] = Field(
-        min_length=1, json_schema_extra=lambda schema: _narrow_support_blocks(schema)
+        min_length=1,
+        max_length=MAX_BLOCKS_PER_TAB,
+        json_schema_extra=lambda schema: _narrow_support_blocks(schema),
     )
 
     @model_validator(mode="after")
@@ -575,10 +620,23 @@ class SupportPage(_Model):
         return self
 
 
+def check_config_budget(raw: object, limit: int = MAX_CONFIG_NODES) -> None:
+    """The site config's budget (see ``reach_around.config.budget``)."""
+    check_budget(raw, replace(SITE_BUDGET, nodes=limit))
+
+
 class SiteConfig(_Model):
+    # "always": an existing SiteConfig is revalidated, so it reaches the before
+    # validator below, which refuses a model instance (a constructed one would
+    # otherwise pass through unchecked). A valid config is never revalidated:
+    # nothing in src passes an instance to the constructor or model_validate.
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, revalidate_instances="always"
+    )
+
     version: Literal[1]
     creator: Creator
-    tabs: list[Tab] = Field(min_length=1)
+    tabs: list[Tab] = Field(min_length=1, max_length=MAX_TABS)
     page: Page = Page()
     page_layout: PageLayout = "tabs"
     disclosure: DisclosureField | None = None
@@ -601,6 +659,40 @@ class SiteConfig(_Model):
     alerts: Alerts = Alerts()
     # The UTC calendar day the site went live; see reach_around.config.cutover.
     cutover_date: date | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _within_budget(cls, data: object) -> object:
+        # Runs before any field is validated: an over-budget or odd-shaped
+        # document never builds the models (or the error list that goes with them).
+        check_config_budget(data)
+        return data
+
+    @classmethod
+    def model_validate_json(
+        cls, json_data: str | bytes | bytearray, **kwargs: Any
+    ) -> SiteConfig:
+        # Pydantic parses JSON before a before-validator runs, so the byte cap is
+        # applied here, ahead of the parse; the node and depth budget then runs
+        # on the parsed value as for every other way in.
+        if json_over_limit(json_data, MAX_CONFIG_BYTES):
+            raise ValidationError.from_exception_data(
+                cls.__name__,
+                [
+                    {
+                        "type": "value_error",
+                        "loc": (),
+                        "input": None,
+                        "ctx": {
+                            "error": ValueError(
+                                "the config file is larger than "
+                                f"{MAX_CONFIG_BYTES} bytes"
+                            )
+                        },
+                    }
+                ],
+            )
+        return super().model_validate_json(json_data, **kwargs)
 
     @field_validator("cutover_date", mode="before")
     @classmethod
@@ -990,25 +1082,320 @@ def error_path(loc: tuple[int | str, ...]) -> tuple[int | str, ...]:
     return tuple(out)
 
 
-def _dotted(loc: tuple[int | str, ...]) -> str:
+UNKNOWN_KEY = "<key>"
+
+
+@functools.cache
+def schema_field_names() -> frozenset[str]:
+    """Every setting name the config schema defines, anywhere in the config."""
+    from reach_around.schema import build_schema  # schema imports this module
+
+    names: set[str] = set()
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            props = node.get("properties")
+            if isinstance(props, dict):
+                names.update(key for key in props if isinstance(key, str))
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(build_schema())
+    return frozenset(names)
+
+
+def _safe_segment(part: str) -> str:
+    """One key of an error path.
+
+    A name the schema defines is printed (escaped and cut, as a precaution). Any
+    other text is a key the file's author typed (a mapping key, an unknown
+    field), so it is replaced by a fixed marker and never echoed, at any length.
+    """
+    if part not in schema_field_names():
+        return UNKNOWN_KEY
+    text = part[: MAX_LOC_SEGMENT_CHARS + 1]
+    out = text.encode("ascii", "backslashreplace").decode("ascii")
+    out = "".join(c if c.isprintable() else f"\\x{ord(c):02x}" for c in out)
+    if len(part) > MAX_LOC_SEGMENT_CHARS or len(out) > MAX_LOC_SEGMENT_CHARS:
+        out = out[:MAX_LOC_SEGMENT_CHARS] + "..."
+    return out
+
+
+def _dotted(loc: tuple[int | str, ...], *, unknown_last: bool = False) -> str:
+    """A safe, short rendering of an error location.
+
+    An ``extra_forbidden`` error carries the file's own unknown key as the last
+    segment; ``unknown_last`` prints a fixed marker instead of it. Every other
+    text segment is escaped to ASCII and cut to ``MAX_LOC_SEGMENT_CHARS``, and
+    only the first ``MAX_LOC_SEGMENTS`` segments are shown.
+    """
+    path = error_path(loc)
+    shown = path[:MAX_LOC_SEGMENTS]
     out = ""
-    for part in error_path(loc):
+    for i, part in enumerate(shown):
         if isinstance(part, int):
             out += f"[{part}]"
-        else:
-            out += f".{part}" if out else part
+            continue
+        text = (
+            "<unknown field>"
+            if unknown_last and i == len(path) - 1
+            else _safe_segment(part)
+        )
+        out += f".{text}" if out else text
+    hidden = len(path) - len(shown)
+    if hidden > 0:
+        out += f" (+{hidden} more path segments)"
     return out
+
+
+# What a printed problem says, by pydantic error type. The text of a problem is
+# never taken from pydantic's own message (or a validator's ValueError), because
+# those can repeat the value you wrote, at any length. An unknown type prints
+# ``_UNKNOWN_PROBLEM``. ``reach-around check`` gives the specific reason.
+_UNKNOWN_PROBLEM = "invalid value"
+_ERROR_TEXT: dict[str, str] = {
+    "missing": "this field is required",
+    "extra_forbidden": "this field is not allowed",
+    "value_error": "this value is not allowed; run reach-around check for the reason",
+    "assertion_error": "this value is not allowed",
+    "string_type": "must be text",
+    "string_too_short": "is too short",
+    "string_too_long": "is too long",
+    "string_pattern_mismatch": "is not in the expected form",
+    "too_short": "has too few items",
+    "too_long": "has too many items",
+    "list_type": "must be a list",
+    "dict_type": "must be a mapping",
+    "model_type": "must be a mapping",
+    "model_attributes_type": "must be a mapping",
+    "bool_type": "must be true or false",
+    "bool_parsing": "must be true or false",
+    "int_type": "must be a whole number",
+    "int_parsing": "must be a whole number",
+    "int_from_float": "must be a whole number",
+    "float_type": "must be a number",
+    "float_parsing": "must be a number",
+    "finite_number": "must be a finite number",
+    "greater_than": "is too small",
+    "greater_than_equal": "is too small",
+    "less_than": "is too large",
+    "less_than_equal": "is too large",
+    "literal_error": "is not one of the allowed choices",
+    "enum": "is not one of the allowed choices",
+    "union_tag_invalid": "is not one of the allowed kinds",
+    "union_tag_not_found": "needs a kind",
+    "block_type": "must be a mapping",
+    "date_type": "must be a date",
+    "date_parsing": "must be a date",
+    "date_from_datetime_parsing": "must be a date",
+    "date_from_datetime_inexact": "must be a date",
+    "none_required": "must be empty",
+    "url_type": "must be a URL",
+    "url_parsing": "must be a URL",
+}
+
+
+# For a ``value_error`` (a validator's ValueError) the type alone says little, so
+# the first MAX_REASON_SCAN characters of pydantic's message are only *matched*
+# against these patterns, and the text printed is the fixed sentence beside the
+# matching pattern. Nothing from the message is ever copied; a message that
+# matches none (or one a hostile value spoofs into a different sentence) prints
+# the generic ``value_error`` text. ``reach-around check`` has the full list.
+MAX_REASON_SCAN = 200
+_REASONS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
+    (re.compile(pattern), text)
+    for pattern, text in (
+        (
+            r"^the config file is larger than",
+            f"the config file is larger than {MAX_CONFIG_BYTES} bytes",
+        ),
+        (
+            r"^the config holds more than \d+ values",
+            f"the config holds more than {MAX_CONFIG_NODES} values; "
+            "split it or remove entries",
+        ),
+        (
+            r"^the config is nested more than",
+            f"the config is nested more than {MAX_CONFIG_DEPTH} levels deep",
+        ),
+        (
+            r"^the config holds more than \d+ characters",
+            f"the config holds more than {MAX_CONFIG_SCALAR_CHARS} characters "
+            "of text and numbers",
+        ),
+        (
+            r"^a value in the config is longer than",
+            f"a value in the config is longer than {MAX_SCALAR_CHARS}",
+        ),
+        (r"^a mapping key in the config is not text", "a mapping key is not text"),
+        (
+            r"^the config holds a value of a type",
+            "the config holds a value of a type that is not allowed",
+        ),
+        (r"^url must start with https://", "url must start with https://"),
+        (r"^url must include a host name", "url must include a host name"),
+        (r"^url must not contain a user name", "url must not hold a user name"),
+        (r"^url must not contain spaces", "url must not hold spaces"),
+        (r"^url is (longer|not valid)", "url is not valid"),
+        (r"^duplicate id", "an id is used more than once: ids must be unique"),
+        (r"^show_until must not be before", "show_until must not be before show_from"),
+        (r"^unknown time zone", "unknown time zone"),
+        (r"only one live block", "a site may have only one live block"),
+        (r"^a live block needs page_layout", "a live block needs page_layout: tabs"),
+        (r"^players must list both", "players must list both twitch and kick"),
+        (r"^set both channels and events", "set both channels and events, or neither"),
+        (r"more than once", "an entry is listed more than once"),
+        (
+            r"^an internal tab: link cannot be an affiliate link",
+            "an internal tab: link cannot be an affiliate link",
+        ),
+        (
+            r"^internal links must use the lowercase scheme",
+            "internal links must use the lowercase scheme tab:",
+        ),
+        (
+            r"^internal link must look like",
+            "internal link must look like tab:<tab-id> or tab:<tab-id>#<fragment>",
+        ),
+        (
+            r"^a profile card needs tags or a button",
+            "a profile card needs tags or a button",
+        ),
+        (r"^unknown tab ", "unknown tab: use the id of a tab in this file"),
+        (r"matches no platforms item", "matches no platforms item"),
+        (r"^platform .* has two sources", "a platform has two sources"),
+        (
+            r"^show_on_hub: false must be keyed by",
+            "show_on_hub: false must be keyed by a platform, not an item id",
+        ),
+        (
+            r"^show_on_hub: false needs a kit metric",
+            "show_on_hub: false needs a kit metric with source: counts "
+            "for the same platform",
+        ),
+    )
+)
+
+# A model-level validator names the setting it means at the front of its message
+# (``tabs[0].blocks[0].url: ...``), built from list indexes and setting names by
+# code. Such a prefix is printed only when it is made of index numbers and
+# names the schema defines; the rest is matched, never copied.
+_REASON_PATH = re.compile(r"^([a-z_]+(?:\[\d{1,4}\]|\.[a-z_]+)*): ")
+MAX_LOCATED_REASONS = 20
+MAX_LOCATED_SCAN = 4_000
+
+
+def _located_reasons(reason: str) -> list[tuple[str, str]]:
+    """The (path, fixed text) pairs of a validator message that names settings.
+
+    Returns an empty list when the message does not start with a path made of
+    schema names and indexes, so an unmatched message prints the generic text.
+    """
+    head = reason[:MAX_LOCATED_SCAN].removeprefix("Value error, ")
+    found: list[tuple[str, str]] = []
+    for piece in head.split("; ")[: MAX_LOCATED_REASONS + 1]:
+        hit = _REASON_PATH.match(piece)
+        if hit is None:
+            # A continuation (``valid tab ids: ...``) belongs to the piece before.
+            continue
+        path = hit.group(1)
+        names = re.findall(r"[a-z_]+", path)
+        if any(name not in schema_field_names() for name in names):
+            return []
+        text = error_message("value_error", piece[hit.end() :])
+        if text == _ERROR_TEXT["value_error"]:
+            return []
+        found.append((path, text))
+    return found
+
+
+def error_message(error_type: str, reason: str = "") -> str:
+    """The fixed, value-free text for a pydantic error type.
+
+    ``reason`` (a ``value_error``'s message) is only matched, never printed."""
+    if error_type == "value_error":
+        head = reason[:MAX_REASON_SCAN].removeprefix("Value error, ")
+        for pattern, text in _REASONS:
+            if pattern.search(head):
+                return text
+    return _ERROR_TEXT.get(error_type, _UNKNOWN_PROBLEM)
+
+
+def _where(err: Any) -> str:
+    return _dotted(err["loc"], unknown_last=err.get("type") == "extra_forbidden")
+
+
+def problem_text(exc: ValidationError) -> str:
+    """The capped, value-free problem list for a failed site config.
+
+    ``error_count()`` builds nothing, but ``errors()`` builds every entry and
+    pydantic has no lazy form. So the entries are only built when there are at
+    most ``MAX_MATERIALIZED_PROBLEMS`` of them; a longer list is a fixed
+    sentence with the count. The input and context are never requested, so no
+    printed entry holds a copy of the document.
+    """
+    total = exc.error_count()
+    if total > MAX_MATERIALIZED_PROBLEMS:
+        return (
+            f"the config has {total} problems, too many to list; "
+            "fix the first ones and run the check again"
+        )
+    problems: list[str] = []
+    entries = 0
+    capped = False
+    for err in exc.errors(
+        include_url=False, include_input=False, include_context=False
+    ):
+        kind, reason = str(err.get("type", "")), str(err.get("msg", ""))
+        located = _located_reasons(reason) if kind == "value_error" else []
+        if located:
+            # A message with more located reasons than the scan reads is only
+            # known to hold "at least" that many.
+            capped = capped or len(located) > MAX_LOCATED_REASONS
+            entries += len(located)
+            if len(problems) < MAX_REPORTED_PROBLEMS:
+                where = _where(err)
+                for path, text in located:
+                    full = f"{where}.{path}" if where else path
+                    problems.append(f"{full}: {text}")
+        else:
+            entries += 1
+            if len(problems) < MAX_REPORTED_PROBLEMS:
+                where = _where(err)
+                msg = error_message(kind, reason)
+                problems.append(f"{where}: {msg}" if where else msg)
+    # One cap for every printed entry, located reasons included. The remainder
+    # counts every entry not printed (an ordinary error is one, a located reason
+    # is one each); when a message held more located reasons than are read, the
+    # count is not known, so it is not printed.
+    problems = problems[:MAX_REPORTED_PROBLEMS]
+    extra = entries - len(problems)
+    text = "; ".join(problems)
+    if extra > 0:
+        text += "; and more problems" if capped else f"; and {extra} more problems"
+    return text
+
+
+def validate_site_config(raw: object) -> SiteConfig:
+    """The one way a parsed document becomes a ``SiteConfig``.
+
+    Every loader (``load_site_config``, ``reach-around check``) calls this. The
+    budget runs from the model's own before-validator, so it also runs for
+    ``SiteConfig(**data)`` and ``SiteConfig.model_validate``, and an existing
+    instance is refused there (``revalidate_instances="always"``).
+    ``model_construct`` skips validation by design and is unsupported for
+    external data; a test scans ``src`` for it.
+    """
+    return SiteConfig.model_validate(raw)
 
 
 def load_site_config(path: Path) -> SiteConfig:
     """Load and validate ``path``; every failure is a ``ConfigError``."""
-    raw = load_yaml(path)
+    raw = load_yaml(path, max_bytes=MAX_CONFIG_BYTES)
     try:
-        return SiteConfig.model_validate(raw)
+        return validate_site_config(raw)
     except ValidationError as exc:
-        problems = []
-        for err in exc.errors(include_url=False):
-            where = _dotted(err["loc"])
-            msg = err["msg"].removeprefix("Value error, ")
-            problems.append(f"{where}: {msg}" if where else msg)
-        raise ConfigError(str(path), None, "; ".join(problems)) from None
+        raise ConfigError(str(path), None, problem_text(exc)) from None

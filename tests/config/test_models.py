@@ -112,8 +112,7 @@ def test_ids_are_unique_across_the_whole_site(tmp_path: Path) -> None:
         }
     )
     error = refused(tmp_path, data)
-    assert "duplicate id" in error.message
-    assert "main" in error.message
+    assert "more than once" in error.message
 
 
 def test_ids_unique_between_tabs(tmp_path: Path) -> None:
@@ -125,7 +124,7 @@ def test_ids_unique_between_tabs(tmp_path: Path) -> None:
             "blocks": [{"id": "first", "title": "X", "url": "https://example.com/x"}],
         }
     )
-    assert "duplicate id" in refused(tmp_path, data).message
+    assert "more than once" in refused(tmp_path, data).message
 
 
 def test_show_until_not_before_show_from(tmp_path: Path) -> None:
@@ -149,10 +148,14 @@ def test_at_least_one_tab(tmp_path: Path) -> None:
 def test_unknown_keys_refused(tmp_path: Path) -> None:
     data = good()
     data["surprise"] = 1
-    assert "surprise" in refused(tmp_path, data).message
+    msg = refused(tmp_path, data).message
+    assert "<unknown field>: this field is not allowed" in msg
+    assert "surprise" not in msg  # the key is the file's own text: never echoed
     data = good()
     first_link(data)["surprise"] = 1
-    assert "surprise" in refused(tmp_path, data).message
+    msg = refused(tmp_path, data).message
+    assert "tabs[0].blocks[0].<unknown field>" in msg
+    assert "surprise" not in msg
 
 
 @pytest.mark.parametrize("zone", ["Mars/Base", "", "../etc/passwd", "America"])
