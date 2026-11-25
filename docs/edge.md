@@ -184,17 +184,29 @@ applied from here" is structural:
 - The module has no rules resource, so even a mistaken run cannot touch other
   sites' rate rules.
 - No file in this repository passes the API token to a program, and the offline
-  check enforces it repository-wide: any code, workflow or script outside
-  `scripts/check-edge.py` that names `CLOUDFLARE_EDGE_READ_TOKEN` fails. There is no
-  local launcher: no wrapper script, no CLI configuration file and no
-  configurable path to a tool. `scripts/check-edge.py --offline` fails if
-  `deploy/edge/` holds a launcher or CLI configuration, or any text that names a
-  token variable, starts a subprocess or begins with a shebang. The one tool
-  that sends the read token, `check-edge.py --live`, reads it from the
-  environment itself and makes one HTTPS GET per call from Python: no
-  subprocess and no executable lookup.
-- The honest limit of that scan: it is a text check, and a determined edit can
-  dodge a text check. It is a tripwire for review, not a proof.
+  check enforces the literal name repository-wide: every file except
+  `scripts/check-edge.py` whose bytes contain `CLOUDFLARE_EDGE_READ_TOKEN` fails,
+  whatever its suffix, depth or encoding. Only `.md` and `.txt` files may name it;
+  `tests/test_edge_settings.py` may hold it only inside longer fixture strings,
+  never as a value or identifier. Directories are skipped by name at the
+  repository root only (`.git`, virtual environments, caches), symlinks are
+  followed to their target and refused if it is outside the repository or
+  missing, and files are read in full. There is no local launcher: no wrapper
+  script, no CLI configuration file and no configurable path to a tool.
+  `scripts/check-edge.py --offline` fails if `deploy/edge/` holds a launcher or
+  CLI configuration, or any text that names a token variable, starts a subprocess
+  or begins with a shebang. The one tool that sends the read token,
+  `check-edge.py --live`, reads it from the environment itself and makes one HTTPS
+  GET per call from Python: no subprocess and no executable lookup.
+- The checker refuses to run unless the interpreter is isolated
+  (`python3 -I scripts/check-edge.py`; the file's shebang says the same). A
+  normal interpreter honors `PYTHONPATH`, `PYTHONHOME` and site files before any
+  line of the script, so a planted module could read the token first. The refusal
+  comes before the token is read or any other module is imported.
+- The honest limit of that scan: it finds the literal name only. A name built at
+  run time, or a token handed on through the environment of another process, is
+  not found, so the scan is a tripwire for review, not a proof. The real control
+  is that no other process is ever started with the token in its environment.
 - `.github/CODEOWNERS` names `deploy/edge/`, the checker and its tests, but it
   only names a reviewer. It becomes a control only when the repository has a
   branch protection rule or ruleset on the default branch with "Require review

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -I
 # SPDX-License-Identifier: Apache-2.0
 """Check the zone's edge settings against deploy/edge/desired-state.json (#613).
 
@@ -31,21 +31,33 @@ Exit 0 agrees, 1 differs, 2 usage or could not read (never read as green).
 
 from __future__ import annotations
 
-import argparse
-import http.client
-import ipaddress
-import json
-import os
-import re
-import socket
-import ssl
 import sys
-import tempfile
-import time
-import urllib.error
-import urllib.request
-from pathlib import Path
-from typing import Any
+
+# This must stay ahead of every other import. The live mode holds the read token,
+# and a non-isolated interpreter has already honored PYTHONPATH, PYTHONHOME and
+# user site files by now, so an attacker-controlled module (a json.py on
+# PYTHONPATH, say) would run before any check below could see the token. Running
+# under `python3 -I` ignores them; anything else is refused before the token is
+# read or any further module is imported.
+if __name__ == "__main__" and sys.flags.isolated != 1:
+    sys.stderr.write("REFUSED run this checker as: python3 -I scripts/check-edge.py\n")
+    sys.exit(2)
+
+import argparse  # noqa: E402
+import ast  # noqa: E402
+import http.client  # noqa: E402
+import ipaddress  # noqa: E402
+import json  # noqa: E402
+import os  # noqa: E402
+import re  # noqa: E402
+import socket  # noqa: E402
+import ssl  # noqa: E402
+import tempfile  # noqa: E402
+import time  # noqa: E402
+import urllib.error  # noqa: E402
+import urllib.request  # noqa: E402
+from pathlib import Path  # noqa: E402
+from typing import Any  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 EDGE = Path("deploy/edge")
@@ -305,43 +317,106 @@ def handoff_problems(edge: Path) -> list[str]:
     return problems
 
 
-# The read token's variable may be named only by the checker and its test. Any
-# other code, workflow or script anywhere in the repository that names it fails.
-TOKEN_NAMERS = frozenset({"scripts/check-edge.py", "tests/test_edge_settings.py"})
-SCAN_SKIP_DIRS = frozenset(
-    {".git", "node_modules", ".venv", "venv", ".terraform", "__pycache__"}
+# The read token's variable may be named only by the checker. Every other file in
+# the repository fails if its bytes contain the literal name, whatever its suffix:
+# only documentation (.md, .txt) may name it, and the test file may name it only
+# inside longer fixture strings, never as a value passed to code. Directories are
+# skipped by name at the repository root only (virtual environments, caches and
+# VCS data), never at depth, and symlinks are followed to their target. This is a
+# literal-name tripwire: a name built at run time ("CLOUDFLARE_" + "EDGE_...") is
+# out of scope, so the real control is that no other process is ever handed the
+# token (see docs/edge.md, "Structural controls").
+TOKEN_CHECKER = "scripts/check-edge.py"  # noqa: S105 (a path)
+TOKEN_TEST_FILE = "tests/test_edge_settings.py"  # noqa: S105 (a path)
+DOC_SUFFIXES = frozenset({".md", ".txt"})
+SKIP_SUFFIXES = frozenset({".pyc", ".pyo"})  # ignored bytecode, never tracked
+ROOT_SKIP_DIRS = frozenset(
+    {".git", "node_modules", ".venv", "venv", ".terraform"}
+    | {".mypy_cache", ".ruff_cache", ".pytest_cache", "__pycache__"}
 )
-CODE_SUFFIXES = frozenset(
-    {".py", ".sh", ".bash", ".zsh", ".yml", ".yaml", ".js", ".mjs", ".cjs", ".ts"}
-    | {".mts", ".toml", ".cfg", ".ini", ".json", ".jsonc", ".tf", ".hcl", ".env"}
-)
+SCAN_CHUNK = 1_048_576
+
+
+def _names_token(path: Path) -> bool | None:
+    """True when the file's bytes hold the variable name; None if unreadable."""
+    needle = TOKEN_ENV.encode()
+    keep = b""
+    try:
+        with path.open("rb") as handle:
+            while chunk := handle.read(SCAN_CHUNK):
+                window = keep + chunk
+                if needle in window:
+                    return True
+                keep = window[-(len(needle) - 1) :]
+    except OSError:
+        return None
+    return False
+
+
+def fixture_file_problem(path: Path) -> str | None:
+    """The test file may hold the name only inside longer fixture strings."""
+    try:
+        tree = ast.parse(path.read_bytes())
+    except (OSError, SyntaxError, ValueError):
+        return "cannot be parsed, so its use of the read token name is unchecked"
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and node.value == TOKEN_ENV:
+            return f"passes the read token name as a value (line {node.lineno})"
+        if isinstance(node, ast.Name | ast.arg | ast.Attribute):
+            ident = (
+                node.id
+                if isinstance(node, ast.Name)
+                else (node.arg if isinstance(node, ast.arg) else node.attr)
+            )
+            if TOKEN_ENV in ident:
+                return f"uses the read token name as an identifier (line {node.lineno})"
+    return None
 
 
 def repo_handoff_problems(root: Path) -> list[str]:
-    """Fail when code outside the checker names the read token variable."""
+    """Fail when anything outside the checker names the read token variable."""
     problems: list[str] = []
     for current, dirs, files in os.walk(root):
-        dirs[:] = sorted(d for d in dirs if d not in SCAN_SKIP_DIRS)
+        if Path(current) == root:
+            dirs[:] = [d for d in dirs if d not in ROOT_SKIP_DIRS]
+        dirs.sort()
         for name in sorted(files):
             path = Path(current) / name
             rel = path.relative_to(root).as_posix()
-            if rel in TOKEN_NAMERS or path.is_symlink():
+            if rel == TOKEN_CHECKER or path.suffix.lower() in SKIP_SUFFIXES:
                 continue
-            try:
-                with path.open("rb") as handle:
-                    head = handle.read(MAX_SCAN_BYTES)
-            except OSError:
+            scanned = path
+            if path.is_symlink():
+                try:
+                    scanned = path.resolve(strict=True)
+                    scanned.relative_to(root.resolve())
+                except (OSError, RuntimeError, ValueError):
+                    problems.append(
+                        f"{rel}: symlink that cannot be scanned inside the repository"
+                    )
+                    continue
+                if not scanned.is_file():
+                    continue
+            elif path.suffix.lower() in DOC_SUFFIXES:
                 continue
-            is_code = path.suffix.lower() in CODE_SUFFIXES or head.startswith(b"#!")
-            if is_code and TOKEN_ENV.encode() in head:
+            if rel == TOKEN_TEST_FILE and scanned is path:
+                bad = fixture_file_problem(path)
+                if bad is not None:
+                    problems.append(f"{rel}: {bad}")
+                continue
+            hit = _names_token(scanned)
+            if hit is None:
+                problems.append(
+                    f"{rel}: cannot be read, so it is not checked for the edge token"
+                )
+            elif hit:
                 problems.append(
                     f"{rel}: names {TOKEN_ENV}; only scripts/check-edge.py may read "
-                    "the edge token, no other script or workflow may hand it on"
+                    "the edge token, no other file may hand it on"
                 )
     return problems
 
 
-MAX_SCAN_BYTES = 2_000_000
 FORBIDDEN_EDGE_FILES = ("plan.sh", "tofu.rc")
 ALLOWED_EDGE_FILES = frozenset(
     {
@@ -1101,27 +1176,49 @@ LIMIT_FIELDS = frozenset(
 )
 
 
-def write_new_file(path: Path, text: str) -> None:
+def write_new_file(path: Path, text: str) -> str | None:
     """Write text to a new path, all or nothing; never overwrite or follow a link.
 
     The text goes to a private temp file in the same directory, is flushed to
     disk, and is then linked into place (a link fails if the path exists, even
-    as a dangling symlink). The temp file is removed on every outcome, so a
-    failed write leaves nothing behind and the same path can be retried.
+    as a dangling symlink). Before the link, any failure removes the temp file
+    and raises, so nothing is left and the same path can be retried. After the
+    link the snapshot is installed and the call has succeeded: a failure to remove
+    the temp name or to sync the directory never raises. It returns the temp
+    file's name when that name could not be removed, else None.
     """
     directory = path.parent
     fd, tmp_name = tempfile.mkstemp(prefix=".snapshot-", dir=directory)  # 0600
+    linked = False
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
         os.link(tmp_name, path)
+        linked = True
     finally:
+        if not linked:
+            try:
+                os.unlink(tmp_name)
+            except FileNotFoundError:
+                pass
+    leftover: str | None = None
+    try:
+        os.unlink(tmp_name)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        leftover = tmp_name
+    try:
+        dir_fd = os.open(directory, os.O_RDONLY)
         try:
-            os.unlink(tmp_name)
-        except FileNotFoundError:
-            pass
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        pass  # the file itself was synced; only the name's durability is unproven
+    return leftover
 
 
 def load_desired() -> dict[str, Any]:
@@ -1180,10 +1277,15 @@ def live(args: argparse.Namespace) -> int:
         problems.append("robots.txt: Cloudflare's managed block is not served")
     if args.save:
         try:
-            write_new_file(
+            leftover = write_new_file(
                 args.save,
                 json.dumps({"bot_management": bot, "http_ratelimit": entry}, indent=2),
             )
+            if leftover is not None:
+                print(
+                    f"warning: snapshot saved; could not remove temp file {leftover}",
+                    file=sys.stderr,
+                )
         except OSError as exc:
             print(f"cannot save snapshot ({type(exc).__name__})", file=sys.stderr)
             return 2

