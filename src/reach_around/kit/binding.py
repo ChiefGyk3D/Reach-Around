@@ -16,12 +16,15 @@ gated figures are not for the public tree.
 from __future__ import annotations
 
 import errno
+import fcntl
 import hashlib
 import json
 import os
 import re
 import stat
-from collections.abc import Callable, Iterable, Mapping
+import time
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -133,23 +136,22 @@ def _check_dir(fd: int, me: int) -> None:
         )
 
 
-def read_anchored(path: Path, limit: int) -> bytes:
-    """Read a regular file at ``path`` through a held chain of directory descriptors.
+def check_file_owner(info: os.stat_result, me: int) -> None:
+    """Refuse a file that another user could have planted or can change: it must
+    belong to this user or root, carry no group or other write bit, and have one
+    link only. (A sticky world-writable directory lets another user create a
+    same-named file; a second hard link lets a file be changed from elsewhere.)"""
+    if info.st_uid not in (me, 0):
+        raise AnchoredReadError("the file belongs to another user")
+    if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise AnchoredReadError("the file can be written by the group or by others")
+    if info.st_nlink != 1:
+        raise AnchoredReadError("the file has more than one link")
 
-    The (absolute, not link-resolved) path is walked from ``/`` one component at a
-    time with ``openat(O_DIRECTORY | O_NOFOLLOW)``, so a link anywhere on the path,
-    in an ancestor as well as in the last name, is refused, and a directory
-    swapped for a link after it was checked cannot redirect the read: the
-    descriptor already held is what is used. Every directory on the way (the root
-    included) must belong to this user or root and must not be writable by the
-    group or others unless sticky, so no one else could rename an ancestor and
-    move the tree. The file is opened ``O_NOFOLLOW | O_NONBLOCK`` and its
-    ``fstat`` must say regular file before anything is read, so a FIFO, a socket or
-    a device cannot block the reader. At most ``limit`` bytes are returned; one
-    more byte present means the file is too large and it is refused."""
-    parts = Path(os.path.abspath(path)).parts
-    if len(parts) < 2:
-        raise AnchoredReadError("the path is not a file")
+
+def _walk_parents(parts: tuple[str, ...]) -> list[int]:
+    """Open every directory above the last name of ``parts`` with a held
+    descriptor (see ``read_anchored``). The caller closes the returned list."""
     me = os.geteuid()
     held: list[int] = []
     try:
@@ -179,6 +181,59 @@ def read_anchored(path: Path, limit: int) -> bytes:
             _check_dir(held[-1], me)
         if _before_final_open is not None:
             _before_final_open()
+    except BaseException:
+        for left in held:
+            os.close(left)
+        raise
+    return held
+
+
+def require_absent(path: Path) -> None:
+    """Refuse when anything is named ``path``: the last name is looked up in the
+    held directory chain (never through a link), not by a fresh path walk. It
+    says what is there now; keeping a builder from creating it a moment later is
+    the job of ``gated_lock``."""
+    parts = Path(os.path.abspath(path)).parts
+    if len(parts) < 2:
+        raise AnchoredReadError("the path is not a file")
+    held = _walk_parents(parts)
+    try:
+        try:
+            os.stat(parts[-1], dir_fd=held[-1], follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise AnchoredReadError(
+                f"the name cannot be checked ({exc.strerror})"
+            ) from exc
+        raise AnchoredReadError("the name is present")
+    finally:
+        for left in held:
+            os.close(left)
+
+
+def read_anchored(path: Path, limit: int) -> bytes:
+    """Read a regular file at ``path`` through a held chain of directory descriptors.
+
+    The (absolute, not link-resolved) path is walked from ``/`` one component at a
+    time with ``openat(O_DIRECTORY | O_NOFOLLOW)``, so a link anywhere on the path,
+    in an ancestor as well as in the last name, is refused, and a directory
+    swapped for a link after it was checked cannot redirect the read: the
+    descriptor already held is what is used. Every directory on the way (the root
+    included) must belong to this user or root and must not be writable by the
+    group or others unless sticky, so no one else could rename an ancestor and
+    move the tree. The file is opened ``O_NOFOLLOW | O_NONBLOCK`` and its
+    ``fstat`` must say regular file before anything is read, so a FIFO, a socket or
+    a device cannot block the reader; it must also belong to this user or root,
+    carry no group or other write bit and have one link (``check_file_owner``), so
+    a file another user planted in a sticky directory is refused. At most
+    ``limit`` bytes are returned; one more byte present means the file is too
+    large and it is refused."""
+    parts = Path(os.path.abspath(path)).parts
+    if len(parts) < 2:
+        raise AnchoredReadError("the path is not a file")
+    held = _walk_parents(parts)
+    try:
         try:
             fd = os.open(parts[-1], _FILE_FLAGS, dir_fd=held[-1])
         except OSError as exc:
@@ -192,6 +247,7 @@ def read_anchored(path: Path, limit: int) -> bytes:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
             raise AnchoredReadError("the file is not a regular file")
+        check_file_owner(info, os.geteuid())
     except BaseException:
         os.close(fd)
         raise
@@ -202,6 +258,101 @@ def read_anchored(path: Path, limit: int) -> bytes:
     if len(data) > limit:
         raise AnchoredReadError("the file is too large")
     return data
+
+
+# --- the gated directory lock and the interrupted-commit marker ----------------
+
+LOCK_FILE = Path(".kit-gated.lock")
+PENDING_FILE = Path(".kit-commit.pending")
+LOCK_WAIT_SECONDS = 30.0
+
+
+class GatedLockError(ValueError):
+    """The gated directory is locked by another build or reader."""
+
+
+def acquire_gated_lock(gated_dir: Path, *, exclusive: bool) -> int:
+    """Take ``flock`` on ``.kit-gated.lock`` in ``gated_dir`` and return the
+    descriptor (close it to release). A build holds it exclusive from staging to
+    the end of the commit; the measures file, the private PDF and the binding
+    reader hold it shared, so no reader sees a half-made build and no build
+    appears between a reader's checks and its use. The directory is opened
+    ``O_NOFOLLOW`` and the lock file is created relative to it. It waits at most
+    ``LOCK_WAIT_SECONDS`` and then refuses. The lock is advisory: it orders
+    this tool's own processes, it does not stop another user from writing."""
+    try:
+        dir_fd = os.open(gated_dir, _DIR_FLAGS)
+    except OSError as exc:
+        raise GatedLockError(
+            f"the gated directory cannot be opened ({exc.strerror})"
+        ) from exc
+    try:
+        try:
+            fd = os.open(
+                LOCK_FILE.name,
+                os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                0o600,
+                dir_fd=dir_fd,
+            )
+        except OSError as exc:
+            raise GatedLockError(
+                f"the gated directory lock cannot be opened ({exc.strerror})"
+            ) from exc
+    finally:
+        os.close(dir_fd)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise GatedLockError("the gated directory lock is not a regular file")
+        try:
+            check_file_owner(info, os.geteuid())
+        except AnchoredReadError as exc:
+            raise GatedLockError(f"the gated directory lock is refused: {exc}") from exc
+        deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        while True:
+            try:
+                fcntl.flock(fd, mode | fcntl.LOCK_NB)
+                return fd
+            except OSError as exc:
+                if exc.errno not in (errno.EAGAIN, errno.EACCES):
+                    raise GatedLockError(
+                        f"the gated directory cannot be locked ({exc.strerror})"
+                    ) from exc
+            if time.monotonic() >= deadline:
+                raise GatedLockError(
+                    "another build or reader holds the gated directory; "
+                    "wait for it to finish and run this again"
+                )
+            time.sleep(0.05)
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+@contextmanager
+def gated_lock(gated_dir: Path, *, exclusive: bool) -> Iterator[None]:
+    """``acquire_gated_lock`` for a ``with`` block."""
+    fd = acquire_gated_lock(gated_dir, exclusive=exclusive)
+    try:
+        yield
+    finally:
+        os.close(fd)
+
+
+def check_no_pending_commit(gated_dir: Path) -> None:
+    """Refuse a gated directory whose last build was interrupted while it
+    replaced the gated files (the build leaves ``.kit-commit.pending`` until its
+    last step): the page, the policy record and the binding may be from
+    different builds. Rebuild to clear it."""
+    try:
+        require_absent(gated_dir / PENDING_FILE)
+    except AnchoredReadError as exc:
+        raise ValueError(
+            f"the gated directory is not in a finished state ({exc}); "
+            "a build was interrupted. Rebuild the site first "
+            "(reach-around build --gated-out)"
+        ) from exc
 
 
 def read_binding(path: Path) -> dict[str, str | None]:

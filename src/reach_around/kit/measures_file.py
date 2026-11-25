@@ -59,10 +59,14 @@ from reach_around.kit.binding import (
     BINDING_FILE,
     BINDING_KEYS,
     AnchoredReadError,
+    GatedLockError,
+    acquire_gated_lock,
     check_binding_shape,
+    check_no_pending_commit,
     measure_row,
     read_anchored,
     read_binding,
+    require_absent,
     rows_digest,
     rows_digest_of,
     sha256_text,
@@ -543,6 +547,7 @@ def check_binding(
     if kit is None:
         raise MeasuresFileError("the config has no media kit")
     try:
+        check_no_pending_commit(gated_dir)
         recorded = read_binding(gated_dir / BINDING_FILE)
     except ValueError as exc:
         raise MeasuresFileError(str(exc)) from exc
@@ -550,8 +555,20 @@ def check_binding(
         "measures"
     ]
     gated_page: str | None = None
-    if recorded["gated_page"] is not None or os.path.lexists(gated_dir / GATED_FILE):
+    if recorded["gated_page"] is not None:
         gated_page = _digest_file(gated_dir / GATED_FILE, MAX_PAGE_BYTES, "gated page")
+    else:
+        # a kit with no gated page: the directory must hold none. The name is
+        # looked up through the held directory chain, and the caller holds the
+        # gated lock, so a build cannot add a page between this and the write
+        try:
+            require_absent(gated_dir / GATED_FILE)
+        except AnchoredReadError as exc:
+            raise MeasuresFileError(
+                f"the build records no gated page but the gated directory is not "
+                f"clean ({exc}); rebuild the site first "
+                "(reach-around build --gated-out)"
+            ) from exc
     now = {
         "policy": policy_fingerprint(),
         "measures": rows_digest(shown),
@@ -587,6 +604,42 @@ def build_measures_file(
     if kit is None:
         raise MeasuresFileError("the config has no media kit")
     document = measures_document(config, numbers, imported, generated)
+    try:
+        lock = acquire_gated_lock(gated_dir, exclusive=False)
+    except GatedLockError as exc:
+        raise MeasuresFileError(str(exc)) from exc
+    try:
+        return _build_locked(
+            config,
+            kit,
+            document,
+            site_dir=site_dir,
+            gated_dir=gated_dir,
+            out_dir=out_dir,
+            overwrite=overwrite,
+            protect=protect,
+            numbers=numbers,
+            imported=imported,
+        )
+    finally:
+        os.close(lock)
+
+
+def _build_locked(
+    config: SiteConfig,
+    kit: KitConfig,
+    document: dict[str, Any],
+    *,
+    site_dir: Path,
+    gated_dir: Path,
+    out_dir: Path,
+    overwrite: bool,
+    protect: Sequence[Path],
+    numbers: Numbers | None,
+    imported: ImportedHistory | None,
+) -> Path:
+    """The checks and the write of ``build_measures_file``, with the shared lock
+    of the gated directory held by the caller."""
     binding = check_binding(
         config,
         site_dir=site_dir,
@@ -822,7 +875,15 @@ def load_measures_for_build(path: Path, gated_dir: Path) -> dict[str, Any]:
     alone (rows and its own copy of the binding together) is refused. A missing,
     linked or malformed binding record fails closed."""
     try:
-        trusted = read_binding(gated_dir / BINDING_FILE)
-    except ValueError as exc:
+        lock = acquire_gated_lock(gated_dir, exclusive=False)
+    except GatedLockError as exc:
         raise MeasuresFileError(str(exc)) from exc
-    return load_measures_file(path, expected_binding=trusted)
+    try:
+        try:
+            check_no_pending_commit(gated_dir)
+            trusted = read_binding(gated_dir / BINDING_FILE)
+        except ValueError as exc:
+            raise MeasuresFileError(str(exc)) from exc
+        return load_measures_file(path, expected_binding=trusted)
+    finally:
+        os.close(lock)

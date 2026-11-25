@@ -76,6 +76,11 @@ from reach_around.config.trust import (
     demographic_trust,
 )
 from reach_around.funnel.floor import shown_count
+from reach_around.kit.binding import (
+    GatedLockError,
+    check_no_pending_commit,
+    gated_lock,
+)
 from reach_around.kit.output import check_name, confine_out_dir, write_private
 from reach_around.kit.pdftext import PdfTextError, extract_pages
 from reach_around.kit.stage import stage_page, valid_as_of_text
@@ -1008,7 +1013,19 @@ def build_kit_pdf(
     check_policy_record(gated_dir / GATED_POLICY_FILE, "gated page")
     check_name(name)
     target_dir = confine_out_dir(out_dir, [gated_dir, site_dir, *protect])
-    staged = stage_page(gated_dir, site_dir)
+    # a shared lock on the gated directory while the page and its policy record
+    # are read, so a build cannot replace them in between, and a directory a
+    # build left half replaced is refused
+    try:
+        with gated_lock(gated_dir, exclusive=False):
+            try:
+                check_no_pending_commit(gated_dir)
+            except ValueError as exc:
+                raise PdfError(str(exc)) from exc
+            check_policy_record(gated_dir / GATED_POLICY_FILE, "gated page")
+            staged = stage_page(gated_dir, site_dir)
+    except GatedLockError as exc:
+        raise PdfError(str(exc)) from exc
     return _print(
         config,
         kit,

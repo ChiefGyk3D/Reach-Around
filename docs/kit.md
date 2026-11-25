@@ -113,7 +113,7 @@ reach-around build --config site.yaml --out site-out --gated-out gated-out
 `--gated-out` is required when the kit has partners, case studies, packages,
 rates, testimonials, demographics or a disclosure statement. It may not be the output directory, inside it, or a parent of it.
 The build writes only `kit.html` there, with its two records `kit-policy.txt` and
-`kit-binding.json` (and removes all three if the kit no longer has gated content); anything else in that directory is left alone. Upload the
+`kit-binding.json` (and removes all three if the kit no longer has gated content), plus an empty lock file `.kit-gated.lock`; anything else in that directory is left alone. Upload the
 gated file with the Worker deploy, never with the Pages deploy: the deploy
 publishes only `--out`.
 
@@ -1027,6 +1027,27 @@ Where it may go, and what it holds:
   O_NONBLOCK` and must be a regular file (checked with `fstat` before anything
   is read), so a FIFO or device cannot block the reader; the size is bounded.
   The measures file and the two kit pages the binding checks are read the same way.
+  The opened file must also belong to you or root, have no group or other write
+  bit and have one link, so a file another user planted under the same name in a
+  sticky, world-writable directory is refused.
+  **One set, one lock.** The build writes `kit.html`, `kit-policy.txt` and
+  `kit-binding.json` as one set: each new file is written and synced under a
+  temporary name first, the old files are kept as hard-linked backups, a marker
+  `.kit-commit.pending` is written, the files are renamed into place with the
+  binding last, and the marker is removed after it. If any step fails, the
+  previous files are put back and the marker removed. If the process dies mid-way
+  (so nothing can roll back) the marker stays and `kit private-measures`,
+  `load_measures_for_build` and `kit pdf` refuse the directory until the next build, which
+  rewrites all three files and removes leftover temporary and backup names.
+  While a build runs it holds an exclusive `flock` on `.kit-gated.lock` in the gated
+  directory (kept there, empty); the measures file, its reader and the private PDF
+  hold it shared while they check and read, so a build cannot add a gated page
+  between the check that a public-only build has none and the write, and two builds
+  do not run at once. A process waits at most 30 seconds, then refuses. The lock
+  is advisory: it orders this tool's own processes, it does not stop another
+  user, or you with another program, from writing into the directory (keep it
+  owner-only). A crash can still leave the old page beside a new binding, which the
+  digests catch; the lock and marker do not replace them.
   **What this defends against:** an edit of the measures file alone (accidental
   or deliberate, with or without recomputing its own binding), and a file made
   from another build. **What it does not defend against:** a party who can write
