@@ -142,6 +142,7 @@ def test_local_close_fails_loudly_when_a_handler_is_stuck() -> None:
 
 def test_drip_close_fails_loudly_when_a_worker_is_stuck() -> None:
     release = threading.Event()
+
     def stuck(_conn: socket.socket) -> None:
         release.wait(10)
 
