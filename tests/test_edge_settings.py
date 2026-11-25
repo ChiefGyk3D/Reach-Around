@@ -19,6 +19,7 @@ import json
 import re
 import shutil
 import socket
+import ssl
 import subprocess
 import urllib.error
 import urllib.request
@@ -52,6 +53,11 @@ OVERRIDE_VARS = (
     "SSL_CERT_DIR",
     "REQUESTS_CA_BUNDLE",
     "CURL_CA_BUNDLE",
+    "SSLKEYLOGFILE",
+    "SSLDEBUG",
+    "OPENSSL_CONF",
+    "OPENSSL_MODULES",
+    "PYTHONHTTPSVERIFY",
 )
 
 
@@ -635,7 +641,7 @@ def test_a_proxy_or_ca_override_refuses_before_any_socket(
     code = check.main(["--live", "--zone-id", "0" * 32])
     out = capsys.readouterr()
     assert code == 2
-    assert out.err.strip() == "REFUSED proxy or CA override variable is set"
+    assert out.err.strip() == "REFUSED proxy, CA or TLS debug override variable is set"
     assert SENTINEL not in out.out + out.err
     with pytest.raises(check.Unreadable):  # the same guard inside get()
         check.get(check.API + "/zones/x", SENTINEL)
@@ -1652,3 +1658,172 @@ def test_a_slow_drip_body_cannot_outlast_the_deadline(
     monkeypatch.setattr(check, "PinnedHTTPSConnection", Conn)
     with pytest.raises(check.Unreadable, match="exceeded"):
         check.fetch_robots("links.example.com")
+
+
+# --- round 5: key log, full rate-rule comparison, repo-wide handoff, snapshot --
+
+
+def test_the_tls_context_verifies_and_never_logs_keys(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("SSLKEYLOGFILE", str(tmp_path / "keys"))
+    context = check.tls_context()
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is True
+    assert context.keylog_filename is None
+
+
+def test_get_builds_its_opener_from_the_keyless_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[Any] = []
+
+    def fake_build_opener(*handlers: Any) -> Any:
+        seen.extend(handlers)
+
+        class Stub:
+            def open(self, *args: Any, **kwargs: Any) -> Any:
+                raise urllib.error.URLError("stop")
+
+        return Stub()
+
+    monkeypatch.setattr(urllib.request, "build_opener", fake_build_opener)
+    with pytest.raises(check.Unreadable):
+        check.get(check.API + "/zones/x", SENTINEL)
+    https = [h for h in seen if isinstance(h, urllib.request.HTTPSHandler)]
+    context = vars(https[0])["_context"]
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.keylog_filename is None
+
+
+@pytest.mark.parametrize(
+    ("where", "key", "value"),
+    [
+        ("rule", "action_parameters", {"response": {"status_code": 200}}),
+        ("rule", "logging", {"enabled": False}),
+        ("rule", "unknown_field", 1),
+        ("limit", "counting_expression", "false"),
+        ("limit", "requests_to_origin", True),
+        ("limit", "score_per_period", 5),
+        ("limit", "score_response_header_name", "x"),
+        ("limit", "unknown_field", 1),
+    ],
+)
+def test_an_extra_behavior_field_on_the_live_rule_is_drift(
+    where: str, key: str, value: Any
+) -> None:
+    live = live_rules()
+    target = live["rules"][0] if where == "rule" else live["rules"][0]["ratelimit"]
+    target[key] = value
+    found = check.rate_differences(desired()["rate_limit"], live)
+    assert found and any(key in f for f in found), found
+
+
+def test_harmless_rule_metadata_and_empty_counting_expression_are_not_drift() -> None:
+    live = live_rules()
+    rule = live["rules"][0]
+    rule.update(version="3", last_updated="2026-01-01T00:00:00Z", categories=["x"])
+    rule["ratelimit"]["counting_expression"] = ""
+    assert check.rate_differences(desired()["rate_limit"], live) == []
+
+
+@pytest.mark.parametrize("key", ["action", "period", "mitigation_timeout"])
+def test_each_core_rate_field_is_compared(key: str) -> None:
+    live = live_rules()
+    target = live["rules"][0]
+    if key != "action":
+        target = target["ratelimit"]
+    target[key] = "other" if key == "action" else 99
+    found = check.rate_differences(desired()["rate_limit"], live)
+    assert any(key in f for f in found), found
+
+
+def test_characteristics_must_be_a_list_matching_the_desired_ones() -> None:
+    live = live_rules()
+    live["rules"][0]["ratelimit"]["characteristics"] = ["ip.src"]
+    assert check.rate_differences(desired()["rate_limit"], live)
+    live["rules"][0]["ratelimit"]["characteristics"] = "ip.src"
+    assert check.rate_differences(desired()["rate_limit"], live)
+
+
+def test_the_extra_field_difference_reaches_the_live_exit_code(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rules = live_rules()
+    rules["rules"][0]["ratelimit"]["counting_expression"] = "false"
+    monkeypatch.setenv(check.TOKEN_ENV, SENTINEL)
+    monkeypatch.setattr(
+        check,
+        "api_result",
+        lambda path, token: live_bot() if "bot_" in path else rules,
+    )
+    assert check.main(["--live", "--zone-id", "0" * 32]) == 1
+    assert "counting_expression" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("rel", "text"),
+    [
+        (
+            "scripts/edge-plan.py",
+            "import os\nx = os.environ['CLOUDFLARE_EDGE_READ_TOKEN']\n",
+        ),
+        (
+            ".github/workflows/edge.yml",
+            "env:\n  T: ${{ env.CLOUDFLARE_EDGE_READ_TOKEN }}\n",
+        ),
+        ("tools/run", "#!/bin/sh\necho $CLOUDFLARE_EDGE_READ_TOKEN\n"),
+    ],
+)
+def test_naming_the_read_token_outside_the_checker_fails_the_offline_check(
+    root: Path, rel: str, text: str
+) -> None:
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    problems = check.offline_problems(root)
+    assert any(rel in p and "edge token" in p for p in problems), problems
+
+
+def test_docs_and_the_checker_may_name_the_read_token(root: Path) -> None:
+    (root / "docs").mkdir()
+    (root / "docs" / "edge.md").write_text("CLOUDFLARE_EDGE_READ_TOKEN\n")
+    (root / "scripts").mkdir()
+    (root / "scripts" / "check-edge.py").write_text(
+        "T = 'CLOUDFLARE_EDGE_READ_TOKEN'\n"
+    )
+    assert check.offline_problems(root) == []
+
+
+def test_a_failed_snapshot_write_leaves_nothing_and_can_be_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "snap.json"
+    real_fsync = check.os.fsync
+
+    def boom(fd: int) -> None:
+        raise OSError(28, "no space")
+
+    monkeypatch.setattr(check.os, "fsync", boom)
+    with pytest.raises(OSError):
+        check.write_new_file(target, '{"a": 1}')
+    assert list(tmp_path.iterdir()) == []  # no partial file, no temp file
+    monkeypatch.setattr(check.os, "fsync", real_fsync)
+    check.write_new_file(target, '{"a": 1}')
+    assert target.read_text() == '{"a": 1}'
+    assert oct(target.stat().st_mode & 0o777) == "0o600"
+    assert [p.name for p in tmp_path.iterdir()] == ["snap.json"]
+
+
+def test_snapshot_never_overwrites_or_follows_a_link(tmp_path: Path) -> None:
+    existing = tmp_path / "old.json"
+    existing.write_text("keep")
+    with pytest.raises(OSError):
+        check.write_new_file(existing, "new")
+    assert existing.read_text() == "keep"
+    link = tmp_path / "link.json"
+    link.symlink_to(tmp_path / "elsewhere.json")
+    with pytest.raises(OSError):
+        check.write_new_file(link, "new")
+    assert not (tmp_path / "elsewhere.json").exists()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["link.json", "old.json"]

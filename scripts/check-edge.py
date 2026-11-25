@@ -40,6 +40,7 @@ import re
 import socket
 import ssl
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -141,8 +142,22 @@ OVERRIDE_VARS = (
     "SSL_CERT_DIR",
     "REQUESTS_CA_BUNDLE",
     "CURL_CA_BUNDLE",
+    # TLS debug and trust variables: a key log file would let anyone holding it
+    # decrypt the token-bearing request.
+    "SSLKEYLOGFILE",
+    "SSLDEBUG",
+    "OPENSSL_CONF",
+    "OPENSSL_MODULES",
+    "PYTHONHTTPSVERIFY",
 )
-OVERRIDE_MESSAGE = "REFUSED proxy or CA override variable is set"
+OVERRIDE_MESSAGE = "REFUSED proxy, CA or TLS debug override variable is set"
+
+
+def tls_context() -> ssl.SSLContext:
+    """Verifying TLS context with key logging switched off whatever the env says."""
+    context = ssl.create_default_context()
+    context.keylog_filename = None  # type: ignore[assignment]
+    return context
 
 
 def override_variables_set(environ: Any) -> list[str]:
@@ -200,6 +215,7 @@ def offline_problems(root: Path) -> list[str]:
 
     problems += module_problems(edge)
     problems += handoff_problems(edge)
+    problems += repo_handoff_problems(root)
     if "NOT approved" not in main_tf:
         problems.append("main.tf header must say the apply path is NOT approved")
     if "desired-state.json" not in main_tf:
@@ -289,6 +305,43 @@ def handoff_problems(edge: Path) -> list[str]:
     return problems
 
 
+# The read token's variable may be named only by the checker and its test. Any
+# other code, workflow or script anywhere in the repository that names it fails.
+TOKEN_NAMERS = frozenset({"scripts/check-edge.py", "tests/test_edge_settings.py"})
+SCAN_SKIP_DIRS = frozenset(
+    {".git", "node_modules", ".venv", "venv", ".terraform", "__pycache__"}
+)
+CODE_SUFFIXES = frozenset(
+    {".py", ".sh", ".bash", ".zsh", ".yml", ".yaml", ".js", ".mjs", ".cjs", ".ts"}
+    | {".mts", ".toml", ".cfg", ".ini", ".json", ".jsonc", ".tf", ".hcl", ".env"}
+)
+
+
+def repo_handoff_problems(root: Path) -> list[str]:
+    """Fail when code outside the checker names the read token variable."""
+    problems: list[str] = []
+    for current, dirs, files in os.walk(root):
+        dirs[:] = sorted(d for d in dirs if d not in SCAN_SKIP_DIRS)
+        for name in sorted(files):
+            path = Path(current) / name
+            rel = path.relative_to(root).as_posix()
+            if rel in TOKEN_NAMERS or path.is_symlink():
+                continue
+            try:
+                with path.open("rb") as handle:
+                    head = handle.read(MAX_SCAN_BYTES)
+            except OSError:
+                continue
+            is_code = path.suffix.lower() in CODE_SUFFIXES or head.startswith(b"#!")
+            if is_code and TOKEN_ENV.encode() in head:
+                problems.append(
+                    f"{rel}: names {TOKEN_ENV}; only scripts/check-edge.py may read "
+                    "the edge token, no other script or workflow may hand it on"
+                )
+    return problems
+
+
+MAX_SCAN_BYTES = 2_000_000
 FORBIDDEN_EDGE_FILES = ("plan.sh", "tofu.rc")
 ALLOWED_EDGE_FILES = frozenset(
     {
@@ -770,7 +823,7 @@ def get(url: str, token: str | None) -> bytes:
         opener = urllib.request.build_opener(
             NoRedirect,
             urllib.request.ProxyHandler({}),  # never an environment proxy
-            urllib.request.HTTPSHandler(context=ssl.create_default_context()),
+            urllib.request.HTTPSHandler(context=tls_context()),
         )
         with opener.open(request, timeout=TIMEOUT) as response:  # noqa: S310
             body: bytes = response.read(MAX_BYTES + 1)
@@ -1008,6 +1061,11 @@ def rate_differences(desired: dict[str, Any], live: Any) -> list[str]:
             found.append(
                 f"rate_limit.{key}: want {desired[key]!r}, live {rule.get(key)!r}"
             )
+    # Any other field can change matching, counting, mitigation or the response
+    # (action_parameters, logging, counting expressions, ...): a difference.
+    extra_rule = sorted(set(rule) - RULE_FIELDS - RULE_METADATA)
+    if extra_rule:
+        found.append(f"rate_limit: unexpected live rule fields {extra_rule}")
     limit = rule.get("ratelimit") or {}
     if not isinstance(limit, dict):
         return found + ["rate_limit.ratelimit: live value is not an object"]
@@ -1016,17 +1074,54 @@ def rate_differences(desired: dict[str, Any], live: Any) -> list[str]:
             found.append(
                 f"rate_limit.{key}: want {desired[key]!r}, live {limit.get(key)!r}"
             )
-    if sorted(limit.get("characteristics") or []) != sorted(desired["characteristics"]):
+    characteristics = limit.get("characteristics")
+    if not isinstance(characteristics, list) or sorted(
+        map(repr, characteristics)
+    ) != sorted(map(repr, desired["characteristics"])):
         found.append("rate_limit.characteristics differ")
+    if limit.get("counting_expression") not in (None, ""):
+        found.append(
+            "rate_limit.counting_expression: want none (count every match), "
+            f"live {limit.get('counting_expression')!r}"
+        )
+    extra_limit = sorted(set(limit) - LIMIT_FIELDS - {"counting_expression"})
+    if extra_limit:
+        found.append(f"rate_limit: unexpected live ratelimit fields {extra_limit}")
     if rule.get("enabled", True) is not True:
         found.append("rate_limit: the rule is disabled")
     return found
 
 
+RULE_FIELDS = frozenset(
+    {"expression", "action", "description", "ref", "ratelimit", "enabled"}
+)
+RULE_METADATA = frozenset({"id", "version", "last_updated", "categories"})
+LIMIT_FIELDS = frozenset(
+    {"characteristics", "period", "requests_per_period", "mitigation_timeout"}
+)
+
+
 def write_new_file(path: Path, text: str) -> None:
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(text)
+    """Write text to a new path, all or nothing; never overwrite or follow a link.
+
+    The text goes to a private temp file in the same directory, is flushed to
+    disk, and is then linked into place (a link fails if the path exists, even
+    as a dangling symlink). The temp file is removed on every outcome, so a
+    failed write leaves nothing behind and the same path can be retried.
+    """
+    directory = path.parent
+    fd, tmp_name = tempfile.mkstemp(prefix=".snapshot-", dir=directory)  # 0600
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(tmp_name, path)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
 
 
 def load_desired() -> dict[str, Any]:

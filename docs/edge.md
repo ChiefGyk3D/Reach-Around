@@ -183,7 +183,9 @@ applied from here" is structural:
 - No workflow is given a Cloudflare token of any kind.
 - The module has no rules resource, so even a mistaken run cannot touch other
   sites' rate rules.
-- No file in this repository passes the API token to a program. There is no
+- No file in this repository passes the API token to a program, and the offline
+  check enforces it repository-wide: any code, workflow or script outside
+  `scripts/check-edge.py` that names `CLOUDFLARE_EDGE_READ_TOKEN` fails. There is no
   local launcher: no wrapper script, no CLI configuration file and no
   configurable path to a tool. `scripts/check-edge.py --offline` fails if
   `deploy/edge/` holds a launcher or CLI configuration, or any text that names a
