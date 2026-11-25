@@ -80,7 +80,10 @@ shift 3
 if [ "$sub" = inspect ]; then
   ref="$1"
   f="$state/${ref##*:}"
-  [ -f "$f" ] || exit 1
+  if [ "${STUB_INSPECT_ERROR_TAG:-}" = "${ref##*:}" ]; then
+    echo "ERROR: dial tcp: i/o timeout" >&2; exit 1
+  fi
+  [ -f "$f" ] || { echo "ERROR: ${ref}: not found" >&2; exit 1; }
   cat "$f"
   exit 0
 fi
@@ -93,10 +96,18 @@ while [ $# -gt 0 ]; do
   esac
 done
 for t in "${tags[@]}"; do
-  if [ "${STUB_FAIL_TAG:-}" = "$t" ]; then exit 1; fi
+  if [ "${STUB_FAIL_TAG:-}" = "$t" ]; then
+    # STUB_SET_ON_FAIL=tag=digest: someone else wrote the tag meanwhile.
+    if [ -n "${STUB_SET_ON_FAIL:-}" ]; then
+      printf '%s' "${STUB_SET_ON_FAIL#*=}" > "$state/${STUB_SET_ON_FAIL%%=*}"
+    fi
+    exit 1
+  fi
 done
 for t in "${tags[@]}"; do
   [ "${STUB_NOOP_TAG:-}" = "$t" ] && continue
+  # STUB_NOOP_DIGEST: a write of this digest reports success and changes nothing.
+  [ "${STUB_NOOP_DIGEST:-}" = "${src##*@}" ] && continue
   printf '%s' "${src##*@}" > "$state/$t"
 done
 if [ -n "${STUB_MOVE_REMOTE_ON_CREATE:-}" ] && [ ! -e "$state/.moved" ]; then
@@ -223,6 +234,14 @@ def test_a_tag_outside_the_accepted_grammar_is_refused(
     done = _run(tmp_path, tag, [tag.splitlines()[0]])
     assert done.returncode == 1, done.stdout + done.stderr
     assert "is not a plain vMAJOR.MINOR.PATCH tag" in done.stderr
+
+
+def test_a_refused_tag_value_is_never_echoed(tmp_path: Path) -> None:
+    tag = "v1.0.0\n::error::forged" + chr(27) + "[31m"
+    done = _run(tmp_path, tag, ["v1.0.0"])
+    assert done.returncode == 1
+    assert "forged" not in done.stderr + done.stdout
+    assert chr(27) not in done.stderr + done.stdout
 
 
 def test_a_refused_tag_is_refused_even_with_a_newer_stable_release(
@@ -401,6 +420,46 @@ def test_a_tag_that_does_not_read_back_is_reported_and_undone(tmp_path: Path) ->
     done = _promote_with(tmp_path, {"STUB_NOOP_TAG": "latest"})
     assert done.returncode == 1, done.stdout + done.stderr
     assert "reads back as" in done.stderr
+    assert (tmp_path / "registry" / "1.2").read_text() == OLD
+
+
+def test_an_unreadable_previous_digest_blocks_every_write(tmp_path: Path) -> None:
+    # A registry error is not "the tag is absent": no write may happen.
+    _seed(tmp_path, latest=OLD, **{"1_2": OLD})
+    done = _promote_with(tmp_path, {"STUB_INSPECT_ERROR_TAG": "latest"})
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert "without a rollback baseline" in done.stderr
+    assert not any(" create " in c for c in _docker_calls(tmp_path))
+    assert (tmp_path / "registry" / "1.2").read_text() == OLD
+
+
+def test_a_malformed_previous_digest_blocks_every_write(tmp_path: Path) -> None:
+    _seed(tmp_path, latest="not-a-digest", **{"1_2": OLD})
+    done = _promote_with(tmp_path, {})
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert "without a rollback baseline" in done.stderr
+    assert not any(" create " in c for c in _docker_calls(tmp_path))
+
+
+def test_a_rollback_that_does_not_stick_is_reported_as_failed(tmp_path: Path) -> None:
+    # The registry accepts the restore of OLD but leaves the tag unchanged.
+    _seed(tmp_path, latest=OLD, **{"1_2": OLD})
+    done = _promote_with(tmp_path, {"STUB_FAIL_TAG": "latest", "STUB_NOOP_DIGEST": OLD})
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert "ROLLBACK FAILED" in done.stderr
+    assert "rolled ghcr.io/example/app:1.2 back" not in done.stderr
+
+
+def test_a_rollback_never_overwrites_a_concurrent_update(tmp_path: Path) -> None:
+    # The write to latest fails and lands nothing, while someone else sets it to NEW.
+    new = "sha256:" + "c" * 64
+    _seed(tmp_path, latest=OLD, **{"1_2": OLD})
+    done = _promote_with(
+        tmp_path, {"STUB_FAIL_TAG": "latest", "STUB_SET_ON_FAIL": f"latest={new}"}
+    )
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert (tmp_path / "registry" / "latest").read_text() == new
+    assert "changed by someone else" in done.stderr
     assert (tmp_path / "registry" / "1.2").read_text() == OLD
 
 

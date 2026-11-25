@@ -21,7 +21,7 @@ export LC_ALL=C
 
 semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 if ! [[ "$TAG" =~ $semver ]]; then
-  echo "tag '${TAG}' is not a plain vMAJOR.MINOR.PATCH tag (no prerelease, build metadata or leading zeros); refusing to publish it" >&2
+  echo "the tag is not a plain vMAJOR.MINOR.PATCH tag (no prerelease, build metadata or leading zeros); refusing to publish it" >&2
   exit 1
 fi
 if ! [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]; then
@@ -43,7 +43,7 @@ if [ -z "$target" ]; then
   exit 1
 fi
 if [ "$target" != "$GITHUB_SHA" ]; then
-  echo "tag '${TAG}' now points at ${target}, not the triggering commit ${GITHUB_SHA}; refusing to publish" >&2
+  echo "tag '${TAG}' now points at $(printf '%s' "${target:0:80}" | tr -c '0-9a-f' '?'), not the triggering commit ${GITHUB_SHA}; refusing to publish" >&2
   exit 1
 fi
 

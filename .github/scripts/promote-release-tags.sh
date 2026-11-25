@@ -19,8 +19,11 @@
 #   * The two moving tags are written one at a time (MAJOR.MINOR first, latest
 #     last) with their previous digests recorded. A failed write, a tag that does
 #     not read back as the new digest, or a failed second check rolls back every tag
-#     already written. A rollback is best effort and is reported; a tag that had no
-#     previous digest cannot be removed here and is named for manual cleanup.
+#     attempted. If a previous digest cannot be read (anything but a confirmed
+#     "not found"), nothing is written. A rollback is conditional: a tag is
+#     restored only while it still holds this run's digest, then read back; a tag
+#     someone else changed is left alone and reported. A tag that had no previous
+#     digest cannot be removed here and is named for manual cleanup.
 set -euo pipefail
 export LC_ALL=C
 
@@ -61,24 +64,71 @@ moving=("$minor" latest)
 
 printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
 
+digest_re='^sha256:[0-9a-f]{64}$'
+# Anything printed from outside this script is reduced to a safe charset first.
+safe() { printf '%s' "${1:0:80}" | tr -c 'A-Za-z0-9:._/@-' '?'; }
+
+# Read one tag's digest. Prints the digest, or nothing when the registry
+# confirms the tag does not exist. Any other failure (transport, auth, parse) or
+# a malformed digest returns non-zero: callers must not treat it as "absent".
+read_tag() {
+  local out err rc=0
+  err="$(mktemp)"
+  out="$(docker buildx imagetools inspect "${repo}:$1" --format '{{.Manifest.Digest}}' 2>"$err")" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    if grep -qiE 'not found|manifest unknown|name unknown' "$err"; then
+      rm -f "$err"
+      return 0
+    fi
+    rm -f "$err"
+    return 1
+  fi
+  rm -f "$err"
+  [[ "$out" =~ $digest_re ]] || return 1
+  printf '%s' "$out"
+}
+
+# Fail closed: without a readable baseline for every moving tag no write is made.
 declare -A previous=()
 for t in "${moving[@]}"; do
-  previous[$t]="$(docker buildx imagetools inspect "${repo}:${t}" --format '{{.Manifest.Digest}}' 2>/dev/null || true)"
+  if ! previous[$t]="$(read_tag "$t")"; then
+    echo "could not read the current state of ${repo}:${t}; refusing to promote without a rollback baseline" >&2
+    exit 1
+  fi
 done
 
 written=()
+# Undo only what this promotion still owns. A tag is restored only when it still
+# holds the digest this run was installing; a tag that holds anything else was
+# changed by someone else and is left alone and reported. Every restore is read
+# back.
 rollback() {
-  local t rc=0
+  local t cur rc=0 now
   for t in "${written[@]}"; do
-    if [ -n "${previous[$t]}" ]; then
-      if docker buildx imagetools create --tag "${repo}:${t}" "${repo}@${previous[$t]}"; then
-        echo "rolled ${repo}:${t} back to ${previous[$t]}" >&2
-      else
-        echo "ROLLBACK FAILED: ${repo}:${t} still points at ${digest}; set it to ${previous[$t]} by hand" >&2
-        rc=1
-      fi
-    else
+    if ! cur="$(read_tag "$t")"; then
+      echo "ROLLBACK SKIPPED: could not read ${repo}:${t}; check it by hand (this run installed ${digest}, it was ${previous[$t]:-absent})" >&2
+      rc=1
+      continue
+    fi
+    if [ "$cur" = "${previous[$t]}" ]; then
+      echo "${repo}:${t} already holds its previous state; nothing to undo" >&2
+      continue
+    fi
+    if [ "$cur" != "$digest" ]; then
+      echo "ROLLBACK SKIPPED: ${repo}:${t} was changed by someone else to $(safe "$cur"); left alone" >&2
+      rc=1
+      continue
+    fi
+    if [ -z "${previous[$t]}" ]; then
       echo "${repo}:${t} had no previous digest and still points at ${digest}; remove it by hand if this release is wrong" >&2
+      rc=1
+      continue
+    fi
+    docker buildx imagetools create --tag "${repo}:${t}" "${repo}@${previous[$t]}" >&2 || true
+    if now="$(read_tag "$t")" && [ "$now" = "${previous[$t]}" ]; then
+      echo "rolled ${repo}:${t} back to ${previous[$t]}" >&2
+    else
+      echo "ROLLBACK FAILED: ${repo}:${t} does not read back as ${previous[$t]}; set it by hand" >&2
       rc=1
     fi
   done
@@ -91,7 +141,8 @@ fail() {
 }
 
 for t in "${moving[@]}"; do
-  # A failed write may still have landed: count the tag as written either way.
+  # A failed write may still have landed: count the tag as attempted either way.
+  # Rollback reads the tag first, so an attempt that never landed is not undone.
   written+=("$t")
   if ! docker buildx imagetools create --tag "${repo}:${t}" "$IMAGE"; then
     fail "writing ${repo}:${t} failed; promotion is partial or absent, see the rollback lines above"
@@ -99,9 +150,9 @@ for t in "${moving[@]}"; do
 done
 
 for t in "${moving[@]}"; do
-  got="$(docker buildx imagetools inspect "${repo}:${t}" --format '{{.Manifest.Digest}}' 2>/dev/null || true)"
+  got="$(read_tag "$t" || true)"
   if [ "$got" != "$digest" ]; then
-    fail "${repo}:${t} reads back as '${got}', not ${digest}; promotion is partial"
+    fail "${repo}:${t} reads back as '$(safe "$got")', not ${digest}; promotion is partial"
   fi
 done
 
