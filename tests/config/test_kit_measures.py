@@ -417,6 +417,12 @@ def _constructor_scopes(name: str, tree: ast.Module) -> set[str]:
     scopes: set[str] = set()
     for top in tree.body:
         for n in ast.walk(top):
+            if isinstance(n, ast.Assign) and (
+                (isinstance(n.value, ast.Name) and n.value.id in aliases)
+                or (isinstance(n.value, ast.Attribute) and n.value.attr == "Measure")
+            ):
+                scopes.add(f"{name}.{getattr(top, 'name', '<module>')}")  # an alias
+                continue
             if not isinstance(n, ast.Call):
                 continue
             f = n.func
@@ -429,9 +435,12 @@ def _constructor_scopes(name: str, tree: ast.Module) -> set[str]:
 
 
 def test_every_function_that_constructs_a_measure_is_in_the_registry() -> None:
-    """#875: a Measure-building function not listed in MEASURE_BUILDERS fails
-    here, so it cannot skip the parity test below. Discovery is static and best
-    effort; the registry plus the runtime test are the guarantee."""
+    """#875, best effort: a Measure-building function not listed in
+    MEASURE_BUILDERS fails here when it builds through ``Measure(...)``, an import
+    alias, ``module.Measure`` or an assigned alias. It cannot see a ``getattr`` or
+    ``type(...)`` construction. The real fix is that every builder derives
+    visibility through ``source_level``; this and the parity tests are regression
+    protection, not a proof of completeness."""
     from reach_around.config.measures import MEASURE_BUILDERS
 
     found: set[str] = set()
@@ -441,7 +450,7 @@ def test_every_function_that_constructs_a_measure_is_in_the_registry() -> None:
     assert found == registered
 
 
-def test_the_discovery_scan_sees_every_way_to_build_a_measure() -> None:
+def test_the_discovery_scan_sees_these_ways_to_build_a_measure() -> None:
     source = (
         "from x import Measure as M\n"
         "import m\n"
@@ -452,9 +461,12 @@ def test_the_discovery_scan_sees_every_way_to_build_a_measure() -> None:
         "def e():\n"
         "    def inner(): return Measure()\n"
         "    return inner\n"
+        "def f():\n"
+        "    make = Measure\n"
+        "    return make()\n"
     )
     scopes = _constructor_scopes("t", ast.parse(source))
-    assert scopes == {"t.a", "t.b", "t.C", "t.e"}
+    assert scopes == {"t.a", "t.b", "t.C", "t.e", "t.f"}
 
 
 def test_no_builder_module_can_name_a_policy_table() -> None:
@@ -493,15 +505,23 @@ def test_no_builder_module_can_name_a_policy_table() -> None:
                 assert "FIELD_POL" not in text and "DISPLAY_" not in text, (name, text)
 
 
-def _sample_kit() -> KitConfig:
+def _full_kit() -> KitConfig:
+    """A kit that makes every kit-driven builder emit every measure it can: every
+    live figure typed, fediverse followers, posts, interactions and the means, and
+    every channel platform with every field it takes. Driven from the builders' own
+    key lists, so a new live, fediverse or channel key is typed here without an
+    edit."""
+    from reach_around.config.channels import ALLOWED
+    from reach_around.config.measures import LIVE_KEYS
+
     doc = kit_doc()
     doc["live"] = [
         {
             "platform": "twitch",
             "as_of": "2026-11-01",
-            "avg_ccv": 12,
             "period_start": "2026-10-01",
             "period_end": "2026-10-31",
+            **{key: 12 for key in LIVE_KEYS[1:]},
         }
     ]
     doc["fediverse"] = [
@@ -510,27 +530,59 @@ def _sample_kit() -> KitConfig:
             "profile_url": "https://example.com/@fake",
             "as_of": "2026-11-01",
             "followers": 10,
+            "posts": 20,
+            "interactions": [{"boosts": 1, "favorites": 2, "replies": 3}],
+            "show_mean": True,
         }
     ]
-    doc["channels"] = [{"platform": "podcast", "as_of": "2026-11-01", "downloads": 5}]
+    doc["channels"] = [
+        {
+            "platform": platform,
+            "as_of": "2026-11-01",
+            "url": "https://example.com/c",
+            **{name: 5 for name in names},
+        }
+        for platform, names in ALLOWED.items()
+    ]
     return KitConfig.model_validate(doc)
 
 
-def _run_builder(function: str, field: str) -> list[Measure]:
-    """Run one registered builder on a minimal input for ``field``."""
+def _expected_keys(function: str) -> set[str]:
+    """Every registry key a builder can emit, from the builder's own key lists
+    where it has them. numbers, analytics and engagement name their keys in the
+    function body, so those three sets are written out here: a key added to one of
+    them makes the emitted set differ and fails the parity test below."""
+    from reach_around.config.channels import ALLOWED, FIELD_KEY
+    from reach_around.config.fediverse import STATED_KEYS
+    from reach_around.config.measures import LIVE_KEYS
+
+    return {
+        "numbers_measures": {"followers", "members"},
+        "analytics_measures": {"followers", "followers_change_30d", "analytics_stat"},
+        "live_measures": set(LIVE_KEYS[1:]),
+        "engagement_measures": {"avg_views_per_item", "engagement_rate"},
+        "fediverse_measures": set(STATED_KEYS),
+        "channel_measures": {FIELD_KEY[n] for names in ALLOWED.values() for n in names},
+    }[function]
+
+
+def _run_builder(function: str, field: str, *, export: str = "") -> list[Measure]:
+    """Run one registered builder on the full fixture for ``field``."""
     from reach_around.config.handkept import HandKeptEntry
     from reach_around.config.measures import MEASURE_BUILDERS
 
     spec = next(b for b in MEASURE_BUILDERS if b.function == function)
     module = importlib.import_module(f"reach_around.config.{spec.module}")
     build = getattr(module, function)
-    kit = _sample_kit()
+    kit = _full_kit()
     if function == "numbers_measures":
         from reach_around.config.kit import resolve_metrics
 
         return build(resolve_metrics(kit, None), None)  # type: ignore[no-any-return]
     if function == "to_measure":
-        entry = HandKeptEntry("twitch", "followers", 5, date(2026, 11, 1), field=field)
+        entry = HandKeptEntry(
+            "twitch", "followers", 5, date(2026, 11, 1), field=field, export=export
+        )
         return [build(entry)]
     inputs = {
         "analytics_measures": kit.analytics,
@@ -557,12 +609,25 @@ def _parity_cases() -> list[tuple[str, str, str]]:
     return cases
 
 
+def test_the_full_fixture_makes_every_builder_emit_every_measure_it_can() -> None:
+    """No allowlist: each builder's fixture reaches every branch, so the keys it
+    emits equal the keys it can emit. A measure added to a builder without
+    fixture coverage fails here."""
+    from reach_around.config.measures import MEASURE_BUILDERS
+
+    for b in MEASURE_BUILDERS:
+        if b.function == "to_measure":
+            continue  # one measure per entry; the key is the entry's own
+        emitted = {m.key for m in _run_builder(b.function, b.fields[0])}
+        assert emitted == _expected_keys(b.function), b.function
+
+
 @pytest.mark.parametrize(("function", "field", "table"), _parity_cases())
 def test_narrowing_either_policy_table_narrows_every_registered_builder(
     function: str, field: str, table: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """#875 runtime parity over the canonical registry: narrow one field in one
-    table and every builder of that field must produce only private measures."""
+    table and every measure the builder can emit becomes private."""
     from dataclasses import replace
 
     from reach_around.config import kit as kit_module
@@ -577,7 +642,34 @@ def test_narrowing_either_policy_table_narrows_every_registered_builder(
     )
     monkeypatch.setattr(kit_module, table, patched)
     after = _run_builder(function, field)
+    if function != "to_measure":
+        assert {m.key for m in after} == _expected_keys(function)
     assert after and {m.visibility for m in after} == {"private"}
+
+
+def test_an_export_entry_stays_private_whatever_its_field() -> None:
+    from reach_around.config.handkept import EXPORTS
+
+    for export, info in EXPORTS.items():
+        built = _run_builder("to_measure", info.field, export=export)
+        assert {m.visibility for m in built} == {info.floor}
+
+
+def test_is_source_field_requires_both_policy_tables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from reach_around.config import kit as kit_module
+    from reach_around.config.measures import is_source_field
+
+    assert is_source_field("live")
+    assert not is_source_field("not_a_field")
+    only_rich = {k: v for k, v in kit_module.DISPLAY_POLICY.items() if k != "live"}
+    monkeypatch.setattr(kit_module, "DISPLAY_POLICY", only_rich)
+    assert not is_source_field("live")
+    monkeypatch.undo()
+    only_display = {k: v for k, v in kit_module.KIT_FIELD_POLICY.items() if k != "live"}
+    monkeypatch.setattr(kit_module, "KIT_FIELD_POLICY", only_display)
+    assert not is_source_field("live")
 
 
 def test_the_registry_names_real_functions_and_covers_compile_measures() -> None:

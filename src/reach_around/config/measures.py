@@ -657,11 +657,13 @@ def source_level(field: str) -> MeasureVisibility:
 
 
 def is_source_field(name: str) -> bool:
-    """Whether ``name`` is a config field with a display policy. The one question
-    other modules may ask about the policy tables; they never read the tables."""
+    """Whether ``name`` is a config field with a policy in both tables, the same
+    two tables ``source_level`` reads (so ``source_level(name)`` cannot raise). The
+    one question other modules may ask about the policy tables; they never read
+    the tables."""
     from reach_around.config import kit
 
-    return name in kit.KIT_FIELD_POLICY
+    return name in kit.KIT_FIELD_POLICY and name in kit.DISPLAY_POLICY
 
 
 @dataclass(frozen=True)
@@ -675,10 +677,13 @@ class MeasureBuilder:
     fields: tuple[str, ...]
 
 
-# The canonical list of every function that builds a ``Measure`` from config.
-# Visibility reaches a builder only through ``source_level``; no builder reads
-# ``KIT_FIELD_POLICY`` or ``DISPLAY_POLICY``. A new builder is added here, and
-# ``tests/config/test_kit_measures.py`` runs every entry under a narrowed policy.
+# The list of the functions that build a ``Measure`` from config. The real fix
+# is that every builder derives visibility through ``source_level`` and none reads
+# ``KIT_FIELD_POLICY`` or ``DISPLAY_POLICY``. This list and the tests over it are
+# regression protection, not a proof: ``tests/config/test_kit_measures.py`` runs
+# every entry, with every measure it can emit, under a narrowed policy, and a
+# static scan flags an unlisted builder where it can see one (best effort; it
+# cannot see ``getattr`` or ``type(...)``). A new builder is added here.
 MEASURE_BUILDERS: tuple[MeasureBuilder, ...] = (
     MeasureBuilder("measures", "numbers_measures", ("metrics",)),
     MeasureBuilder("measures", "analytics_measures", ("analytics",)),
