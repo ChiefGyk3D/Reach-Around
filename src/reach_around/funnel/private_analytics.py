@@ -222,8 +222,6 @@ def canonical_platform(name: object) -> str:
     elif rest.startswith("//"):
         rest = rest[2:]
     authority = re.split(r"[/?#]", rest, maxsplit=1)[0]
-    if "@" in authority:
-        return UNRECOGNIZED_PLATFORM
     host, colon, port = authority.partition(":")
     if colon and (not _PORT.match(port) or not 1 <= int(port) <= 65535):
         return UNRECOGNIZED_PLATFORM
