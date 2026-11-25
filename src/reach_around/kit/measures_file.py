@@ -749,16 +749,21 @@ def _row(row: Any, number: int) -> None:
 
 
 def load_measures_file(
-    path: Path, expected_binding: Mapping[str, str | None] | None = None
+    path: Path, expected_binding: Mapping[str, str | None]
 ) -> dict[str, Any]:
     """Read and validate a measures file. The sponsor page reads measure values
     through this and nothing else. Every field is checked for type and format; a
     link, a large or deeply nested file, a duplicate or unknown key, NaN or
-    Infinity, another version or a private row is refused. With
-    ``expected_binding`` (the binding record of the build the page came from) a
-    file made from another build is refused too. In every case the rows must
-    digest to the binding's ``measures`` digest (recomputed here), so an edited
-    row is refused even when the binding is a genuine one."""
+    Infinity, another version or a private row is refused.
+
+    ``expected_binding`` is required and has no default: it is the binding record
+    of the build the page came from, loaded from the build's own gated directory
+    (see ``load_measures_for_build``), never from the measures file. The binding
+    stored inside the file is only a claim: anyone who can edit the file can
+    recompute every digest in it. So the file is refused unless its binding equals
+    the independent record, and the rows (recomputed here) digest to that
+    record's ``measures`` digest. This holds against an editor of the measures
+    file who cannot also write the gated directory; see docs/kit.md."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError as exc:
@@ -807,7 +812,11 @@ def load_measures_file(
         raise MeasuresFileError(f"the measures file {exc}") from exc
     if bound["policy"] != doc["policy"]:
         raise MeasuresFileError("the measures file binding disagrees with its policy")
-    if expected_binding is not None and dict(expected_binding) != bound:
+    try:
+        trusted = check_binding_shape(dict(expected_binding))
+    except ValueError as exc:
+        raise MeasuresFileError(f"the expected {exc}") from exc
+    if trusted != bound:
         raise MeasuresFileError(
             "the measures file is not from the build it was expected to match"
         )
@@ -818,9 +827,22 @@ def load_measures_file(
         _row(row, number)
     # The binding authenticates only itself: the rows being consumed must digest
     # to what the build recorded, or an edited value would carry a genuine binding.
-    if rows_digest_of(rows) != bound["measures"]:
+    if rows_digest_of(rows) != trusted["measures"]:
         raise MeasuresFileError(
             "the measures file rows are not the measures its binding records; "
             "the file was changed after the build. Make it again"
         )
     return doc
+
+
+def load_measures_for_build(path: Path, gated_dir: Path) -> dict[str, Any]:
+    """The reader for consumers: the expected binding is read here from
+    ``kit-binding.json`` in the build's gated directory, a different file in a
+    different directory than the measures file, so an edit of the measures file
+    alone (rows and its own copy of the binding together) is refused. A missing,
+    linked or malformed binding record fails closed."""
+    try:
+        trusted = read_binding(gated_dir / BINDING_FILE)
+    except ValueError as exc:
+        raise MeasuresFileError(str(exc)) from exc
+    return load_measures_file(path, expected_binding=trusted)

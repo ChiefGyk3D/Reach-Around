@@ -1010,9 +1010,23 @@ Where it may go, and what it holds:
   directories, and writes nothing when any differs: a changed config or numbers
   file, a `--site-out` and `--gated-out` from different builds, an edited page or
   a changed display policy. Rebuild, then run it again with the same inputs. The
-  file records the same digests (`binding`), and the reader can compare them with
-  an expected binding, and recomputes the digest of the rows it loads: a row edited
-  after the build is refused even when the binding is a genuine one. A kit with no
+  file records the same digests (`binding`), but that copy is only a claim: whoever
+  can edit the file can recompute every digest in it. The reader therefore has no
+  default for the expected binding. A consumer calls `load_measures_for_build(path,
+  gated_dir)`, which reads the build's own `kit-binding.json` from the gated
+  directory (a different file in a different directory, mode 0600 there) and
+  refuses the measures file unless its binding equals that record and its rows
+  digest to it. A missing, linked or malformed record fails closed.
+  **What this defends against:** an edit of the measures file alone (accidental
+  or deliberate, with or without recomputing its own binding), and a file made
+  from another build. **What it does not defend against:** a party who can write
+  both the measures directory and the gated directory (they can forge both
+  records), or one who can change the code or the reader's call. There is no key
+  or signature: an HMAC would need a secret kept apart from both directories, and
+  with a same-user threat model (a process running as you can read every private
+  input) that adds a secret without a stronger boundary. Keep the two
+  directories owner-only; if the gated and measures directories ever need
+  different owners, a keyed MAC becomes worth adding (owner decision). A kit with no
   gated content (public measures only) has no gated page; its binding records
   `gated_page` as null, and the command then requires that the gated directory
   holds no `kit.html` either. A kit with no measures writes no file.
@@ -1104,8 +1118,9 @@ Where it may go, and what it holds:
 
 The file is JSON. `schema_version` is 1; a change that renames, removes or
 retypes a key raises it, and a reader refuses a version it does not know.
-`load_measures_file(path, expected_binding=None)` in
-`reach_around.kit.measures_file` is the one reader. It checks the type and format
+`load_measures_for_build(path, gated_dir)` in
+`reach_around.kit.measures_file` is the one reader (it calls
+`load_measures_file(path, expected_binding)`, whose `expected_binding` has no default). It checks the type and format
 of every field (whole numbers only, not booleans; negative only for a `percent`
 change; real `YYYY-MM-DD` days and ordered periods; a known unit and trust label;
 slugs; text limits), and refuses a link, a file over 4 MiB, nesting over 8

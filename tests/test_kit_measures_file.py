@@ -30,6 +30,7 @@ from reach_around.kit.measures_file import (
     build_measures_file,
     check_no_private_values,
     load_measures_file,
+    load_measures_for_build,
     private_scalars,
 )
 from reach_around.kit.output import OutputError
@@ -72,6 +73,16 @@ def published_hits(*roots: Path) -> list[Path]:
     return found
 
 
+def load_self_bound(path: Path) -> dict[str, Any]:
+    """Structure tests only: trust the binding the file itself carries (the
+    forgeable path), so these tests exercise field checks, not authenticity."""
+    try:
+        own = json.loads(path.read_text("utf-8"))["binding"]
+    except (OSError, ValueError, KeyError, TypeError, RecursionError):
+        own = {k: "0" * 64 for k in ("policy", "measures", "gated_page", "public_page")}
+    return load_measures_file(path, expected_binding=own)
+
+
 # --- what the file holds -------------------------------------------------------
 
 
@@ -81,7 +92,7 @@ def test_the_file_holds_the_resolved_measures_with_trust_and_date(
     config, site, gated = instance(tmp_path)
     path = write(tmp_path, config, site, gated)
     assert path == tmp_path / "private" / FILE_NAME
-    doc = load_measures_file(path)
+    doc = load_self_bound(path)
     assert doc["schema_version"] == SCHEMA_VERSION == 1
     assert doc["generated"] == "2027-03-10"
     rows = {(m["platform"], m["key"]): m for m in doc["measures"]}
@@ -307,25 +318,25 @@ def test_the_reader_refuses_another_version(tmp_path: Path) -> None:
     doc = good(tmp_path)
     doc["schema_version"] = 2
     with pytest.raises(MeasuresFileError, match="schema_version"):
-        load_measures_file(put(tmp_path, doc))
+        load_self_bound(put(tmp_path, doc))
 
 
 def test_the_reader_refuses_an_unknown_key(tmp_path: Path) -> None:
     doc = good(tmp_path)
     doc["measures"][0]["extra"] = 1
     with pytest.raises(MeasuresFileError, match="measures"):
-        load_measures_file(put(tmp_path, doc))
+        load_self_bound(put(tmp_path, doc))
     doc = good(tmp_path / "b")
     doc["partners"] = ["x"]
     with pytest.raises(MeasuresFileError, match="partners"):
-        load_measures_file(put(tmp_path, doc, "y.json"))
+        load_self_bound(put(tmp_path, doc, "y.json"))
 
 
 def test_the_reader_refuses_a_private_row(tmp_path: Path) -> None:
     doc = good(tmp_path)
     doc["measures"][0]["visibility"] = "private"
     with pytest.raises(MeasuresFileError, match="visibility"):
-        load_measures_file(put(tmp_path, doc))
+        load_self_bound(put(tmp_path, doc))
 
 
 def test_the_reader_refuses_a_link_and_bad_json(tmp_path: Path) -> None:
@@ -334,22 +345,22 @@ def test_the_reader_refuses_a_link_and_bad_json(tmp_path: Path) -> None:
     link = tmp_path / "link.json"
     link.symlink_to(real)
     with pytest.raises(MeasuresFileError, match="link"):
-        load_measures_file(link)
+        load_self_bound(link)
     bad = tmp_path / "bad.json"
     bad.write_text("{", encoding="utf-8")
     with pytest.raises(MeasuresFileError, match="JSON"):
-        load_measures_file(bad)
+        load_self_bound(bad)
     big = tmp_path / "big.json"
     big.write_bytes(b" " * (5 * 1024 * 1024))
     with pytest.raises(MeasuresFileError, match="large"):
-        load_measures_file(big)
+        load_self_bound(big)
 
 
 def test_the_reader_refuses_a_duplicate_key(tmp_path: Path) -> None:
     path = tmp_path / "dup.json"
     path.write_text('{"schema_version": 1, "schema_version": 1}', encoding="utf-8")
     with pytest.raises(MeasuresFileError, match="duplicate"):
-        load_measures_file(path)
+        load_self_bound(path)
 
 
 def test_a_hostile_key_is_not_echoed_whole(tmp_path: Path) -> None:
@@ -359,13 +370,13 @@ def test_a_hostile_key_is_not_echoed_whole(tmp_path: Path) -> None:
     path = tmp_path / "dup.json"
     path.write_text('{"' + key + '":1,"' + key + '":2}', encoding="utf-8")
     with pytest.raises(MeasuresFileError, match="duplicate") as caught:
-        load_measures_file(path)
+        load_self_bound(path)
     assert len(str(caught.value)) < 200
     doc = good(tmp_path)
     for index in range(2000):
         doc[f"{index}" + chr(10) + chr(0x202E) + "K" * 1000] = 1
     with pytest.raises(MeasuresFileError, match="unexpected keys") as caught:
-        load_measures_file(put(tmp_path, doc, "many.json"))
+        load_self_bound(put(tmp_path, doc, "many.json"))
     text = str(caught.value)
     assert len(text) < 600
     assert "1995 more" in text
@@ -633,7 +644,7 @@ BAD = {
 def test_the_reader_refuses_a_bad_field(tmp_path: Path, name: str) -> None:
     path = mutate(tmp_path, BAD[name])
     with pytest.raises(MeasuresFileError) as caught:
-        load_measures_file(path)
+        load_self_bound(path)
     # refused by the field's own check, not by the digest of the rows
     assert "binding records" not in str(caught.value)
 
@@ -647,7 +658,7 @@ def test_the_bad_field_cases_would_pass_without_their_own_check(
 
     monkeypatch.setattr(module, "_row", lambda row, number: None)
     path = mutate(tmp_path, BAD["unit is unknown"])
-    assert load_measures_file(path)["measures"][0]["unit"] == "parsecs"
+    assert load_self_bound(path)["measures"][0]["unit"] == "parsecs"
 
 
 def test_the_reader_refuses_nan_and_infinity(tmp_path: Path) -> None:
@@ -657,7 +668,7 @@ def test_the_reader_refuses_nan_and_infinity(tmp_path: Path) -> None:
         path.write_text(text.replace('"value": 1200', f'"value": {constant}'))
         assert constant in path.read_text(encoding="utf-8")
         with pytest.raises(MeasuresFileError, match="not a number"):
-            load_measures_file(path)
+            load_self_bound(path)
 
 
 def test_the_reader_refuses_deep_nesting(tmp_path: Path) -> None:
@@ -670,11 +681,11 @@ def test_the_reader_refuses_deep_nesting(tmp_path: Path) -> None:
         json.dumps(doc)[:-1] + ', "x": ' + "[" * 100000 + "]" * 100000 + "}"
     )
     with pytest.raises(MeasuresFileError, match="deeply"):
-        load_measures_file(path)
+        load_self_bound(path)
 
 
 def test_the_reader_accepts_what_the_writer_wrote(tmp_path: Path) -> None:
-    assert load_measures_file(put(tmp_path, good(tmp_path)))["measures"]
+    assert load_self_bound(put(tmp_path, good(tmp_path)))["measures"]
 
 
 # --- the inventory covers decimals, formats and every source ----------------------
@@ -1138,12 +1149,12 @@ def test_an_edited_row_with_the_original_binding_is_refused(
     with pytest.raises(MeasuresFileError, match="binding records"):
         load_measures_file(bad, expected_binding=recorded)
     with pytest.raises(MeasuresFileError, match="binding records"):
-        load_measures_file(bad)
+        load_self_bound(bad)  # its own binding is the original: stale digest
 
 
 def test_the_reader_and_the_build_digest_rows_the_same_way(tmp_path: Path) -> None:
     config, site, gated = instance(tmp_path)
-    doc = load_measures_file(write(tmp_path, config, site, gated))
+    doc = load_self_bound(write(tmp_path, config, site, gated))
     assert rows_digest_of(doc["measures"]) == doc["binding"]["measures"]
 
 
@@ -1365,3 +1376,65 @@ def test_the_guarantee_names_what_is_not_read() -> None:
     docs = " ".join(docs.split())
     for phrase in ("spelled out in words", "written as a fraction", "Roman numerals"):
         assert phrase in docs, phrase
+
+
+# --- a forged file: rows edited and its own binding recomputed (#632) -------------
+
+
+def forge(path: Path) -> Path:
+    """Edit a value, then recompute the file's own binding to match (what anyone
+    who can edit the file can do)."""
+
+    def change(doc: dict[str, Any]) -> None:
+        doc["measures"][0]["value"] = 999999
+        doc["binding"]["measures"] = rows_digest_of(doc["measures"])
+
+    return edited(path, change)
+
+
+def test_a_forged_file_with_a_recomputed_binding_is_refused(tmp_path: Path) -> None:
+    config, site, gated = instance(tmp_path)
+    path = write(tmp_path, config, site, gated)
+    assert load_measures_for_build(path, gated)  # control
+    bad = forge(path)
+    # the forgery is self-consistent: only the independent record catches it
+    assert load_self_bound(bad)["measures"][0]["value"] == 999999
+    with pytest.raises(MeasuresFileError, match="expected to match"):
+        load_measures_for_build(bad, gated)
+    recorded = json.loads((gated / BINDING_FILE).read_text("utf-8"))
+    with pytest.raises(MeasuresFileError, match="expected to match"):
+        load_measures_file(bad, expected_binding=recorded)
+
+
+def test_the_reader_has_no_default_binding() -> None:
+    with pytest.raises(TypeError):
+        load_measures_file(Path("x.json"))  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("damage", ["missing", "link", "garbage", "shape"])
+def test_a_missing_or_bad_build_record_fails_closed(
+    tmp_path: Path, damage: str
+) -> None:
+    config, site, gated = instance(tmp_path)
+    path = write(tmp_path, config, site, gated)
+    record = gated / BINDING_FILE
+    if damage == "missing":
+        record.unlink()
+    elif damage == "link":
+        real = tmp_path / "real-binding.json"
+        real.write_bytes(record.read_bytes())
+        record.unlink()
+        record.symlink_to(real)
+    elif damage == "garbage":
+        record.write_text("{not json", "utf-8")
+    else:
+        record.write_text(json.dumps({"policy": "x"}), "utf-8")
+    with pytest.raises(MeasuresFileError, match="binding"):
+        load_measures_for_build(path, gated)
+
+
+def test_a_malformed_expected_binding_is_refused(tmp_path: Path) -> None:
+    config, site, gated = instance(tmp_path)
+    path = write(tmp_path, config, site, gated)
+    with pytest.raises(MeasuresFileError, match="expected"):
+        load_measures_file(path, expected_binding={"policy": "x"})
