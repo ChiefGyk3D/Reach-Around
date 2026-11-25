@@ -11,7 +11,8 @@ for stdin. Reads only; stdlib only. The dump is parsed, not grepped:
   * Schema. Every CREATE TABLE is parsed. A table or a column that is not in
     the allowlist (scripts/dump-schema.json, kept equal to the Worker's
     migrations by a test) fails, whatever it is called. A view, a trigger or a
-    table created by SELECT fails. This is what catches a renamed column.
+    table created by SELECT fails; the one exception is a trigger whose whole
+    text (whitespace folded) equals an entry of the allowlist's "triggers". This is what catches a renamed column.
   * Rows. Every INSERT is parsed into values (strings, numbers, NULL, X'..'
     blobs, ``||`` concatenation joined). Any other expression fails. A value
     count that does not match the columns fails. Any blob fails.
@@ -542,6 +543,7 @@ def load_cfg(path: Path) -> dict[str, Any]:
     }
     if not set(cfg["numeric"].values()) <= set(cfg["numeric_kinds"]):
         raise ValueError("numeric rule names an unknown kind")
+    cfg["triggers"] = {" ".join(v.split()) for v in cfg.get("triggers", {}).values()}
     cfg["spaces_ok"] = set(cfg["spaces_ok"])
     cfg["patterns"] = dict(cfg["patterns"])
     return cfg
@@ -626,6 +628,12 @@ def scan(
                 seen_cols[table.lower()] = [c.lower() for c in cols]
                 findings += check_columns(line, table, cols, tables)
             elif upper.startswith(SKIP_CREATE):
+                continue
+            elif upper.startswith("CREATE TRIGGER") and (
+                " ".join(stmt.split()) in cfg["triggers"]
+            ):
+                # The trigger body's own ';' ends this statement; the trailing
+                # END is skipped below.
                 continue
             elif upper.startswith("INSERT"):
                 rows += 1

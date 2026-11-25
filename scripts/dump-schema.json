@@ -399,5 +399,9 @@
   ],
   "bare_number_ok": [
     "leads.email"
-  ]
+  ],
+  "triggers": {
+    "kit_meta_floor_insert": "CREATE TRIGGER kit_meta_floor_insert BEFORE INSERT ON kit_meta WHEN NEW.key = 'unstored_floor_ts' AND NEW.value < 0 BEGIN SELECT RAISE(ABORT, 'unstored_floor_ts must be >= 0')",
+    "kit_meta_floor_update": "CREATE TRIGGER kit_meta_floor_update BEFORE UPDATE ON kit_meta WHEN NEW.key = 'unstored_floor_ts' AND NEW.value < 0 BEGIN SELECT RAISE(ABORT, 'unstored_floor_ts must be >= 0')"
+  }
 }
