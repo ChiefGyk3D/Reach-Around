@@ -1,1 +1,1 @@
-- Docs: the Beacons parity doc and its seven-item cutover checklist now match what has merged to main since 2026-11-20, name the still-open blockers by number, and mark nothing as verified that was only built (#860, epic #1)
+- Docs: the Beacons parity doc and its seven-item cutover checklist now match what has merged to main since 2026-11-20, name the still-open blockers by number, and mark nothing as verified that was only built (#878, refs #860, epic #1)
