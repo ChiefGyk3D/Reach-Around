@@ -102,11 +102,12 @@ DEMOGRAPHICS_METRIC = "follower_demographics"
 # * graph-api/changelog/version20.0 (Instagram User Insights): last_14_days,
 #   last_30_days, last_90_days and prev_month are no longer supported "for the
 #   reached_audience_demographics and engaged_audience_demographics metrics"
-#   (v20.0+, all versions from 2024-08-19). It does not name follower_demographics.
-# So this_month is the one value that is on the follower_demographics table and on
-# no deprecation list; last_30_days is not proven rejected for follower_demographics
-# but is the value the changelog removes for its sibling metrics. NOT called live:
-# #552 settles acceptance and the real window.
+#   (v20.0+, all versions from 2024-08-19). It does not name follower_demographics,
+#   so nothing is removed for that metric. Removals are per metric, never global.
+# The request keeps last_30_days (the value that worked before). this_month is
+# deliberately NOT adopted: it is on the table but nothing shows it is accepted or
+# returns the same window. The window semantics are vendor-defined and UNVERIFIED;
+# #552 (live check) settles acceptance and the real window.
 TIMEFRAME_ALLOWED = {
     "follower_demographics": frozenset(
         {
@@ -119,10 +120,16 @@ TIMEFRAME_ALLOWED = {
         }
     ),
 }
-TIMEFRAME_DEPRECATED_V20 = frozenset(
-    {"last_14_days", "last_30_days", "last_90_days", "prev_month"}
-)
-TIMEFRAME = "this_month"
+# metric -> timeframe values the vendor changelog removed for it (v20.0).
+TIMEFRAME_REMOVED_V20 = {
+    "reached_audience_demographics": frozenset(
+        {"last_14_days", "last_30_days", "last_90_days", "prev_month"}
+    ),
+    "engaged_audience_demographics": frozenset(
+        {"last_14_days", "last_30_days", "last_90_days", "prev_month"}
+    ),
+}
+TIMEFRAME = "last_30_days"
 # UNVERIFIED: label spellings of the breakdown answers.
 AGE_LABELS = {
     "13-17": "13_17",
@@ -363,8 +370,8 @@ def _demographic(reader: _Reader, dim: str, first: date, last: date) -> Report:
     if folded > MAX_VALUE:  # refused, never clamped: a clamped total is wrong
         raise InstagramInsightsError("bad_aggregate")
     note = (
-        f"followers by {dim} (timeframe {TIMEFRAME}, vendor-defined; vendor text "
-        "says the last 30 days, calendar or rolling not stated; UNVERIFIED, #552); "
+        f"followers by {dim} (timeframe {TIMEFRAME}, vendor-defined window; "
+        "UNVERIFIED, #552); "
         f"cells under {FLOOR} are summed into fdemo_{dim}_other"
     )
     out = [Measure(f"fdemo_{dim}_{key}", count, note) for key, count in sorted(ranked)]

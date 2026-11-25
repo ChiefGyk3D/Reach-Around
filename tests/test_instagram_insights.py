@@ -210,12 +210,14 @@ def test_requests_are_gets_to_one_host_with_the_documented_parameters() -> None:
     assert sorted(q["breakdown"][0] for q in demos) == ["age", "country", "gender"]
     assert all(q["metric_type"] == ["total_value"] for q in demos)
     # request construction only: the vendor acceptance is not proven here (#552)
-    assert all(q["timeframe"] == ["this_month"] for q in demos)
+    assert all(q["timeframe"] == ["last_30_days"] for q in demos)
     # per-metric table: only demographics carry timeframe; the activity metrics do not
     for q in queries:
         metric = q["metric"][0]
         if metric in ins.TIMEFRAME_ALLOWED:
-            assert q["timeframe"][0] in ins.TIMEFRAME_ALLOWED[metric]
+            tf = q["timeframe"][0]
+            assert tf in ins.TIMEFRAME_ALLOWED[metric]
+            assert tf not in ins.TIMEFRAME_REMOVED_V20.get(metric, frozenset())
         else:
             assert "timeframe" not in q
 
@@ -1257,26 +1259,18 @@ def test_the_refresh_window_edge_matches_the_follower_read() -> None:
     assert run_source(source(date(2026, 11, 30)))[1] == []  # 11 days left
 
 
-def test_timeframe_table_matches_the_vendor_pages_read_2026_11_24() -> None:
-    # Fixture of the documented facts, not a vendor call (live check: #552).
-    assert ins.TIMEFRAME_ALLOWED == {
-        "follower_demographics": {
-            "last_14_days",
-            "last_30_days",
-            "last_90_days",
-            "prev_month",
-            "this_month",
-            "this_week",
-        }
+def test_timeframe_removals_are_scoped_per_metric() -> None:
+    # The v20.0 removals name two metrics; follower_demographics is not one of them
+    # (vendor changelog read 2026-11-24), so nothing is removed for it.
+    assert set(ins.TIMEFRAME_REMOVED_V20) == {
+        "reached_audience_demographics",
+        "engaged_audience_demographics",
     }
-    assert ins.TIMEFRAME_DEPRECATED_V20 == {
-        "last_14_days",
-        "last_30_days",
-        "last_90_days",
-        "prev_month",
-    }
-    # the chosen value is allowed for its metric and on no deprecation list
+    assert ins.DEMOGRAPHICS_METRIC not in ins.TIMEFRAME_REMOVED_V20
+
+
+def test_demographics_timeframe_is_pinned_to_last_30_days() -> None:
+    # No behavior change to the working request; this_month is not adopted until
+    # #552 shows it is accepted and returns the same window.
+    assert ins.TIMEFRAME == "last_30_days"
     assert ins.TIMEFRAME in ins.TIMEFRAME_ALLOWED[ins.DEMOGRAPHICS_METRIC]
-    assert ins.TIMEFRAME not in ins.TIMEFRAME_DEPRECATED_V20
-    # no collector metric other than demographics is allowed a timeframe
-    assert set(ins.ACTIVITY_METRICS).isdisjoint(ins.TIMEFRAME_ALLOWED)
