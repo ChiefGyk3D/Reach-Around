@@ -93,8 +93,11 @@ describe("the site is chosen by the matched host", () => {
     await post(e, "links.example.test", "home", 1, { cf });
     await post(e, "blog.example.test", "post-one", 2, { cf });
     const [a, b] = await rows();
-    expect([a?.region, a?.city]).toEqual(["CA", "Sentinelville"]);
+    // The raw row never holds the city; at level city it goes to the daily counter, and only for that site.
+    expect([a?.region, a?.city]).toEqual(["CA", ""]);
     expect([b?.region, b?.city]).toEqual(["", ""]);
+    const c = await DB.prepare("SELECT site, region, city, views, uniques FROM view_city_daily").all();
+    expect(c.results).toEqual([{ site: "links", region: "CA", city: "Sentinelville", views: 1, uniques: 1 }]);
   });
 
   it("an_internal_referrer_is_a_host_of_the_same_site_only", async () => {

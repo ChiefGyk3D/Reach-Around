@@ -373,7 +373,13 @@ def twitch_routes() -> dict[str, Any]:
 
     return {
         "https://id.twitch.tv/oauth2/token": reply(
-            {"access_token": ACCESS, "refresh_token": REFRESH, "expires_in": 14000}
+            {
+                "access_token": ACCESS,
+                "refresh_token": REFRESH,
+                "expires_in": 14000,
+                "scope": ["moderator:read:followers"],
+                "token_type": "bearer",
+            }
         ),
         USERS: reply({"data": [{"id": "4242", "login": "some_user"}]}),
         FOLLOWERS: followers,
@@ -1261,6 +1267,67 @@ def test_a_run_without_the_sink_drops_the_token_and_still_works(
     assert main(refresh_args(site, "--dry-run")) == 0
     assert "REACH_AROUND_DOPPLER_TOKEN" not in os.environ
     assert main(["--version"]) == 0
+
+
+# ---- bounded stdin token read; encoded size of non-ASCII batches ------------------
+
+
+class _CountingStream:
+    """A stream that records the sizes a caller asked readline for."""
+
+    def __init__(self, text: str) -> None:
+        self._inner = io.StringIO(text)
+        self.asked: list[int] = []
+
+    def readline(self, size: int = -1) -> str:
+        self.asked.append(size)
+        return self._inner.readline(size)
+
+    def tell(self) -> int:
+        return self._inner.tell()
+
+
+def _stdin_args() -> Any:
+    import argparse
+
+    return argparse.Namespace(
+        doppler_project=PROJECT, doppler_config=CONFIG, doppler_token_stdin=True
+    )
+
+
+def test_stdin_token_read_is_bounded() -> None:
+    stream = _CountingStream("T" * 200_000)
+    fake_stdin: Any = stream
+    exc = capture_exc(partial(counts_cmd.doppler_spec, _stdin_args(), {}, fake_stdin))
+    assert isinstance(exc, ValueError)
+    assert "too long" in str(exc)
+    assert stream.asked and all(0 < n <= 4096 for n in stream.asked)
+    assert stream.tell() <= 4096  # the rest of the stream was never read
+    no_leak(render_with_locals(exc))
+
+
+def test_stdin_token_at_the_limit_is_accepted() -> None:
+    token = "T" * counts_cmd.MAX_STDIN_TOKEN
+    spec = counts_cmd.doppler_spec(_stdin_args(), {}, io.StringIO(token + "\n"))
+    assert spec.token.get() == token
+
+
+def test_stdin_token_one_over_the_limit_is_refused() -> None:
+    token = "T" * (counts_cmd.MAX_STDIN_TOKEN + 1)
+    exc = capture_exc(
+        partial(counts_cmd.doppler_spec, _stdin_args(), {}, io.StringIO(token + "\n"))
+    )
+    assert isinstance(exc, ValueError)
+
+
+@pytest.mark.parametrize("char", ["é", "€", "😀"])
+def test_largest_non_ascii_batch_is_stored_and_verified(
+    doppler: FakeDoppler, char: str
+) -> None:
+    values = {f"KEY_{i}": char * secret_sink.MAX_VALUE for i in range(8)}
+    make_sink(doppler).put(values)  # raises SinkError("store_failed") if capped early
+    for name, value in values.items():
+        assert doppler.store[(PROJECT, CONFIG, name)] == value
 
 
 def test_a_help_exit_also_scrubs_the_token(monkeypatch: pytest.MonkeyPatch) -> None:

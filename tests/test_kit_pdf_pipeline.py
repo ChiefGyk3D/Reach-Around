@@ -285,7 +285,7 @@ def test_the_pipeline_makes_no_socket_call(
 
 
 def test_policy_names_every_field_for_the_pdf() -> None:
-    fields = set(KitConfig.model_fields) | {"unified_total"}
+    fields = set(KitConfig.model_fields) | {"unified_total", "measures"}
     in_pdf = {n for n, v in DISPLAY_POLICY.items() if v in ("public", "gated")}
     private = {n for n, v in DISPLAY_POLICY.items() if v == "private"}
     assert fields == set(DISPLAY_POLICY)
@@ -469,7 +469,9 @@ CONFIG_YAML = (
     "version: 1\ncreator: {name: Example Creator}\n"
     "tabs:\n- id: start\n  title: Start\n  blocks:\n"
     "  - {id: one, title: One, url: 'https://example.com/1'}\n"
-    "features: {kit_gate: true}\nkit:\n"
+    "features: {kit_gate: true}\n"
+    "privacy: {controller_name: Example Creator, contact: example.com/contact}\n"
+    "kit:\n"
     "  title: Example Creator media kit\n  about: Fake.\n"
     "  rates:\n  - {item: Sponsored video fake, price_text: Ask me}\n"
 )

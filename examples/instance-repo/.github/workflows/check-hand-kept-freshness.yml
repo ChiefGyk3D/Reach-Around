@@ -1,0 +1,80 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Once a week (and by hand): check that the numbers you keep by hand in
+# hand-kept.json are not out of date, and keep exactly one issue open while any
+# of them is. Optional; delete this file if you keep nothing by hand. Setup and
+# what it reads are in README.md, "Hand-kept numbers".
+#
+# What it does: runs scripts/check-freshness.py (standard library only) on the
+# committed hand-kept.json. For each platform and key the newest entry is judged
+# against a 30 day limit. The issue lists platform names, keys and ages, never a
+# value. When everything is fresh again the next run closes the issue.
+#
+# What it cannot do: no secret, no network call except GitHub's own API through
+# the run's token, no Worker route, no code from a pull request. It runs only on
+# main. The token can write issues and nothing else.
+name: Check hand-kept freshness
+
+on:
+  schedule:
+    # Mondays, 07:41 UTC (off the top of the hour, when runs start late).
+    - cron: "41 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hand-kept-freshness
+  cancel-in-progress: false
+
+jobs:
+  freshness:
+    name: Check hand-kept freshness
+    # A manual run can pick another branch; refuse it.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write # to open, update and close the one reminder issue
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the hand-kept numbers
+        id: check
+        run: python3 -I scripts/check-freshness.py --file hand-kept.json --body "$RUNNER_TEMP/stale.md"
+
+      # The issue is found by its exact title and by who opened it (this
+      # workflow's bot), so a person's issue with the same words is never edited.
+      - name: Open or update the reminder issue
+        if: steps.check.outputs.stale == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          title="Hand-kept numbers are out of date"
+          number="$(gh issue list --state open --limit 100 --json number,title,author \
+            | jq -r --arg t "$title" '[.[] | select(.title == $t and (.author.login | IN("app/github-actions", "github-actions")))] | first | .number // empty')"
+          if [ -n "$number" ]; then
+            gh issue edit "$number" --body-file "$RUNNER_TEMP/stale.md"
+          else
+            gh issue create --title "$title" --body-file "$RUNNER_TEMP/stale.md"
+          fi
+
+      - name: Close the reminder issue when everything is fresh
+        if: steps.check.outputs.stale == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          title="Hand-kept numbers are out of date"
+          gh issue list --state open --limit 100 --json number,title,author \
+            | jq -r --arg t "$title" '.[] | select(.title == $t and (.author.login | IN("app/github-actions", "github-actions"))) | .number' \
+            | while read -r number; do
+              gh issue close "$number" --comment "Every hand-kept number is within its limit again."
+            done

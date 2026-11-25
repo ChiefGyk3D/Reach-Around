@@ -710,3 +710,71 @@ def test_fetch_error_text_is_sanitized(source: Any, kind: str, expected: str) ->
     assert type(err) in (FetchError, SourceError)
     assert getattr(err, "kind", None) == expected
     assert err.__cause__ is None and err.__context__ is None
+
+
+# ---- credential handling: no credential in any traceback frame ---------------------
+
+
+def _frame_texts(exc: BaseException) -> list[str]:
+    """Every local of every frame in the traceback chain, as text. The Context
+    object is the caller's own environment holder, so it is skipped."""
+    seen: list[str] = []
+    pending: list[BaseException | None] = [exc]
+    while pending:
+        current = pending.pop()
+        if current is None:
+            continue
+        pending.extend([current.__cause__, current.__context__])
+        tb = current.__traceback__
+        while tb is not None:
+            for name, value in tb.tb_frame.f_locals.items():
+                if isinstance(value, Context):
+                    continue
+                seen.append(f"{name}={value!r}")
+            tb = tb.tb_next
+    return seen
+
+
+def _assert_frames_clean(caught: BaseException, secrets: list[str]) -> None:
+    texts = _frame_texts(caught)
+    for secret in secrets:
+        assert not any(secret in text for text in texts)
+
+
+def test_youtube_failure_leaves_no_credential_in_frame_locals() -> None:
+    def fail(url: str, **kwargs: Any) -> dict[str, object]:
+        raise FetchError("http_500")
+
+    context = Context(fetch=fail, env={"YOUTUBE_API_KEY": KEY})
+    with pytest.raises(FetchError) as caught:
+        PROVIDERS["youtube"](YT, context)
+    _assert_frames_clean(caught.value, [KEY])
+
+
+def test_youtube_unexpected_failure_leaves_no_credential_in_frame_locals() -> None:
+    def boom(url: str, **kwargs: Any) -> dict[str, object]:
+        raise RuntimeError("x")
+
+    context = Context(fetch=boom, env={"YOUTUBE_API_KEY": KEY})
+    with pytest.raises(SourceError) as caught:
+        PROVIDERS["youtube"](YT, context)
+    _assert_frames_clean(caught.value, [KEY])
+
+
+@pytest.mark.parametrize("failing", [AUTH_URL, USERS_URL, FOLLOWERS_URL])
+def test_twitch_failure_leaves_no_credential_in_frame_locals(failing: str) -> None:
+    def fetch(url: str, **kwargs: Any) -> dict[str, object]:
+        if url.split("?")[0] == failing.split("?")[0]:
+            raise FetchError("http_500")
+        if url == AUTH_URL:
+            return {"access_token": "SENTINEL-APP-TOKEN"}
+        if url.startswith("https://api.twitch.tv/helix/users"):
+            return {"data": [{"id": "4242"}]}
+        return {"total": 1}
+
+    context = Context(fetch=fetch, env=TW_ENV)
+    with pytest.raises(FetchError) as caught:
+        PROVIDERS["twitch"](TW, context)
+    _assert_frames_clean(
+        caught.value, ["SENTINEL-CLIENT-ID", "SENTINEL-APP-TOKEN", *TW_ENV.values()]
+    )
