@@ -81,7 +81,19 @@ def test_second_counts_metric_on_one_platform_refused() -> None:
 def test_metric_labels_compare_normalized(label: str) -> None:
     with pytest.raises(ValidationError, match="more than once") as exc:
         KitConfig.model_validate(kit_doc([manual(), manual(label=label)]))
-    assert label.strip() not in str(exc.value) or label.strip() == "Followers"
+    text = problem_text(exc.value)
+    assert "more than once" in text
+    assert "followers" not in text.casefold()
+
+
+def test_duplicate_label_canary_is_absent_from_the_real_output() -> None:
+    canary = "ZQCANARYLABEL"
+    pair = [manual(label=canary), manual(label=canary.lower())]
+    with pytest.raises(ValidationError) as exc:
+        KitConfig.model_validate(kit_doc(pair))
+    text = problem_text(exc.value)
+    assert "more than once" in text
+    assert canary.casefold() not in text.casefold()
 
 
 def test_distinct_labels_still_allowed() -> None:
@@ -238,9 +250,9 @@ def test_error_formatting_stops_at_the_cap(
     calls: list[int] = []
     real = models._dotted
 
-    def counting(loc: tuple[int | str, ...]) -> str:
+    def counting(loc: tuple[int | str, ...], **kw: Any) -> str:
         calls.append(1)
-        return real(loc)
+        return real(loc, **kw)
 
     monkeypatch.setattr(models, "_dotted", counting)
     lines = ["version: 1", "creator:", "  name: E", "tabs:"]
@@ -363,11 +375,20 @@ def test_cycle_is_refused_not_looped() -> None:
         check_config_budget(_CYCLE)
 
 
-def test_dates_and_models_are_leaf_values() -> None:
+def test_dates_are_leaf_values_and_models_are_refused() -> None:
     from datetime import date
 
     check_config_budget({"a": date(2027, 1, 1), "b": None, "c": 1.5, "d": True})
-    check_config_budget([Link(id="a", title="t", url="https://example.com/")])
+    with pytest.raises(ValueError, match="type that is not allowed"):
+        check_config_budget([Link(id="a", title="t", url="https://example.com/")])
+
+
+def test_model_construct_cannot_hide_a_huge_list_behind_one_node() -> None:
+    from reach_around.config.models import Creator
+
+    creator = Creator.model_construct(name="E", socials=[object()] * 1_000_000)
+    with pytest.raises(ValidationError, match="type that is not allowed"):
+        SiteConfig.model_validate(site_doc(creator=creator))
 
 
 # ---- the error list is only built when it is short --------------------------
@@ -435,18 +456,53 @@ def _hostile_docs() -> dict[str, dict[str, Any]]:
     }
 
 
-@pytest.mark.parametrize("name", sorted(_hostile_docs()))
+_GEN_COUNT = 60
+
+
+def _generated_family() -> dict[str, dict[str, Any]]:
+    """Seeded hostile docs over every block tag and many kinds of bad value."""
+    import random
+
+    from reach_around.config.models import _BLOCK_TAGS
+
+    rng = random.Random(764)  # noqa: S311 (seeded test data, not security)
+    bad_values: list[Any] = [1, None, [], {}, [{}], "", "x" * 5000, {"a": [1, 2]}]
+    fields = [
+        "id", "title", "url", "markdown", "src", "coins", "address", "items",
+        "players", "links", "platform", "kind", "bogus",
+    ]  # fmt: skip
+    docs: dict[str, dict[str, Any]] = {}
+    for n in range(_GEN_COUNT):
+        blocks = []
+        for _ in range(MAX_BLOCKS_PER_TAB):
+            block = {f: rng.choice(bad_values) for f in rng.sample(fields, 5)}
+            if rng.random() < 0.8:
+                block["kind"] = rng.choice(sorted(_BLOCK_TAGS | {"nope"}))
+            blocks.append(block)
+        docs[f"gen-{n}"] = site_doc(tabs=[{"id": "T_1", "blocks": blocks}])
+    return docs
+
+
+def _all_hostile() -> dict[str, dict[str, Any]]:
+    return {**_hostile_docs(), **_generated_family()}
+
+
+@pytest.mark.parametrize("name", sorted(_all_hostile()))
 def test_worst_case_error_count_is_bounded_by_the_node_budget(name: str) -> None:
-    # pydantic builds every error before anything can slice the list, so the
-    # work is bounded by (node budget) x (errors per node). Measure the
-    # multiplier on the worst shapes we can build, and refuse to let it grow.
-    doc = _hostile_docs()[name]
+    # Measured, not enforced. pydantic builds every error before anything can
+    # slice the list, so the work is (node budget, enforced) x (errors per node,
+    # a property of the schema). This asserts a hard ceiling on the hand-built
+    # worst shapes plus a seeded generated family over every block tag, so a
+    # schema change that raises the factor fails here. Production enforces the
+    # node budget and the 1,000-entry materialization cap in problem_text only.
+    doc = _all_hostile()[name]
     nodes = _walk_count(doc)
     assert nodes <= MAX_CONFIG_NODES
     with pytest.raises(ValidationError) as exc:
         SiteConfig.model_validate(doc)
     assert 0 < exc.value.error_count() <= nodes * _MAX_ERRORS_PER_NODE
     assert exc.value.error_count() <= MAX_CONFIG_NODES * _MAX_ERRORS_PER_NODE
+    assert len(problem_text(exc.value)) < 8000
 
 
 def test_hostile_load_reports_a_count_not_a_list(tmp_path: Path) -> None:
@@ -484,3 +540,59 @@ def test_metric_platform_is_a_closed_set() -> None:
         PlatformMetric.model_validate(manual(platform="CANARY-PLATFORM"))
     msgs = [e["msg"] for e in exc.value.errors(include_input=False)]
     assert msgs and all("CANARY" not in m for m in msgs)
+
+
+# ---- error locations never echo the file's own keys --------------------------
+
+_HOSTILE_KEYS = [
+    "SECRET_API_KEY_abc123",
+    "k" * 100_000,
+    "bad\x00key\x07\r\nINJECT",
+    "\x1b[31mred\x1b[0m",
+    "line1\nline2",
+    "café‮",
+]
+
+
+def _printable_ascii(text: str) -> bool:
+    return all(c.isascii() and c.isprintable() for c in text)
+
+
+@pytest.mark.parametrize("key", _HOSTILE_KEYS)
+def test_extra_key_at_the_root_is_not_echoed(key: str) -> None:
+    with pytest.raises(ValidationError) as exc:
+        SiteConfig.model_validate(site_doc(**{key: 1}))
+    text = problem_text(exc.value)
+    assert "<unknown field>" in text
+    assert key[:8] not in text
+    assert _printable_ascii(text), repr(text)
+    assert len(text) < 200
+
+
+@pytest.mark.parametrize("key", _HOSTILE_KEYS)
+def test_extra_key_nested_is_not_echoed(key: str) -> None:
+    doc = site_doc(creator={"name": "E", key: 1})
+    doc["tabs"][0]["blocks"] = [{**link(0), key: 1}]
+    with pytest.raises(ValidationError) as exc:
+        SiteConfig.model_validate(doc)
+    text = problem_text(exc.value)
+    assert text.count("<unknown field>") == 2
+    assert key[:8] not in text
+    assert _printable_ascii(text), repr(text)
+
+
+@pytest.mark.parametrize("key", _HOSTILE_KEYS)
+def test_any_path_segment_is_escaped_and_cut(key: str) -> None:
+    from reach_around.config.models import MAX_LOC_SEGMENT_CHARS, _dotted
+
+    out = _dotted((key, 3, "name"))
+    assert _printable_ascii(out), repr(out)
+    assert len(out) <= MAX_LOC_SEGMENT_CHARS + len("...") + len("[3].name")
+
+
+def test_long_paths_show_a_few_segments_and_a_count() -> None:
+    from reach_around.config.models import MAX_LOC_SEGMENTS, _dotted
+
+    out = _dotted(tuple(f"s{i}" for i in range(30)))
+    assert out.count(".") == MAX_LOC_SEGMENTS - 1 + out.count("...")
+    assert f"+{30 - MAX_LOC_SEGMENTS} more path segments" in out

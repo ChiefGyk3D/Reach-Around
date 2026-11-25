@@ -104,8 +104,9 @@ A parsed config is then checked before any of it is validated, and refused when 
 - holds more than 20,000 values (every scalar, list, mapping and mapping key counts
   as one, and a value reached twice, such as a YAML alias, counts each time),
 - is nested more than 64 levels deep,
-- holds anything but mappings with text keys, lists and plain values (a tuple or
-  a set is refused, so a container cannot hide its size from the count).
+- holds anything but mappings with text keys, lists and plain values (a tuple, a
+  set or a pydantic model instance is refused, so a container cannot hide its size
+  from the count).
 
 The per-list caps still apply on top: 50 tabs, 200 blocks per tab, 200 links per
 section, 50 socials.
@@ -113,11 +114,16 @@ section, 50 socials.
 **Error output.** At most 20 problems print, then a count of the rest. Pydantic
 builds every error before it can be sliced, so the list is only built when the
 config has at most 1,000 problems; a config with more prints one sentence with the
-count and nothing else. This bounds the memory the error list can use. The work of
-validating and counting the errors is bounded by the 20,000-value budget times the
-most errors one value can raise; a test measures that multiplier on the worst
-shapes we could build and fails if it grows past 8 per value. No message repeats a
-value from the file.
+count and nothing else. This bounds the memory the error list can use, and that
+cap is enforced. The work of validating and counting the errors is bounded by the
+20,000-value budget (enforced) times the most errors one value can raise. That
+second factor is a property of the schema and is measured, not enforced: a test
+checks it stays at or below 8 per value on the worst shapes we built and on a
+seeded generated family over every block kind, so a schema change that raises it
+fails the test, but nothing in production caps it. No message repeats a value from
+the file, and an error path never prints a key you wrote: an unknown key shows as
+`<unknown field>`, other path segments are escaped to ASCII and cut to 40
+characters, and a path shows at most 8 segments plus a count of the rest.
 
 ## What the build writes
 

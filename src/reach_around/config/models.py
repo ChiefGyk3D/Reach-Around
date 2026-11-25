@@ -88,7 +88,11 @@ MAX_CONFIG_DEPTH = 64
 # short. Counting the errors is cheap and builds nothing; a longer list is
 # reported as a count only.
 MAX_MATERIALIZED_PROBLEMS = 1_000
-_LEAVES = (str, int, float, bool, date, BaseModel)
+_LEAVES = (str, int, float, bool, date)
+# Error locations: a path segment can be a key the file's author typed, so it is
+# escaped and cut, and a long path shows only its first segments.
+MAX_LOC_SEGMENT_CHARS = 40
+MAX_LOC_SEGMENTS = 8
 
 Title = Annotated[str, StringConstraints(min_length=1, max_length=200)]
 Subtitle = Annotated[str, StringConstraints(min_length=1, max_length=500)]
@@ -591,7 +595,10 @@ def check_config_budget(raw: object, limit: int = MAX_CONFIG_NODES) -> None:
     A document is built only from ``dict`` (with ``str`` keys), ``list`` and
     plain scalars. Any other container (a tuple, a set, a generator, a mapping
     subclass) is refused, because pydantic would accept it as a list or mapping
-    and validate every element while this count saw one node. Every value, every
+    and validate every element while this count saw one node. A pydantic model
+    instance is refused too: parsed YAML or JSON never holds one, and a model
+    built with ``model_construct`` is not revalidated, so it would hide any
+    amount of data behind one node. Every value, every
     container and every mapping key counts as one node; a value reachable
     twice (a YAML alias, a shared list) is counted each time it is reached, so
     an alias bomb is its expanded size. The walk is iterative (no recursion),
@@ -1027,13 +1034,40 @@ def error_path(loc: tuple[int | str, ...]) -> tuple[int | str, ...]:
     return tuple(out)
 
 
-def _dotted(loc: tuple[int | str, ...]) -> str:
+def _safe_segment(part: str) -> str:
+    """One key of an error path: printable ASCII only, cut short, never raw."""
+    text = part[: MAX_LOC_SEGMENT_CHARS + 1]
+    out = text.encode("ascii", "backslashreplace").decode("ascii")
+    out = "".join(c if c.isprintable() else f"\\x{ord(c):02x}" for c in out)
+    if len(part) > MAX_LOC_SEGMENT_CHARS or len(out) > MAX_LOC_SEGMENT_CHARS:
+        out = out[:MAX_LOC_SEGMENT_CHARS] + "..."
+    return out
+
+
+def _dotted(loc: tuple[int | str, ...], *, unknown_last: bool = False) -> str:
+    """A safe, short rendering of an error location.
+
+    An ``extra_forbidden`` error carries the file's own unknown key as the last
+    segment; ``unknown_last`` prints a fixed marker instead of it. Every other
+    text segment is escaped to ASCII and cut to ``MAX_LOC_SEGMENT_CHARS``, and
+    only the first ``MAX_LOC_SEGMENTS`` segments are shown.
+    """
+    path = error_path(loc)
+    shown = path[:MAX_LOC_SEGMENTS]
     out = ""
-    for part in error_path(loc):
+    for i, part in enumerate(shown):
         if isinstance(part, int):
             out += f"[{part}]"
-        else:
-            out += f".{part}" if out else part
+            continue
+        text = (
+            "<unknown field>"
+            if unknown_last and i == len(path) - 1
+            else _safe_segment(part)
+        )
+        out += f".{text}" if out else text
+    hidden = len(path) - len(shown)
+    if hidden > 0:
+        out += f" (+{hidden} more path segments)"
     return out
 
 
@@ -1057,7 +1091,7 @@ def problem_text(exc: ValidationError) -> str:
         exc.errors(include_url=False, include_input=False, include_context=False),
         MAX_REPORTED_PROBLEMS,
     ):
-        where = _dotted(err["loc"])
+        where = _dotted(err["loc"], unknown_last=err.get("type") == "extra_forbidden")
         msg = err["msg"].removeprefix("Value error, ")
         problems.append(f"{where}: {msg}" if where else msg)
     extra = total - len(problems)
