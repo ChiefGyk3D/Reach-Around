@@ -112,8 +112,8 @@ The runbook for each condition is the "By alert or symptom" table in
 
 Kit event alerts (`kit_unlocked`, `lead_captured`, `gate_failed_repeatedly`,
 `inquiry_received`) are notifications, not faults. By default the visitor address
-is in the alert (`visitor_email: full`); choose `masked` or `none` if your chat
-room is shared.
+is masked in the alert (`visitor_email: masked`); choose `full` to show the whole
+address, or `none` to leave it out.
 
 A known, bounded limit: a crash or failed write between delivery and the record
 can repeat one health alert once per hour until it clears or the daily alert

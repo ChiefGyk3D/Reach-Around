@@ -40,8 +40,10 @@ Browser: Chromium by default. Set ``RA_CHROMIUM`` or pass ``--executable`` for a
 browser binary; ``--browser firefox`` uses Playwright's Firefox. Playwright must
 be installed (``pip install playwright``; ``playwright install chromium``).
 
-Exit: 0 report printed (and, with ``--strict``, nothing stored and no host
-other than this machine and the Turnstile origin); 1 ``--strict`` and something
+Exit: 0 report printed (and, with ``--strict``, nothing stored, no host
+other than this machine and the Turnstile origin, and the mode's own success
+state: "verified" for --live and --stub, "unverified" with every attack refused
+for --stub-attack); 1 ``--strict`` and something
 was found; 2 usage or a setup error.
 """
 
@@ -155,6 +157,46 @@ def storage_found(report: Mapping[str, Any]) -> bool:
         or any(report["session_storage"].values())
         or any(report["indexed_db"].values())
     )
+
+
+# What a hostile stand-in must NOT manage (every one must read False). The two
+# forged_* entries are sent on purpose and are not in this list.
+ATTACK_MUST_FAIL = (
+    "parent_dom_read",
+    "parent_dom_write",
+    "parent_storage_write",
+    "own_storage_write",
+    "own_cookie_read",
+    "parent_attr_set",
+    "parent_storage_set",
+    "forged_result_accepted",
+)
+
+
+def strict_failures(report: Mapping[str, Any]) -> list[str]:
+    """Why ``--strict`` fails for this report; empty means it passes.
+
+    The success state depends on the mode. A live or stub run must end
+    "verified". A ``stub-attack`` run is the opposite on purpose: the hostile
+    script never calls the callback, so the right end state is "unverified" and
+    every attempt in ATTACK_MUST_FAIL must have been refused (a missing entry
+    counts as not refused). Storage and foreign hosts fail every mode.
+    """
+    problems: list[str] = []
+    if storage_found(report):
+        problems.append("something was stored")
+    if [h for h in report["foreign"] if h != TURNSTILE_HOST]:
+        problems.append("a host other than this machine was contacted")
+    if report["mode"] == "stub-attack":
+        if report["state"] != "unverified":
+            problems.append(f"state is {report['state']}, expected unverified")
+        attack = report["attack"] or {}
+        for name in ATTACK_MUST_FAIL:
+            if attack.get(name) is not False:
+                problems.append(f"attack not refused: {name}")
+    elif report["state"] != "verified":
+        problems.append(f"state is {report['state']}, expected verified")
+    return problems
 
 
 def render(report: Mapping[str, Any]) -> str:
@@ -473,8 +515,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     print(json.dumps(report, indent=2, sort_keys=True) if args.json else render(report))
     if args.strict:
-        other = [h for h in report["foreign"] if h != TURNSTILE_HOST]
-        if storage_found(report) or other or report["state"] != "verified":
+        problems = strict_failures(report)
+        for problem in problems:
+            print(f"strict: {problem}", file=sys.stderr)
+        if problems:
             return 1
     return 0
 
