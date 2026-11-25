@@ -680,5 +680,5 @@ def test_the_registry_names_real_functions_and_covers_compile_measures() -> None
         assert callable(getattr(module, b.function))
         for field in b.fields:
             assert source_level(field) in {"public", "gated", "private"}
-    covered = {m.block for m in compile_measures(_sample_kit(), None)}
+    covered = {m.block for m in compile_measures(_full_kit(), None)}
     assert {"headline", "tile", "live", "derived", "fediverse", "channels"} <= covered
