@@ -235,7 +235,24 @@ Intent = Literal[
     "gear",
     "more",
     "hire",
+    "free",
+    "paid",
+    "crypto",
+    "contact",
 ]
+# The screens of ``page.density: compact`` besides the home screen (#873).
+# Each is its own page at ``/<screen>/``, reached from a tab bar.
+TabScreen = Literal["support", "contact"]
+SCREEN_PATHS: tuple[TabScreen, ...] = ("support", "contact")
+# The intents each screen takes, in the order they must appear on it (#873).
+# ``None`` is the home screen: every other intent lives there, and the four
+# screen-only intents (free, paid, crypto, contact) never do. ``hire`` is the
+# one intent the home screen and the Contact screen both take.
+SCREEN_INTENTS: dict[str | None, tuple[str, ...]] = {
+    "support": ("free", "paid", "crypto"),
+    "contact": ("contact", "hire"),
+}
+SCREEN_ONLY_INTENTS = frozenset({"free", "paid", "crypto", "contact"})
 # ``compact`` draws every group as a grid of icon-over-label tiles (#873).
 PageDensity = Literal["comfortable", "compact"]
 
@@ -254,6 +271,20 @@ def _plain_kicker(value: str) -> str:
         )
     return value
 
+
+def _plain_note(value: str) -> str:
+    if value != value.strip() or not value.isprintable():
+        raise ValueError(
+            "note must be plain text with no control characters or edge spaces"
+        )
+    return value
+
+
+Note = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=160),
+    AfterValidator(_plain_note),
+]
 
 Kicker = Annotated[
     str,
@@ -417,6 +448,13 @@ class Tab(_Model):
     # Only read by ``page.density: compact``: tiles per row, 1 to 6. Unset, the
     # engine picks from the link count (a short last row is stretched).
     columns: Annotated[int, Field(strict=True, ge=1, le=6)] | None = None
+    # Only read by ``page.density: compact``: draw the group on its own screen
+    # (``/support/`` or ``/contact/``, reached from a tab bar) instead of the
+    # home screen (#873).
+    screen: TabScreen | None = None
+    # Only read by ``page.density: compact``: one plain line under the heading
+    # (an affiliate line, or the sentence of a hire block). Escaped, never markup.
+    note: Note | None = None
     blocks: list[Block] = Field(max_length=MAX_BLOCKS_PER_TAB)
 
 
@@ -773,10 +811,18 @@ class SiteConfig(_Model):
                 raise ValueError("page.live_badges needs page.layout: stack")
             if page.url is not None:
                 raise ValueError("page.url needs page.layout: stack")
-            for tab in self.tabs:
+            for position, tab in enumerate(self.tabs, 1):
                 if tab.columns is not None:
                     raise ValueError(
                         f"tab {tab.id!r}: columns needs page.density: compact"
+                    )
+                if tab.screen is not None:
+                    raise ValueError(
+                        f"tab #{position}: screen needs page.density: compact"
+                    )
+                if tab.note is not None:
+                    raise ValueError(
+                        f"tab #{position}: note needs page.density: compact"
                     )
                 if tab.spoke:
                     raise ValueError(f"tab {tab.id!r}: spoke needs page.layout: stack")
@@ -804,13 +850,37 @@ class SiteConfig(_Model):
         links: dict[str, Link] = {}
         watch_links: dict[str, Link] = {}
         spoke_ids: set[str] = set()
-        intents: set[str] = set()
-        for tab in self.tabs:
+        intents: set[tuple[str | None, str]] = set()
+        screen_order: dict[str | None, int] = {}
+        screens = {tab.screen for tab in self.tabs if tab.screen is not None}
+        if screens and self.support is not None and "support" in screens:
+            raise ValueError(
+                "a support screen takes the path /support/, which the support "
+                "page uses; remove support: or the screen"
+            )
+        route_root = self.analytics.route.strip("/").split("/")[0]
+        if route_root in screens:
+            raise ValueError(
+                f"a {route_root} screen cannot take the path of analytics.route; "
+                "rename the route"
+            )
+        for position, tab in enumerate(self.tabs, 1):
             if tab.intent is None:
                 raise ValueError(f"tab {tab.id!r} needs intent for page.layout: stack")
-            if tab.intent in intents:
+            if (tab.screen, tab.intent) in intents:
                 raise ValueError(f"tab intent {tab.intent!r} may appear only once")
-            intents.add(tab.intent)
+            intents.add((tab.screen, tab.intent))
+            if compact:
+                _check_screen_intent(tab, position, screen_order)
+            if not compact and tab.screen is not None:
+                raise ValueError(f"tab #{position}: screen needs page.density: compact")
+            if not compact and tab.note is not None:
+                raise ValueError(f"tab #{position}: note needs page.density: compact")
+            if compact and tab.intent == "watch" and (tab.screen or tab.note):
+                raise ValueError(
+                    f"tab #{position}: the Watch group stays on the home screen "
+                    "and takes no note"
+                )
             if tab.columns is not None and not compact:
                 raise ValueError(f"tab {tab.id!r}: columns needs page.density: compact")
             if compact and tab.intent == "watch" and tab.columns is not None:
@@ -875,13 +945,32 @@ class SiteConfig(_Model):
                 raise ValueError(
                     f"tab {tab.id!r}: a spoke page needs at least one link"
                 )
-            if compact and not 2 <= len(group_links) <= 6:
+            if compact and tab.intent == "crypto":
+                if any(
+                    not is_tab_ref(link.url) or link.image is not None
+                    for link in group_links
+                ):
+                    raise ValueError(
+                        f"tab #{position}: a crypto group links inside this site "
+                        "only (tab: links, no image); payment instructions never "
+                        "sit behind an outbound link"
+                    )
+            if compact and tab.intent == "hire":
+                if len(group_links) != 1:
+                    raise ValueError(
+                        f"tab #{position}: a hire group takes exactly 1 link "
+                        "for page.density: compact"
+                    )
+                if tab.columns is not None:
+                    raise ValueError(f"tab #{position}: a hire group sets no columns")
+            elif compact and not 2 <= len(group_links) <= 6:
                 raise ValueError(
                     f"tab {tab.id!r} must contain 2 to 6 links "
                     "for page.density: compact"
                 )
             if (
                 tab.intent != "watch"
+                and not (compact and tab.intent == "hire")
                 and tab.style != "icons"
                 and not tab.spoke
                 and not 2 <= len(group_links) <= 6
@@ -1030,6 +1119,37 @@ class SiteConfig(_Model):
         if problems:
             raise ValueError("; ".join(problems))
         return self
+
+
+def _check_screen_intent(tab: Tab, position: int, last: dict[str | None, int]) -> None:
+    """Refuse an intent on the wrong screen, or out of its screen's order (#873).
+
+    ``position`` is the tab's 1-based place in the list. ``last`` holds the
+    index of the latest intent seen on each screen. The reasons are fixed text:
+    no value from the config is printed.
+    """
+    if tab.intent == "watch":
+        return  # the Watch group has its own refusal
+    allowed = SCREEN_INTENTS.get(tab.screen)
+    if allowed is None:
+        if tab.intent in SCREEN_ONLY_INTENTS:
+            raise ValueError(
+                f"tab #{position}: this intent belongs on a screen "
+                "(free, paid and crypto on support; contact on contact)"
+            )
+        return
+    if tab.intent not in allowed:
+        raise ValueError(
+            f"tab #{position}: this intent is not allowed on that screen "
+            "(support takes free, paid, crypto; contact takes contact, hire)"
+        )
+    index = allowed.index(tab.intent)
+    if index < last.get(tab.screen, -1):
+        raise ValueError(
+            f"tab #{position}: groups on a screen keep their order "
+            "(support: free, paid, crypto; contact: contact, hire)"
+        )
+    last[tab.screen] = index
 
 
 def _internal_urls(config: SiteConfig) -> list[tuple[str, str]]:
