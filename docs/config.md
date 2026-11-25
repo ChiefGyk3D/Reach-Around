@@ -343,6 +343,14 @@ example is [`examples/instance/site-link-grid.yaml`](../examples/instance/site-l
   three columns draw 3 + 2). `columns` needs `density: compact`.
 - Not available with `compact`: `page.featured`, `collapsed`, `spoke` and
   `style` (they hide or restyle links), so the validator refuses them.
+- A link's own `show_from` and `show_until` still apply: today's group shows
+  every link that is inside its window, and a group with none left is dropped,
+  heading and all (the Watch group keeps the two `page.watch` links, which
+  cannot be scheduled).
+- A label is clipped to two lines with an ellipsis inside its tile, so a long
+  or unbroken title never reaches the next tile. Where a row of four to six
+  tiles would be narrower than 44 px (a very narrow screen or a large zoom),
+  the group falls back to three across and the last short row wraps to the left.
 - The `gear`, `more` and `hire` intents exist for the groups the grid uses
   (a gear section, Website, GitHub, Email and RSS, a hire-me group); each may
   appear once like every intent. Name the gear group anything you like in its

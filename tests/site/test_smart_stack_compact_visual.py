@@ -234,3 +234,127 @@ def test_keyboard_focus_visits_every_tile_in_order(
     assert len(seen) == TILES
     assert seen[:3] == ["Twitch", "Kick", "YouTube Live"]
     page.context.close()
+
+
+# --- untrusted labels in a real browser (the review of #879, round 1) ---------
+
+LONG_SPACED = " ".join(["Supercalifragilistic expialidocious"] * 6)[:200]
+LABELS = [
+    LONG_SPACED,
+    "W" * 200,
+    "ا" * 40 + " " + "مرحبا بالعالم " * 11,
+    "a​" * 100,
+    "\U0001f600" * 60,
+    "Supercalifragilisticexpialidocious",
+    "‮evil‬ " + "x" * 150,
+    "Ok",
+]
+HOSTILE_SIZES = [(390, 844), (360, 640), (320, 568), (280, 500)]
+
+
+@pytest.fixture(scope="module")
+def hostile_url(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
+    from test_smart_stack_compact import raw
+
+    data = raw()
+    for tab in data["tabs"]:
+        if tab["intent"] == "videos":  # six across, the narrowest tiles
+            tab["blocks"] += [
+                {
+                    "id": f"videos-{n}",
+                    "title": "x",
+                    "url": f"https://example.invalid/{n}",
+                }
+                for n in (4, 5, 6)
+            ]
+            tab["columns"] = 6
+        if tab["intent"] == "follow":
+            tab["columns"] = 5
+    n = 0
+    for tab in data["tabs"]:
+        for block in tab["blocks"]:
+            block["title"] = LABELS[n % len(LABELS)]
+            n += 1
+    out = tmp_path_factory.mktemp("gridhostile") / "out"
+    build_site(SiteConfig.model_validate(data), out, today=TODAY)
+    handler = functools.partial(_Quiet, directory=str(out))
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+BOXES = """() => {
+  const r = e => { const b = e.getBoundingClientRect();  // page coordinates
+    return {l: b.left + scrollX, t: b.top + scrollY, r: b.right + scrollX,
+            b: b.bottom + scrollY, w: b.width, h: b.height}; };
+  return {
+    w: innerWidth, scrollW: document.documentElement.scrollWidth,
+    tiles: [...document.querySelectorAll('a.smart-tile')].map(a => {
+      const title = a.querySelector('.link-title');
+      const chip = a.querySelector('.link-chip');
+      const line = parseFloat(getComputedStyle(title).lineHeight);
+      a.scrollIntoView({block: 'center', inline: 'nearest'});
+      const b = a.getBoundingClientRect();
+      const cx = (b.left + b.right) / 2, cy = (b.top + b.bottom) / 2;
+      const probes = [[cx, b.top + 3], [cx, b.bottom - 3],
+                      [b.left + 3, cy], [b.right - 3, cy]].map(([x, y]) => {
+        const hit = document.elementFromPoint(x, y);
+        return hit === a || a.contains(hit);
+      });
+      return {tile: r(a), title: r(title), chip: chip ? r(chip) : null,
+              line, probes, text: title.textContent};
+    }),
+  };
+}"""
+
+
+def overlap(a: dict[str, float], b: dict[str, float]) -> bool:
+    return (
+        a["l"] < b["r"] - 0.5
+        and b["l"] < a["r"] - 0.5
+        and a["t"] < b["b"] - 0.5
+        and b["t"] < a["b"] - 0.5
+    )
+
+
+@pytest.mark.parametrize("size", HOSTILE_SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
+def test_hostile_labels_stay_inside_their_tiles(
+    browser: Browser, hostile_url: str, size: tuple[int, int]
+) -> None:
+    page, foreign = open_page(browser, hostile_url, size)
+    got = page.evaluate(BOXES)
+    tiles = got["tiles"]
+    assert len(tiles) == 29
+    assert got["scrollW"] <= got["w"], (got["scrollW"], got["w"])
+    for i, t in enumerate(tiles):
+        box, title = t["tile"], t["title"]
+        assert box["w"] >= 44 - 0.5 and box["h"] >= 44 - 0.5, (i, box)
+        # The label box is inside the tile and never over the icon.
+        assert title["l"] >= box["l"] - 0.5 and title["r"] <= box["r"] + 0.5, (i, t)
+        assert title["t"] >= box["t"] - 0.5 and title["b"] <= box["b"] + 0.5, (i, t)
+        assert title["h"] <= 2 * t["line"] + 1, (i, t)
+        if t["chip"]:
+            assert not overlap(title, t["chip"]), (i, t)
+        assert all(t["probes"]), ("covered by another tile", i, t["text"][:20])
+        for j in range(i + 1, len(tiles)):
+            assert not overlap(box, tiles[j]["tile"]), (i, j)
+    assert foreign == []
+    page.context.close()
+
+
+def test_the_hostile_labels_keep_their_full_text_for_assistive_tech(
+    browser: Browser, hostile_url: str
+) -> None:
+    page, _foreign = open_page(browser, hostile_url, (360, 640))
+    names = page.evaluate(
+        "[...document.querySelectorAll('a.smart-tile .link-title')]"
+        ".map(e => e.textContent)"
+    )
+    assert LABELS[0] in names and LABELS[1] in names  # clipped to look, not to read
+    page.context.close()

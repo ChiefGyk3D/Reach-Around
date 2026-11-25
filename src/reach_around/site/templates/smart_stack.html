@@ -22,6 +22,7 @@
 {# The compact grid (#873): every link is a tile, no group is collapsed or hidden. #}
 {% macro tile_grid(links, columns, watch_ids=()) -%}
 {% set count = links|length %}
+{% if count %}
 {% set cols = columns if columns else (count if count <= 5 else 3) %}
 {% set rest = count % cols %}
 {% set first_short = count - rest if rest else count %}
@@ -31,6 +32,7 @@
 {{ link_anchor(link, click_tracking, " smart-tile smart-span-" ~ (60 // across), link.icon if (page.live_badges and link.id in watch_ids) else "", true) }}
 {% endfor %}
 </div>
+{% endif %}
 {%- endmacro %}
 {% block content %}
 {% if compact %}

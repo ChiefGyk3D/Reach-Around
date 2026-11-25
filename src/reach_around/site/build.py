@@ -585,6 +585,10 @@ def _render_smart_stack_page(
         for tab, blocks in zip(config.tabs, shown, strict=True)
         if tab.intent != "watch"
     ]
+    if compact:
+        # A group whose links are all outside their show_from / show_until window
+        # today has nothing to show: drop it, heading and all (#873).
+        groups = [item for item in groups if item["links"]]
     watch_all = (
         [
             link
