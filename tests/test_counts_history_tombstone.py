@@ -243,11 +243,10 @@ def test_a_failed_write_leaves_the_original_and_no_temp_file(
     build(path)
     before = path.read_bytes()
 
-    def boom(*args: Any, **kwargs: Any) -> None:
+    def boom(*args: Any, **kwargs: Any) -> bool:
         raise OSError("disk full")
 
-    monkeypatch.setattr(hist, "_exchange", lambda *a: False)
-    monkeypatch.setattr(os, "rename", boom)
+    monkeypatch.setattr(hist, "_exchange", boom)
     with pytest.raises(HistoryError, match="cannot write"):
         redact(path)
     monkeypatch.undo()
