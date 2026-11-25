@@ -59,7 +59,10 @@ class Local:
                 pass
 
         self.srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
-        self.srv.daemon_threads = True
+        # Non-daemon handler threads, joined by server_close(): a handler must
+        # not outlive its test and print a traceback into the next one.
+        self.srv.daemon_threads = False
+        self.srv.block_on_close = True
         self.thread = threading.Thread(target=self.srv.serve_forever, daemon=True)
         self.thread.start()
 

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import ast
 import asyncio
+import contextlib
 import shutil
 import socket
 import ssl
@@ -345,6 +346,7 @@ class DripServer:
         self.port = self.listener.getsockname()[1]
         self._behavior = behavior
         self._conns: list[socket.socket] = []
+        self._workers: list[threading.Thread] = []
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._thread.start()
 
@@ -355,7 +357,9 @@ class DripServer:
             except OSError:
                 return
             self._conns.append(conn)
-            threading.Thread(target=self._run, args=(conn,), daemon=True).start()
+            worker = threading.Thread(target=self._run, args=(conn,), daemon=True)
+            self._workers.append(worker)
+            worker.start()
 
     def _run(self, conn: socket.socket) -> None:
         try:
@@ -367,9 +371,31 @@ class DripServer:
             pass
 
     def close(self) -> None:
+        """Stop accepting, wake every blocked worker, and join all threads.
+
+        close() alone does not wake a thread blocked in accept() or recv() on
+        Linux; shutdown() does. Joining keeps a worker from outliving its test.
+        """
+        with contextlib.suppress(OSError):
+            self.listener.shutdown(socket.SHUT_RDWR)
         self.listener.close()
-        for conn in self._conns:
+        self._thread.join(timeout=5)
+        for conn in list(self._conns):
+            with contextlib.suppress(OSError):
+                conn.shutdown(socket.SHUT_RDWR)
             conn.close()
+        for worker in list(self._workers):
+            worker.join(timeout=5)
+
+
+def hold(conn: socket.socket, seconds: float = 30) -> None:
+    """Block until the peer or the server's close() ends the connection."""
+    deadline = time.monotonic() + seconds
+    with contextlib.suppress(OSError):
+        while (left := deadline - time.monotonic()) > 0:
+            conn.settimeout(left)
+            if not conn.recv(4096):  # b"": the peer closed or close() shut us down
+                return
 
 
 def drip(conn: socket.socket, data: bytes, gap: float = 0.1) -> None:
@@ -390,17 +416,17 @@ def _slow_headers(conn: socket.socket) -> None:
 def _slow_body(conn: socket.socket) -> None:
     conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 5000\r\n\r\n")
     drip(conn, b"x" * 30)
-    time.sleep(30)
+    hold(conn)
 
 
 def _slow_close_delimited(conn: socket.socket) -> None:
     conn.sendall(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")
     conn.sendall(b'{"a": "')
-    time.sleep(30)  # the reader is blocked here when the deadline cuts it
+    hold(conn)  # the reader is blocked here when the deadline cuts it
 
 
 def _silent(conn: socket.socket) -> None:
-    time.sleep(30)
+    hold(conn)
 
 
 def _timed(
