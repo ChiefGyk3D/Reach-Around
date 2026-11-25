@@ -65,6 +65,7 @@ from reach_around.counts.history import (
     PRIVATE_PROVIDERS,
     REASONS,
     HistoryError,
+    HistoryNotWritten,
     OldCopyRemainsError,
     Record,
     RedactDurabilityError,
@@ -103,6 +104,7 @@ from reach_around.counts.pending import (
     pending_path,
     read_note,
     reconcile,
+    require_no_stranded,
     withdraw_pending,
 )
 from reach_around.counts.refresh import (
@@ -386,13 +388,19 @@ def _history_state(history: Path) -> tuple[int, ...] | None:
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
 
 
-def _withdraw(paths: Paths, history: Path, staged: Staged) -> None:
+def _withdraw(
+    paths: Paths, history: Path, staged: Staged, error: Exception | None = None
+) -> None:
     """Take this run's id back out of the note after a failure, but only when
     the history file is exactly as it was before (nothing of this run is in it).
     When it is not, or that cannot be told, the id stays: it may be the only
-    way to correct a value that did land."""
+    way to correct a value that did land. A write that was rolled back
+    (``HistoryNotWritten``) put nothing in history, whatever its mtime says."""
     try:
-        if _history_state(history) == staged.history_before:
+        if (
+            isinstance(error, HistoryNotWritten)
+            or _history_state(history) == staged.history_before
+        ):
             withdraw_pending(pending_path(paths.target), staged.nonce, staged.previous)
     except (OSError, HistoryError):
         pass  # the note stays; the next run compares its values
@@ -414,6 +422,7 @@ def _stage_history(
     be trusted; the note is then left as it is and nothing is written.
     """
     pending = pending_path(paths.target)
+    require_no_stranded(pending)
     note = read_note(pending)
     ids = live_ids(note, paths.target)  # [] when that run's numbers write landed
     before = _history_state(history)
@@ -656,7 +665,7 @@ def _cycle(
         try:
             kept = append_records(history, fetched, now=stamp, skip_days=True)
         except HistoryError as exc:
-            _withdraw(paths, history, staged)
+            _withdraw(paths, history, staged, exc)
             print(
                 f"error: history not written, nothing else was changed: {exc}",
                 file=sys.stderr,
@@ -1196,8 +1205,8 @@ def run_import(
                 )
                 try:
                     append_records(history, staged.records, now=stamp, skip_days=True)
-                except (OSError, HistoryError):
-                    _withdraw(paths, history, staged)
+                except (OSError, HistoryError) as failure:
+                    _withdraw(paths, history, staged, failure)
                     raise
             write_atomic(paths.target, dump_numbers(merged))
             if staged is not None:

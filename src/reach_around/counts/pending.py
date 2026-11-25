@@ -251,16 +251,55 @@ def mark_pending(
     return nonce
 
 
+_STRANDED = (
+    "a note set aside next to the numbers file (a '.take' file) was left behind "
+    "by an interrupted or conflicting run; it may list unfinished runs; inspect "
+    "it, merge or remove it, then run again"
+)
+
+
+def _take_names(path: Path) -> list[Path]:
+    prefix = f"{path.name}."
+    return [
+        entry
+        for entry in path.parent.iterdir()
+        if entry.name.startswith(prefix) and entry.name.endswith(".take")
+    ]
+
+
+def require_no_stranded(path: Path) -> None:
+    """Refuse to go on while a set-aside note is lying next to the pending note.
+
+    A note moved aside under a ``.take`` name is never read by anything else, so
+    its ids would be lost without a trace. Leaving one behind (a crash, or a
+    second note that appeared while it was set aside) therefore blocks every
+    later run until a person has looked at it. Raises ``PendingError``.
+    """
+    try:
+        found = _take_names(path)
+    except OSError:
+        raise PendingError(_UNUSABLE) from None
+    if found:
+        raise PendingError(_STRANDED)
+
+
+def _set_aside(path: Path) -> Path:
+    return path.with_name(f"{path.name}.{secrets.token_hex(8)}.take")
+
+
 def _take(path: Path, nonce: str) -> Path | None:
     """Take the note at ``path`` out of the way if it is the one named ``nonce``.
 
-    The name is renamed to a private one first (one atomic step that moves
-    whatever is there), and only then read. A note that is not ours (another
-    process put one in its place) is linked back and left alone; it is never
-    deleted. Returns the private path of our note, ``None`` when there is no
-    note, and raises ``PendingError`` for one that is not ours.
+    The name is renamed to a private ``.take`` name first (one atomic step that
+    moves whatever is there), and only then read. A note that is not ours
+    (another process put one in its place) is linked back and left alone; it is
+    never deleted. If it cannot be linked back (a newer note already took the
+    name) it stays under its ``.take`` name, which blocks every later run
+    (``require_no_stranded``) so the ids in it cannot be lost quietly. Returns
+    the private path of our note, ``None`` when there is no note, and raises
+    ``PendingError`` for one that is not ours.
     """
-    taken = path.with_name(f"{path.name}.{secrets.token_hex(8)}.take")
+    taken = _set_aside(path)
     try:
         os.rename(path, taken)
     except FileNotFoundError:
@@ -274,7 +313,7 @@ def _take(path: Path, nonce: str) -> Path | None:
     try:
         os.link(taken, path, follow_symlinks=False)  # never replaces a new note
     except FileExistsError:
-        raise PendingError(_UNUSABLE) from None  # both are kept; a person decides
+        raise PendingError(_STRANDED) from None  # kept as .take; blocks next run
     os.unlink(taken)
     raise PendingError(_UNUSABLE)
 
@@ -291,13 +330,15 @@ def withdraw_pending(path: Path, nonce: str, previous: Note) -> None:
 
     Puts back what the note held before this run listed itself (``previous``,
     with its own base and digest), or removes the note when it listed nothing
-    live. Acts only on the note that carries ``nonce``.
+    live. Acts only on the note that carries ``nonce``. Our own note is kept
+    until the previous one is installed; if another note took the name meanwhile
+    the previous one is kept under a ``.take`` name (blocking, never silent).
     """
     taken = _take(path, nonce)
     if taken is None:
         return
-    os.unlink(taken)
     if not previous.ids:
+        os.unlink(taken)
         return
     fresh = path.with_name(f"{path.name}.{secrets.token_hex(8)}.new")
     write_atomic(
@@ -308,8 +349,15 @@ def withdraw_pending(path: Path, nonce: str, previous: Note) -> None:
     )
     try:
         os.link(fresh, path, follow_symlinks=False)
-    finally:
-        os.unlink(fresh)
+    except FileExistsError:
+        os.rename(fresh, _set_aside(path))  # kept where the next run must look
+        os.unlink(taken)
+        raise PendingError(_STRANDED) from None
+    except BaseException:
+        os.unlink(fresh)  # our own note (taken) is still there to be found
+        raise
+    os.unlink(fresh)
+    os.unlink(taken)
 
 
 def reconcile(

@@ -788,3 +788,126 @@ def test_a_file_that_ends_early_or_grows_is_unusable(
     monkeypatch.setattr(os, "read", grows)
     with pytest.raises(PendingError):
         read_note(path)
+
+
+# ---- round 5: appended bytes, stranded notes, rolled-back writes ------------
+
+
+def test_same_size_corruption_of_the_appended_bytes_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "h.jsonl"
+    _big_history(path, 5)
+    size = path.stat().st_size
+    real = hist._write_all
+
+    def corrupt(fd: int, data: bytes) -> None:
+        real(fd, data)
+        other = os.open(path, os.O_WRONLY)  # not O_APPEND: pwrite lands in place
+        try:
+            os.pwrite(other, b"X", size + 3)  # inside the new bytes; same size
+        finally:
+            os.close(other)
+
+    monkeypatch.setattr(hist, "_write_all", corrupt)
+    new = rec(platform="new", as_of_utc="2026-11-09T09:00:00Z")
+    with pytest.raises(HistoryError, match="changed while it was written"):
+        append_records(path, [new], now=NOW)
+
+
+def _stranded(tmp_path: Path) -> tuple[Path, str]:
+    path = tmp_path / ".numbers.json.pending"
+    return path, mark_pending(path, [], "run-mine")
+
+
+def test_a_note_that_cannot_be_put_back_blocks_the_next_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, mine = _stranded(tmp_path)
+    foreign = "run-other\nnonce " + "a" * 32 + "\n"
+    path.write_text(foreign, encoding="ascii")
+    real = os.rename
+
+    def race(src: Any, dst: Any) -> None:
+        real(src, dst)
+        # a new note appears while the foreign one is set aside
+        path.write_text("run-new\nnonce " + "c" * 32 + "\n", encoding="ascii")
+
+    monkeypatch.setattr(os, "rename", race)
+    with pytest.raises(PendingError):
+        clear_pending(path, mine)
+    monkeypatch.undo()
+    kept = [p for p in tmp_path.iterdir() if p.name.endswith(".take")]
+    assert len(kept) == 1 and kept[0].read_text("ascii") == foreign
+    with pytest.raises(PendingError, match="set aside"):
+        pending_mod.require_no_stranded(path)
+
+
+def test_a_withdraw_that_loses_the_name_keeps_the_previous_ids_loudly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / ".numbers.json.pending"
+    previous = pending_mod.Note(["run-old"], None, None, "d" * 32)
+    mine = mark_pending(path, ["run-old"], "run-mine")
+    real = write_atomic
+
+    def write(target: Path, text: str, **kwargs: Any) -> None:
+        real(target, text, **kwargs)
+        if target.name.endswith(".new"):  # another note takes the name first
+            path.write_text("run-new\nnonce " + "c" * 32 + "\n", encoding="ascii")
+
+    monkeypatch.setattr(pending_mod, "write_atomic", write)
+    with pytest.raises(PendingError):
+        pending_mod.withdraw_pending(path, mine, previous)
+    kept = [p for p in tmp_path.iterdir() if p.name.endswith(".take")]
+    assert len(kept) == 1 and "run-old" in kept[0].read_text("ascii")
+    assert not [p for p in tmp_path.iterdir() if p.name.endswith(".new")]
+    with pytest.raises(PendingError):
+        pending_mod.require_no_stranded(path)
+
+
+def test_a_run_refuses_to_start_while_a_set_aside_note_exists(
+    setup: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    serve(monkeypatch, 100)
+    note = pending_path(setup / "numbers.json")
+    (note.parent / f"{note.name}.0123456789abcdef.take").write_text(
+        "run-lost\n", encoding="ascii"
+    )
+    history = setup / "history" / "social.jsonl"
+    before = history.read_bytes() if history.exists() else None
+    assert run(setup, DAY1) == counts_cmd.EXIT_WRITE
+    assert (history.read_bytes() if history.exists() else None) == before
+    assert not note.exists()
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_a_rolled_back_append_does_not_use_up_a_pending_slot(
+    setup: Path, monkeypatch: pytest.MonkeyPatch, existing: bool
+) -> None:
+    serve(monkeypatch, 100)
+    history = setup / "history" / "social.jsonl"
+    if existing:
+        append_records(history, [rec(run_id="run-0")], now=NOW)
+    else:
+        history.unlink(missing_ok=True)
+    note = pending_path(setup / "numbers.json")
+    real = os.fsync
+    state = {"fail": True}
+
+    def flaky(fd: int) -> None:
+        name = os.readlink(f"/proc/self/fd/{fd}")
+        if state["fail"] and name.endswith("social.jsonl"):
+            state["fail"] = False
+            raise OSError(5, "forced")
+        real(fd)
+
+    for _ in range(MAX_IDS + 3):
+        state["fail"] = True
+        monkeypatch.setattr(os, "fsync", flaky)
+        assert run(setup, DAY1) == counts_cmd.EXIT_WRITE
+        monkeypatch.setattr(os, "fsync", real)
+        assert not note.exists()  # rolled back: nothing of the attempt landed
+    if not existing:
+        assert not history.exists()  # the empty file this call made is gone
+    assert run(setup, DAY1) == 0  # never blocked by a full note

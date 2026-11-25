@@ -102,6 +102,10 @@ class HistoryError(Exception):
     """The history file or a record is not acceptable. Never quotes content."""
 
 
+class HistoryNotWritten(HistoryError):
+    """A write failed and was rolled back: none of the new records is in the file."""
+
+
 class RedactDurabilityError(HistoryError):
     """A redaction ended in a state that needs checking (exit 5), not a clean failure.
 
@@ -886,13 +890,23 @@ def _append_locked(
     max_bytes: int,
     skip_days: bool,
 ) -> int:
+    created = False
     try:
-        fd = os.open(
-            path.name,
-            os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW,
-            0o600,
-            dir_fd=dir_fd,
-        )
+        try:
+            fd = os.open(
+                path.name,
+                os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=dir_fd,
+            )
+            created = True  # this call made the (empty) file
+        except FileExistsError:
+            fd = os.open(
+                path.name,
+                os.O_RDWR | os.O_APPEND | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=dir_fd,
+            )
     except OSError:
         raise HistoryError("cannot open the history file (a symlink?)") from None
     original = -1
@@ -937,10 +951,11 @@ def _append_locked(
                 "the history file changed while it was written; run "
                 "history-verify and restore from git if it reports damage"
             )
-        if _prefix_digest(fd, size) != validated:
-            # A byte that was validated was changed in place (same size) by
-            # something that ignores the lock. The chain now on disk is not the
-            # one that was checked; do not claim success.
+        if _prefix_digest(fd, size) != validated or not _range_equals(fd, size, new):
+            # A byte that was validated, or one that was just written, was
+            # changed in place (same size) by something that ignores the lock.
+            # The chain now on disk is not the one that was checked; do not
+            # claim success.
             raise HistoryError(
                 "the history file changed while it was written; run "
                 "history-verify and restore from git if it reports damage"
@@ -955,12 +970,40 @@ def _append_locked(
                 "are not in it; run history-verify and try again"
             )
         return len(records)
+    except HistoryError:
+        if created and original < 0:  # refused before any write: leave no file
+            _remove_created(dir_fd, path.name, fd)
+        raise
     except OSError:
         if original >= 0:
             _roll_back(fd, original)
+            if created:
+                _remove_created(dir_fd, path.name, fd)
+            # The rollback worked: none of these records is in the file.
+            raise HistoryNotWritten("cannot write the history file") from None
         raise HistoryError("cannot write the history file") from None
     finally:
         os.close(fd)
+
+
+def _range_equals(fd: int, offset: int, data: bytes) -> bool:
+    """The held file holds exactly ``data`` at ``offset`` (read back, not assumed)."""
+    done = 0
+    while done < len(data):
+        chunk = os.pread(fd, min(1 << 20, len(data) - done), offset + done)
+        if not chunk or chunk != data[done : done + len(chunk)]:
+            return False
+        done += len(chunk)
+    return True
+
+
+def _remove_created(dir_fd: int, name: str, fd: int) -> None:
+    """Remove the empty file this call created, if the name is still that file."""
+    try:
+        if os.fstat(fd).st_size == 0 and _same_file(dir_fd, name, fd):
+            os.unlink(name, dir_fd=dir_fd)
+    except OSError:
+        pass  # an empty file left behind is harmless; the append still failed
 
 
 def _write_all(fd: int, data: bytes) -> None:
