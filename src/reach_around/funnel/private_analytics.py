@@ -183,6 +183,16 @@ def _withhold_pinning_shares(section: dict[str, Any], floor: int) -> None:
             g.update(state="withheld", rows=[], other=None)
 
 
+# Alias spellings of a platform name, folded to the one canonical name (#397).
+_PLATFORM_ALIASES = {"twitch.tv": "twitch", "kick.com": "kick"}
+
+
+def canonical_platform(name: object) -> str:
+    """The one canonical platform name: trimmed, case-folded, alias-folded."""
+    folded = str(name).strip().casefold()
+    return _PLATFORM_ALIASES.get(folded, folded)
+
+
 def build_private(
     history: History,
     *,
@@ -197,7 +207,11 @@ def build_private(
     by_metric: dict[tuple[str, str, str], list[Record]] = {}
     for record in history.records:
         if record.api_provider in PRIVATE_PROVIDERS:
-            key = (record.platform, str(record.api_provider), record.metric)
+            key = (
+                canonical_platform(record.platform),
+                str(record.api_provider),
+                record.metric,
+            )
             by_metric.setdefault(key, []).append(record)
     sections: dict[tuple[str, str], dict[str, Any]] = {}
     pending: dict[tuple[str, str, str], list[tuple[str, str, Series]]] = {}
@@ -298,7 +312,8 @@ def build_private(
         "not_available": [
             {"platform": p, "reason": r}
             for p, r in NOT_AVAILABLE
-            if p.lower() not in {sec["platform"].lower() for sec in sections.values()}
+            if canonical_platform(p)
+            not in {sec["platform"] for sec in sections.values()}
         ],
         "notes": list(NOTES),
     }
@@ -353,7 +368,7 @@ def private_lines(block: dict[str, Any]) -> list[str]:
                 lines.append(
                     f"      {'(other, below the floor)':<22} {group['other']:>12,}"
                 )
-    for entry in block["not_available"]:
+    for entry in block.get("not_available", ()):  # absent in a legacy block
         lines.append(f"  {entry['platform']}: not available ({entry['reason']})")
     if block["unrecognized"]:
         lines.append(

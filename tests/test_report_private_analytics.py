@@ -616,3 +616,23 @@ def test_not_available_shows_even_with_no_private_data() -> None:
 def test_a_platform_with_collected_figures_is_not_listed_not_available() -> None:
     b = block([rec("fdemo_age_18_24", 50, platform="twitch", provider=YT)])
     assert [e["platform"] for e in b["not_available"]] == ["Kick"]
+
+
+def test_a_legacy_block_without_not_available_still_renders() -> None:
+    legacy = block([])
+    del legacy["not_available"]
+    text = "\n".join(private_lines(legacy))
+    assert "not available" not in text and legacy["label"] in text
+
+
+@pytest.mark.parametrize("name", ["twitch", "Twitch", " twitch ", "TWITCH.TV"])
+def test_every_spelling_of_a_platform_is_one_canonical_platform(name: str) -> None:
+    b = block(
+        [
+            rec("fdemo_age_18_24", 50, platform=name, provider=YT),
+            rec("fdemo_age_25_34", 60, platform="twitch", provider=YT),
+        ]
+    )
+    sections = [s["platform"] for s in b["sections"]]
+    assert sections == ["twitch"]  # duplicates and aliases merge into one section
+    assert [e["platform"] for e in b["not_available"]] == ["Kick"]
