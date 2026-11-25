@@ -468,16 +468,17 @@ def test_a_history_file_truncated_during_the_scan_is_refused(
     _big_history(path, 50)
     good = path.read_bytes()
     first_line = good.index(b"\n") + 1
-    real = hist.os.pread
+    real = os.pread
     armed = [True]
 
     def pread(fd: int, length: int, offset: int) -> bytes:
         if armed[0]:
             armed[0] = False
             os.truncate(path, first_line)  # same inode, cut at a newline
-        return real(fd, length, offset)
+        result: bytes = real(fd, length, offset)
+        return result
 
-    monkeypatch.setattr(hist.os, "pread", pread)
+    monkeypatch.setattr(os, "pread", pread)
     new = rec(platform="new", as_of_utc="2026-11-09T09:00:00Z")
     with pytest.raises(HistoryError, match="changed while it was read"):
         append_records(path, [new], now=NOW)
