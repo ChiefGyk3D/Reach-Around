@@ -737,9 +737,7 @@ def live_measures(rows: Iterable[LiveRow]) -> list[Measure]:
     """The typed live figures: one measure per figure the owner entered, each with
     its period and the hand-kept label. A figure left out is not a measure; it is
     never zeroed."""
-    from reach_around.config.kit import KIT_FIELD_POLICY
-
-    source = KIT_FIELD_POLICY["live"].visibility
+    source = source_level("live")
     out: list[Measure] = []
     for row in rows:
         period = (

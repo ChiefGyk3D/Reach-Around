@@ -375,3 +375,58 @@ def test_a_private_source_field_reaches_neither_projection(
     assert mine and {m.visibility for m in mine} == {"private"}
     for projection in (public_projection(kit, None), gated_projection(kit, None)):
         assert not [m for m in projection["measures"] if m.block == blocks[field]]
+
+
+def test_every_measure_builder_derives_visibility_through_source_level() -> None:
+    """#875 parity: no measure builder reads a policy table directly, so no
+    builder can bypass the narrower-of-both-tables rule."""
+    import inspect
+
+    from reach_around.config import measures as measures_module
+
+    source = inspect.getsource(measures_module)
+    helper = inspect.getsource(measures_module.source_level)
+    body = source.replace(helper, "")
+    assert "KIT_FIELD_POLICY" not in body.replace("``KIT_FIELD_POLICY``", "")
+    assert "DISPLAY_POLICY" not in body
+    for name in (
+        "numbers_measures",
+        "analytics_measures",
+        "live_measures",
+        "engagement_measures",
+    ):
+        assert "source_level(" in inspect.getsource(getattr(measures_module, name)), name
+
+
+@pytest.mark.parametrize(
+    ("field", "block"),
+    [
+        ("metrics", "headline"),
+        ("analytics", "tile"),
+        ("live", "live"),
+        ("engagement", "derived"),
+    ],
+)
+def test_narrowing_the_display_policy_narrows_that_fields_measures(
+    field: str, block: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reach_around.config import kit as kit_module
+
+    doc = kit_doc()
+    doc["live"] = [
+        {
+            "platform": "twitch",
+            "as_of": "2026-11-01",
+            "avg_ccv": 12,
+            "period_start": "2026-10-01",
+            "period_end": "2026-10-31",
+        }
+    ]
+    kit = KitConfig.model_validate(doc)
+    before = [m for m in compile_measures(kit, None) if m.block == block]
+    assert before and {m.visibility for m in before} != {"private"}
+    monkeypatch.setattr(
+        kit_module, "DISPLAY_POLICY", {**kit_module.DISPLAY_POLICY, field: "private"}
+    )
+    after = [m for m in compile_measures(kit, None) if m.block == block]
+    assert after and {m.visibility for m in after} == {"private"}

@@ -1,0 +1,1 @@
+- Kit live measures took their visibility from KIT_FIELD_POLICY alone, so narrowing the live field in DISPLAY_POLICY did not narrow them; live_measures now uses source_level, the narrower of both tables, like the other builders, and a parity test fails if any measure builder reads a policy table directly (#875, epic #244).
