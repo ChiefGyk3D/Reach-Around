@@ -1,0 +1,9 @@
+{
+  "comment": "The permissions the engine's reusable deploy-worker.yml declares at the commit the instance template pins (engine.lock ENGINE_REF): its top level and each of its jobs. Read from `git show <engine_ref>:.github/workflows/deploy-worker.yml`. Refresh it with the lock whenever the pin moves; tests/test_instance_repo_template.py fails when the two differ.",
+  "engine_ref": "16efbd68a535b0bdd3dc96b5d7684e61d82bf609",
+  "permissions": [
+    {"contents": "read"},
+    {"contents": "read"},
+    {"contents": "read", "id-token": "write"}
+  ]
+}

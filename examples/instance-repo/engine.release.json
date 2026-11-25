@@ -1,8 +1,8 @@
 {
   "manifest_version": 1,
-  "image": "ghcr.io/chiefgyk3d/reach-around:0.2.0@sha256:bec09d709701622a9dadff40ab5092de6e32f3006106bc52925e9929471fa071",
+  "image": "ghcr.io/chiefgyk3d/reach-around:0.3.0-rc.6@sha256:5754bfcbcfb60c2eff8973e13b6fb257f0aee7f9bdf3816f852da7ca12fd7870",
   "repo": "ChiefGyk3D/Reach-Around",
-  "commit": "46eb5c26b2d8c95825b7904ea860b502740e1d76",
-  "tag": "v0.2.0",
-  "d1_schema": "0007"
+  "commit": "16efbd68a535b0bdd3dc96b5d7684e61d82bf609",
+  "tag": "v0.3.0-rc.6",
+  "d1_schema": "0017"
 }

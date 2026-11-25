@@ -11,6 +11,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,12 @@ TEMPLATE = ROOT / "examples" / "instance-repo"
 WORKFLOWS = TEMPLATE / ".github" / "workflows"
 BASH = "/bin/bash"
 
-PINNED = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40} # v\d+(\.\d+)*$")
+# A version comment: v1.2.3, or a pre-release v1.2.3-rc.4 (also -alpha, -beta,
+# each with an optional .N). Anything else after the numbers is refused.
+PINNED = re.compile(
+    r"^[\w.-]+/[\w./-]+@[0-9a-f]{40} # "
+    r"v\d+(\.\d+)*(-(rc\.\d+|alpha(\.\d+)?|beta(\.\d+)?))?$"
+)
 USES_LINE = re.compile(r"^\s*(?:-\s*)?uses:\s*(\S.*?)\s*$", re.MULTILINE)
 CF_ENV_VAR = "CLOUDFLARE_API_TOKEN"
 DIGEST_IMAGE = re.compile(r"^ENGINE_IMAGE=\S+:[\w.-]+@sha256:[0-9a-f]{64}$", re.M)
@@ -36,9 +42,30 @@ def workflow_files() -> list[Path]:
     return sorted(WORKFLOWS.glob("*.yml"))
 
 
-# Every job holds contents: read, except these two: the comment job is the only
-# one allowed to write to a pull request, and the gate needs nothing at all.
+# The four deploy jobs of deploy.yml. Each worker job calls the engine's
+# reusable workflow, each pages job publishes the site; each pair is one tier.
+WORKER_JOBS = ("worker-staging", "worker-production")
+PAGES_JOBS = ("pages-staging", "pages-production")
+# In the order the file lists them: each tier's Worker, then its Pages job.
+DEPLOY_JOBS = (
+    "worker-staging",
+    "pages-staging",
+    "worker-production",
+    "pages-production",
+)
+# The GitHub environment of a pages job. A worker job names its environment in
+# `with:` (the called workflow holds it), so it carries none of its own.
+ENVIRONMENT_OF = {"pages-staging": "staging", "pages-production": "production"}
+CALLEE_PATH = "ChiefGyk3D/Reach-Around/.github/workflows/deploy-worker.yml"
+CALLEE_FILE = ROOT / ".github" / "workflows" / "deploy-worker.yml"
+DEPLOY_ID_TOKEN = {"contents": "read", "id-token": "write"}
+
+# Every job holds contents: read, except these: the comment job is the only
+# one allowed to write to a pull request, the gate needs nothing at all, and the
+# four deploy jobs also hold id-token: write to exchange the OIDC token with the
+# secret manager (nothing else in the template may).
 JOB_PERMISSIONS: dict[str, dict[str, str]] = {
+    **{name: DEPLOY_ID_TOKEN for name in DEPLOY_JOBS},
     "comment": {"contents": "read", "pull-requests": "write"},
     "ci-green": {},
     # Opens, updates and closes the one reminder issue; reads no key.
@@ -77,7 +104,7 @@ def violations(text: str) -> list[str]:
             found.append(f"{job_name}: continue-on-error")
         if "env" in job:
             found.append(f"{job_name}: job-level env")
-        if job.get("environment") not in (None, "production"):
+        if job.get("environment") != ENVIRONMENT_OF.get(job_name):
             found.append(f"{job_name}: unexpected environment")
         for step in job.get("steps", []):
             label = f"{job_name}/{step.get('name', step.get('uses'))}"
@@ -88,7 +115,8 @@ def violations(text: str) -> list[str]:
             is_wrangler = "wrangler" in run and "--version" not in run
             token_step = (
                 is_wrangler
-                and job_name == "deploy"
+                and job_name in PAGES_JOBS
+                and step.get("name") == "Publish the site to Pages"
                 and CF_ENV_VAR in step.get("env", {})
             )
             counts_step = (
@@ -96,8 +124,10 @@ def violations(text: str) -> list[str]:
                 and step.get("name") == "Refresh the counts"
                 and CF_ENV_VAR not in step_text
             )
-            if "secrets." in step_text and not (token_step or counts_step):
-                found.append(f"{label}: secret outside a wrangler step")
+            # The Cloudflare token is never a GitHub secret now: it is the masked
+            # output of the secret-manager step, mapped into the one publish step.
+            if "secrets." in step_text and not counts_step:
+                found.append(f"{label}: GitHub secret read")
             if CF_ENV_VAR in step_text and not token_step:
                 found.append(f"{label}: token name outside a wrangler step")
     return found
@@ -166,21 +196,114 @@ def test_workflow_hardening(path: Path) -> None:
     assert violations(path.read_text(encoding="utf-8")) == []
 
 
+TIER_DOPPLER_CONFIG = {"staging": "dev", "production": "prd"}
+TIER_BRANCH = {"staging": "staging", "production": "main"}
+# What a `with:` value of a worker call may be: a literal or an output of the
+# validate job (the checked values). Never a repository variable read again,
+# a secret, event data or an input of the run.
+WITH_EXPRESSION = re.compile(r"^\$\{\{ needs\.validate\.outputs\.[a-z][a-z0-9_]* \}\}$")
+# The values check-tiers.sh writes as step outputs; the deploy jobs read only these.
+CHECKED_OUTPUTS = (
+    "staging_worker_name",
+    "production_worker_name",
+    "staging_pages_project",
+    "production_pages_project",
+    "staging_d1_database_id",
+    "production_d1_database_id",
+    "staging_ratelimit_namespace_id",
+    "production_ratelimit_namespace_id",
+    "staging_site_host",
+    "production_site_host",
+    "staging_zone_name",
+    "production_zone_name",
+    "doppler_identity_id_staging",
+    "doppler_identity_id_production",
+    "cloudflare_account_id",
+    "doppler_project",
+    "allow_staging_deploy",
+    "allow_production_deploy",
+)
+STAGING_SWITCH = "needs.validate.outputs.allow_staging_deploy"
+PRODUCTION_SWITCH = "needs.validate.outputs.allow_production_deploy"
+
+
+def _deploy_data() -> dict[Any, Any]:
+    data: dict[Any, Any] = yaml.safe_load(
+        (WORKFLOWS / "deploy.yml").read_text(encoding="utf-8")
+    )
+    return data
+
+
+UPSTREAM_REPO = "ChiefGyk3D/Reach-Around"
+
+
 def test_deploy_workflow_shape() -> None:
-    data = yaml.safe_load((WORKFLOWS / "deploy.yml").read_text(encoding="utf-8"))
-    assert data[True] == {"push": {"branches": ["main"]}, "workflow_dispatch": None}
+    data = _deploy_data()
+    dispatch = data[True]["workflow_dispatch"]
+    assert set(data[True]) == {"push", "workflow_dispatch"}
+    assert data[True]["push"] == {"branches": ["main"]}
+    target = dispatch["inputs"]["target"]
+    assert target["type"] == "choice"
+    assert target["options"] == ["staging", "production"]
+    assert target["default"] == "staging"
+    assert set(dispatch["inputs"]) == {"target"}
     jobs = data["jobs"]
+    assert list(jobs) == ["validate", *DEPLOY_JOBS]
     assert "environment" not in jobs["validate"]
-    assert jobs["deploy"]["environment"] == "production"
-    assert jobs["deploy"]["needs"] == "validate"
-    with_token = [
-        s["name"] for s in jobs["deploy"]["steps"] if CF_ENV_VAR in s.get("env", {})
-    ]
-    assert with_token == [
-        "Apply D1 migrations",
-        "Deploy the Worker",
-        "Publish the site to Pages",
-    ]
+    # the engine repository is a literal in the template
+    assert set(jobs["validate"]["outputs"]) == {"engine_ref", *CHECKED_OUTPUTS}
+    for tier in ("staging", "production"):
+        worker = jobs[f"worker-{tier}"]
+        pages = jobs[f"pages-{tier}"]
+        # the worker call: the engine's reusable workflow, the tier's environment
+        assert worker["uses"].startswith(CALLEE_PATH + "@")
+        assert worker["needs"] == "validate"
+        assert "environment" not in worker  # the called job holds it
+        assert "secrets" not in worker
+        call = worker["with"]
+        assert call["environment"] == tier
+        assert call["doppler_config"] == TIER_DOPPLER_CONFIG[tier]
+        assert call["manifest_file"] == "manifest.json"
+        assert call["manifest_artifact"] == "site-manifest"
+        assert call["site_artifact"] == "site-out"
+        assert call["engine_ref"] == "${{ needs.validate.outputs.engine_ref }}"
+        assert call["engine_repo"] == UPSTREAM_REPO
+        for key, value in call.items():
+            if "${{" in str(value):
+                assert WITH_EXPRESSION.match(str(value)), (tier, key, value)
+        # the pages job: same environment, after the Worker
+        assert pages["environment"] == tier
+        assert pages["needs"] == ["validate", f"worker-{tier}"]
+        steps = pages["steps"]
+        with_token = [s["name"] for s in steps if CF_ENV_VAR in s.get("env", {})]
+        assert with_token == ["Publish the site to Pages"]
+        names = [s.get("name") for s in steps]
+        fetch = next(i for i, s in enumerate(steps) if s.get("id") == "cf_doppler")
+        publish = names.index("Publish the site to Pages")
+        assert publish == len(steps) - 1 and fetch == publish - 1
+        for before in ("Check configuration", "Install Worker dependencies"):
+            assert names.index(before) < fetch
+        smoke = steps[names.index("Confirm wrangler runs")]
+        assert names.index("Confirm wrangler runs") < fetch
+        assert "env" in smoke and CF_ENV_VAR not in smoke["env"]
+        doppler = steps[fetch]
+        assert doppler["uses"].startswith(
+            "ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@"
+        )
+        assert doppler["with"]["export"] == "outputs"
+        assert doppler["with"]["names"] == "CLOUDFLARE_KEY_VALUE"
+        assert doppler["with"]["required"] == "true"
+        assert doppler["with"]["config"] == TIER_DOPPLER_CONFIG[tier]
+        identity = "DOPPLER_IDENTITY_ID_" + tier.upper()
+        checked = f"${{{{ needs.validate.outputs.{identity.lower()} }}}}"
+        assert doppler["with"]["identity-id"] == checked
+        assert call["doppler_identity_id"] == checked
+        publish_step = steps[publish]
+        assert publish_step["env"][CF_ENV_VAR] == (
+            "${{ fromJSON(steps.cf_doppler.outputs.secrets).CLOUDFLARE_KEY_VALUE }}"
+        )
+        assert f"--branch {TIER_BRANCH[tier]}" in publish_step["run"]
+        assert "--commit-dirty=true" in publish_step["run"]
 
 
 def test_preview_workflow_deploys_nothing() -> None:
@@ -193,8 +316,14 @@ def test_preview_workflow_deploys_nothing() -> None:
     assert "secrets." not in text
 
 
+PAGES_ENV = (
+    "    runs-on: ubuntu-latest\n    timeout-minutes: 15\n    environment: staging\n"
+)
+
+
 def test_the_guard_bites() -> None:
     good = (WORKFLOWS / "deploy.yml").read_text(encoding="utf-8")
+    assert PAGES_ENV in good
     assert violations(good) == []
     sha = re.search(r"actions/checkout@([0-9a-f]{40}) # v[\d.]+", good)
     assert sha
@@ -220,10 +349,812 @@ def test_the_guard_bites() -> None:
         "expression in run": good.replace(
             "run: scripts/check-repo.sh", "run: echo ${{ github.head_ref }}"
         ),
+        "token from a GitHub secret": good.replace(
+            "${{ fromJSON(steps.cf_doppler.outputs.secrets).CLOUDFLARE_KEY_VALUE }}",
+            f"${{{{ secrets.{CF_ENV_VAR} }}}}",
+        ),
+        "token on the smoke test": good.replace(
+            '          WRANGLER_SEND_METRICS: "false"\n'
+            "        run: npx --no-install wrangler --version",
+            f'          {CF_ENV_VAR}: x\n          WRANGLER_SEND_METRICS: "false"\n'
+            "        run: npx --no-install wrangler --version",
+        ),
+        "wrong environment": good.replace(
+            PAGES_ENV, PAGES_ENV.replace("staging", "production"), 1
+        ),
+        "environment dropped": good.replace(
+            PAGES_ENV, PAGES_ENV.rsplit("    environment", 1)[0], 1
+        ),
+        "pre-release comment with a bad suffix": good.replace(
+            "# v0.3.0-rc.6", "# v0.3.0-rc", 1
+        ),
     }
     for label, mutated in mutations.items():
         assert mutated != good, label
         assert violations(mutated), label
+
+
+# --- the deploy migration (issue #694): the pins, the permissions, the tiers ----
+
+
+def deploy_text() -> str:
+    return (WORKFLOWS / "deploy.yml").read_text(encoding="utf-8")
+
+
+def lock_text() -> str:
+    return (TEMPLATE / "engine.lock").read_text(encoding="utf-8")
+
+
+def lock_pin(lock: str) -> tuple[str, str]:
+    """The commit and the version comment of ENGINE_REF in engine.lock."""
+    match = re.search(r"^ENGINE_REF=([0-9a-f]{40}) # (v\S+)$", lock, re.M)
+    assert match, "engine.lock has no ENGINE_REF with a version comment"
+    return match.group(1), match.group(2)
+
+
+CALL_LINE = re.compile(
+    r"^\s*uses:\s+" + re.escape(CALLEE_PATH) + r"@([0-9a-f]{40}) # (\S+)\s*$", re.M
+)
+
+
+def call_pin_problems(text: str, lock: str) -> list[str]:
+    """The reusable call must be pinned to the commit engine.lock names."""
+    ref, tag = lock_pin(lock)
+    found: list[str] = []
+    calls = CALL_LINE.findall(text)
+    named = [ln for ln in text.splitlines() if CALLEE_PATH in ln and "uses:" in ln]
+    if len(calls) != len(WORKER_JOBS) or len(named) != len(calls):
+        found.append(f"expected {len(WORKER_JOBS)} pinned calls, found {len(calls)}")
+    for sha, comment in calls:
+        if sha != ref:
+            found.append(f"call pinned to {sha}, engine.lock says {ref}")
+        if comment != tag:
+            found.append(f"call comment {comment}, engine.lock says {tag}")
+    return found
+
+
+def test_the_reusable_call_is_pinned_to_the_commit_in_engine_lock() -> None:
+    assert call_pin_problems(deploy_text(), lock_text()) == []
+
+
+def test_the_call_pin_guard_bites() -> None:
+    good, lock = deploy_text(), lock_text()
+    ref, tag = lock_pin(lock)
+    assert call_pin_problems(good, lock) == []
+    other = "0" * 40
+    cases = {
+        "one call moved": (good.replace(ref, other, 1), lock),
+        "lock moved": (good, lock.replace(ref, other)),
+        "branch instead of a commit": (
+            good.replace(f"@{ref} # {tag}", "@main", 1),
+            lock,
+        ),
+        "wrong comment": (
+            good.replace(f"@{ref} # {tag}", f"@{ref} # v0.0.1", 1),
+            lock,
+        ),
+        "no call at all": (good.replace(CALLEE_PATH, "ChiefGyk3D/x/y"), lock),
+    }
+    for label, (text, lock_used) in cases.items():
+        assert (text, lock_used) != (good, lock), label
+        assert call_pin_problems(text, lock_used), label
+
+
+GYST_PIN = re.compile(r"ChiefGyk3D/git-your-ship-together/\S+@([0-9a-f]{40})\b")
+
+
+def gyst_pin_problems(texts: dict[str, str]) -> list[str]:
+    """Every pin of the shared workflows and actions must be one commit."""
+    pins = {name: set(GYST_PIN.findall(text)) for name, text in texts.items()}
+    found = {sha for shas in pins.values() for sha in shas}
+    problems: list[str] = []
+    if len(found) != 1:
+        problems.append(f"expected one shared commit, found {sorted(found)}")
+    if sum(1 for shas in pins.values() if shas) < 2:
+        problems.append("fewer than two files use the shared repository")
+    return problems
+
+
+def workflow_texts() -> dict[str, str]:
+    return {p.name: p.read_text(encoding="utf-8") for p in workflow_files()}
+
+
+def test_all_shared_workflow_pins_are_one_commit() -> None:
+    texts = workflow_texts()
+    assert gyst_pin_problems(texts) == []
+    # collected loosely: the doppler action in deploy.yml and the bash lint call
+    # in preview.yml are both found, so the check is not vacuous
+    assert GYST_PIN.search(texts["deploy.yml"])
+    assert GYST_PIN.search(texts["preview.yml"])
+
+
+def test_the_shared_pin_guard_bites() -> None:
+    texts = workflow_texts()
+    sha = GYST_PIN.search(texts["deploy.yml"])
+    assert sha
+    skewed = {
+        **texts,
+        "deploy.yml": texts["deploy.yml"].replace(sha.group(1), "1" * 40, 1),
+    }
+    assert skewed["deploy.yml"] != texts["deploy.yml"]
+    assert gyst_pin_problems(skewed)
+    assert gyst_pin_problems({"deploy.yml": texts["deploy.yml"]})  # one file only
+    assert gyst_pin_problems({k: v.replace(sha.group(1), "") for k, v in texts.items()})
+
+
+LEVEL = {"none": 0, "read": 1, "write": 2}
+
+
+RECORDED = ROOT / "tests" / "fixtures" / "instance_template" / "callee_permissions.json"
+
+
+def recorded_callee() -> dict[str, Any]:
+    data: dict[str, Any] = json.loads(RECORDED.read_text(encoding="utf-8"))
+    return data
+
+
+def permission_blocks(workflow: dict[Any, Any]) -> list[dict[str, str]]:
+    """The top-level permissions of a workflow, then each job's."""
+    blocks = [workflow.get("permissions", {})]
+    blocks += [job.get("permissions", {}) for job in workflow["jobs"].values()]
+    return blocks
+
+
+def needs_of(workflow_text: str) -> dict[str, int]:
+    """The most each permission is asked for anywhere in a workflow (its top level
+    and every job)."""
+    needs: dict[str, int] = {}
+    for block in permission_blocks(yaml.safe_load(workflow_text)):
+        for scope, level in block.items():
+            needs[scope] = max(needs.get(scope, 0), LEVEL[level])
+    return needs
+
+
+def _git(*args: str, timeout: int = 120) -> subprocess.CompletedProcess[str]:
+    git = shutil.which("git")
+    assert git, "git is needed to read the pinned workflow"
+    return subprocess.run(  # noqa: S603 - fixed argv, read-only except one fetch
+        [git, *args],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=timeout,
+    )
+
+
+def pinned_callee_text(
+    ref: str | None = None,
+    env: Mapping[str, str] | None = None,
+    fetch: bool = True,
+) -> str:
+    """The called workflow exactly as GitHub runs it for the template: the file at
+    the commit in engine.lock, read from git (never the working-tree copy, never a
+    recorded copy). If the commit is not in this clone, try to fetch it. If it is
+    still missing, fail under CI (the check must not pass unchecked) and skip with
+    a message elsewhere."""
+    env = os.environ if env is None else env
+    ref = ref or lock_pin(lock_text())[0]
+    present = _git("cat-file", "-e", f"{ref}^{{commit}}").returncode == 0
+    if not present and fetch:
+        _git("fetch", "--depth=1", "origin", ref)
+        present = _git("cat-file", "-e", f"{ref}^{{commit}}").returncode == 0
+    if present:
+        shown = _git("show", f"{ref}:.github/workflows/deploy-worker.yml")
+        assert shown.returncode == 0, shown.stderr
+        return shown.stdout
+    message = (
+        f"the engine commit {ref} from engine.lock is not in this checkout and "
+        f"`git fetch --depth=1 origin {ref}` did not get it; fetch it (or use "
+        "fetch-depth: 0) so the callee's permissions can be read from it"
+    )
+    if env.get("CI"):
+        pytest.fail(message)
+    pytest.skip(message)
+
+
+def callee_needs() -> dict[str, int]:
+    """What the called workflow, at the pinned commit, asks of its caller."""
+    return needs_of(pinned_callee_text())
+
+
+def permission_problems(text: str, needs: dict[str, int]) -> list[str]:
+    """A caller job's permissions must cover what the called workflow asks for:
+    GitHub checks it when the file is parsed, so a skipped job counts."""
+    found: list[str] = []
+    jobs = yaml.safe_load(text)["jobs"]
+    calls = {
+        n: j for n, j in jobs.items() if str(j.get("uses", "")).startswith(CALLEE_PATH)
+    }
+    if not calls:
+        found.append("no call of the reusable workflow found")
+    for name, job in calls.items():
+        granted = job.get("permissions", {})
+        for scope, level in needs.items():
+            if LEVEL[granted.get(scope, "none")] < level:
+                found.append(f"{name}: {scope} is below what the callee asks for")
+    return found
+
+
+def test_the_caller_permissions_cover_what_the_callee_asks_for() -> None:
+    needs = callee_needs()
+    # collected loosely, asserted strictly: the callee does ask for both
+    assert needs.get("contents") == LEVEL["read"]
+    assert needs.get("id-token") == LEVEL["write"]
+    assert permission_problems(deploy_text(), needs) == []
+
+
+def drop_first_id_token(text: str) -> str:
+    """The text without its first `id-token: write` line (a comment may follow
+    the permission on the same line)."""
+    return re.sub(r"^ +id-token: write.*\n", "", text, count=1, flags=re.M)
+
+
+def test_the_permission_guard_bites() -> None:
+    good, needs = deploy_text(), callee_needs()
+    no_id_token = drop_first_id_token(good)
+    assert no_id_token != good
+    assert permission_problems(no_id_token, needs)
+    assert permission_problems(good, {**needs, "packages": LEVEL["write"]})
+    assert permission_problems(good.replace(CALLEE_PATH, "x/y/z"), needs)
+
+
+def secret_problems(text: str) -> list[str]:
+    """No GitHub secret is read or passed in the deploy workflow."""
+    code = code_only(text)
+    found: list[str] = []
+    if "secrets." in code:
+        found.append("reads a secrets. value")
+    if re.search(r"^\s*secrets:", code, re.M):
+        found.append("passes secrets to a called workflow")
+    if "inherit" in code:
+        found.append("secrets: inherit")
+    return found
+
+
+def test_the_deploy_workflow_reads_no_github_secret() -> None:
+    assert secret_problems(deploy_text()) == []
+
+
+def test_the_secret_guard_bites() -> None:
+    good = deploy_text()
+    call = "    uses: " + CALLEE_PATH
+    assert call in good
+    mutations = {
+        "inherit": good.replace(call, "    secrets: inherit\n" + call, 1),
+        "named secret": good.replace(call, "    secrets:\n      X: y\n" + call, 1),
+        "secrets context": good.replace(
+            "node-version:",
+            "x: ${{ secrets.CLOUDFLARE_API_TOKEN }}\n          node-version:",
+            1,
+        ),
+    }
+    for label, mutated in mutations.items():
+        assert mutated != good, label
+        assert secret_problems(mutated), label
+
+
+def evaluate(expr: str, context: dict[str, str]) -> bool:
+    """A small evaluator for the `if` expressions of deploy.yml: `==` and `!=`
+    against a quoted text, joined by `&&` and `||`. Anything else (a function, a
+    bracket) is refused, so a condition this cannot read fails the test."""
+
+    def atom(text: str) -> bool:
+        match = re.fullmatch(r"\s*([\w.]+)\s*(==|!=)\s*'([^']*)'\s*", text)
+        if not match:
+            raise ValueError(f"unsupported condition: {text!r}")
+        return (context.get(match.group(1), "") == match.group(3)) == (
+            match.group(2) == "=="
+        )
+
+    return any(all(atom(a) for a in part.split("&&")) for part in expr.split("||"))
+
+
+def contexts(event: str) -> list[dict[str, str]]:
+    """Every run the expression could see for one event name."""
+    return [
+        {
+            "github.event_name": event,
+            "github.ref": ref,
+            "inputs.target": target,
+            PRODUCTION_SWITCH: allow,
+            STAGING_SWITCH: staging_allow,
+        }
+        for staging_allow in ("", "true", "false", "TRUE")
+        for ref in ("refs/heads/main", "refs/heads/other", "refs/tags/v1")
+        for target in ("", "staging", "production")
+        for allow in ("", "true", "false", "TRUE")
+    ]
+
+
+def tier_problems(text: str) -> list[str]:
+    jobs = yaml.safe_load(text)["jobs"]
+    found: list[str] = []
+    for name in ("worker-production", "pages-production"):
+        condition = str(jobs[name].get("if", ""))
+        if not condition:
+            found.append(f"{name}: no condition")
+            continue
+        try:
+            evaluate(condition, {})
+        except ValueError:
+            found.append(f"{name}: a condition this check cannot read")
+            continue
+        if any(evaluate(condition, c) for c in contexts("push")):
+            found.append(f"{name}: can run on a push")
+        on = {
+            "github.event_name": "workflow_dispatch",
+            "github.ref": "refs/heads/main",
+            "inputs.target": "production",
+            PRODUCTION_SWITCH: "true",
+        }
+        if not evaluate(condition, on):
+            found.append(f"{name}: never runs, even when asked for")
+        # each of the four conditions is needed on its own
+        for key, other in (
+            ("github.ref", "refs/heads/other"),
+            ("github.event_name", "push"),
+            ("inputs.target", "staging"),
+            (PRODUCTION_SWITCH, ""),
+        ):
+            if evaluate(condition, {**on, key: other}):
+                found.append(f"{name}: runs without {key}")
+    for name in ("worker-staging", "pages-staging"):
+        # The one place staging may name production: the Pages job compares its
+        # project with the production project and refuses to publish into it.
+        job_text = yaml.safe_dump(jobs[name]).replace("PRODUCTION_PAGES_PROJECT", "")
+        job_text = job_text.replace("production_pages_project", "")
+        if "production" in job_text.lower():
+            found.append(f"{name}: names production")
+        condition = str(jobs[name].get("if", ""))
+        try:
+            evaluate(condition, {})
+        except ValueError:
+            found.append(f"{name}: a condition this check cannot read")
+            continue
+        for ctx in contexts("push") + contexts("workflow_dispatch"):
+            allowed = ctx[STAGING_SWITCH] == "true"
+            if evaluate(condition, ctx) and not allowed:
+                found.append(f"{name}: runs without ALLOW_STAGING_DEPLOY")
+                break
+        for ctx in contexts("pull_request"):
+            if evaluate(condition, ctx):
+                found.append(f"{name}: can run on a pull request")
+                break
+    return found
+
+
+def test_production_never_runs_on_a_push_and_staging_never_names_it() -> None:
+    assert tier_problems(deploy_text()) == []
+    jobs = yaml.safe_load(deploy_text())["jobs"]
+    # controls: staging does run on a push to main and on a staging run
+    push = {
+        "github.event_name": "push",
+        "github.ref": "refs/heads/main",
+        STAGING_SWITCH: "true",
+    }
+    assert evaluate(str(jobs["worker-staging"]["if"]), push)
+    # but not until the repository variable says the environments are ready
+    assert not evaluate(str(jobs["worker-staging"]["if"]), {**push, STAGING_SWITCH: ""})
+    assert evaluate(
+        str(jobs["pages-staging"]["if"]),
+        {
+            "github.event_name": "workflow_dispatch",
+            "github.ref": "refs/heads/main",
+            "inputs.target": "staging",
+            STAGING_SWITCH: "true",
+        },
+    )
+
+
+def test_the_tier_guard_bites() -> None:
+    good = deploy_text()
+    jobs = yaml.safe_load(good)["jobs"]
+    cond = str(jobs["worker-production"]["if"])
+    assert "github.event_name == 'workflow_dispatch'" in cond
+    parts = [p.strip() for p in cond.split("&&")]
+    assert len(parts) == 4, parts
+    for index, part in enumerate(parts):
+        rest = " && ".join(p for i, p in enumerate(parts) if i != index)
+        mutated = good.replace(cond, rest)
+        assert mutated != good, part
+        assert tier_problems(mutated), part
+    assert tier_problems(good.replace(cond, f"{cond} || github.event_name == 'push'"))
+    assert tier_problems(good.replace(cond, "contains(github.ref, 'main')"))
+    # the staging condition is folded over two lines in the file
+    first = (
+        "      github.ref == 'refs/heads/main'"
+        " && needs.validate.outputs.allow_staging_deploy == 'true'"
+        " && github.event_name == 'push'\n"
+    )
+    assert first in good
+    assert tier_problems(good.replace(first, "      github.event_name != 'x'\n"))
+    # without the staging switch a push would start the first, unprotected run
+    no_switch = first.replace(
+        " && needs.validate.outputs.allow_staging_deploy == 'true'", ""
+    )
+    assert tier_problems(good.replace(first, no_switch))
+    # naming the production project anywhere but the one refusal is caught
+    assert tier_problems(
+        good.replace(
+            "${{ needs.validate.outputs.staging_pages_project }}\n          # Only",
+            "${{ needs.validate.outputs.production_worker_name }}\n          # Only",
+            1,
+        )
+    )
+    assert tier_problems(
+        good.replace(
+            "worker_name: ${{ needs.validate.outputs.staging_worker_name }}",
+            "worker_name: ${{ needs.validate.outputs.production_worker_name }}",
+            1,
+        )
+    )
+    assert evaluate("a.b == 'x' && c.d != 'y'", {"a.b": "x", "c.d": "z"})
+    with pytest.raises(ValueError):
+        evaluate("contains(a, 'b')", {})
+
+
+def id_token_problems(text: str) -> list[str]:
+    """id-token: write only on the four deploy jobs, and on all four."""
+    data = yaml.safe_load(text)
+    found: list[str] = []
+    if "id-token" in (data.get("permissions") or {}):
+        found.append("workflow-level id-token")
+    for name, job in data["jobs"].items():
+        has = (job.get("permissions") or {}).get("id-token") == "write"
+        if name in DEPLOY_JOBS and not has:
+            found.append(f"{name}: has no id-token: write")
+        if name not in DEPLOY_JOBS and "id-token" in (job.get("permissions") or {}):
+            found.append(f"{name}: id-token outside the deploy jobs")
+    return found
+
+
+def test_id_token_write_is_only_on_the_four_deploy_jobs() -> None:
+    texts = workflow_texts()
+    assert id_token_problems(texts["deploy.yml"]) == []
+    for name in ("preview.yml", "refresh-counts.yml"):
+        assert "id-token" not in texts[name], name
+    jobs = yaml.safe_load(texts["deploy.yml"])["jobs"]
+    holders = [n for n, j in jobs.items() if "id-token" in (j.get("permissions") or {})]
+    assert holders == list(DEPLOY_JOBS)
+
+
+def test_the_id_token_guard_bites() -> None:
+    good = deploy_text()
+    on_validate = good.replace(
+        "    permissions:\n      contents: read\n    # No `environment`",
+        "    permissions:\n      contents: read\n      id-token: write\n"
+        "    # No `environment`",
+        1,
+    )
+    assert on_validate != good
+    assert id_token_problems(on_validate)
+    assert id_token_problems(
+        good.replace(
+            "permissions:\n  contents: read\n",
+            "permissions:\n  contents: read\n  id-token: write\n",
+            1,
+        )
+    )
+    assert drop_first_id_token(good) != good
+    assert id_token_problems(drop_first_id_token(good))
+
+
+def engine_group_wins(renovate: str) -> bool:
+    """The engine group rule must come after the Actions group rule, so the two
+    reusable-call pins move in the same pull request as engine.lock."""
+    rules = json.loads(renovate)["packageRules"]
+    engine = [
+        i for i, r in enumerate(rules) if r.get("groupName") == "reach-around engine"
+    ]
+    actions = [i for i, r in enumerate(rules) if r.get("groupName") == "github actions"]
+    return bool(engine) and bool(actions) and min(engine) > max(actions)
+
+
+def test_renovate_moves_the_call_pins_with_engine_lock() -> None:
+    text = (TEMPLATE / "renovate.json").read_text(encoding="utf-8")
+    assert engine_group_wins(text)
+    swapped = json.loads(text)
+    swapped["packageRules"].reverse()
+    assert not engine_group_wins(json.dumps(swapped))
+
+
+# --- Daybreak round 1 findings (issue #694) -----------------------------------
+
+
+def _step(job: str, prefix: str, text: str | None = None) -> dict[str, Any]:
+    jobs = yaml.safe_load(text or deploy_text())["jobs"]
+    steps = [s for s in jobs[job]["steps"] if s.get("name", "").startswith(prefix)]
+    assert len(steps) == 1, (job, prefix)
+    found: dict[str, Any] = steps[0]
+    return found
+
+
+def _shell(
+    step: dict[str, Any], env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    """Run a step's own script with only the given values in its environment."""
+    assert set(env) <= set(step.get("env", {})), "the step does not read those"
+    return subprocess.run(  # noqa: S603 - the template's own step, fixed argv
+        [BASH, "-c", step["run"]],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={"PATH": os.environ["PATH"], **env},
+    )
+
+
+NAMES = {
+    "STAGING_WORKER_NAME": "my-links-clicks-staging",
+    "PRODUCTION_WORKER_NAME": "my-links-clicks",
+    "DOPPLER_PROJECT": "my-links",
+    "STAGING_PAGES_PROJECT": "my-links-staging",
+    "PRODUCTION_PAGES_PROJECT": "my-links",
+}
+NAMES_STEP = "Check the plain configuration values"
+
+
+def test_validate_checks_the_plain_names_and_keeps_the_pages_projects_apart() -> None:
+    step = _step("validate", NAMES_STEP)
+    assert _shell(step, NAMES).returncode == 0
+    # staging only: production not set up yet
+    staging_only = {
+        **NAMES,
+        "PRODUCTION_WORKER_NAME": "",
+        "PRODUCTION_PAGES_PROJECT": "",
+    }
+    assert _shell(step, staging_only).returncode == 0
+    # names are lowercased before they are checked and compared
+    mixed = {**NAMES, "PRODUCTION_PAGES_PROJECT": "My-Links"}
+    assert _shell(step, mixed).returncode == 0
+    bad = {
+        "same pages project": {"PRODUCTION_PAGES_PROJECT": "my-links-staging"},
+        "same after lowercasing": {
+            "STAGING_PAGES_PROJECT": "My-Links-Staging",
+            "PRODUCTION_PAGES_PROJECT": "my-links-staging",
+        },
+        "second line": {"STAGING_PAGES_PROJECT": "my-links-staging\nmy-links"},
+        "trailing newline": {"PRODUCTION_PAGES_PROJECT": "my-links\n"},
+        "not plain": {"STAGING_PAGES_PROJECT": "my links"},
+        "slash": {"PRODUCTION_PAGES_PROJECT": "a/b"},
+        "staging pages unset": {"STAGING_PAGES_PROJECT": ""},
+        "same worker": {"PRODUCTION_WORKER_NAME": "my-links-clicks-staging"},
+        "test worker": {"STAGING_WORKER_NAME": "reach-around-clicks"},
+    }
+    for label, change in bad.items():
+        result = _shell(step, {**NAMES, **change})
+        assert result.returncode != 0, label
+        assert "::error::" in result.stdout, label
+
+
+def test_the_staging_pages_job_refuses_the_production_project() -> None:
+    step = _step("pages-staging", "Check configuration")
+    env = {
+        "CLOUDFLARE_ACCOUNT_ID": "0" * 32,
+        "PAGES_PROJECT": "my-links-staging",
+        "PRODUCTION_PAGES_PROJECT": "my-links",
+    }
+    assert _shell(step, env).returncode == 0
+    assert _shell(step, {**env, "PRODUCTION_PAGES_PROJECT": ""}).returncode == 0
+    for label, change in {
+        "same": {"PRODUCTION_PAGES_PROJECT": "my-links-staging"},
+        "same, other case": {
+            "PAGES_PROJECT": "My-Links",
+            "PRODUCTION_PAGES_PROJECT": "my-links",
+        },
+        "newline": {"PAGES_PROJECT": "my-links-staging\nx"},
+    }.items():
+        assert _shell(step, {**env, **change}).returncode != 0, label
+
+
+def test_the_production_pages_job_does_not_read_the_staging_project() -> None:
+    assert "STAGING" not in yaml.safe_dump(
+        yaml.safe_load(deploy_text())["jobs"]["pages-production"]
+    )
+
+
+def readme_text() -> str:
+    return (TEMPLATE / "README.md").read_text(encoding="utf-8")
+
+
+def setup_order_problems(text: str) -> list[str]:
+    """The environments and their protection come before any variable that lets a
+    run start, and nothing says to push first."""
+    found: list[str] = []
+    marks = [
+        "**Settings > Environments > New environment**",
+        "Required reviewers",
+        "Deployment branches",
+        "**repository variables**",
+        "| `ALLOW_STAGING_DEPLOY` |",  # the table row that switches staging on
+    ]
+    at = [text.find(m) for m in marks]
+    if min(at) < 0:
+        return [f"missing: {m}" for m, i in zip(marks, at, strict=True) if i < 0]
+    if at != sorted(at):
+        found.append("the setup steps are out of order")
+    # the enabling row is the last variable of the table
+    rows = [ln for ln in text.splitlines() if ln.startswith("| `") and "|" in ln[3:]]
+    names = [ln.split("`")[1] for ln in rows]
+    for must in ("ALLOW_STAGING_DEPLOY", "ALLOW_PRODUCTION_DEPLOY"):
+        if must not in names:
+            found.append(f"{must} is not in the variable table")
+    if "ALLOW_STAGING_DEPLOY" in names:
+        idx = names.index("ALLOW_STAGING_DEPLOY")
+        tail = names[idx + 1 :]
+        if any(
+            n.startswith("STAGING_") or n == "DOPPLER_IDENTITY_ID_STAGING" for n in tail
+        ):
+            found.append("a staging variable comes after the enabling one")
+    if "Do not push" not in text:
+        found.append("nothing tells the reader not to push before setup is done")
+    return found
+
+
+def test_the_readme_creates_and_protects_the_environments_before_anything_can_run() -> (
+    None
+):
+    assert setup_order_problems(readme_text()) == []
+    docs = " ".join(
+        (ROOT / "docs" / "instance-repos.md").read_text(encoding="utf-8").split()
+    )
+    assert "ALLOW_STAGING_DEPLOY" in docs
+    assert "before the first push" in docs
+
+
+def test_the_setup_order_guard_bites() -> None:
+    good = readme_text()
+    assert setup_order_problems(good) == []
+    env = "**Settings > Environments > New environment**"
+    moved = good.replace(env, "X", 1) + "\n" + env
+    assert setup_order_problems(moved)
+    assert setup_order_problems(good.replace("Do not push", "Push"))
+    assert setup_order_problems(good.replace("ALLOW_STAGING_DEPLOY", "ALLOW_X"))
+    lines = good.splitlines()
+    first_row = next(ln for ln in lines if ln.startswith("| `STAGING_WORKER_NAME`"))
+    row = next(ln for ln in lines if ln.startswith("| `ALLOW_STAGING_DEPLOY`"))
+    # the enabling variable set before the staging values it enables
+    early = good.replace(row + "\n", "").replace(first_row, row + "\n" + first_row)
+    assert early != good
+    assert setup_order_problems(early)
+
+
+PROTECTION_PHRASES = (
+    "Prevent self-review",
+    "sole owner",
+    "second human",
+    "do not establish that the approver did not author",
+    "protected-branch pull-request review",
+    "confirmation pause",
+    "not an approval control",
+)
+# A second account is not a second person: never offered as independent control.
+PROTECTION_FORBIDDEN = (
+    "second account",
+    "another account",
+    "(not the author)",
+    "Add yourself (or a second person)",
+)
+
+
+def protection_problems(text: str) -> list[str]:
+    """What a document says about environment protection and the sole owner."""
+    flat = " ".join(text.split())
+    found = [f"missing: {n}" for n in PROTECTION_PHRASES if n not in flat]
+    found += [f"must not say: {n}" for n in PROTECTION_FORBIDDEN if n in flat]
+    return found
+
+
+def test_the_readme_does_not_promise_more_than_environment_protection_gives() -> None:
+    assert protection_problems(readme_text()) == []
+    docs = (ROOT / "docs" / "instance-repos.md").read_text(encoding="utf-8")
+    flat = " ".join(docs.split())
+    # the docs page carries the same limits, in its own words
+    for needed in (
+        "Prevent self-review",
+        "second human",
+        "do not establish that the approver did not author",
+        "protected-branch pull-request review",
+    ):
+        assert needed in flat, needed
+    for banned in PROTECTION_FORBIDDEN:
+        assert banned not in flat, banned
+
+
+def test_the_protection_guard_bites() -> None:
+    # the phrases may wrap across lines in the file, so mutate the flat text
+    good = " ".join(readme_text().split())
+    assert protection_problems(good) == []
+    for phrase in PROTECTION_PHRASES:
+        assert phrase in good
+        assert protection_problems(good.replace(phrase, "x")), phrase
+    for banned in PROTECTION_FORBIDDEN:
+        assert protection_problems(good + " " + banned), banned
+
+
+def review_aid_problems(recorded: dict[str, Any], lock: str, callee: str) -> list[str]:
+    """The committed fixture is a review aid only: it must name the pinned commit
+    and say what the pinned workflow says. It is never what the tests trust."""
+    found: list[str] = []
+    ref, _ = lock_pin(lock)
+    if recorded["engine_ref"] != ref:
+        found.append("the review aid is for another commit than engine.lock")
+    if permission_blocks(yaml.safe_load(callee)) != recorded["permissions"]:
+        found.append("the review aid differs from the pinned workflow")
+    return found
+
+
+def test_the_review_aid_equals_the_permissions_of_the_pinned_workflow() -> None:
+    recorded = recorded_callee()
+    assert recorded["permissions"], "nothing recorded; the check would be vacuous"
+    assert review_aid_problems(recorded, lock_text(), pinned_callee_text()) == []
+
+
+def test_the_review_aid_guard_bites() -> None:
+    recorded, lock, callee = recorded_callee(), lock_text(), pinned_callee_text()
+    ref, _ = lock_pin(lock)
+    assert review_aid_problems({**recorded, "engine_ref": "0" * 40}, lock, callee)
+    assert review_aid_problems(recorded, lock.replace(ref, "1" * 40), callee)
+    fewer = {**recorded, "permissions": recorded["permissions"][:-1]}
+    assert review_aid_problems(fewer, lock, callee)
+    widened = callee.replace(
+        "permissions:\n  contents: read\n",
+        "permissions:\n  contents: read\n  packages: read\n",
+        1,
+    )
+    assert widened != callee
+    assert review_aid_problems(recorded, lock, widened)
+
+
+SYNTHETIC_CALLEE = (
+    "permissions:\n  contents: read\n"
+    "jobs:\n  deploy:\n    permissions:\n      contents: read\n"
+    "      id-token: write\n      packages: read\n"
+)
+
+
+def test_a_newly_required_callee_permission_fails_the_compatibility_check() -> None:
+    # a callee that starts to ask for packages: read, which the caller does not give
+    needs = needs_of(SYNTHETIC_CALLEE)
+    assert needs["packages"] == LEVEL["read"]
+    problems = permission_problems(deploy_text(), needs)
+    assert any("packages" in p for p in problems)
+    # and the real pinned callee asks for nothing the caller lacks
+    assert permission_problems(deploy_text(), callee_needs()) == []
+    # a caller that grants it passes
+    granted = deploy_text().replace(
+        "      id-token: write", "      packages: read\n      id-token: write"
+    )
+    assert permission_problems(granted, needs) == []
+
+
+def test_a_missing_pinned_commit_fails_under_ci_and_skips_elsewhere() -> None:
+    absent = "0" * 40
+    with pytest.raises(pytest.fail.Exception, match="not in this checkout"):
+        pinned_callee_text(absent, {"CI": "true"}, fetch=False)
+    with pytest.raises(pytest.skip.Exception, match="fetch"):
+        pinned_callee_text(absent, {}, fetch=False)
+    # present: read from git, not from the working tree
+    ref, _ = lock_pin(lock_text())
+    text = pinned_callee_text(ref, {"CI": "true"}, fetch=False)
+    assert yaml.safe_load(text)["name"] == "Deploy Worker"
+
+
+def test_a_workflow_pin_comment_accepts_a_pre_release_and_refuses_a_bad_suffix() -> (
+    None
+):
+    sha = "a" * 40
+    for ok in ("v1.2.3", "v0.3.0-rc.6", "v1.0.0-alpha", "v1.0.0-beta.2", "v7"):
+        assert PINNED.match(f"x/y@{sha} # {ok}"), ok
+    for bad in (
+        "v0.3.0-rc",
+        "v0.3.0-rc.x",
+        "v0.3.0-gamma",
+        "v0.3.0-rc.6x",
+        "0.3.0",
+        "v1.2.3 x",
+    ):
+        assert not PINNED.match(f"x/y@{sha} # {bad}"), bad
 
 
 def test_the_engine_is_pinned_by_digest() -> None:
@@ -311,7 +1242,8 @@ def manifest_violations(text: str) -> list[str]:
     data = yaml.safe_load(text)
     for name, job in data["jobs"].items():
         uploads: dict[str, str] = {}
-        for step in job["steps"]:
+        # a job that calls a reusable workflow has no steps
+        for step in job.get("steps", []):
             label = f"{name}/{step.get('name', step.get('uses'))}"
             run = step.get("run", "")
             if "site-out/manifest" in run or "site-out/manifest" in str(
@@ -357,39 +1289,48 @@ def test_manifest_is_its_own_artifact_and_not_in_the_pages_upload() -> None:
     assert set(uploads) == {"site-out", "site-manifest"}
     assert "manifest" not in uploads["site-out"]
     assert "site-manifest/manifest.json" in uploads["site-manifest"]
-    downloads = {
-        s["with"]["name"]: s["with"]["path"]
-        for s in jobs["deploy"]["steps"]
-        if str(s.get("uses", "")).startswith("actions/download-artifact@")
+    for name in PAGES_JOBS:
+        downloads = {
+            s["with"]["name"]: s["with"]["path"]
+            for s in jobs[name]["steps"]
+            if str(s.get("uses", "")).startswith("actions/download-artifact@")
+        }
+        # the Pages job never sees the manifest: the Worker call reads it
+        assert downloads == {"site-out": "site-out"}, name
+        pages = [
+            s
+            for s in jobs[name]["steps"]
+            if s.get("name") == "Publish the site to Pages"
+        ]
+        assert len(pages) == 1
+        assert "manifest" not in pages[0]["run"]
+
+
+def test_the_worker_call_reads_the_manifest_the_validate_job_uploads() -> None:
+    # The reusable workflow downloads the artifact and reads one file from it
+    # (its own tests cover the reading); this ties the names it is given to the
+    # upload steps, so a rename on one side cannot slip past the other.
+    jobs = _deploy_jobs()
+    uploads = {
+        s["with"]["name"]: str(s["with"]["path"])
+        for s in jobs["validate"]["steps"]
+        if str(s.get("uses", "")).startswith("actions/upload-artifact@")
     }
-    assert downloads == {"site-out": "site-out", "site-manifest": "manifest-in"}
-    pages = [
-        s
-        for s in jobs["deploy"]["steps"]
-        if s.get("name") == "Publish the site to Pages"
-    ]
-    assert len(pages) == 1
-    assert "manifest" not in pages[0]["run"]
-
-
-def test_the_manifest_reader_step_has_no_secrets() -> None:
-    steps = _deploy_jobs()["deploy"]["steps"]
-    readers = [s for s in steps if "manifest-in" in s.get("run", "")]
-    assert len(readers) == 1
-    reader = readers[0]
-    text = yaml.safe_dump(reader)
-    assert "secrets." not in text
-    assert CF_ENV_VAR not in text
-    run = reader["run"]
-    assert "jq " in run or "python3 -I" in run
-    assert "-mindepth 1" in run
-    assert "! -L" in run
+    for name in WORKER_JOBS:
+        call = jobs[name]["with"]
+        assert call["manifest_artifact"] in uploads, name
+        assert call["site_artifact"] in uploads, name
+        assert uploads[call["manifest_artifact"]].endswith("/" + call["manifest_file"])
+    for job in jobs.values():
+        assert all("manifest-in" not in s.get("run", "") for s in job.get("steps", []))
 
 
 def test_the_manifest_guard_bites() -> None:
     good = (WORKFLOWS / "deploy.yml").read_text(encoding="utf-8")
     assert manifest_violations(good) == []
-    old_read = good.replace("manifest-in/manifest.json", "site-out/manifest.json")
+    old_read = good.replace(
+        "run: npm ci --ignore-scripts", "run: cat site-out/manifest.json", 1
+    )
     assert old_read != good
     assert manifest_violations(old_read)
     bundled = good.replace(
@@ -1988,3 +2929,769 @@ def test_a_clean_repository_check_records_status_zero(
     done = run.run(steps["repo"], TRUSTED=trusted, RESULTS=results)
     assert done.returncode == 0, done.stderr
     assert run.outputs["repo.status"] == "0"
+
+
+# ---- the engine source is the upstream repository (#694) ---
+
+
+def engine_source_problems(text: str) -> list[str]:
+    """Every engine checkout and reusable call names the upstream literal."""
+    found: list[str] = []
+    jobs = yaml.safe_load(text)["jobs"]
+    seen = 0
+    for name, job in jobs.items():
+        if "with" in job and "engine_repo" in job["with"]:
+            seen += 1
+            if job["with"]["engine_repo"] != UPSTREAM_REPO:
+                found.append(f"{name}: engine_repo is not the upstream literal")
+        for step in job.get("steps", []):
+            args = step.get("with", {})
+            if "repository" in args:
+                seen += 1
+                if args["repository"] != UPSTREAM_REPO:
+                    found.append(f"{name}: checkout repository is not the literal")
+    if seen != len(DEPLOY_JOBS):
+        found.append(f"expected 4 engine sources, found {seen}")
+    return found
+
+
+def test_the_engine_source_is_the_upstream_literal_in_every_deploy_job() -> None:
+    assert engine_source_problems(deploy_text()) == []
+
+
+def test_the_engine_source_check_fails_on_a_changed_source() -> None:
+    text = deploy_text()
+    lock_value = "${{ needs.validate.outputs.engine_repo }}"
+    one_call = text.replace(
+        f"engine_repo: {UPSTREAM_REPO}", f"engine_repo: {lock_value}", 1
+    )
+    assert engine_source_problems(one_call)
+    one_checkout = text.replace(
+        f"repository: {UPSTREAM_REPO}", f"repository: {lock_value}", 1
+    )
+    assert engine_source_problems(one_checkout)
+    other = text.replace(f"repository: {UPSTREAM_REPO}", "repository: other/engine", 1)
+    assert engine_source_problems(other)
+
+
+REPO_LINE = "ENGINE_REPO=ChiefGyk3D/Reach-Around"
+IMAGE_HEAD = "ghcr.io/chiefgyk3d/reach-around:"
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "key"),
+    [
+        (REPO_LINE, "ENGINE_REPO=other/engine", "ENGINE_REPO"),
+        (REPO_LINE, "ENGINE_REPO=chiefgyk3d/reach-around", "ENGINE_REPO"),
+        (REPO_LINE, "ENGINE_REPO=ChiefGyk3D/Reach-Around-fork", "ENGINE_REPO"),
+        (IMAGE_HEAD, "ghcr.io/other/reach-around:", "ENGINE_IMAGE"),
+        (IMAGE_HEAD, "docker.io/chiefgyk3d/reach-around:", "ENGINE_IMAGE"),
+        (IMAGE_HEAD, "ghcr.io/chiefgyk3d/reach-around-x:", "ENGINE_IMAGE"),
+    ],
+)
+def test_read_lock_requires_the_upstream_source(
+    tmp_path: Path, old: str, new: str, key: str
+) -> None:
+    root = _copy_template(tmp_path)
+    lock = root / "engine.lock"
+    lock.write_text(
+        lock.read_text(encoding="utf-8").replace(old, new), encoding="utf-8"
+    )
+    assert _script(root, "read-lock.sh", key).returncode != 0
+    # --verify applies the same literal to a value handed in by another script
+    value = new.split("=", 1)[1] if "=" in new else new
+    if key == "ENGINE_REPO":
+        assert _script(root, "read-lock.sh", "--verify", key, value).returncode != 0
+
+
+def test_read_lock_verify_pins_the_upstream_repository(tmp_path: Path) -> None:
+    root = _copy_template(tmp_path)
+    ok = _script(root, "read-lock.sh", "--verify", "ENGINE_REPO", UPSTREAM_REPO)
+    assert ok.returncode == 0, ok.stderr
+    for bad in ("other/engine", "ChiefGyk3D/other", "chiefgyk3d/reach-around"):
+        res = _script(root, "read-lock.sh", "--verify", "ENGINE_REPO", bad)
+        assert res.returncode != 0, bad
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="jq not installed (runs on CI)")
+def test_a_release_naming_another_repository_is_refused_even_when_consistent(
+    tmp_path: Path,
+) -> None:
+    """Lock and manifest agree on another repository: still refused."""
+    root = _copy_template(tmp_path)
+    manifest = root / "engine.release.json"
+    doc = json.loads(manifest.read_text(encoding="utf-8"))
+    doc["repo"] = "other/engine"
+    manifest.write_text(json.dumps(doc), encoding="utf-8")
+    lock = root / "engine.lock"
+    lock.write_text(
+        lock.read_text(encoding="utf-8").replace(
+            "ENGINE_REPO=ChiefGyk3D/Reach-Around", "ENGINE_REPO=other/engine"
+        ),
+        encoding="utf-8",
+    )
+    res = _script(root, "read-lock.sh", "--release")
+    assert res.returncode != 0
+    assert "ENGINE_REPO" in res.stderr or "repo" in res.stderr
+
+
+# ---- the staging and production settings are distinct (#694) ----------------
+
+TIER_ENV = {
+    "STAGING_WORKER_NAME": "my-links-clicks-staging",
+    "PRODUCTION_WORKER_NAME": "my-links-clicks",
+    "STAGING_PAGES_PROJECT": "my-links-staging",
+    "PRODUCTION_PAGES_PROJECT": "my-links",
+    "STAGING_D1_DATABASE_ID": "11111111-1111-1111-1111-111111111111",
+    "PRODUCTION_D1_DATABASE_ID": "22222222-2222-2222-2222-222222222222",
+    "STAGING_RATELIMIT_NAMESPACE_ID": "1001",
+    "PRODUCTION_RATELIMIT_NAMESPACE_ID": "1002",
+    "STAGING_SITE_HOST": "staging.links.example.invalid",
+    "PRODUCTION_SITE_HOST": "links.example.invalid",
+    "STAGING_ZONE_NAME": "example.invalid",
+    "PRODUCTION_ZONE_NAME": "example.invalid",
+    "DOPPLER_IDENTITY_ID_STAGING": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    "DOPPLER_IDENTITY_ID_PRODUCTION": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    "CLOUDFLARE_ACCOUNT_ID": "0" * 32,
+    "DOPPLER_PROJECT": "my-links",
+    "ALLOW_STAGING_DEPLOY": "true",
+    "ALLOW_PRODUCTION_DEPLOY": "true",
+}
+TIER_STEP = "Check the tier settings are distinct"
+PROD_D1 = TIER_ENV["PRODUCTION_D1_DATABASE_ID"]
+PRODUCTION_SETTINGS = (
+    "PRODUCTION_WORKER_NAME",
+    "PRODUCTION_PAGES_PROJECT",
+    "PRODUCTION_D1_DATABASE_ID",
+    "PRODUCTION_RATELIMIT_NAMESPACE_ID",
+    "PRODUCTION_SITE_HOST",
+    "PRODUCTION_ZONE_NAME",
+    "DOPPLER_IDENTITY_ID_PRODUCTION",
+    "ALLOW_PRODUCTION_DEPLOY",
+)
+PRODUCTION_OFF = dict.fromkeys(PRODUCTION_SETTINGS, "")
+STAGING_REQUIRED = (
+    "STAGING_WORKER_NAME",
+    "STAGING_PAGES_PROJECT",
+    "STAGING_D1_DATABASE_ID",
+    "STAGING_RATELIMIT_NAMESPACE_ID",
+    "STAGING_SITE_HOST",
+    "DOPPLER_IDENTITY_ID_STAGING",
+    "CLOUDFLARE_ACCOUNT_ID",
+    "DOPPLER_PROJECT",
+)
+
+
+def _tiers(
+    root: Path, change: Mapping[str, str], out: Path | None = None
+) -> subprocess.CompletedProcess[str]:
+    env = {"PATH": os.environ["PATH"], **TIER_ENV, **change}
+    if out is not None:
+        env["GITHUB_OUTPUT"] = str(out)
+    return subprocess.run(  # noqa: S603 - fixed argv, a copy of the template
+        [BASH, str(root / "scripts" / "check-tiers.sh")],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+
+def _outputs(path: Path) -> dict[str, str]:
+    pairs = (ln.split("=", 1) for ln in path.read_text(encoding="utf-8").splitlines())
+    return {k: v for k, v in pairs}
+
+
+def test_distinct_tier_settings_pass(tmp_path: Path) -> None:
+    root = _copy_template(tmp_path)
+    assert _tiers(root, {}).returncode == 0
+    # production off: none of its settings is set, nothing to compare
+    assert _tiers(root, PRODUCTION_OFF).returncode == 0
+    # the zone name is optional in both tiers
+    assert (
+        _tiers(root, {"STAGING_ZONE_NAME": "", "PRODUCTION_ZONE_NAME": ""}).returncode
+        == 0
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "change"),
+    [
+        ("d1", {"STAGING_D1_DATABASE_ID": TIER_ENV["PRODUCTION_D1_DATABASE_ID"]}),
+        (
+            "d1 case",
+            {"STAGING_D1_DATABASE_ID": TIER_ENV["PRODUCTION_D1_DATABASE_ID"].upper()},
+        ),
+        ("ratelimit", {"STAGING_RATELIMIT_NAMESPACE_ID": "1002"}),
+        ("worker (and its namespaces)", {"STAGING_WORKER_NAME": "my-links-clicks"}),
+        ("pages", {"STAGING_PAGES_PROJECT": "my-links"}),
+        ("pages case", {"STAGING_PAGES_PROJECT": "My-Links"}),
+        ("host (route)", {"STAGING_SITE_HOST": "links.example.invalid"}),
+        ("host case", {"STAGING_SITE_HOST": "LINKS.example.invalid"}),
+        ("host equals the production zone", {"STAGING_SITE_HOST": "example.invalid"}),
+        (
+            "production host is the staging zone",
+            {"STAGING_ZONE_NAME": "links.example.invalid"},
+        ),
+        (
+            "identity",
+            {"DOPPLER_IDENTITY_ID_STAGING": TIER_ENV["DOPPLER_IDENTITY_ID_PRODUCTION"]},
+        ),
+        ("second line", {"STAGING_D1_DATABASE_ID": "x\n" + PROD_D1}),
+        ("padded", {"STAGING_SITE_HOST": " staging.links.example.invalid"}),
+    ],
+)
+def test_each_tier_setting_pair_must_differ(
+    tmp_path: Path, label: str, change: dict[str, str]
+) -> None:
+    root = _copy_template(tmp_path)
+    result = _tiers(root, change)
+    assert result.returncode != 0, label
+    assert "::error::" in result.stdout, label
+    # only the name of a setting is printed, never a value
+    for value in change.values():
+        assert value.strip() not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    ("label", "change"),
+    [
+        ("trailing dot", {"STAGING_SITE_HOST": "links.example.invalid."}),
+        (
+            "upper case and trailing dot",
+            {"STAGING_SITE_HOST": "LINKS.Example.invalid."},
+        ),
+        ("default https port", {"STAGING_SITE_HOST": "links.example.invalid:443"}),
+        ("default http port", {"STAGING_SITE_HOST": "links.example.invalid:80"}),
+        ("port and dot", {"STAGING_SITE_HOST": "links.example.invalid.:443"}),
+        (
+            "host is the other zone, with a dot",
+            {"STAGING_SITE_HOST": "EXAMPLE.invalid."},
+        ),
+        (
+            "production host equals the staging zone, with a dot",
+            {"STAGING_ZONE_NAME": "LINKS.example.invalid."},
+        ),
+        ("leading zeros", {"STAGING_RATELIMIT_NAMESPACE_ID": "01002"}),
+        ("many leading zeros", {"STAGING_RATELIMIT_NAMESPACE_ID": "0000001002"}),
+    ],
+)
+def test_equivalent_forms_of_a_shared_value_are_refused(
+    tmp_path: Path, label: str, change: dict[str, str]
+) -> None:
+    root = _copy_template(tmp_path)
+    result = _tiers(root, change)
+    assert result.returncode != 0, label
+    assert "::error::" in result.stdout, label
+
+
+def test_an_international_name_equals_its_punycode_form_only(tmp_path: Path) -> None:
+    root = _copy_template(tmp_path)
+    puny = "xn--bcher-kva.example.invalid"
+    both = {"STAGING_SITE_HOST": puny, "PRODUCTION_SITE_HOST": puny.upper() + "."}
+    assert _tiers(root, both).returncode != 0
+    # the Unicode spelling is refused, not guessed at
+    unicode_host = {"STAGING_SITE_HOST": "bücher.example.invalid"}
+    result = _tiers(root, unicode_host)
+    assert result.returncode != 0
+    assert "STAGING_SITE_HOST must be ASCII" in result.stdout
+    # a different punycode name is a different host
+    other = {"STAGING_SITE_HOST": puny, "PRODUCTION_SITE_HOST": "xn--fiq228c.invalid"}
+    assert _tiers(root, other).returncode == 0
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["１００２", "100٢", "1e3", "+1002", "-1", "0x3ea", "1 2", "1" * 13],
+)
+def test_a_namespace_id_is_ascii_digits_only(tmp_path: Path, value: str) -> None:
+    root = _copy_template(tmp_path)
+    result = _tiers(root, {"PRODUCTION_RATELIMIT_NAMESPACE_ID": value})
+    assert result.returncode != 0
+    assert "PRODUCTION_RATELIMIT_NAMESPACE_ID must be ASCII digits" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "links.example.invalid:8443",
+        "links.example.invalid/",
+        "http://links.example",
+        "-links.example.invalid",
+        "links..example.invalid",
+        "links.example.invalid..",
+        "*.example.invalid",
+        "[::1]",
+        "links_x.example.invalid",
+        "a" * 64 + ".example",
+    ],
+)
+def test_a_host_must_be_a_plain_name(tmp_path: Path, value: str) -> None:
+    root = _copy_template(tmp_path)
+    result = _tiers(root, {"PRODUCTION_SITE_HOST": value})
+    assert result.returncode != 0
+    assert "PRODUCTION_SITE_HOST" in result.stdout
+
+
+# A tier whose required setting is missing fails; it is never "distinct".
+@pytest.mark.parametrize("name", STAGING_REQUIRED)
+def test_a_missing_staging_setting_fails(tmp_path: Path, name: str) -> None:
+    root = _copy_template(tmp_path)
+    for production in (TIER_ENV, PRODUCTION_OFF):
+        result = _tiers(root, {**production, name: ""})
+        assert result.returncode != 0, name
+        assert f"{name} is" in result.stdout, name
+
+
+@pytest.mark.parametrize("name", PRODUCTION_SETTINGS[:5] + PRODUCTION_SETTINGS[6:7])
+def test_a_missing_production_setting_fails_once_production_is_set_up(
+    tmp_path: Path, name: str
+) -> None:
+    root = _copy_template(tmp_path)
+    # one other production setting is set, or the switch is on: production is
+    # being set up, so every required production setting must be there
+    assert _tiers(root, {name: ""}).returncode != 0, name
+    only_one = {**PRODUCTION_OFF, "PRODUCTION_PAGES_PROJECT": "other-pages"}
+    result = _tiers(root, only_one)
+    assert result.returncode != 0
+    assert "is required when production is set up" in result.stdout
+    # the switch alone, with nothing else configured
+    result = _tiers(root, {**PRODUCTION_OFF, "ALLOW_PRODUCTION_DEPLOY": "true"})
+    assert result.returncode != 0
+    assert "is required when production is set up" in result.stdout
+
+
+def test_a_switch_is_on_only_when_exactly_true(tmp_path: Path) -> None:
+    root = _copy_template(tmp_path)
+    for value in ("TRUE", "True", "1", "yes", " ", "false", ""):
+        out = tmp_path / f"out-{abs(hash(value))}"
+        change = {**PRODUCTION_OFF, "ALLOW_STAGING_DEPLOY": value.strip()}
+        assert _tiers(root, change, out).returncode == 0, value
+        assert _outputs(out)["allow_staging_deploy"] == "false", value
+    out = tmp_path / "out-true"
+    assert _tiers(root, {}, out).returncode == 0
+    assert _outputs(out)["allow_staging_deploy"] == "true"
+    assert _outputs(out)["allow_production_deploy"] == "true"
+
+
+def test_the_outputs_are_the_normalized_values(tmp_path: Path) -> None:
+    root = _copy_template(tmp_path)
+    out = tmp_path / "github-output"
+    change = {
+        "STAGING_SITE_HOST": "Staging.Links.Example.invalid.:443",
+        "STAGING_RATELIMIT_NAMESPACE_ID": "0001001",
+        "STAGING_PAGES_PROJECT": "My-Links-Staging",
+    }
+    assert _tiers(root, change, out).returncode == 0
+    got = _outputs(out)
+    assert set(got) == set(CHECKED_OUTPUTS)
+    assert got["staging_site_host"] == "staging.links.example.invalid"
+    assert got["staging_ratelimit_namespace_id"] == "1001"
+    assert got["staging_pages_project"] == "my-links-staging"
+    assert got["production_ratelimit_namespace_id"] == "1002"
+    assert got["doppler_project"] == "my-links"
+    # a failing check writes nothing for the deploy jobs to read
+    bad = tmp_path / "bad-output"
+    assert _tiers(root, {"STAGING_D1_DATABASE_ID": PROD_D1}, bad).returncode != 0
+    assert not bad.exists() or bad.read_text(encoding="utf-8") == ""
+
+
+def test_the_tier_check_runs_in_validate_with_every_value_it_reads() -> None:
+    step = _step("validate", TIER_STEP)
+    assert step["run"] == "scripts/check-tiers.sh"
+    assert step["id"] == "tiers"
+    assert set(step["env"]) == set(TIER_ENV)
+    for name, value in step["env"].items():
+        assert value == "${{ vars." + name + " }}", name
+    validate_steps = yaml.safe_load(deploy_text())["jobs"]["validate"]["steps"]
+    names = [s.get("name") for s in validate_steps]
+    # before the build, so a failure stops before any deploy job starts
+    assert names.index(TIER_STEP) < names.index("Build the site with the pinned engine")
+    # the plain-name checks read the checked values, not the raw variables
+    plain = _step("validate", NAMES_STEP)
+    for value in plain["env"].values():
+        assert str(value).startswith("${{ steps.tiers.outputs."), value
+
+
+def binding_problems(text: str) -> list[str]:
+    """The deploy jobs read the values the validate job checked, and nothing
+    else: no repository variable is read again after the check."""
+    jobs = yaml.safe_load(text)["jobs"]
+    found: list[str] = []
+    outputs = jobs["validate"]["outputs"]
+    for key in CHECKED_OUTPUTS:
+        want = "${{ steps.tiers.outputs." + key + " }}"
+        if outputs.get(key) != want:
+            found.append(f"validate output {key} is not the checked value")
+    allowed = {"engine_ref", *CHECKED_OUTPUTS}
+    for name in DEPLOY_JOBS:
+        job_text = yaml.safe_dump(jobs[name])
+        if "vars." in job_text:
+            found.append(f"{name}: reads a repository variable")
+        if "github.event.repository" in job_text or "secrets." in job_text:
+            found.append(f"{name}: reads something the check did not")
+        used = set(re.findall(r"needs\.validate\.outputs\.([A-Za-z0-9_]+)", job_text))
+        for key in used - allowed:
+            found.append(f"{name}: reads an unchecked output {key}")
+        if "validate" not in jobs[name]["needs"]:
+            found.append(f"{name}: does not need validate")
+    return found
+
+
+def test_the_deploy_jobs_read_only_the_checked_outputs() -> None:
+    assert binding_problems(deploy_text()) == []
+    # each job names the values of its own tier from the check
+    jobs = yaml.safe_load(deploy_text())["jobs"]
+    for name in DEPLOY_JOBS:
+        used = set(
+            re.findall(
+                r"needs\.validate\.outputs\.([A-Za-z0-9_]+)",
+                yaml.safe_dump(jobs[name]),
+            )
+        )
+        assert "cloudflare_account_id" in used or name.startswith("worker"), name
+        assert used, name
+
+
+def test_the_binding_guard_bites() -> None:
+    good = deploy_text()
+    worker = "worker_name: ${{ needs.validate.outputs.staging_worker_name }}"
+    assert worker in good
+    # a deploy job that reads the raw variable again
+    assert binding_problems(
+        good.replace(worker, "worker_name: ${{ vars.STAGING_WORKER_NAME }}")
+    )
+    page = "PAGES_PROJECT: ${{ needs.validate.outputs.production_pages_project }}"
+    assert page in good
+    assert binding_problems(
+        good.replace(page, "PAGES_PROJECT: ${{ vars.PRODUCTION_PAGES_PROJECT }}")
+    )
+    # the switch re-read in a condition
+    cond = "&& needs.validate.outputs.allow_production_deploy == 'true'"
+    assert cond in good
+    assert binding_problems(
+        good.replace(cond, "&& vars.ALLOW_PRODUCTION_DEPLOY == 'true'")
+    )
+    # an output that is not the checked value
+    out = (
+        "      staging_d1_database_id:"
+        " ${{ steps.tiers.outputs.staging_d1_database_id }}"
+    )
+    assert out in good
+    assert binding_problems(
+        good.replace(
+            out, "      staging_d1_database_id: ${{ vars.STAGING_D1_DATABASE_ID }}"
+        )
+    )
+    # an output the check never produced
+    assert binding_problems(
+        good.replace(worker, "worker_name: ${{ needs.validate.outputs.worker }}")
+    )
+
+
+def test_each_tier_uses_only_its_own_identity_and_environment() -> None:
+    jobs = yaml.safe_load(deploy_text())["jobs"]
+    for tier, other in (("staging", "PRODUCTION"), ("production", "STAGING")):
+        for name in (f"worker-{tier}", f"pages-{tier}"):
+            job_text = yaml.safe_dump(jobs[name])
+            assert f"doppler_identity_id_{other.lower()}" not in job_text, name
+            assert f"doppler_identity_id_{tier}" in job_text, name
+
+
+ENGINE_TAG_GRAMMAR = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$")
+
+
+def test_the_engine_call_comment_is_the_release_tag_of_the_lock() -> None:
+    """The grammar read-lock.sh enforces (stable or -rc.N), not the broader
+    workflow pin comment grammar."""
+    lock = (TEMPLATE / "engine.lock").read_text(encoding="utf-8")
+    found = re.search(r"^ENGINE_REF=[0-9a-f]{40} # (\S+)$", lock, re.M)
+    assert found
+    assert ENGINE_TAG_GRAMMAR.match(found.group(1))
+    text = deploy_text()
+    calls = re.findall(rf"uses: {re.escape(CALLEE_PATH)}@[0-9a-f]{{40}} # (\S+)", text)
+    assert len(calls) == 2
+    assert set(calls) == {found.group(1)}
+
+
+# --- Daybreak round 3 findings (issue #694) -----------------------------------
+# Exact per-job binding of every validated value, read from the parsed YAML.
+
+OUTPUT_REF = re.compile(r"^\$\{\{ needs\.validate\.outputs\.([a-z0-9_]+) \}\}$")
+Binding = tuple[str, str | None]
+Key = tuple[str, str, str]
+
+# (job, where, input) -> ("output", name) or ("literal", value). The staging
+# Pages job reads the production Pages project only to refuse it.
+STEP_LABELS = (
+    "Fetch the Worker source",
+    "Check configuration",
+    "Fetch Cloudflare credentials",
+    "Publish the site",
+)
+
+
+def expected_bindings() -> dict[Key, Binding]:
+    out: dict[Key, Binding] = {}
+    for tier, config in (("staging", "dev"), ("production", "prd")):
+        w = f"worker-{tier}"
+        for key, value in (
+            ("environment", ("literal", tier)),
+            ("engine_repo", ("literal", UPSTREAM_REPO)),
+            ("engine_ref", ("output", "engine_ref")),
+            ("manifest_artifact", ("literal", "site-manifest")),
+            ("manifest_file", ("literal", "manifest.json")),
+            ("site_artifact", ("literal", "site-out")),
+            ("doppler_project", ("output", "doppler_project")),
+            ("doppler_config", ("literal", config)),
+            ("cloudflare_account_id", ("output", "cloudflare_account_id")),
+            ("worker_name", ("output", f"{tier}_worker_name")),
+            ("d1_database_id", ("output", f"{tier}_d1_database_id")),
+            ("ratelimit_namespace_id", ("output", f"{tier}_ratelimit_namespace_id")),
+            ("site_host", ("output", f"{tier}_site_host")),
+            ("zone_name", ("output", f"{tier}_zone_name")),
+            ("doppler_identity_id", ("output", f"doppler_identity_id_{tier}")),
+        ):
+            out[(w, "with", key)] = value
+        p = f"pages-{tier}"
+        for label, where, value in (
+            ("Fetch the Worker source", "with.ref", ("output", "engine_ref")),
+            ("Fetch the Worker source", "with.repository", ("literal", UPSTREAM_REPO)),
+            ("Fetch the Worker source", "with.path", ("literal", "engine")),
+            ("Fetch the Worker source", "with.sparse-checkout", ("literal", "worker")),
+            (
+                "Fetch the Worker source",
+                "with.persist-credentials",
+                ("literal", "False"),
+            ),
+            (
+                "Publish the site",
+                "env.CLOUDFLARE_API_TOKEN",
+                (
+                    "literal",
+                    "${{ fromJSON(steps.cf_doppler.outputs.secrets)"
+                    ".CLOUDFLARE_KEY_VALUE }}",
+                ),
+            ),
+            (
+                "Check configuration",
+                "env.CLOUDFLARE_ACCOUNT_ID",
+                ("output", "cloudflare_account_id"),
+            ),
+            (
+                "Check configuration",
+                "env.PAGES_PROJECT",
+                ("output", f"{tier}_pages_project"),
+            ),
+            (
+                "Fetch Cloudflare credentials",
+                "with.project",
+                ("output", "doppler_project"),
+            ),
+            ("Fetch Cloudflare credentials", "with.config", ("literal", config)),
+            ("Fetch Cloudflare credentials", "with.export", ("literal", "outputs")),
+            (
+                "Fetch Cloudflare credentials",
+                "with.names",
+                ("literal", "CLOUDFLARE_KEY_VALUE"),
+            ),
+            ("Fetch Cloudflare credentials", "with.required", ("literal", "true")),
+            (
+                "Fetch Cloudflare credentials",
+                "with.identity-id",
+                ("output", f"doppler_identity_id_{tier}"),
+            ),
+            (
+                "Publish the site",
+                "env.CLOUDFLARE_ACCOUNT_ID",
+                ("output", "cloudflare_account_id"),
+            ),
+            (
+                "Publish the site",
+                "env.PAGES_PROJECT",
+                ("output", f"{tier}_pages_project"),
+            ),
+        ):
+            out[(p, label, where)] = value
+    out[("pages-staging", "Check configuration", "env.PRODUCTION_PAGES_PROJECT")] = (
+        "output",
+        "production_pages_project",
+    )
+    return out
+
+
+def actual_bindings(text: str) -> dict[Key, Binding]:
+    """Every input of the four deploy jobs, read from the parsed workflow.
+
+    Worker jobs: every key of `with`. Pages jobs: every `with` or `env` key of
+    the four named steps (a step that is not one of them is its own finding).
+    """
+    jobs = yaml.safe_load(text)["jobs"]
+    found: dict[Key, Binding] = {}
+
+    def classify(value: Any) -> Binding:
+        match = OUTPUT_REF.match(str(value))
+        return ("output", match.group(1)) if match else ("literal", str(value))
+
+    for tier in ("staging", "production"):
+        for key, value in jobs[f"worker-{tier}"]["with"].items():
+            found[(f"worker-{tier}", "with", key)] = classify(value)
+        for step in jobs[f"pages-{tier}"]["steps"]:
+            name = str(step.get("name", ""))
+            label = next((n for n in STEP_LABELS if name.startswith(n)), None)
+            for where in ("with", "env"):
+                for key, value in (step.get(where) or {}).items():
+                    if label is None:
+                        if "needs.validate" in str(value):
+                            found[(f"pages-{tier}", name, f"{where}.{key}")] = classify(
+                                value
+                            )
+                        continue
+                    if where == "env" and key == "WRANGLER_SEND_METRICS":
+                        continue
+                    found[(f"pages-{tier}", label, f"{where}.{key}")] = classify(value)
+    return found
+
+
+def binding_map_problems(text: str) -> list[str]:
+    expected = expected_bindings()
+    actual = actual_bindings(text)
+    found: list[str] = []
+    for key in sorted(set(actual) - set(expected)):
+        found.append(f"{key}: an input that is not mapped (add it to the map)")
+    for key in sorted(set(expected) - set(actual)):
+        found.append(f"{key}: a mapped input that is missing")
+    for key in sorted(set(expected) & set(actual)):
+        if expected[key] != actual[key]:
+            found.append(f"{key}: reads {actual[key]}, must read {expected[key]}")
+    # the tier rule over every output a job reads, apart from the explicit map
+    jobs = yaml.safe_load(text)["jobs"]
+    for tier, other in (("staging", "production"), ("production", "staging")):
+        for job in (f"worker-{tier}", f"pages-{tier}"):
+            for ref in re.findall(
+                r"needs\.validate\.outputs\.([a-z0-9_]+)", yaml.safe_dump(jobs[job])
+            ):
+                if re.search(rf"(^{other}_|_{other}$)", ref) and not (
+                    job == "pages-staging" and ref == "production_pages_project"
+                ):
+                    found.append(f"{job}: reads the {other} output {ref}")
+    return found
+
+
+def test_each_deploy_input_reads_only_its_own_tiers_output() -> None:
+    assert binding_map_problems(deploy_text()) == []
+    # every validate output is either mapped or one of the two switches
+    outputs = set(yaml.safe_load(deploy_text())["jobs"]["validate"]["outputs"])
+    used = {v[1] for v in expected_bindings().values() if v[0] == "output"}
+    for name in outputs - used:
+        assert name.startswith("allow_"), f"validate output {name} is never used"
+
+
+def test_the_per_tier_binding_guard_bites() -> None:
+    good = deploy_text()
+    swaps = {
+        "worker_name": ("production_worker_name", "staging_worker_name"),
+        "d1_database_id": ("production_d1_database_id", "staging_d1_database_id"),
+        "ratelimit_namespace_id": (
+            "production_ratelimit_namespace_id",
+            "staging_ratelimit_namespace_id",
+        ),
+        "site_host": ("production_site_host", "staging_site_host"),
+        "zone_name": ("production_zone_name", "staging_zone_name"),
+        "doppler_identity_id": (
+            "doppler_identity_id_production",
+            "doppler_identity_id_staging",
+        ),
+    }
+    for key, (production, staging) in swaps.items():
+        # each job reads the other tier's output, in both directions
+        for want, wrong in ((production, staging), (staging, production)):
+            line = f"      {key}: ${{{{ needs.validate.outputs.{want} }}}}"
+            assert good.count(line) == 1, line
+            bad = good.replace(
+                line, f"      {key}: ${{{{ needs.validate.outputs.{wrong} }}}}"
+            )
+            assert binding_map_problems(bad), (key, want, wrong)
+    # the Pages project, in the check step and in the publish step
+    for tier, other in (("production", "staging"), ("staging", "production")):
+        line = f"PAGES_PROJECT: ${{{{ needs.validate.outputs.{tier}_pages_project }}}}"
+        assert good.count(line) >= 2
+        bad = good.replace(
+            line,
+            f"PAGES_PROJECT: ${{{{ needs.validate.outputs.{other}_pages_project }}}}",
+        )
+        assert binding_map_problems(bad), tier
+    # the secret-manager step of a Pages job
+    for tier, other in (("production", "staging"), ("staging", "production")):
+        line = (
+            f"identity-id: ${{{{ needs.validate.outputs.doppler_identity_id_{tier} }}}}"
+        )
+        assert line in good
+        assert binding_map_problems(good.replace(line, line.replace(tier, other)))
+    # a literal that names the tier is bound too
+    assert binding_map_problems(
+        good.replace("environment: production", "environment: staging")
+    )
+    assert binding_map_problems(
+        good.replace("doppler_config: prd", "doppler_config: dev")
+    )
+
+
+def test_a_new_deploy_input_fails_until_it_is_mapped() -> None:
+    good = deploy_text()
+    anchor = "      zone_name: ${{ needs.validate.outputs.production_zone_name }}\n"
+    assert anchor in good
+    extra = anchor + "      new_input: literal\n"
+    problems = binding_map_problems(good.replace(anchor, extra))
+    assert any("not mapped" in p and "new_input" in p for p in problems), problems
+    # a new validated value in a Pages step
+    env = (
+        '          WRANGLER_SEND_METRICS: "false"\n'
+        "        run: >-\n"
+        "          npx --no-install wrangler pages deploy ../../site-out\n"
+        '          --project-name "$PAGES_PROJECT"\n'
+        "          --branch main"
+    )
+    assert env in good
+    new_env = (
+        "          NEW_VALUE: ${{ needs.validate.outputs.production_site_host }}\n"
+    )
+    added = env.replace(
+        "          WRANGLER_SEND_METRICS",
+        new_env + "          WRANGLER_SEND_METRICS",
+        1,
+    )
+    problems = binding_map_problems(good.replace(env, added))
+    assert any("not mapped" in p and "NEW_VALUE" in p for p in problems), problems
+    # a new step that reads a validated value
+    step = (
+        "      - name: Publish the site to Pages\n"
+        "        working-directory: engine/worker\n"
+        "        env:\n"
+        "          CLOUDFLARE_API_TOKEN"
+    )
+    assert good.count(step) == 2
+    sneaky = (
+        "      - name: Extra\n        run: echo\n        env:\n"
+        "          X: ${{ needs.validate.outputs.staging_site_host }}\n" + step
+    )
+    assert any(
+        "Extra" in p for p in binding_map_problems(good.replace(step, sneaky, 1))
+    )
+
+
+def test_the_docs_say_exactly_when_staging_runs() -> None:
+    root = ROOT
+    for path in (
+        root / "docs" / "deploy.md",
+        root / "docs" / "instance-repos.md",
+        TEMPLATE / "README.md",
+        TEMPLATE / ".github" / "workflows" / "deploy.yml",
+    ):
+        text = path.read_text(encoding="utf-8")
+        assert "on every push to `main`" not in text, path
+        assert "every push to `main`, and" not in text, path
+        assert "runs on every push" not in text, path
+    deploy_doc = (root / "docs" / "deploy.md").read_text(encoding="utf-8")
+    start = deploy_doc.index("Staging runs")
+    assert "ALLOW_STAGING_DEPLOY" in deploy_doc[start : start + 400]
