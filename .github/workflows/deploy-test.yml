@@ -67,7 +67,7 @@ jobs:
     outputs:
       engine_sha256: ${{ steps.hash.outputs.engine_sha256 }}
     steps:
-      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+      - uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: audit # as in the build job: artifact hosts vary per run
 
@@ -127,7 +127,7 @@ jobs:
     # job-level env, on purpose.
     environment: counts-secrets
     steps:
-      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+      - uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           # audit, not block, for two reasons that cannot be listed: the wheels
           # artifact download goes to a blob host whose name varies per run
@@ -186,7 +186,7 @@ jobs:
       - name: Fetch count-source keys from Doppler
         id: doppler
         if: ${{ vars.DOPPLER_COUNTS_IDENTITY_ID != '' && vars.DOPPLER_COUNTS_PROJECT != '' && vars.DOPPLER_COUNTS_CONFIG != '' }}
-        uses: ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@01f397834f7acc553593abefbba135b18f580730 # v1.34.0
+        uses: ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@ff658b7c11a55eea1394af5fd1a3a1b4b09d9cd0 # v1.36.0
         with:
           project: ${{ vars.DOPPLER_COUNTS_PROJECT }}
           config: ${{ vars.DOPPLER_COUNTS_CONFIG }}
@@ -236,7 +236,7 @@ jobs:
     # No `environment` and no secrets here, on purpose: `pip install .` runs
     # dependency build scripts.
     steps:
-      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+      - uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           # audit, not block: artifact upload goes to a blob host whose name
           # varies per run and cannot be listed without a wildcard (unsupported
@@ -425,7 +425,7 @@ jobs:
     # No job-level env: the Cloudflare token is fetched from Doppler only after
     # the last install step, so no install script ever runs with it present.
     steps:
-      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+      - uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           # block, with an explicit list (no wildcards). The runner's own
           # infrastructure hosts are allowed by the agent. This list is
@@ -979,7 +979,7 @@ jobs:
       # from the GitHub `test` environment secret.
       - name: Fetch Cloudflare credentials from Doppler
         id: cf_doppler
-        uses: ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@01f397834f7acc553593abefbba135b18f580730 # v1.34.0
+        uses: ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@ff658b7c11a55eea1394af5fd1a3a1b4b09d9cd0 # v1.36.0
         with:
           project: reach-around
           config: dev
@@ -1215,7 +1215,7 @@ jobs:
     permissions:
       issues: write
     steps:
-      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+      - uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           # audit, as in the build job: the host list is not measured yet.
           egress-policy: audit

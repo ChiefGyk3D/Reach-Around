@@ -322,7 +322,7 @@ jobs:
       # and `required` fails the job when the secret manager gives nothing.
       - name: Fetch Cloudflare credentials from the secret manager
         id: cf_doppler
-        uses: ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@01f397834f7acc553593abefbba135b18f580730 # v1.34.0
+        uses: ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@ff658b7c11a55eea1394af5fd1a3a1b4b09d9cd0 # v1.36.0
         with:
           project: ${{ needs.validate.outputs.doppler_project }}
           config: dev
@@ -430,7 +430,7 @@ jobs:
 
       - name: Fetch Cloudflare credentials from the secret manager
         id: cf_doppler
-        uses: ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@01f397834f7acc553593abefbba135b18f580730 # v1.34.0
+        uses: ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@ff658b7c11a55eea1394af5fd1a3a1b4b09d9cd0 # v1.36.0
         with:
           project: ${{ needs.validate.outputs.doppler_project }}
           config: prd
