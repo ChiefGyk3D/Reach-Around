@@ -16,7 +16,7 @@ export type SessionVerdict = "ok" | "expired" | "error";
 
 /**
  * Decide whether verified token claims still open the gated routes. "expired" is a lead that is gone
- * or a cookie at or below the applicable floor; "error" is a storage read that failed (callers refuse).
+ * or a cookie at or below the applicable floor; "error" is a storage read that failed or a stored floor that is malformed (callers refuse).
  */
 export async function authorizeSession(db: D1Database, keys: readonly string[], claims: TokenClaims): Promise<SessionVerdict> {
   let floorMs: number | null;
@@ -31,6 +31,11 @@ export async function authorizeSession(db: D1Database, keys: readonly string[], 
   } catch {
     return "error";
   }
-  if (floorMs !== null && claims.iat <= Math.floor(floorMs / 1000)) return "expired"; // CONTROL:session-floor
+  if (floorMs === null) return "ok";
+  // The columns are STRICT integers with a CHECK, but a value that is not a non-negative safe integer
+  // (text, NaN, a fraction, a negative) must never open the session: NaN makes every comparison false.
+  // Fail closed as a storage error (callers refuse).
+  if (typeof floorMs !== "number" || !Number.isSafeInteger(floorMs) || floorMs < 0) return "error"; // CONTROL:session-floor-shape
+  if (claims.iat <= Math.floor(floorMs / 1000)) return "expired"; // CONTROL:session-floor
   return "ok";
 }

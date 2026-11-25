@@ -120,6 +120,24 @@ beforeEach(async () => {
   ]);
 });
 
+// A DB handle that records every statement prepared through it, so a test can prove the session check ran.
+function recordingDb(): { db: D1Database; sql: string[] } {
+  const sql: string[] = [];
+  const db = new Proxy(testEnv.DB, {
+    get(target, prop) {
+      if (prop === "prepare") {
+        return (q: string) => {
+          sql.push(q);
+          return target.prepare(q);
+        };
+      }
+      const v = Reflect.get(target, prop) as unknown;
+      return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+    },
+  });
+  return { db: db as D1Database, sql };
+}
+
 describe("session checks (the same rules as the view route)", () => {
   const sessionCookie = async (over: { lid?: string; key?: string; iat?: number } = {}) => cookie(over);
   async function refused(c: string, e: InquiryEnv = baseEnv()) {
@@ -133,10 +151,27 @@ describe("session checks (the same rules as the view route)", () => {
     expect(row?.n).toBe(before);
   }
 
-  it("accepts a stored lead with no floor", async () => {
-    const { res, f } = await post({ cookie: await sessionCookie() });
+  it("reads the stored lead before it delivers (fails without the session check)", async () => {
+    const rec = recordingDb();
+    const { res, f } = await post({ cookie: await sessionCookie() }, baseEnv({ DB: rec.db }));
     expect(res.headers.get("location")).toBe(INQUIRY_SENT_ROUTE);
     expect(f.calls).toHaveLength(1);
+    expect(rec.sql.some((q) => /FROM leads WHERE id/.test(q))).toBe(true);
+  });
+  it("answers 503 and delivers nothing when the session read fails", async () => {
+    const lim = limiter();
+    const boom = new Proxy(testEnv.DB, {
+      get(target, prop) {
+        if (prop === "prepare") return () => { throw new Error("d1 down"); };
+        const v = Reflect.get(target, prop) as unknown;
+        return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+      },
+    }) as D1Database;
+    const { res, f } = await post({}, baseEnv({ DB: boom, INQUIRY_LIMITER: lim }));
+    expect(res.status).toBe(503);
+    expect(f.calls).toHaveLength(0);
+    const row = await testEnv.DB.prepare("SELECT COALESCE(SUM(count), 0) AS n FROM counters WHERE key = 'inquiry'").first<{ n: number }>();
+    expect(row?.n).toBe(0);
   });
   it("refuses a cookie for a lead that no longer exists", async () => {
     await testEnv.DB.prepare("DELETE FROM leads WHERE id = ?").bind(LEAD_ID).run();
@@ -154,8 +189,11 @@ describe("session checks (the same rules as the view route)", () => {
   });
   it("applies the kit-wide floor to an unstored unlock", async () => {
     const lid = await mintUnstoredId(KEY);
-    const ok = await post({ cookie: await sessionCookie({ lid }) });
+    await setUnstoredSessionFloor(testEnv.DB, T0 - 120_000);
+    const rec = recordingDb();
+    const ok = await post({ cookie: await sessionCookie({ lid }) }, baseEnv({ DB: rec.db }));
     expect(ok.res.headers.get("location")).toBe(INQUIRY_SENT_ROUTE);
+    expect(rec.sql.some((q) => /FROM kit_meta/.test(q))).toBe(true);
     await setUnstoredSessionFloor(testEnv.DB, T0);
     await refused(await sessionCookie({ lid }));
   });
@@ -164,9 +202,19 @@ describe("session checks (the same rules as the view route)", () => {
     const lid = await mintUnstoredId(OLD);
     const rotated = baseEnv({ TOKEN_HMAC_KEY: KEY, TOKEN_HMAC_KEY_PREVIOUS: OLD });
     const c = await sessionCookie({ lid, key: OLD });
-    expect((await post({ cookie: c }, rotated)).res.headers.get("location")).toBe(INQUIRY_SENT_ROUTE);
     await setUnstoredSessionFloor(testEnv.DB, T0);
+    // Only a recognized unstored id is held to the kit-wide floor: refused here, and the lead table
+    // (which has no such row) is not what refused it. Deleting the session check lets this through.
     await refused(c, rotated);
+  });
+  it("accepts an unstored unlock minted under the previous key while no floor is set", async () => {
+    const OLD = "o".repeat(40);
+    const lid = await mintUnstoredId(OLD);
+    const rec = recordingDb();
+    const rotated = baseEnv({ DB: rec.db, TOKEN_HMAC_KEY: KEY, TOKEN_HMAC_KEY_PREVIOUS: OLD });
+    const c = await sessionCookie({ lid, key: OLD });
+    expect((await post({ cookie: c }, rotated)).res.headers.get("location")).toBe(INQUIRY_SENT_ROUTE);
+    expect(rec.sql.some((q) => /FROM kit_meta/.test(q))).toBe(true);
   });
 });
 
