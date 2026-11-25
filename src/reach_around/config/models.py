@@ -181,8 +181,20 @@ RESERVED_SPOKE_IDS = frozenset(
 )
 GroupStyle = Literal["buttons", "rows", "icons"]
 Intent = Literal[
-    "watch", "videos", "follow", "community", "support", "work", "shop", "blog"
+    "watch",
+    "videos",
+    "follow",
+    "community",
+    "support",
+    "work",
+    "shop",
+    "blog",
+    "gear",
+    "more",
+    "hire",
 ]
+# ``compact`` draws every group as a grid of icon-over-label tiles (#873).
+PageDensity = Literal["comfortable", "compact"]
 
 
 class PageStatus(_Model):
@@ -239,6 +251,9 @@ class Page(_Model):
     watch: list[Slug] = Field(default_factory=list)
     featured: PageFeatured | None = None
     live_badges: StrictBool = False
+    # Only read by ``page.layout: stack``. ``compact`` draws every group as a
+    # labeled grid of icon-over-label tiles that fits a phone screen (#873).
+    density: PageDensity = "comfortable"
     # The site's own https origin, with no path. Only read by ``page.layout:
     # stack``: it makes the canonical link of the home page and every spoke page.
     url: HttpsUrl | None = None
@@ -356,6 +371,9 @@ class Tab(_Model):
     # Only read by ``page.layout: stack``: render the group as its own page at
     # ``/<id>/`` with a single card on the home page that links to it.
     spoke: bool = False
+    # Only read by ``page.density: compact``: tiles per row, 1 to 6. Unset, the
+    # engine picks from the link count (a short last row is stretched).
+    columns: Annotated[int, Field(strict=True, ge=1, le=6)] | None = None
     blocks: list[Block]
 
 
@@ -653,7 +671,10 @@ class SiteConfig(_Model):
     def _smart_stack_is_complete(self) -> SiteConfig:
         """The smart stack uses tabs as ordered groups and links as its items."""
         page = self.page
+        compact = page.density == "compact"
         if page.layout == "classic":
+            if compact:
+                raise ValueError("page.density needs page.layout: stack")
             if page.featured is not None:
                 raise ValueError("page.featured needs page.layout: stack")
             if page.live_badges:
@@ -661,6 +682,10 @@ class SiteConfig(_Model):
             if page.url is not None:
                 raise ValueError("page.url needs page.layout: stack")
             for tab in self.tabs:
+                if tab.columns is not None:
+                    raise ValueError(
+                        f"tab {tab.id!r}: columns needs page.density: compact"
+                    )
                 if tab.spoke:
                     raise ValueError(f"tab {tab.id!r}: spoke needs page.layout: stack")
                 if tab.collapsed:
@@ -674,6 +699,10 @@ class SiteConfig(_Model):
             raise ValueError("page.status is required for page.layout: stack")
         if self.theme.mode == "light":
             raise ValueError("page.layout: stack requires the dark theme")
+        if compact and page.featured is not None:
+            raise ValueError(
+                "page.featured is not available with page.density: compact"
+            )
         if len(page.watch) != 2:
             raise ValueError("page.watch must contain exactly two link ids")
         watch_tabs = [tab for tab in self.tabs if tab.intent == "watch"]
@@ -690,6 +719,18 @@ class SiteConfig(_Model):
             if tab.intent in intents:
                 raise ValueError(f"tab intent {tab.intent!r} may appear only once")
             intents.add(tab.intent)
+            if tab.columns is not None and not compact:
+                raise ValueError(f"tab {tab.id!r}: columns needs page.density: compact")
+            if compact and tab.intent == "watch" and tab.columns is not None:
+                raise ValueError(
+                    f"tab {tab.id!r}: the Watch group sets no columns "
+                    "(its column count is automatic)"
+                )
+            if compact and (tab.spoke or tab.collapsed or tab.style != "buttons"):
+                raise ValueError(
+                    f"tab {tab.id!r}: page.density: compact shows every link, so "
+                    "it takes no spoke, collapsed or style"
+                )
             if tab.spoke:
                 if tab.intent == "watch":
                     raise ValueError("the Watch group cannot be a spoke page")
@@ -741,6 +782,11 @@ class SiteConfig(_Model):
             if tab.spoke and not group_links:
                 raise ValueError(
                     f"tab {tab.id!r}: a spoke page needs at least one link"
+                )
+            if compact and not 2 <= len(group_links) <= 6:
+                raise ValueError(
+                    f"tab {tab.id!r} must contain 2 to 6 links "
+                    "for page.density: compact"
                 )
             if (
                 tab.intent != "watch"

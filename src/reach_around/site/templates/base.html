@@ -26,6 +26,9 @@
 {% if smart_stack is defined and smart_stack %}
 <link rel="stylesheet" href="{{ root }}{{ asset("static/smart-stack.css") }}">
 {% endif %}
+{% if smart_compact is defined and smart_compact %}
+<link rel="stylesheet" href="{{ root }}{{ asset("static/smart-compact.css") }}">
+{% endif %}
 {% if has_crypto %}
 <link rel="stylesheet" href="{{ root }}{{ asset("static/crypto.css") }}">
 {% endif %}

@@ -1,0 +1,169 @@
+# Synthetic example of the compact link grid (#873). Every name and URL here is
+# made up. Build it with: reach-around build examples/instance/site-link-grid.yaml
+# See docs/config.md, "Compact grid" under `page`.
+#
+# Every link is one icon-over-label tile, every group is named and open, and
+# nothing is collapsed or behind a tab. The page fits a phone screen without
+# scrolling at 390x844, 390x664 and 360x640. Dark only.
+version: 1
+timezone: America/New_York
+creator:
+  name: Example Creator
+  header: compact
+  avatar: media/mascot.svg
+  favicon: media/mascot.svg
+theme:
+  mode: dark
+  mascot: media/mascot.svg
+  mascot_opacity: 0.08
+  button_style: square
+  radius: 0.25rem
+disclosure: This page uses affiliate links. Example Creator may earn a commission.
+features:
+  click_tracking: true
+page:
+  layout: stack
+  # compact: icon-over-label tiles that fit one phone screen. The default,
+  # comfortable, is the deck with link cards and subtitles.
+  density: compact
+  status:
+    text: Live Friday at 8 PM Eastern
+  # The Twitch and Kick tiles carry the same treatment (and the LIVE badge when
+  # live_badges is on). Other links in the watch group, such as YouTube Live,
+  # get the same tile.
+  watch: [live-twitch, live-kick]
+tabs:
+  - id: watch
+    title: Live now
+    intent: watch
+    blocks:
+      - id: live-twitch
+        title: Twitch
+        url: https://example.invalid/live-twitch
+        icon: twitch
+      - id: live-kick
+        title: Kick
+        url: https://example.invalid/live-kick
+        icon: kick
+      - id: live-youtube
+        title: YouTube Live
+        url: https://example.invalid/live-youtube
+        icon: youtube
+  - id: videos
+    title: Videos
+    intent: videos
+    blocks:
+      - id: videos-youtube
+        title: YouTube
+        url: https://example.invalid/videos-youtube
+        icon: youtube
+      - id: videos-tiktok
+        title: TikTok
+        url: https://example.invalid/videos-tiktok
+        icon: tiktok
+      - id: videos-instagram
+        title: Instagram
+        url: https://example.invalid/videos-instagram
+        icon: instagram
+  - id: follow
+    title: Follow
+    intent: follow
+    blocks:
+      - id: follow-bluesky
+        title: Bluesky
+        url: https://example.invalid/follow-bluesky
+        icon: bluesky
+      - id: follow-mastodon
+        title: Mastodon
+        url: https://example.invalid/follow-mastodon
+        icon: mastodon
+      - id: follow-x
+        title: X
+        url: https://example.invalid/follow-x
+        icon: x
+      - id: follow-threads
+        title: Threads
+        url: https://example.invalid/follow-threads
+        icon: threads
+      - id: follow-facebook
+        title: Facebook
+        url: https://example.invalid/follow-facebook
+        icon: facebook
+  - id: community
+    title: Chat
+    intent: community
+    blocks:
+      - id: community-discord
+        title: Discord
+        url: https://example.invalid/community-discord
+        icon: discord
+      - id: community-matrix
+        title: Matrix
+        url: https://example.invalid/community-matrix
+        icon: matrix
+      - id: community-telegram
+        title: Telegram
+        url: https://example.invalid/community-telegram
+        icon: telegram
+  - id: support
+    title: Support
+    intent: support
+    # columns: tiles per row, 1 to 6. Unset, five links or fewer share one row.
+    columns: 3
+    blocks:
+      - id: support-patreon
+        title: Patreon
+        url: https://example.invalid/support-patreon
+        icon: patreon
+      - id: support-ko-fi
+        title: Ko-fi
+        url: https://example.invalid/support-ko-fi
+        icon: kofi
+      - id: support-stream-tip
+        title: Stream tip
+        url: https://example.invalid/support-stream-tip
+        icon: streamelements
+      - id: support-merch
+        title: Merch
+        url: https://example.invalid/support-merch
+        icon: merch
+      - id: support-crypto
+        title: Crypto
+        url: https://example.invalid/support-crypto
+        icon: bitcoin
+  - id: gear
+    title: Gear I Use
+    intent: gear
+    blocks:
+      - id: gear-radio
+        title: Radio
+        url: https://example.invalid/gear-radio
+        icon: radio
+      - id: gear-security
+        title: Security
+        url: https://example.invalid/gear-security
+        icon: shield
+      - id: gear-creator
+        title: Creator
+        url: https://example.invalid/gear-creator
+        icon: tools
+  - id: more
+    title: More
+    intent: more
+    blocks:
+      - id: more-website
+        title: Website
+        url: https://example.invalid/more-website
+        icon: website
+      - id: more-github
+        title: GitHub
+        url: https://example.invalid/more-github
+        icon: github
+      - id: more-email
+        title: Email
+        url: https://example.invalid/more-email
+        icon: email
+      - id: more-rss
+        title: RSS
+        url: https://example.invalid/more-rss
+        icon: rss

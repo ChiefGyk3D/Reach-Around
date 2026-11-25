@@ -1,0 +1,13 @@
+-- SPDX-License-Identifier: Apache-2.0
+-- Page view rollup: an explicit "re-roll closed" state per (site, day).
+--
+--   reroll_closed  0 = a late row may still re-roll the day, 1 = the day will
+--                  never be re-rolled again: a late row of a closed day only
+--                  advances max_id and is counted as dropped.
+--
+-- A day closes when a late batch is dropped (the purge already took some of the
+-- rows its aggregates count) and when the seal window ends (48 hours after the
+-- ROLLUP_GRACE_HOURS grace period). Existing rows stay open (the default); the
+-- rollup still checks that every counted raw row exists before it re-rolls.
+-- A plain column add: no data is deleted and no row is rewritten.
+ALTER TABLE view_rollup_log ADD COLUMN reroll_closed INTEGER NOT NULL DEFAULT 0 CHECK (reroll_closed IN (0, 1));

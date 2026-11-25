@@ -34,7 +34,8 @@ describe("migration 0008", () => {
         m.name >= "0009" &&
         m.name !== "0010_click_source.sql" &&
         m.name !== "0011_click_funnel.sql" &&
-        m.name !== "0016_destination_kind.sql",
+        m.name !== "0016_destination_kind.sql" &&
+        m.name !== "0018_rollup_reroll_closed.sql",
     );
     for (const m of later) {
       expect(m.queries.join("\n")).not.toMatch(/\bview_(events|daily|dim_daily|geo_daily|rollup_log|meta)\b|\bclick_events\b|\bvisitor_seen\b/);

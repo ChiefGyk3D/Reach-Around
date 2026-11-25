@@ -173,6 +173,14 @@ Run these steps in order:
      --out-dir ~/private/kit-public --isolation netns --overwrite
    ```
 
+   The owner-only measures file for the sponsor page comes from the same build,
+   into its own owner-only directory (never the site or gated output):
+
+   ```bash
+   reach-around kit private-measures --config site.yaml --site-out site-out \
+     --gated-out gated-out --out-dir ~/private/kit-measures --overwrite
+   ```
+
 7. Check the aggregate lead count and the last successful purge time. The
    second value is epoch milliseconds. If it is older than the expected hourly
    run, follow [lead retention](privacy.md#how-long-it-is-kept) before treating

@@ -221,6 +221,13 @@ a:focus-visible, summary:focus-visible, button:focus-visible {
 .icon-solana { -webkit-mask-image: url("icons/solana.svg"); mask-image: url("icons/solana.svg"); }
 .icon-streamelements { -webkit-mask-image: url("icons/streamelements.svg"); mask-image: url("icons/streamelements.svg"); }
 .icon-pixelfed { -webkit-mask-image: url("icons/pixelfed.svg"); mask-image: url("icons/pixelfed.svg"); }
+.icon-facebook { -webkit-mask-image: url("icons/facebook.svg"); mask-image: url("icons/facebook.svg"); }
+.icon-kofi { -webkit-mask-image: url("icons/kofi.svg"); mask-image: url("icons/kofi.svg"); }
+.icon-telegram { -webkit-mask-image: url("icons/telegram.svg"); mask-image: url("icons/telegram.svg"); }
+.icon-website { -webkit-mask-image: url("icons/website.svg"); mask-image: url("icons/website.svg"); }
+.icon-radio { -webkit-mask-image: url("icons/radio.svg"); mask-image: url("icons/radio.svg"); }
+.icon-shield { -webkit-mask-image: url("icons/shield.svg"); mask-image: url("icons/shield.svg"); }
+.icon-tools { -webkit-mask-image: url("icons/tools.svg"); mask-image: url("icons/tools.svg"); }
 
 
 /* Header: avatar at the left, the name beside it, the social icons below the name. */

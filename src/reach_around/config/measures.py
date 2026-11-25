@@ -656,6 +656,45 @@ def source_level(field: str) -> MeasureVisibility:
     return narrow(kit.KIT_FIELD_POLICY[field].visibility, kit.DISPLAY_POLICY[field])
 
 
+def is_source_field(name: str) -> bool:
+    """Whether ``name`` is a config field with a policy in both tables, the same
+    two tables ``source_level`` reads (so ``source_level(name)`` cannot raise). The
+    one question other modules may ask about the policy tables; they never read
+    the tables."""
+    from reach_around.config import kit
+
+    return name in kit.KIT_FIELD_POLICY and name in kit.DISPLAY_POLICY
+
+
+@dataclass(frozen=True)
+class MeasureBuilder:
+    """One function that constructs ``Measure`` objects, and the config fields
+    whose policy bounds what it builds (empty when the entry names its own
+    field, as the hand-kept entries do)."""
+
+    module: str
+    function: str
+    fields: tuple[str, ...]
+
+
+# The list of the functions that build a ``Measure`` from config. The real fix
+# is that every builder derives visibility through ``source_level`` and none reads
+# ``KIT_FIELD_POLICY`` or ``DISPLAY_POLICY``. This list and the tests over it are
+# regression protection, not a proof: ``tests/config/test_kit_measures.py`` runs
+# every entry, with every measure it can emit, under a narrowed policy, and a
+# static scan flags an unlisted builder where it can see one (best effort; it
+# cannot see ``getattr`` or ``type(...)``). A new builder is added here.
+MEASURE_BUILDERS: tuple[MeasureBuilder, ...] = (
+    MeasureBuilder("measures", "numbers_measures", ("metrics",)),
+    MeasureBuilder("measures", "analytics_measures", ("analytics",)),
+    MeasureBuilder("measures", "live_measures", ("live",)),
+    MeasureBuilder("measures", "engagement_measures", ("engagement",)),
+    MeasureBuilder("fediverse", "fediverse_measures", ("fediverse",)),
+    MeasureBuilder("channels", "channel_measures", ("channels",)),
+    MeasureBuilder("handkept", "to_measure", ()),
+)
+
+
 def _entry(key: str) -> MeasureDef:
     return REGISTRY[key]
 
@@ -737,9 +776,7 @@ def live_measures(rows: Iterable[LiveRow]) -> list[Measure]:
     """The typed live figures: one measure per figure the owner entered, each with
     its period and the hand-kept label. A figure left out is not a measure; it is
     never zeroed."""
-    from reach_around.config.kit import KIT_FIELD_POLICY
-
-    source = KIT_FIELD_POLICY["live"].visibility
+    source = source_level("live")
     out: list[Measure] = []
     for row in rows:
         period = (
