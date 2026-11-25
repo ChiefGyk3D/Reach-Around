@@ -1169,8 +1169,68 @@ _REASONS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
         (r"^players must list both", "players must list both twitch and kick"),
         (r"^set both channels and events", "set both channels and events, or neither"),
         (r"more than once", "an entry is listed more than once"),
+        (
+            r"^an internal tab: link cannot be an affiliate link",
+            "an internal tab: link cannot be an affiliate link",
+        ),
+        (
+            r"^internal links must use the lowercase scheme",
+            "internal links must use the lowercase scheme tab:",
+        ),
+        (
+            r"^internal link must look like",
+            "internal link must look like tab:<tab-id> or tab:<tab-id>#<fragment>",
+        ),
+        (
+            r"^a profile card needs tags or a button",
+            "a profile card needs tags or a button",
+        ),
+        (r"^unknown tab ", "unknown tab: use the id of a tab in this file"),
+        (r"matches no platforms item", "matches no platforms item"),
+        (r"^platform .* has two sources", "a platform has two sources"),
+        (
+            r"^show_on_hub: false must be keyed by",
+            "show_on_hub: false must be keyed by a platform, not an item id",
+        ),
+        (
+            r"^show_on_hub: false needs a kit metric",
+            "show_on_hub: false needs a kit metric with source: counts "
+            "for the same platform",
+        ),
     )
 )
+
+# A model-level validator names the setting it means at the front of its message
+# (``tabs[0].blocks[0].url: ...``), built from list indexes and setting names by
+# code. Such a prefix is printed only when it is made of index numbers and
+# names the schema defines; the rest is matched, never copied.
+_REASON_PATH = re.compile(r"^([a-z_]+(?:\[\d{1,4}\]|\.[a-z_]+)*): ")
+MAX_LOCATED_REASONS = 20
+MAX_LOCATED_SCAN = 4_000
+
+
+def _located_reasons(reason: str) -> list[tuple[str, str]]:
+    """The (path, fixed text) pairs of a validator message that names settings.
+
+    Returns an empty list when the message does not start with a path made of
+    schema names and indexes, so an unmatched message prints the generic text.
+    """
+    head = reason[:MAX_LOCATED_SCAN].removeprefix("Value error, ")
+    found: list[tuple[str, str]] = []
+    for piece in head.split("; ")[:MAX_LOCATED_REASONS]:
+        hit = _REASON_PATH.match(piece)
+        if hit is None:
+            # A continuation (``valid tab ids: ...``) belongs to the piece before.
+            continue
+        path = hit.group(1)
+        names = re.findall(r"[a-z_]+", path)
+        if any(name not in schema_field_names() for name in names):
+            return []
+        text = error_message("value_error", piece[hit.end() :])
+        if text == _ERROR_TEXT["value_error"]:
+            return []
+        found.append((path, text))
+    return found
 
 
 def error_message(error_type: str, reason: str = "") -> str:
@@ -1206,7 +1266,14 @@ def problem_text(exc: ValidationError) -> str:
         MAX_REPORTED_PROBLEMS,
     ):
         where = _dotted(err["loc"], unknown_last=err.get("type") == "extra_forbidden")
-        msg = error_message(str(err.get("type", "")), str(err.get("msg", "")))
+        kind, reason = str(err.get("type", "")), str(err.get("msg", ""))
+        located = _located_reasons(reason) if kind == "value_error" else []
+        if located:
+            for path, text in located:
+                full = f"{where}.{path}" if where else path
+                problems.append(f"{full}: {text}")
+            continue
+        msg = error_message(kind, reason)
         problems.append(f"{where}: {msg}" if where else msg)
     extra = total - len(problems)
     text = "; ".join(problems)

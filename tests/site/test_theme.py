@@ -14,7 +14,12 @@ import yaml
 from assetpaths import asset, read
 from reach_around.config import ConfigError, SiteConfig, load_site_config
 from reach_around.site.build import build_site
-from reach_around.site.theme import ALLOWED_PROPERTIES, theme_css
+from reach_around.site.theme import (
+    ALLOWED_PROPERTIES,
+    check_color,
+    check_font,
+    theme_css,
+)
 
 TODAY = date(2027, 3, 10)
 ROOT = Path(__file__).resolve().parents[2]
@@ -105,7 +110,15 @@ def test_color_values_are_validated_good(tmp_path: Path, value: str) -> None:
 def test_color_values_are_validated_bad(
     tmp_path: Path, value: str, reason: str
 ) -> None:
-    assert reason in color(tmp_path, value)
+    # The loader prints a fixed sentence and never the value; the specific
+    # reason is the validator's own, so it is asserted on the validator.
+    with pytest.raises(ValueError, match=re.escape(reason)):
+        check_color(value)
+    message = color(tmp_path, value)
+    assert message.endswith(
+        "this value is not allowed; run reach-around check for the reason"
+    )
+    assert "theme.colors: " in message
 
 
 @pytest.mark.parametrize(
@@ -115,7 +128,9 @@ def test_color_values_are_validated_bad(
 def test_color_values_outside_the_allowlist_are_refused(
     tmp_path: Path, value: str
 ) -> None:
-    assert "theme.colors: bg:" in color(tmp_path, value)
+    with pytest.raises(ValueError):
+        check_color(value)
+    assert "theme.colors: " in color(tmp_path, value)
 
 
 @pytest.mark.parametrize(
@@ -125,13 +140,16 @@ def test_color_values_outside_the_allowlist_are_refused(
 def test_a_value_with_a_comment_or_backslash_escape_is_refused(
     tmp_path: Path, value: str
 ) -> None:
-    message = color(tmp_path, value)
-    assert "comment" in message or "backslash" in message
+    with pytest.raises(ValueError, match="comment|backslash"):
+        check_color(value)
+    assert "theme.colors: " in color(tmp_path, value)
 
 
 def test_only_known_token_names_are_emitted(tmp_path: Path) -> None:
     for key in ("--ra-evil", "bg;x", "BG", "bg-image", ""):
-        assert "unknown color" in refused(tmp_path, {"colors": {key: "red"}})
+        message = refused(tmp_path, {"colors": {key: "red"}})
+        assert "theme.colors: " in message
+        assert key not in message or key == ""  # a hostile key is never echoed
     css = css_for(
         tmp_path,
         {
@@ -205,9 +223,13 @@ def test_fonts_are_system_stacks_or_local_files(tmp_path: Path) -> None:
         "Georgia, }",
     ):
         refused(tmp_path, {"fonts": {"body": bad}})
-    assert "third-party" in refused(
+    with pytest.raises(ValueError, match="third-party"):
+        check_font("https://fonts.example.com/f.woff2")
+    message = refused(
         tmp_path, {"fonts": {"body": "https://fonts.example.com/f.woff2"}}
     )
+    assert "theme.fonts.body: " in message
+    assert "fonts.example.com" not in message
 
 
 # --- background -------------------------------------------------------------
