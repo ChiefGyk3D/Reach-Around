@@ -1,1 +1,0 @@
-- The instance template's `scripts/read-lock.sh --release` accepts a release-candidate tag `vX.Y.Z-rc.N` as well as `vX.Y.Z` (#694). The grammar is `^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$` over the whole value and nothing else passes (no other suffix, no whitespace, no newline); the `# vX.Y.Z[-rc.N]` comment on `ENGINE_REF` follows the same grammar.
