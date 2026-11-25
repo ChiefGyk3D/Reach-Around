@@ -11,7 +11,7 @@ from __future__ import annotations
 import itertools
 import re
 from collections.abc import Iterator
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -88,7 +88,15 @@ MAX_CONFIG_DEPTH = 64
 # short. Counting the errors is cheap and builds nothing; a longer list is
 # reported as a count only.
 MAX_MATERIALIZED_PROBLEMS = 1_000
-_LEAVES = (str, int, float, bool, date)
+# Scalar size. The node budget counts a value once however large it is, so the
+# text and numbers are also bounded: one scalar at most MAX_SCALAR_CHARS long,
+# and all text, mapping keys and integer digits together at most
+# MAX_CONFIG_SCALAR_CHARS (a value reached twice counts twice).
+MAX_SCALAR_CHARS = 65_536
+MAX_CONFIG_SCALAR_CHARS = 262_144
+# Only these exact types are plain values; a subclass (a StrEnum, an IntEnum, a
+# str subclass with its own methods) is refused, not trusted.
+_FIXED_SIZE_LEAVES = (float, bool, date, datetime)
 # Error locations: a path segment can be a key the file's author typed, so it is
 # escaped and cut, and a long path shows only its first segments.
 MAX_LOC_SEGMENT_CHARS = 40
@@ -589,6 +597,23 @@ def _refuse_config(message: str) -> None:
     raise ValueError(message)
 
 
+def _scalar_size(value: str | int) -> int:
+    """The size of a text (its length) or an integer (its decimal digits).
+
+    Both are O(1) to read (an integer's digits come from its bit length, a
+    slight over-count), and a scalar over ``MAX_SCALAR_CHARS`` is refused here,
+    before anything reads it.
+    """
+    size = (
+        len(value)
+        if isinstance(value, str)
+        else (value.bit_length() * 30103 // 100000 + 1)
+    )
+    if size > MAX_SCALAR_CHARS:
+        _refuse_config(f"a value in the config is longer than {MAX_SCALAR_CHARS}")
+    return size
+
+
 def check_config_budget(raw: object, limit: int = MAX_CONFIG_NODES) -> None:
     """Refuse a parsed document that is too big, too deep or of a wrong shape.
 
@@ -604,10 +629,16 @@ def check_config_budget(raw: object, limit: int = MAX_CONFIG_NODES) -> None:
     an alias bomb is its expanded size. The walk is iterative (no recursion),
     stops at the first node over ``limit`` or over ``MAX_CONFIG_DEPTH`` levels,
     and cannot loop on a cycle (each visit is counted), so the work is bounded
-    by ``limit`` whatever the input. Messages are fixed: they never repeat a
-    value from the document.
+    by ``limit`` whatever the input. Only exact ``str``, ``int``, ``float``,
+    ``bool``, ``date`` and ``datetime`` scalars are allowed (a subclass is
+    refused). The size of the scalars is bounded too: a text or key over
+    ``MAX_SCALAR_CHARS`` characters, an integer over that many digits, or more
+    than ``MAX_CONFIG_SCALAR_CHARS`` of them in all is refused, so work is
+    bounded by size and not only by count. Messages are fixed: they never
+    repeat a value from the document.
     """
     seen = 0
+    size = 0
     stack: list[tuple[object, int]] = [(raw, 1)]
     while stack:
         node, depth = stack.pop()
@@ -623,14 +654,22 @@ def check_config_budget(raw: object, limit: int = MAX_CONFIG_NODES) -> None:
             for key, value in node.items():
                 if type(key) is not str:
                     _refuse_config("a mapping key in the config is not text")
+                size += _scalar_size(key)
                 stack.append((value, depth + 1))
         elif type(node) is list:
             if seen + len(node) > limit:
                 seen += len(node)
                 break
             stack.extend((item, depth + 1) for item in node)
-        elif not (node is None or isinstance(node, _LEAVES)):
+        elif type(node) is str or type(node) is int:
+            size += _scalar_size(node)
+        elif not (node is None or type(node) in _FIXED_SIZE_LEAVES):
             _refuse_config("the config holds a value of a type that is not allowed")
+        if size > MAX_CONFIG_SCALAR_CHARS:
+            _refuse_config(
+                f"the config holds more than {MAX_CONFIG_SCALAR_CHARS} characters "
+                "of text and numbers; shorten or remove entries"
+            )
         if seen > limit:
             break
     if seen > limit:
@@ -1071,6 +1110,115 @@ def _dotted(loc: tuple[int | str, ...], *, unknown_last: bool = False) -> str:
     return out
 
 
+# What a printed problem says, by pydantic error type. The text of a problem is
+# never taken from pydantic's own message (or a validator's ValueError), because
+# those can repeat the value you wrote, at any length. An unknown type prints
+# ``_UNKNOWN_PROBLEM``. ``reach-around check`` gives the specific reason.
+_UNKNOWN_PROBLEM = "invalid value"
+_ERROR_TEXT: dict[str, str] = {
+    "missing": "this field is required",
+    "extra_forbidden": "this field is not allowed",
+    "value_error": "this value is not allowed; run reach-around check for the reason",
+    "assertion_error": "this value is not allowed",
+    "string_type": "must be text",
+    "string_too_short": "is too short",
+    "string_too_long": "is too long",
+    "string_pattern_mismatch": "is not in the expected form",
+    "too_short": "has too few items",
+    "too_long": "has too many items",
+    "list_type": "must be a list",
+    "dict_type": "must be a mapping",
+    "model_type": "must be a mapping",
+    "model_attributes_type": "must be a mapping",
+    "bool_type": "must be true or false",
+    "bool_parsing": "must be true or false",
+    "int_type": "must be a whole number",
+    "int_parsing": "must be a whole number",
+    "int_from_float": "must be a whole number",
+    "float_type": "must be a number",
+    "float_parsing": "must be a number",
+    "finite_number": "must be a finite number",
+    "greater_than": "is too small",
+    "greater_than_equal": "is too small",
+    "less_than": "is too large",
+    "less_than_equal": "is too large",
+    "literal_error": "is not one of the allowed choices",
+    "enum": "is not one of the allowed choices",
+    "union_tag_invalid": "is not one of the allowed kinds",
+    "union_tag_not_found": "needs a kind",
+    "block_type": "must be a mapping",
+    "date_type": "must be a date",
+    "date_parsing": "must be a date",
+    "date_from_datetime_parsing": "must be a date",
+    "date_from_datetime_inexact": "must be a date",
+    "none_required": "must be empty",
+    "url_type": "must be a URL",
+    "url_parsing": "must be a URL",
+}
+
+
+# For a ``value_error`` (a validator's ValueError) the type alone says little, so
+# the first MAX_REASON_SCAN characters of pydantic's message are only *matched*
+# against these patterns, and the text printed is the fixed sentence beside the
+# matching pattern. Nothing from the message is ever copied; a message that
+# matches none (or one a hostile value spoofs into a different sentence) prints
+# the generic ``value_error`` text. ``reach-around check`` has the full list.
+MAX_REASON_SCAN = 200
+_REASONS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
+    (re.compile(pattern), text)
+    for pattern, text in (
+        (
+            r"^the config holds more than \d+ values",
+            f"the config holds more than {MAX_CONFIG_NODES} values; "
+            "split it or remove entries",
+        ),
+        (
+            r"^the config is nested more than",
+            f"the config is nested more than {MAX_CONFIG_DEPTH} levels deep",
+        ),
+        (
+            r"^the config holds more than \d+ characters",
+            f"the config holds more than {MAX_CONFIG_SCALAR_CHARS} characters "
+            "of text and numbers",
+        ),
+        (
+            r"^a value in the config is longer than",
+            f"a value in the config is longer than {MAX_SCALAR_CHARS}",
+        ),
+        (r"^a mapping key in the config is not text", "a mapping key is not text"),
+        (
+            r"^the config holds a value of a type",
+            "the config holds a value of a type that is not allowed",
+        ),
+        (r"^url must start with https://", "url must start with https://"),
+        (r"^url must include a host name", "url must include a host name"),
+        (r"^url must not contain a user name", "url must not hold a user name"),
+        (r"^url must not contain spaces", "url must not hold spaces"),
+        (r"^url is (longer|not valid)", "url is not valid"),
+        (r"^duplicate id", "an id is used more than once: ids must be unique"),
+        (r"^show_until must not be before", "show_until must not be before show_from"),
+        (r"^unknown time zone", "unknown time zone"),
+        (r"only one live block", "a site may have only one live block"),
+        (r"^a live block needs page_layout", "a live block needs page_layout: tabs"),
+        (r"^players must list both", "players must list both twitch and kick"),
+        (r"^set both channels and events", "set both channels and events, or neither"),
+        (r"more than once", "an entry is listed more than once"),
+    )
+)
+
+
+def error_message(error_type: str, reason: str = "") -> str:
+    """The fixed, value-free text for a pydantic error type.
+
+    ``reason`` (a ``value_error``'s message) is only matched, never printed."""
+    if error_type == "value_error":
+        head = reason[:MAX_REASON_SCAN].removeprefix("Value error, ")
+        for pattern, text in _REASONS:
+            if pattern.search(head):
+                return text
+    return _ERROR_TEXT.get(error_type, _UNKNOWN_PROBLEM)
+
+
 def problem_text(exc: ValidationError) -> str:
     """The capped, value-free problem list for a failed site config.
 
@@ -1092,7 +1240,7 @@ def problem_text(exc: ValidationError) -> str:
         MAX_REPORTED_PROBLEMS,
     ):
         where = _dotted(err["loc"], unknown_last=err.get("type") == "extra_forbidden")
-        msg = err["msg"].removeprefix("Value error, ")
+        msg = error_message(str(err.get("type", "")), str(err.get("msg", "")))
         problems.append(f"{where}: {msg}" if where else msg)
     extra = total - len(problems)
     text = "; ".join(problems)

@@ -106,7 +106,13 @@ A parsed config is then checked before any of it is validated, and refused when 
 - is nested more than 64 levels deep,
 - holds anything but mappings with text keys, lists and plain values (a tuple, a
   set or a pydantic model instance is refused, so a container cannot hide its size
-  from the count).
+  from the count). Only exact text, integer, float, boolean, date and null values
+  count as plain; a subclass (an enum that is also text, for example) is refused,
+- holds one text, mapping key or integer longer than 65,536 characters (an
+  integer counts by its decimal digits), or more than 262,144 characters of text,
+  keys and integer digits in all (a value reached twice counts twice). This is
+  checked in the same pass, at the one entry point every load goes through, so
+  the work to validate and print is bounded by size as well as by value count.
 
 The per-list caps still apply on top: 50 tabs, 200 blocks per tab, 200 links per
 section, 50 socials.
@@ -119,9 +125,13 @@ cap is enforced. The work of validating and counting the errors is bounded by th
 20,000-value budget (enforced) times the most errors one value can raise. That
 second factor is a property of the schema and is measured, not enforced: a test
 checks it stays at or below 8 per value on the worst shapes we built and on a
-seeded generated family over every block kind, so a schema change that raises it
-fails the test, but nothing in production caps it. No message repeats a value from
-the file, and an error path never prints a key you wrote: an unknown key shows as
+seeded sample over the block kinds, plus one hostile document per block tag read from the schema's own union, so a schema change that raises it
+fails the test, but nothing in production caps it. The text of each
+problem is a fixed sentence chosen by the error type (pydantic's own message is
+never printed, because it can repeat what you wrote; a validator's reason is only
+matched against a short list of known reasons and otherwise prints a generic
+sentence, and `reach-around check` gives the specific one). No message repeats a
+value from the file, and an error path never prints a key you wrote: an unknown key shows as
 `<unknown field>`, other path segments are escaped to ASCII and cut to 40
 characters, and a path shows at most 8 segments plus a count of the rest.
 

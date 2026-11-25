@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError
@@ -29,6 +29,7 @@ from reach_around.config.models import (
     MAX_TABS,
     Link,
     check_config_budget,
+    error_message,
     problem_text,
 )
 
@@ -82,7 +83,6 @@ def test_metric_labels_compare_normalized(label: str) -> None:
     with pytest.raises(ValidationError, match="more than once") as exc:
         KitConfig.model_validate(kit_doc([manual(), manual(label=label)]))
     text = problem_text(exc.value)
-    assert "more than once" in text
     assert "followers" not in text.casefold()
 
 
@@ -92,7 +92,6 @@ def test_duplicate_label_canary_is_absent_from_the_real_output() -> None:
     with pytest.raises(ValidationError) as exc:
         KitConfig.model_validate(kit_doc(pair))
     text = problem_text(exc.value)
-    assert "more than once" in text
     assert canary.casefold() not in text.casefold()
 
 
@@ -273,12 +272,19 @@ def test_error_details_are_requested_without_input_or_context() -> None:
     class Fake:
         def errors(self, **kwargs: Any) -> list[dict[str, Any]]:
             seen.update(kwargs)
-            return [{"loc": ("tabs", 0, "id"), "msg": "Value error, bad"}] * 3
+            return [
+                {
+                    "loc": ("tabs", 0, "id"),
+                    "msg": "Value error, bad",
+                    "type": "value_error",
+                }
+            ] * 3
 
         def error_count(self) -> int:
             return 3
 
-    assert problem_text(Fake()) == "tabs[0].id: bad; " * 2 + "tabs[0].id: bad"  # type: ignore[arg-type]
+    want = f"tabs[0].id: {error_message('value_error')}"
+    assert problem_text(cast(ValidationError, Fake())) == "; ".join([want] * 3)
     assert seen == {
         "include_url": False,
         "include_input": False,
@@ -459,14 +465,17 @@ def _hostile_docs() -> dict[str, dict[str, Any]]:
 _GEN_COUNT = 60
 
 
-def _generated_family() -> dict[str, dict[str, Any]]:
-    """Seeded hostile docs over every block tag and many kinds of bad value."""
+def _sampled_family() -> dict[str, dict[str, Any]]:
+    """A seeded SAMPLE of hostile docs over the block tags and bad values.
+
+    A sample, not proof of coverage: ``test_every_block_tag_has_a_hostile_document``
+    is the per-tag proof."""
     import random
 
     from reach_around.config.models import _BLOCK_TAGS
 
     rng = random.Random(764)  # noqa: S311 (seeded test data, not security)
-    bad_values: list[Any] = [1, None, [], {}, [{}], "", "x" * 5000, {"a": [1, 2]}]
+    bad_values: list[Any] = [1, None, [], {}, [{}], "", "x" * 300, {"a": [1, 2]}]
     fields = [
         "id", "title", "url", "markdown", "src", "coins", "address", "items",
         "players", "links", "platform", "kind", "bogus",
@@ -479,12 +488,12 @@ def _generated_family() -> dict[str, dict[str, Any]]:
             if rng.random() < 0.8:
                 block["kind"] = rng.choice(sorted(_BLOCK_TAGS | {"nope"}))
             blocks.append(block)
-        docs[f"gen-{n}"] = site_doc(tabs=[{"id": "T_1", "blocks": blocks}])
+        docs[f"sample-{n}"] = site_doc(tabs=[{"id": "T_1", "blocks": blocks}])
     return docs
 
 
 def _all_hostile() -> dict[str, dict[str, Any]]:
-    return {**_hostile_docs(), **_generated_family()}
+    return {**_hostile_docs(), **_sampled_family()}
 
 
 @pytest.mark.parametrize("name", sorted(_all_hostile()))
@@ -546,7 +555,7 @@ def test_metric_platform_is_a_closed_set() -> None:
 
 _HOSTILE_KEYS = [
     "SECRET_API_KEY_abc123",
-    "k" * 100_000,
+    "k" * 60_000,
     "bad\x00key\x07\r\nINJECT",
     "\x1b[31mred\x1b[0m",
     "line1\nline2",

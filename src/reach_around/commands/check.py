@@ -499,7 +499,7 @@ def _model_level(raw: object, message: str) -> list[Problem]:
 
 def _schema_problems(raw: object, error: ValidationError) -> list[Problem]:
     problems: list[Problem] = []
-    for err in error.errors(include_url=False):
+    for err in error.errors(include_url=False, include_input=False):
         loc = error_path(tuple(err["loc"]))
         kind = str(err["type"])
         if kind == "value_error" and not loc:
