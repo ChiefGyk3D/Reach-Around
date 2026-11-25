@@ -39,6 +39,7 @@ from pydantic import (
     model_validator,
 )
 
+from reach_around.config.budget import Budget, check_budget
 from reach_around.config.era import SPANS, classify_window, era_text
 from reach_around.config.loader import ConfigError, _read
 from reach_around.counts.beacons import IMPORT_NOTE, IMPORT_PLATFORM, IMPORT_SOURCE
@@ -47,6 +48,14 @@ from reach_around.funnel.floor import shown_count
 MAX_IMPORTED_BYTES = 256 * 1024
 MAX_PERIODS = 120
 MAX_VALUE = 10**12
+# The file is read only up to MAX_IMPORTED_BYTES, and ImportedHistory refuses an
+# over-budget document before any model is built, whoever calls it (the loader,
+# ImportedHistory(...) or ImportedHistory.model_validate). A real file is about
+# 11 nodes per period (a mapping, five keys, five values), so 120 periods is
+# about 1,350 nodes; the cap leaves room and still stops a million-node input.
+IMPORTED_BUDGET = Budget(
+    nodes=4_000, depth=6, scalar_chars=256, total_chars=32_768, what="file"
+)
 PLATFORM = IMPORT_PLATFORM
 SOURCE = IMPORT_SOURCE
 
@@ -83,11 +92,23 @@ class ImportedPeriod(_Model):
 
 
 class ImportedHistory(_Model):
+    # "always": an existing instance reaches the before validator and is refused
+    # (a model_construct instance would otherwise pass unchecked).
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, revalidate_instances="always"
+    )
+
     version: StrictInt
     source: StrictStr
     note: StrictStr
     platform: StrictStr
     periods: tuple[ImportedPeriod, ...] = Field(min_length=1, max_length=MAX_PERIODS)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _within_budget(cls, data: object) -> object:
+        check_budget(data, IMPORTED_BUDGET)
+        return data
 
     @field_validator("version")
     @classmethod

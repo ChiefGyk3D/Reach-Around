@@ -30,7 +30,6 @@ Exit status: 0 when the config is valid, 2 when it is not (or cannot be read).
 from __future__ import annotations
 
 import argparse
-import functools
 import json
 import re
 from dataclasses import dataclass, field
@@ -43,7 +42,11 @@ from pydantic import ValidationError
 from reach_around.checkvocab import say
 from reach_around.config import ConfigError, SiteConfig, load_yaml
 from reach_around.config.cutover import cutover_date, live_since
-from reach_around.config.models import error_path
+from reach_around.config.models import (
+    error_path,
+    schema_field_names,
+    validate_site_config,
+)
 from reach_around.config.numbers import (
     NumberNote,
     Numbers,
@@ -51,7 +54,6 @@ from reach_around.config.numbers import (
     load_numbers,
 )
 from reach_around.config.stale import all_numbers
-from reach_around.schema import build_schema
 from reach_around.site.visibility import today_in
 
 EXIT_INVALID = 2
@@ -88,24 +90,9 @@ def _safe_id(value: object) -> str | None:
     return None
 
 
-@functools.cache
 def known_fields() -> frozenset[str]:
     """Every setting name the config schema defines, anywhere in the config."""
-    names: set[str] = set()
-
-    def walk(node: object) -> None:
-        if isinstance(node, dict):
-            props = node.get("properties")
-            if isinstance(props, dict):
-                names.update(key for key in props if isinstance(key, str))
-            for value in node.values():
-                walk(value)
-        elif isinstance(node, list):
-            for value in node:
-                walk(value)
-
-    walk(build_schema())
-    return frozenset(names)
+    return schema_field_names()
 
 
 # --- a problem and how it is shown --------------------------------------------
@@ -742,7 +729,7 @@ def _run(args: argparse.Namespace) -> int:
         problems.append(_loader_problem(exc))
     else:
         try:
-            config = SiteConfig.model_validate(raw)
+            config = validate_site_config(raw)
             counts = _counts(config)
             numbers_path = args.numbers or path.parent / "numbers.json"
             problems, warnings = _number_findings(

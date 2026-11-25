@@ -36,7 +36,9 @@ def test_non_mapping_root_is_allowed_to_load_but_models_reject_it(
 def test_duplicate_key_refused(tmp_path: Path) -> None:
     error = refused(write(tmp_path, "a: 1\nb:\n  x: 1\n  x: 2\n"))
     assert "duplicate key" in error.message
-    assert "x" in error.message
+    # The key is never echoed (it can be anything the file's author typed); the
+    # line number says where.
+    assert "'x'" not in error.message
     assert error.line == 4
     assert "site.yaml" in str(error)
     assert error.path.endswith("site.yaml")

@@ -8,10 +8,12 @@ Every model refuses unknown keys and is frozen. Later phases extend
 
 from __future__ import annotations
 
+import functools
 import itertools
 import re
 from collections.abc import Iterator
-from datetime import date, datetime
+from dataclasses import replace
+from datetime import date
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -42,6 +44,7 @@ from reach_around.config.blocks import (
     Platforms,
     Text,
 )
+from reach_around.config.budget import Budget, check_budget
 from reach_around.config.cutover import check_cutover_day
 from reach_around.config.disclosure import DisclosureField
 from reach_around.config.footer import Footer
@@ -94,9 +97,12 @@ MAX_MATERIALIZED_PROBLEMS = 1_000
 # MAX_CONFIG_SCALAR_CHARS (a value reached twice counts twice).
 MAX_SCALAR_CHARS = 65_536
 MAX_CONFIG_SCALAR_CHARS = 262_144
-# Only these exact types are plain values; a subclass (a StrEnum, an IntEnum, a
-# str subclass with its own methods) is refused, not trusted.
-_FIXED_SIZE_LEAVES = (float, bool, date, datetime)
+SITE_BUDGET = Budget(
+    nodes=MAX_CONFIG_NODES,
+    depth=MAX_CONFIG_DEPTH,
+    scalar_chars=MAX_SCALAR_CHARS,
+    total_chars=MAX_CONFIG_SCALAR_CHARS,
+)
 # Error locations: a path segment can be a key the file's author typed, so it is
 # escaped and cut, and a long path shows only its first segments.
 MAX_LOC_SEGMENT_CHARS = 40
@@ -593,92 +599,20 @@ class SupportPage(_Model):
         return self
 
 
-def _refuse_config(message: str) -> None:
-    raise ValueError(message)
-
-
-def _scalar_size(value: str | int) -> int:
-    """The size of a text (its length) or an integer (its decimal digits).
-
-    Both are O(1) to read (an integer's digits come from its bit length, a
-    slight over-count), and a scalar over ``MAX_SCALAR_CHARS`` is refused here,
-    before anything reads it.
-    """
-    size = (
-        len(value)
-        if isinstance(value, str)
-        else (value.bit_length() * 30103 // 100000 + 1)
-    )
-    if size > MAX_SCALAR_CHARS:
-        _refuse_config(f"a value in the config is longer than {MAX_SCALAR_CHARS}")
-    return size
-
-
 def check_config_budget(raw: object, limit: int = MAX_CONFIG_NODES) -> None:
-    """Refuse a parsed document that is too big, too deep or of a wrong shape.
-
-    A document is built only from ``dict`` (with ``str`` keys), ``list`` and
-    plain scalars. Any other container (a tuple, a set, a generator, a mapping
-    subclass) is refused, because pydantic would accept it as a list or mapping
-    and validate every element while this count saw one node. A pydantic model
-    instance is refused too: parsed YAML or JSON never holds one, and a model
-    built with ``model_construct`` is not revalidated, so it would hide any
-    amount of data behind one node. Every value, every
-    container and every mapping key counts as one node; a value reachable
-    twice (a YAML alias, a shared list) is counted each time it is reached, so
-    an alias bomb is its expanded size. The walk is iterative (no recursion),
-    stops at the first node over ``limit`` or over ``MAX_CONFIG_DEPTH`` levels,
-    and cannot loop on a cycle (each visit is counted), so the work is bounded
-    by ``limit`` whatever the input. Only exact ``str``, ``int``, ``float``,
-    ``bool``, ``date`` and ``datetime`` scalars are allowed (a subclass is
-    refused). The size of the scalars is bounded too: a text or key over
-    ``MAX_SCALAR_CHARS`` characters, an integer over that many digits, or more
-    than ``MAX_CONFIG_SCALAR_CHARS`` of them in all is refused, so work is
-    bounded by size and not only by count. Messages are fixed: they never
-    repeat a value from the document.
-    """
-    seen = 0
-    size = 0
-    stack: list[tuple[object, int]] = [(raw, 1)]
-    while stack:
-        node, depth = stack.pop()
-        seen += 1
-        if depth > MAX_CONFIG_DEPTH:
-            _refuse_config(
-                f"the config is nested more than {MAX_CONFIG_DEPTH} levels deep"
-            )
-        if type(node) is dict:
-            seen += len(node)
-            if seen > limit:
-                break
-            for key, value in node.items():
-                if type(key) is not str:
-                    _refuse_config("a mapping key in the config is not text")
-                size += _scalar_size(key)
-                stack.append((value, depth + 1))
-        elif type(node) is list:
-            if seen + len(node) > limit:
-                seen += len(node)
-                break
-            stack.extend((item, depth + 1) for item in node)
-        elif type(node) is str or type(node) is int:
-            size += _scalar_size(node)
-        elif not (node is None or type(node) in _FIXED_SIZE_LEAVES):
-            _refuse_config("the config holds a value of a type that is not allowed")
-        if size > MAX_CONFIG_SCALAR_CHARS:
-            _refuse_config(
-                f"the config holds more than {MAX_CONFIG_SCALAR_CHARS} characters "
-                "of text and numbers; shorten or remove entries"
-            )
-        if seen > limit:
-            break
-    if seen > limit:
-        _refuse_config(
-            f"the config holds more than {limit} values; split it or remove entries"
-        )
+    """The site config's budget (see ``reach_around.config.budget``)."""
+    check_budget(raw, replace(SITE_BUDGET, nodes=limit))
 
 
 class SiteConfig(_Model):
+    # "always": an existing SiteConfig is revalidated, so it reaches the before
+    # validator below, which refuses a model instance (a constructed one would
+    # otherwise pass through unchecked). A valid config is never revalidated:
+    # nothing in src passes an instance to the constructor or model_validate.
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, revalidate_instances="always"
+    )
+
     version: Literal[1]
     creator: Creator
     tabs: list[Tab] = Field(min_length=1, max_length=MAX_TABS)
@@ -1073,8 +1007,40 @@ def error_path(loc: tuple[int | str, ...]) -> tuple[int | str, ...]:
     return tuple(out)
 
 
+UNKNOWN_KEY = "<key>"
+
+
+@functools.cache
+def schema_field_names() -> frozenset[str]:
+    """Every setting name the config schema defines, anywhere in the config."""
+    from reach_around.schema import build_schema  # schema imports this module
+
+    names: set[str] = set()
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            props = node.get("properties")
+            if isinstance(props, dict):
+                names.update(key for key in props if isinstance(key, str))
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(build_schema())
+    return frozenset(names)
+
+
 def _safe_segment(part: str) -> str:
-    """One key of an error path: printable ASCII only, cut short, never raw."""
+    """One key of an error path.
+
+    A name the schema defines is printed (escaped and cut, as a precaution). Any
+    other text is a key the file's author typed (a mapping key, an unknown
+    field), so it is replaced by a fixed marker and never echoed, at any length.
+    """
+    if part not in schema_field_names():
+        return UNKNOWN_KEY
     text = part[: MAX_LOC_SEGMENT_CHARS + 1]
     out = text.encode("ascii", "backslashreplace").decode("ascii")
     out = "".join(c if c.isprintable() else f"\\x{ord(c):02x}" for c in out)
@@ -1249,10 +1215,23 @@ def problem_text(exc: ValidationError) -> str:
     return text
 
 
+def validate_site_config(raw: object) -> SiteConfig:
+    """The one way a parsed document becomes a ``SiteConfig``.
+
+    Every loader (``load_site_config``, ``reach-around check``) calls this. The
+    budget runs from the model's own before-validator, so it also runs for
+    ``SiteConfig(**data)`` and ``SiteConfig.model_validate``, and an existing
+    instance is refused there (``revalidate_instances="always"``).
+    ``model_construct`` skips validation by design and is unsupported for
+    external data; a test scans ``src`` for it.
+    """
+    return SiteConfig.model_validate(raw)
+
+
 def load_site_config(path: Path) -> SiteConfig:
     """Load and validate ``path``; every failure is a ``ConfigError``."""
     raw = load_yaml(path, max_bytes=MAX_CONFIG_BYTES)
     try:
-        return SiteConfig.model_validate(raw)
+        return validate_site_config(raw)
     except ValidationError as exc:
         raise ConfigError(str(path), None, problem_text(exc)) from None

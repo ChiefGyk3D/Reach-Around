@@ -123,17 +123,39 @@ config has at most 1,000 problems; a config with more prints one sentence with t
 count and nothing else. This bounds the memory the error list can use, and that
 cap is enforced. The work of validating and counting the errors is bounded by the
 20,000-value budget (enforced) times the most errors one value can raise. That
-second factor is a property of the schema and is measured, not enforced: a test
-checks it stays at or below 8 per value on the worst shapes we built and on a
-seeded sample over the block kinds, plus one hostile document per block tag read from the schema's own union, so a schema change that raises it
-fails the test, but nothing in production caps it. The text of each
+second factor is a property of the schema and is **measured, not enforced**: a
+test samples it (at most 8 per value on the worst shapes we built, a seeded
+sample over the block kinds, and one hostile document per block tag read from
+the schema's own union). That is a regression heuristic, not a proof of a worst
+case, and nothing in production caps the factor; a schema change that raises it
+fails the sample, but a shape the sample misses could still raise more. What is
+**enforced**, and tested at the boundary (one under passes, one over is
+refused), is the byte cap (256 KiB, before parsing), the node cap, the depth
+cap, the per-scalar and total character caps, and the 1,000-entry materialization
+cap on the error list. The text of each
 problem is a fixed sentence chosen by the error type (pydantic's own message is
 never printed, because it can repeat what you wrote; a validator's reason is only
 matched against a short list of known reasons and otherwise prints a generic
 sentence, and `reach-around check` gives the specific one). No message repeats a
-value from the file, and an error path never prints a key you wrote: an unknown key shows as
-`<unknown field>`, other path segments are escaped to ASCII and cut to 40
-characters, and a path shows at most 8 segments plus a count of the rest.
+value from the file. An error path prints only names the schema defines: any
+other segment (an unknown field, or a key you used in a mapping) shows as
+`<key>` (the last segment of an unknown-field error shows as `<unknown field>`),
+a path shows at most 8 segments plus a count of the rest, and
+`reach-around check` names an unknown setting by its position. The YAML loader
+never echoes a key either (a duplicate key says so and gives the line; a YAML
+tag or a parser sentence is escaped to ASCII and cut).
+
+**Every way in.** The budget runs from a before-validator on the root model, so
+`SiteConfig(...)` and `SiteConfig.model_validate(...)` both pass through it, and
+the loaders (`load_site_config`, `reach-around check`) all call one function,
+`validate_site_config`. An existing `SiteConfig` is revalidated and refused, so a
+model made with `model_construct` cannot be passed back in. `model_construct`
+itself skips every validator by design; it is unsupported for external data, and
+a test fails if any code in `src` calls it. The imported-history file is held to
+the same kind of budget at its own entry (`ImportedHistory(...)` and
+`ImportedHistory.model_validate(...)`): 4,000 values, 6 levels, 256 characters per
+scalar, 32,768 in all, applied before any period is validated, on top of the
+256 KiB file cap and the 120-period cap.
 
 ## What the build writes
 
