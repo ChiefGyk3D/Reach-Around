@@ -187,7 +187,7 @@ socials:
 | --- | --- | --- | --- |
 | `id` | Slug | required | unique across the site |
 | `title` | Title | required | the label in the navigation |
-| `intent` | `watch`, `videos`, `follow`, `community`, `support`, `work`, `shop` or `blog` | none | Required by `page.layout: stack`; the tab becomes an ordered group and its title becomes the group heading. |
+| `intent` | `watch`, `videos`, `follow`, `community`, `support`, `work`, `shop`, `blog`, `gear`, `more` or `hire` | none | Required by `page.layout: stack`; the tab becomes an ordered group and its title becomes the group heading. |
 | `page_title` | page title text | none | Replaces the whole browser title of this tab's page; see [Page titles](#page-titles). It is not called `title` because that key is the navigation label. |
 | `open` | true or false | unset | Only with [`page_layout: sections`](#page_layout): whether this tab's section starts open. Unset opens the first section only. |
 | `blocks` | list of Link or Section | required | may be empty |
@@ -259,6 +259,7 @@ keeps the existing tab or sections layout.
 | `status.text` | Subtitle | none | Required owner-written live or next-stream line. |
 | `status.schedule` | Subtitle | none | Optional second schedule line. |
 | `watch` | list of link ids | empty | Exactly two with `stack`, naming one Twitch-icon link and one Kick-icon link. Config order is display order and both links receive identical treatment. |
+| `density` | `comfortable` or `compact` | `comfortable` | Needs `layout: stack`. `compact` draws every group as a grid of icon-over-label tiles; see [Compact grid](#compact-grid). |
 | `live_badges` | boolean | `false` | Needs `layout: stack` and a real boolean. Adds an empty, hidden LIVE / OFFLINE badge to each of the two Watch links (identical markup for Twitch and Kick) and one polite status region, and publishes the `live.js` script on the home page. The script reads the same-origin `/e/live` document; see [Live badges on the Watch links](live.md#live-badges-on-the-watch-links). Off, nothing is added. |
 | `featured.link` | link id | none | One link promoted above the groups. It must exist in a tab, and `page.featured` needs `layout: stack`. |
 | `featured.kicker` | text, 1 to 60 characters | none | Required with `featured`. A short plain-text label above the link, such as `New this week`. No control characters, no leading or trailing space. |
@@ -322,6 +323,55 @@ page:
     kicker: New this week
     show_from: 2027-03-01
     show_until: 2027-03-31
+```
+
+### Compact grid
+
+`page.density: compact` is the phone-first arrangement: every link is one
+icon-over-label tile (a mark, the title, no subtitle), every group has a named
+heading and stays open, and nothing sits behind a tab, an accordion or a
+script. The status line stays under the Watch heading. A tile is at least 44 px
+tall and wide, the page is dark only, and it works with JavaScript off. The
+example is [`examples/instance/site-link-grid.yaml`](../examples/instance/site-link-grid.yaml).
+
+- The `watch` group draws all of its links (2 to 6), not only the two named in
+  `page.watch`; Twitch, Kick and any other link there are the same tile. The
+  two named links still take the LIVE badge when `live_badges` is on.
+- Every other group takes 2 to 6 links and may set `columns` (1 to 6, a whole
+  number): tiles per row. Unset, a group of up to five links shares one row and
+  six links make two rows of three. A short last row stretches (five links in
+  three columns draw 3 + 2). `columns` needs `density: compact`.
+- Not available with `compact`: `page.featured`, `collapsed`, `spoke` and
+  `style` (they hide or restyle links), so the validator refuses them.
+- The `gear`, `more` and `hire` intents exist for the groups the grid uses
+  (a gear section, Website, GitHub, Email and RSS, a hire-me group); each may
+  appear once like every intent. Name the gear group anything you like in its
+  tab `title`.
+- Tile height follows the viewport height, from the tap size up to 4.5 rem, so
+  the example (eight rows of tiles) fits 390x844, 390x664 and 360x640 with no
+  scroll. Past about eight rows the tiles stay at the tap size and the page
+  scrolls rather than shrinking a target. On a short screen (under 43.75 rem
+  tall) the schedule line and the avatar are not drawn.
+- Desktop (48 rem and up): one centered column up to 72 rem, the Watch group on
+  top, then the groups three across (a group of five or six tiles takes two
+  columns).
+
+```yaml
+page:
+  layout: stack
+  density: compact
+  status:
+    text: Live Friday at 8 PM Eastern
+  watch: [live-twitch, live-kick]
+tabs:
+  - id: support
+    title: Support
+    intent: support
+    columns: 3
+    blocks:
+      - { id: sup-patreon, title: Patreon, url: "https://example.invalid/p", icon: patreon }
+      - { id: sup-kofi, title: Ko-fi, url: "https://example.invalid/k", icon: kofi }
+      - { id: sup-merch, title: Merch, url: "https://example.invalid/m", icon: merch }
 ```
 
 ### Collapsed groups

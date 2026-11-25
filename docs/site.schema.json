@@ -2640,6 +2640,15 @@
       "additionalProperties": false,
       "description": "Production link-page presentation choices.",
       "properties": {
+        "density": {
+          "default": "comfortable",
+          "enum": [
+            "comfortable",
+            "compact"
+          ],
+          "title": "Density",
+          "type": "string"
+        },
         "featured": {
           "anyOf": [
             {
@@ -3803,6 +3812,20 @@
           "title": "Collapsed",
           "type": "boolean"
         },
+        "columns": {
+          "anyOf": [
+            {
+              "maximum": 6,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Columns"
+        },
         "id": {
           "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
           "title": "Id",
@@ -3819,7 +3842,10 @@
                 "support",
                 "work",
                 "shop",
-                "blog"
+                "blog",
+                "gear",
+                "more",
+                "hire"
               ],
               "type": "string"
             },
@@ -4445,6 +4471,7 @@
     "page": {
       "$ref": "#/$defs/Page",
       "default": {
+        "density": "comfortable",
         "featured": null,
         "layout": "classic",
         "live_badges": false,
