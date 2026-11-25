@@ -101,6 +101,13 @@
         "worker/wrangler.toml"
       ]
     },
+    "Storage.md": {
+      "verified": "2026-11-25",
+      "sources": [
+        "docs/design.md",
+        "worker/wrangler.toml"
+      ]
+    },
     "Troubleshooting.md": {
       "verified": "2026-11-25",
       "sources": [
