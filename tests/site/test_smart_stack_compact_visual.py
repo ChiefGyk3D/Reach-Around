@@ -480,7 +480,7 @@ def test_the_width_guarantee_holds_on_a_very_narrow_screen(
     page.context.close()
 
 
-@pytest.mark.parametrize("container", [130, 100, 80, 60], ids=lambda c: f"{c}px")
+@pytest.mark.parametrize("container", [130, 100, 80, 60, 48], ids=lambda c: f"{c}px")
 def test_a_container_below_three_tap_targets_falls_back_to_fewer_columns(
     browser: Browser, base_url: str, container: int
 ) -> None:
@@ -509,6 +509,23 @@ def test_a_container_below_three_tap_targets_falls_back_to_fewer_columns(
                 grp,
                 tile,
             )
+    page.context.close()
+
+
+@pytest.mark.parametrize("width", [320, 280, 240])
+def test_the_minimum_supported_screen_never_scrolls_sideways(
+    browser: Browser, base_url: str, width: int
+) -> None:
+    """The documented floor: down to a 240 px wide screen every tile is at least
+    44 px wide and inside the page. Below it a 44 px tile cannot fit (the
+    guarantee is scoped there, docs/config.md)."""
+    page, foreign = open_page(browser, base_url, (width, 700))
+    got = page.evaluate(MEASURE)
+    assert got["scrollW"] <= got["w"], (width, got["scrollW"], got["w"])
+    for tile in got["tiles"]:
+        assert tile["w"] >= 44 - 0.01, (width, tile)
+        assert tile["left"] >= -0.5 and tile["right"] <= got["w"] + 0.5, (width, tile)
+    assert foreign == []
     page.context.close()
 
 

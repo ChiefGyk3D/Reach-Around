@@ -338,7 +338,8 @@ example is [`examples/instance/site-link-grid.yaml`](../examples/instance/site-l
   `page.watch`; Twitch, Kick and any other link there are the same tile. The
   two named links still take the LIVE badge when `live_badges` is on.
 - Every other group takes 2 to 6 links and may set `columns` (1 to 6, a whole
-  number): tiles per row. Unset, a group of up to five links shares one row and
+  number): tiles per row. The Watch group sets no `columns`: the validator
+  refuses it there and its count is automatic. Unset, a group of up to five links shares one row and
   six links make two rows of three. A short last row stretches (five links in
   three columns draw 3 + 2). `columns` needs `density: compact`.
 - Not available with `compact`: `page.featured`, `collapsed`, `spoke` and
@@ -352,7 +353,10 @@ example is [`examples/instance/site-link-grid.yaml`](../examples/instance/site-l
   tiles would be narrower than 44 px (a very narrow screen or a large zoom),
   the group falls back to three across and the last short row wraps to the left;
   narrower than three tiles it goes two across, then one, so a tile is never
-  under 44 px wide and the page never scrolls sideways.
+  under 44 px wide and the page does not scroll sideways. This holds down to a
+  240 px wide screen (a group is then at least 48 px wide: one 44 px tile plus
+  its 4 px of gap); a tile cannot be both 44 px wide and inside a narrower
+  container, so below that width the guarantee does not apply.
 - The `gear`, `more` and `hire` intents exist for the groups the grid uses
   (a gear section, Website, GitHub, Email and RSS, a hire-me group); each may
   appear once like every intent. Name the gear group anything you like in its

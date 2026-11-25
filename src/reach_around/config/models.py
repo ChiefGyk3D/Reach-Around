@@ -721,6 +721,11 @@ class SiteConfig(_Model):
             intents.add(tab.intent)
             if tab.columns is not None and not compact:
                 raise ValueError(f"tab {tab.id!r}: columns needs page.density: compact")
+            if compact and tab.intent == "watch" and tab.columns is not None:
+                raise ValueError(
+                    f"tab {tab.id!r}: the Watch group sets no columns "
+                    "(its column count is automatic)"
+                )
             if compact and (tab.spoke or tab.collapsed or tab.style != "buttons"):
                 raise ValueError(
                     f"tab {tab.id!r}: page.density: compact shows every link, so "

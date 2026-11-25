@@ -74,6 +74,16 @@ def test_a_group_may_set_its_column_count_only_in_compact_density() -> None:
     assert any("columns needs page.density: compact" in m for m in messages(plain))
 
 
+def test_the_watch_group_refuses_columns_with_a_fixed_reason() -> None:
+    data = compact()
+    data["tabs"][0]["columns"] = 1
+    found = messages(data)
+    assert any(
+        "the Watch group sets no columns (its column count is automatic)" in m
+        for m in found
+    ), found
+
+
 @pytest.mark.parametrize("bad", [0, 7, -1, 2.5, "3", True])
 def test_columns_is_a_whole_number_from_one_to_six(bad: object) -> None:
     data = compact()
