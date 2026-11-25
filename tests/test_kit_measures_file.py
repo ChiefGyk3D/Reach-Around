@@ -22,7 +22,7 @@ from reach_around.config.imported_history import ImportedHistory
 from reach_around.config.kit import KitConfig
 from reach_around.config.numbers import Numbers, NumbersEntry
 from reach_around.counts.beacons import IMPORT_NOTE
-from reach_around.kit.binding import BINDING_FILE
+from reach_around.kit.binding import BINDING_FILE, rows_digest_of
 from reach_around.kit.measures_file import (
     FILE_NAME,
     SCHEMA_VERSION,
@@ -549,8 +549,17 @@ def test_a_private_free_text_is_found_in_a_note(
 
 
 def mutate(tmp_path: Path, change: Any) -> Path:
+    """A document with one field made bad and the rows digest made right again,
+    so the digest check cannot be what refuses it: only the field's own
+    validation can."""
     doc = good(tmp_path)
     change(doc)
+    rows = doc.get("measures")
+    if isinstance(doc.get("binding"), dict) and isinstance(rows, list):
+        try:
+            doc["binding"]["measures"] = rows_digest_of(rows)
+        except (TypeError, ValueError, AttributeError):
+            pass
     return put(tmp_path, doc, "m.json")
 
 
@@ -602,8 +611,22 @@ BAD = {
 @pytest.mark.parametrize("name", sorted(BAD))
 def test_the_reader_refuses_a_bad_field(tmp_path: Path, name: str) -> None:
     path = mutate(tmp_path, BAD[name])
-    with pytest.raises(MeasuresFileError):
+    with pytest.raises(MeasuresFileError) as caught:
         load_measures_file(path)
+    # refused by the field's own check, not by the digest of the rows
+    assert "binding records" not in str(caught.value)
+
+
+def test_the_bad_field_cases_would_pass_without_their_own_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Control: with the row validator removed, a row with a bad value gets as far
+    as the digest check and is accepted, so the test above bites on the validator."""
+    import reach_around.kit.measures_file as module
+
+    monkeypatch.setattr(module, "_row", lambda row, number: None)
+    path = mutate(tmp_path, BAD["unit is unknown"])
+    assert load_measures_file(path)["measures"][0]["unit"] == "parsecs"
 
 
 def test_the_reader_refuses_nan_and_infinity(tmp_path: Path) -> None:
@@ -1098,8 +1121,6 @@ def test_an_edited_row_with_the_original_binding_is_refused(
 
 
 def test_the_reader_and_the_build_digest_rows_the_same_way(tmp_path: Path) -> None:
-    from reach_around.kit.binding import rows_digest_of
-
     config, site, gated = instance(tmp_path)
     doc = load_measures_file(write(tmp_path, config, site, gated))
     assert rows_digest_of(doc["measures"]) == doc["binding"]["measures"]
@@ -1223,3 +1244,103 @@ def test_other_exponents_and_decimals_are_not_a_hit() -> None:
         "version 1.23.1",
     ):
         check_no_private_values(a_note(text), inventory)
+
+
+# --- round 2: percent rows and more written forms (#632) ---------------------------
+
+
+@pytest.mark.parametrize("value", [123, -123])
+def test_a_private_decimal_is_found_in_a_percent_row(value: int) -> None:
+    # a percent row stores tenths: 123 is the 12.3% the page shows
+    document = {"measures": [{"label": "Growth", "value": value, "unit": "percent"}]}
+    with pytest.raises(MeasuresFileError, match="kit.x.n"):
+        check_no_private_values(document, [("kit.x.n", Decimal("12.3"))])
+
+
+def test_a_private_long_figure_is_found_in_a_percent_row() -> None:
+    document = {"measures": [{"label": "G", "value": 12345670, "unit": "percent"}]}
+    with pytest.raises(MeasuresFileError, match="kit.x.n"):
+        check_no_private_values(document, [("kit.x.n", 1234567)])
+
+
+def test_a_percent_row_that_is_not_the_private_figure_is_not_a_hit() -> None:
+    inventory: list[tuple[str, Any]] = [("kit.x.n", Decimal("12.3"))]
+    for value, unit in ((124, "percent"), (123, "views"), (1230, "percent")):
+        document = {"measures": [{"label": "G", "value": value, "unit": unit}]}
+        check_no_private_values(document, inventory)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "growth was ١٢٫٣%",  # Arabic decimal separator
+        "growth was 1 . 23e1%",  # spaced mantissa
+        "growth was 1.23 × 10¹%",  # superscript exponent
+        "growth was 1.23×10⁺¹%",
+        "growth was 123 × 10⁻¹%",
+        "growth was 1.23 · 10^1%",
+        "growth was 1.23 times 10^1%",
+        "growth was 1.23 x 10^(1)%",
+        "growth was 1.23X10^1%",
+        "growth was 12·3%",  # middle dot
+        "growth was 12'3%",
+        "growth was 12’3%",
+        "growth was 0.0123e3%",
+    ],
+)
+def test_a_private_decimal_is_found_in_more_written_forms(text: str) -> None:
+    with pytest.raises(MeasuresFileError, match="kit.x.n"):
+        check_no_private_values(a_note(text), [("kit.x.n", Decimal("12.3"))])
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "reached 1.234,5",
+        "reached 1 234,5",
+        "reached 1'234.5",
+        "reached 1,234 . 5",
+        "reached ١٬٢٣٤٫٥",  # Arabic thousands and decimal separators
+        "reached 1.2345e3",
+        "reached −1 234,5",
+    ],
+)
+def test_a_private_grouped_decimal_is_found_in_more_written_forms(text: str) -> None:
+    with pytest.raises(MeasuresFileError, match="kit.x.n"):
+        check_no_private_values(a_note(text), [("kit.x.n", Decimal("1234.5"))])
+
+
+@pytest.mark.parametrize("text", ["12,34,567.5", "1.234.567,5"])
+def test_a_private_large_decimal_is_found_in_regional_grouping(text: str) -> None:
+    with pytest.raises(MeasuresFileError, match="kit.x.n"):
+        check_no_private_values(
+            a_note(f"reached {text}"), [("kit.x.n", Decimal("1234567.5"))]
+        )
+
+
+def test_a_private_whole_number_is_found_in_indian_grouping() -> None:
+    with pytest.raises(MeasuresFileError, match="kit.x.n"):
+        check_no_private_values(a_note("12,34,567"), [("kit.x.n", 1234567)])
+
+
+def test_more_forms_that_are_not_the_private_number_are_not_a_hit() -> None:
+    inventory: list[tuple[str, Any]] = [("kit.x.n", Decimal("12.3"))]
+    for text in (
+        "1.23 × 10² and 1.24 × 10¹",
+        "1.23 × 10 apples",
+        "12·4 and 13'3",
+        "١٢٫٤%",
+    ):
+        check_no_private_values(a_note(text), inventory)
+
+
+def test_the_guarantee_names_what_is_not_read() -> None:
+    docs = (
+        Path(__file__)
+        .resolve()
+        .parent.parent.joinpath("docs/kit.md")
+        .read_text(encoding="utf-8")
+    )
+    docs = " ".join(docs.split())
+    for phrase in ("spelled out in words", "written as a fraction", "Roman numerals"):
+        assert phrase in docs, phrase

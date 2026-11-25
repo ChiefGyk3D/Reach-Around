@@ -1045,7 +1045,20 @@ Where it may go, and what it holds:
   Devanagari and so on, read as the plain digits) and scientific notation
   ("1.23e1", "1.23E+1", "123e-1", "1.23x10^1", "1.23 × 10^1", "1.23 * 10 ** 1";
   exponents up to 40) are read as the numbers they mean, so a private 12.3 is
-  found in all of them. A false stop ("12. 3 more") is the price.
+  found in all of them. So are the spaced mantissa ("1 . 23e1"), a superscript
+  exponent ("1.23 × 10¹", "10⁻¹"), the other multiplication signs (`·`, `⋅`,
+  `∙`, `✕`, `X`, "times"), an exponent in parentheses ("10^(1)"), the Arabic
+  decimal and thousands separators (U+066B, U+066C), the Unicode minus, a
+  decimal written with a middle dot or an apostrophe ("12·3", "12'3"), a
+  decimal with groups written the other way ("1.234,5", "1 234,5") and the
+  Indian grouping ("12,34,567.5"). A false stop ("12. 3 more") is the price.
+  **A row shows what a text would:** the numeric `value` of a row is also read as
+  the figure the row shows (a `percent` row stores tenths, so 123 is 12.3%), and
+  compared with every private figure, decimals and long whole numbers included.
+  **What is not read:** the check compares digits as written. A figure spelled out in
+  words ("twelve point three"), written as a fraction ("123/10") or a ratio, as
+  Roman numerals, in another base (hex, binary), as a calculation, or inside an
+  encoded or hashed value is not found; keep such figures out of free text.
   **Short figures:** a private whole number of fewer than 6 digits (3, 40) is in
   the inventory, but is matched in a text only when it is written with a unit: a
   percent sign, a currency sign or code before or after it (`$3`, `$-3`, `3

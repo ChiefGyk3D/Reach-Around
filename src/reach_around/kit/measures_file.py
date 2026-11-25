@@ -276,12 +276,24 @@ def _whole(value: Scalar) -> bool:
     )
 
 
+_SUPERSCRIPT = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻", "0123456789+-")
+# An exponent written as superscript digits right after a 10 ("1.23 x 10¹"); NFKC
+# alone would turn it into a digit glued to the 10.
+_SUPER_EXPONENT = re.compile(r"(?<=10)[ \t]*([⁺⁻]?[⁰¹²³⁴⁵⁶⁷⁸⁹]+)")
+# Marks other locales use that NFKC leaves alone: the Arabic decimal and thousands
+# separators and the Unicode minus.
+_LOCALE_MARKS = str.maketrans({"٫": ".", "٬": ",", "−": "-"})
+
+
 def _fold_text(text: str) -> str:
-    """A text as a reader sees it: Unicode NFKC (fullwidth digits, signs and
-    separators become plain ones) with the invisible format characters (zero
-    width joiners and the like) removed, and every other script's decimal digit
-    (Arabic-Indic, Devanagari and so on) written as the plain digit it means."""
-    folded = unicodedata.normalize("NFKC", text)
+    """A text as a reader sees it: superscript exponents written out, Unicode NFKC
+    (fullwidth digits, signs and separators become plain ones) with the invisible
+    format characters (zero width joiners and the like) removed, every other
+    script's decimal digit (Arabic-Indic, Devanagari and so on) written as the
+    plain digit it means, and the Arabic decimal and thousands separators and the
+    Unicode minus written as the plain mark."""
+    text = _SUPER_EXPONENT.sub(lambda m: "^" + m.group(1).translate(_SUPERSCRIPT), text)
+    folded = unicodedata.normalize("NFKC", text).translate(_LOCALE_MARKS)
     return "".join(
         str(unicodedata.decimal(ch)) if unicodedata.category(ch) == "Nd" else ch
         for ch in folded
@@ -303,11 +315,26 @@ _PLAIN = re.compile(r"[0-9]+(?:\.[0-9]+)?")
 # A decimal as other conventions write it: a comma or a period with spaces
 # around it ("12,3", "12 .3", "12. 3"). Both parts are digit runs; read as the
 # decimal they could mean. A false stop ("12. 3 more") is the price of the rule.
-_SPLIT_DECIMAL = re.compile(r"(?<![0-9.,])([0-9]+)[ \t]*[.,][ \t]*([0-9]+)(?![0-9])")
-# Scientific notation: 1.23e1, 1.23 E+1, 1.23x10^1, 1.23 * 10 ** 1, 1.23×10^1.
+_DECIMAL_MARK = "[.,·'’]"
+_SPLIT_DECIMAL = re.compile(
+    rf"(?<![0-9.,])([0-9]+)[ \t]*{_DECIMAL_MARK}[ \t]*([0-9]+)(?![0-9])"
+)
+# Groups written one way and a decimal the other: "1.234,5", "1 234,5", "1,234 . 5".
+# Read with the last mark as the decimal point.
+_GROUPED_DECIMAL = re.compile(
+    rf"(?<![0-9.,])[0-9]{{1,3}}(?:{_SEPARATOR}|\.)[0-9]{{3}}"
+    rf"(?:(?:{_SEPARATOR}|\.)[0-9]{{3}})*[ \t]*[.,][ \t]*[0-9]+(?![0-9])"
+)
+# The Indian grouping: "12,34,567.5".
+_INDIAN = re.compile(
+    r"(?<![0-9.,])[0-9]{1,2}(?:,[0-9]{2})+,[0-9]{3}(?:\.[0-9]+)?(?![0-9])"
+)
+# Scientific notation: 1.23e1, 1.23 E+1, 1.23x10^1, 1.23 * 10 ** 1, 1.23×10^1,
+# 1 . 23e1, 1.23 x 10^(1), 1.23 times 10^1 (a superscript exponent is folded to ^).
 _SCIENTIFIC = re.compile(
-    r"(?<![0-9.,])([0-9]+(?:[.,][0-9]+)?)[ \t]*"
-    r"(?:[eE]|[x×*][ \t]*10[ \t]*(?:\^|\*\*))[ \t]*([+-]?[0-9]{1,4})(?![0-9])"
+    rf"(?<![0-9.,])([0-9]+(?:[ \t]*{_DECIMAL_MARK}[ \t]*[0-9]+)?)[ \t]*"
+    r"(?:[eE]|(?:[xX×✕✖*·⋅∙]|times)[ \t]*10[ \t]*(?:\^|\*\*))"
+    r"[ \t]*\(?[ \t]*([+-]?[0-9]{1,4})(?![0-9])"
 )
 MAX_EXPONENT = 40
 
@@ -341,11 +368,27 @@ def _spans(folded: str) -> list[tuple[int, int, Decimal, str]]:
     for match in _SPLIT_DECIMAL.finditer(folded):
         value = Decimal(f"{match.group(1)}.{match.group(2)}")
         spans.append((match.start(), match.end(), value, "decimal"))
+    for match in _GROUPED_DECIMAL.finditer(folded):
+        text = re.sub(r"[ \t]+", "", match.group())
+        last = max(text.rfind("."), text.rfind(","))
+        digits = re.sub(rf"{_SEPARATOR}|\.|,", "", text[:last])
+        spans.append(
+            (
+                match.start(),
+                match.end(),
+                Decimal(f"{digits}.{text[last + 1 :]}"),
+                "decimal",
+            )
+        )
+    for match in _INDIAN.finditer(folded):
+        value = Decimal(match.group().replace(",", ""))
+        spans.append((match.start(), match.end(), value, "decimal"))
     for match in _SCIENTIFIC.finditer(folded):
         exponent = int(match.group(2))
         if abs(exponent) > MAX_EXPONENT:
             continue
-        mantissa = Decimal(match.group(1).replace(",", "."))
+        marked = re.sub(_DECIMAL_MARK, ".", match.group(1))
+        mantissa = Decimal(re.sub(r"[ \t]+", "", marked))
         spans.append(
             (match.start(), match.end(), mantissa.scaleb(exponent), "scientific")
         )
@@ -453,7 +496,10 @@ def check_no_private_values(
         elif is_short(value):
             hit = abs(Decimal(value)) in figures
         else:
-            hit = abs(Decimal(value)) in numbers
+            # a row's figure is the number the row shows (a percent row stores
+            # tenths), so it is compared against the decoded figures as well
+            magnitude = abs(Decimal(value))
+            hit = magnitude in numbers or magnitude in figures
             if not hit and _whole(value):
                 # fail closed: a whole number of 6 or more digits is also
                 # looked for with every separator removed
