@@ -1,6 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# Zone-wide bot management settings for Reach Around (issue #613). PLAN ONLY.
+# Zone-wide bot management settings for Reach Around (issue #613). PLAN ONLY BY
+# POLICY.
+#
+# This module is apply-capable but apply-prohibited: the resource below is an
+# ordinary resource, so a hand-typed apply with a write token would change the
+# zone. What prevents that is policy and structure, not the module: only a
+# read-only token is issued, no workflow holds a credential, and
+# scripts/check-edge.py --offline fails CI if anything but this one resource, bound
+# exactly to desired-state.json, appears here (docs/edge.md, "Policy, not
+# capability").
 #
 # The apply path is NOT approved. Two things must be proven first:
 #   1. what request body provider 5.29.0 really sends for this resource. The

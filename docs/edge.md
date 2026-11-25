@@ -14,7 +14,8 @@ other sites on the zone.
 
 **Nothing here applies itself, and nothing may be applied yet.** The apply path
 is NOT approved (see [the apply path](#the-apply-path-is-not-approved)).
-`deploy/edge/plan.sh` only plans. No workflow runs an apply.
+`deploy/edge/plan.sh` only plans. No workflow runs an apply. The module is
+apply-capable but apply-prohibited (see [Policy, not capability](#policy-not-capability)).
 
 Cloudflare documentation read 2026-11-23 (page dates are Cloudflare's own
 `dateModified`):
@@ -146,6 +147,26 @@ Calls the read token makes: `GET /zones/{zone_id}/bot_management` and
 is needed because the zone id is an input. `--site-host` also fetches
 `https://HOST/robots.txt` without a token.
 
+## Policy, not capability
+
+`deploy/edge/` is a mutable OpenTofu module: `cloudflare_bot_management.zone` is
+an ordinary resource, and OpenTofu has no setting that makes a resource
+plan-only. A hand-typed apply with a write token would change the zone. What
+keeps that from happening is policy plus the controls below, and this page does
+not claim more:
+
+- Only the read-only token is issued; the write token is not (see the table above).
+- `scripts/check-edge.py --offline` (CI) fails if `deploy/edge/` holds any
+  resource other than `cloudflare_bot_management.zone`, any data source, module,
+  provisioner, lifecycle block or other locals, or if any attribute of the
+  resource is not assigned exactly the matching `local.bot` key from
+  `desired-state.json` (a literal, a swapped key or a stray reference fails).
+- The same check fails if `deploy/edge/` holds any file that is not on its list
+  (a saved plan under any name, a state file). `deploy/edge/.gitignore` ignores
+  everything not on the list. `plan.sh` saves no plan.
+- `--live` runs the same validation of the desired state, the provider manifest,
+  the pin and the module before it makes any request, and exits 2 if it fails.
+
 ## Structural controls
 
 The text scans in `tests/test_edge_settings.py` (no apply, destroy or import
@@ -165,7 +186,8 @@ applied from here" is structural:
   `TF_VAR_*`, no `TF_PLUGIN_CACHE_DIR`. The tool is found at a fixed absolute path
   (`/usr/local/bin`, `/usr/bin` or `~/.local/bin`, or `TOFU_BIN`), never through
   `PATH`, and refused unless it and its parent directories belong to root or you
-  and others cannot write to them. The script's own helper commands run with the
+  and neither the group nor others can write to the binary or its parent directories
+  (a sticky root-owned directory such as `/tmp` is the one exception). The script's own helper commands run with the
   same cleaned environment. Exit 65 means no trusted binary.
 - The module has no rules resource, so even a mistaken run cannot touch other
   sites' rate rules.

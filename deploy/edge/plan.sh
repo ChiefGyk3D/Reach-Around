@@ -18,6 +18,10 @@
 # at a fixed absolute path that is checked first (TOFU_BIN may name another). The token reaches them through
 # a file descriptor, not argv.
 #
+# Apply is prohibited by policy, not by the module: the module holds one
+# apply-capable resource (docs/edge.md, "Policy, not capability"). Use only a
+# read-only token here; a write token is never issued for this work.
+#
 # Exit: 64 usage, 65 no trusted tofu, otherwise tofu's own code
 # (-detailed-exitcode: 0 no changes, 1 error, 2 changes planned).
 set -eu
@@ -51,21 +55,27 @@ if ! [[ "$zone" =~ ^[0-9a-f]{32}$ ]]; then
 fi
 
 me="$(id -u)"
-mygid="$(id -g)"
 
-# A path is trusted when its owner is root or the current user and nobody else
-# can write to it (group write is accepted only for the user's own group; a
-# world-writable directory only when sticky).
+# A path is trusted when its owner is root or the current user and nobody but
+# the owner (and root) can write to it. Group write is refused even for the
+# user's own group (that group may have other members), except for root's group
+# on a root-owned directory. The binary itself may not be group or other
+# writable at all. A world-writable directory passes only when sticky and
+# root-owned (like /tmp), where others cannot replace the user's entries.
 trusted_node() {
     local node="$1" owner mode group
     read -r owner mode group < <(stat -c '%u %a %g' -- "$node") || return 1
     [ "$owner" = 0 ] || [ "$owner" = "$me" ] || return 1
     mode=$((8#$mode))
-    if (( mode & 8#020 )) && [ "$group" != "$mygid" ] && [ "$group" != 0 ]; then
-        return 1
+    if [ -f "$node" ]; then
+        (( mode & 8#022 )) && return 1
+        return 0
+    fi
+    if (( mode & 8#020 )); then
+        [ "$group" = 0 ] && [ "$owner" = 0 ] || return 1
     fi
     if (( mode & 8#002 )); then
-        [ -d "$node" ] && (( mode & 8#1000 )) || return 1
+        [ "$owner" = 0 ] && (( mode & 8#1000 )) || return 1
     fi
     return 0
 }
@@ -104,7 +114,7 @@ for candidate in "${candidates[@]}"; do
     fi
 done
 if [ -z "$tofu_bin" ]; then
-    echo "plan: no trusted tofu found (looked in TOFU_BIN or /usr/local/bin, /usr/bin and ~/.local/bin; it must be owned by root or you and not writable by others)" >&2
+    echo "plan: no trusted tofu found (looked in TOFU_BIN or /usr/local/bin, /usr/bin and ~/.local/bin; it must be owned by root or you and not writable by group or others)" >&2
     exit 65
 fi
 

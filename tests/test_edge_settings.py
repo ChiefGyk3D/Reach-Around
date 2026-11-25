@@ -36,6 +36,7 @@ FILES = (
     "desired-state.json",
     "main.tf",
     "versions.tf",
+    "variables.tf",
     ".terraform.lock.hcl",
     "provider-fields.json",
 )
@@ -435,7 +436,12 @@ def test_the_generator_refuses_a_schema_without_the_resource() -> None:
 
 def test_ci_runs_the_offline_check() -> None:
     ci = (REPO / ".github" / "workflows" / "ci.yml").read_text()
-    assert "python3 -I scripts/check-edge.py --offline" in ci
+    runs = [
+        x.strip()
+        for x in ci.splitlines()
+        if not x.strip().startswith("#") and "python3 -I scripts/check-edge.py" in x
+    ]
+    assert runs == ["python3 -I scripts/check-edge.py --offline"]
 
 
 def test_the_doc_names_every_setting_and_scope() -> None:
@@ -775,6 +781,9 @@ def make_fake_tofu(home: Path, dump: Path, mode: int = 0o755) -> Path:
         f"with open({str(dump)!r}, 'a') as h:\n"
         "    row = [sys.argv[1:], dict(os.environ), os.getcwd()]\n"
         "    h.write(json.dumps(row) + chr(10))\n"
+        f"rc = {str(dump) + '.rc'!r}\n"
+        "if sys.argv[1] == 'plan' and os.path.exists(rc):\n"
+        "    sys.exit(int(open(rc).read()))\n"
     )
     fake.chmod(mode)
     return fake
@@ -870,7 +879,7 @@ def test_plan_ignores_a_tofu_earlier_on_path(tmp_path: Path) -> None:
     assert len(calls) == 2
 
 
-@pytest.mark.parametrize("mode", [0o777, 0o757])
+@pytest.mark.parametrize("mode", [0o777, 0o757, 0o775, 0o770, 0o720, 0o722])
 def test_plan_refuses_a_binary_writable_by_others(tmp_path: Path, mode: int) -> None:
     run, calls = run_plan(tmp_path, {}, mode)
     assert run.returncode == 65
@@ -896,6 +905,27 @@ def test_plan_refuses_a_binary_in_a_directory_writable_by_others(
     assert not (tmp_path / "env.json").exists()
 
 
+@pytest.mark.parametrize("mode", [0o775, 0o770, 0o757])
+def test_plan_refuses_a_group_or_other_writable_directory_of_the_binary(
+    tmp_path: Path, mode: int
+) -> None:
+    home = tmp_path / "home"
+    make_fake_tofu(home, tmp_path / "env.json")
+    # Owned by the caller, whose primary group is the caller's own: a group
+    # member could still replace the binary, so it is refused too.
+    (home / ".local" / "bin").chmod(mode)
+    run = subprocess.run(  # noqa: S603 (fixed repo script; fake tofu, no network)
+        [str(REPO / EDGE / "plan.sh")],
+        env=plan_env(home, {}),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert run.returncode == 65
+    assert not (tmp_path / "env.json").exists()
+    assert SENTINEL not in run.stdout + run.stderr
+
+
 def test_plan_refuses_a_malformed_zone_id(tmp_path: Path) -> None:
     run, calls = run_plan(tmp_path, {"TF_VAR_zone_id": "not-a-zone"})
     assert run.returncode == 64
@@ -905,6 +935,21 @@ def test_plan_refuses_a_malformed_zone_id(tmp_path: Path) -> None:
 def test_plan_usage_and_exit_codes_pass_through(tmp_path: Path) -> None:
     run, calls = run_plan(tmp_path, {})
     assert run.returncode == 0 and len(calls) == 2
+
+
+@pytest.mark.parametrize("code", [1, 2])
+def test_plan_passes_the_tools_own_exit_code_through(tmp_path: Path, code: int) -> None:
+    home = tmp_path / "home"
+    make_fake_tofu(home, tmp_path / "env.json")
+    (tmp_path / "env.json.rc").write_text(str(code))
+    run = subprocess.run(  # noqa: S603 (fixed repo script; fake tofu, no network)
+        [str(REPO / EDGE / "plan.sh")],
+        env=plan_env(home, {}),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert run.returncode == code
 
 
 def test_the_reviewed_cli_config_installs_only_the_locked_provider() -> None:
@@ -1183,3 +1228,190 @@ def test_a_garbage_response_body_is_unreadable_not_a_crash(
     monkeypatch.setattr(check, "get", lambda url, token: b"\xff\xfe not json")
     assert check.main(["--live", "--zone-id", "0" * 32]) == 2
     assert "Traceback" not in capsys.readouterr().err
+
+
+# --- the module is bound to the desired state by structure (Daybreak round 1) ---
+
+
+def edit_main(root: Path, old: str, new: str) -> None:
+    path = root / EDGE / "main.tf"
+    text = path.read_text()
+    assert old in text
+    path.write_text(text.replace(old, new, 1))
+
+
+def test_a_literal_in_the_resource_is_caught_even_with_a_decoy_reference(
+    root: Path,
+) -> None:
+    edit_main(
+        root,
+        "ai_training                 = local.bot.ai_training",
+        'ai_training                 = "disabled"',
+    )
+    edit_main(root, "locals {", "locals {\n  guard_bypass = local.bot.ai_training")
+    problems = check.offline_problems(root)
+    assert any("ai_training must be 'local.bot.ai_training'" in p for p in problems)
+
+
+def test_swapped_bindings_are_caught(root: Path) -> None:
+    edit_main(root, "= local.bot.ai_user", "= local.bot.ai_training")
+    assert any("ai_user must be" in p for p in check.offline_problems(root))
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        'resource "cloudflare_ruleset" "x" {}',
+        'resource "cloudflare_dns_record" "x" {\n  zone_id = var.zone_id\n}',
+        'data "cloudflare_zone" "x" {}',
+        'module "m" {\n  source = "./m"\n}',
+        'import {\n  id = "x"\n}',
+        'resource "cloudflare_bot_management" "other" {\n  zone_id = var.zone_id\n}',
+    ],
+)
+def test_any_other_resource_or_block_fails(root: Path, extra: str) -> None:
+    path = root / EDGE / "main.tf"
+    path.write_text(path.read_text() + "\n" + extra + "\n")
+    assert check.offline_problems(root)
+
+
+def test_a_nested_provisioner_or_lifecycle_block_fails(root: Path) -> None:
+    edit_main(
+        root,
+        "  zone_id = var.zone_id\n",
+        "  zone_id = var.zone_id\n  lifecycle {\n  }\n",
+    )
+    assert any("assignments" in p for p in check.offline_problems(root))
+
+
+def test_extra_locals_and_comment_tricks_fail(root: Path) -> None:
+    edit_main(root, "locals {", 'locals {\n  extra = "x"')
+    assert any("locals differ" in p for p in check.offline_problems(root))
+
+
+def test_block_comments_are_refused(root: Path) -> None:
+    path = root / EDGE / "main.tf"
+    path.write_text(path.read_text() + "\n/* hidden */\n")
+    assert any("only # comments" in p for p in check.offline_problems(root))
+
+
+@pytest.mark.parametrize(
+    "name", ["edge-plan.bin", "x.tfstate", "crash.log", "plan", ".terraform"]
+)
+def test_a_stray_file_in_the_edge_folder_fails(root: Path, name: str) -> None:
+    (root / EDGE / name).write_text("x")
+    assert any(name in p for p in check.offline_problems(root))
+
+
+def test_the_gitignore_ignores_everything_not_listed() -> None:
+    lines = [
+        x.strip()
+        for x in (REPO / EDGE / ".gitignore").read_text().splitlines()
+        if x.strip() and not x.startswith("#")
+    ]
+    assert lines[0] == "*"
+    allowed = {x[1:] for x in lines[1:]}
+    assert all(x.startswith("!") for x in lines[1:])
+    assert allowed == set(check.ALLOWED_EDGE_FILES)
+
+
+def test_the_files_in_the_edge_folder_are_all_expected() -> None:
+    names = {p.name for p in (REPO / EDGE).iterdir()}
+    assert names <= set(check.ALLOWED_EDGE_FILES)
+
+
+def test_the_real_module_has_one_resource_and_says_it_is_apply_capable() -> None:
+    text = (REPO / EDGE / "main.tf").read_text()
+    assert len(re.findall(r"^resource\s", text, re.M)) == 1
+    assert "apply-capable but apply-prohibited" in text
+    doc = (REPO / "docs" / "edge.md").read_text()
+    assert "## Policy, not capability" in doc
+    assert "apply-capable" in doc
+
+
+# --- live mode validates the desired state first ------------------------------
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda d: d["bot_management"].update(ai_training="disabled"),
+        lambda d: d["rate_limit"].update(expression="true"),
+        lambda d: d["rate_limit"].update(requests_per_period=100000),
+        lambda d: d["rate_limit"].update(ref="anything"),
+        lambda d: d["bot_management"].update(enable_js=True),
+    ],
+)
+def test_live_refuses_an_unsafe_desired_state_before_any_request(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    root: Path,
+    mutate: Any,
+) -> None:
+    data = copy.deepcopy(desired())
+    mutate(data)
+    write_desired(root, data)
+    calls: list[str] = []
+
+    def spy(path: str, token: str) -> Any:
+        calls.append(path)
+        return {}
+
+    monkeypatch.setenv(check.TOKEN_ENV, SENTINEL)
+    monkeypatch.setattr(check, "api_result", spy)
+    monkeypatch.setattr(check, "ROOT", root)
+    assert check.main(["--live", "--zone-id", "0" * 32]) == 2
+    assert calls == []
+    assert "INVALID" in capsys.readouterr().err
+
+
+def test_live_refuses_a_module_that_differs_from_the_desired_state(
+    monkeypatch: pytest.MonkeyPatch, root: Path
+) -> None:
+    edit_main(root, "= local.bot.fight_mode", "= true")
+    calls: list[str] = []
+    monkeypatch.setenv(check.TOKEN_ENV, SENTINEL)
+
+    def spy(path: str, token: str) -> Any:
+        calls.append(path)
+        return {}
+
+    monkeypatch.setattr(check, "api_result", spy)
+    monkeypatch.setattr(check, "ROOT", root)
+    assert check.main(["--live", "--zone-id", "0" * 32]) == 2
+    assert calls == []
+
+
+def test_a_second_rule_claiming_our_ref_is_ambiguous_not_agreement() -> None:
+    d = desired()["rate_limit"]
+    live = live_rules()
+    assert check.rate_differences(d, live) == []
+    live["rules"].append(
+        {
+            "ref": d["ref"],
+            "expression": "true",
+            "action": "block",
+            "description": d["description"],
+            "ratelimit": {
+                "characteristics": ["cf.colo.id", "ip.src"],
+                "period": 10,
+                "requests_per_period": 1,
+                "mitigation_timeout": 10,
+            },
+        }
+    )
+    assert any("ambiguous" in x for x in check.rate_differences(d, live))
+    live["rules"].reverse()
+    assert any("ambiguous" in x for x in check.rate_differences(d, live))
+
+
+def test_two_rules_with_our_expression_and_no_ref_are_ambiguous() -> None:
+    d = desired()["rate_limit"]
+    live = live_rules()
+    for rule in live["rules"]:
+        if rule.get("ref") == d["ref"]:
+            rule["ref"] = "renamed-1"
+    clone = copy.deepcopy([r for r in live["rules"] if r["ref"] == "renamed-1"][0])
+    clone["ref"] = "renamed-2"
+    live["rules"].append(clone)
+    assert any("ambiguous" in x for x in check.rate_differences(d, live))

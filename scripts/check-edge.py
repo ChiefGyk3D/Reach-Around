@@ -105,6 +105,7 @@ RL_KEYS = (
     "requests_per_period",
     "mitigation_timeout",
 )
+RL_REF = "reach_around_mint_cap"  # the rule's identity in the zone
 PIN = re.compile(r'version\s*=\s*"= (\d+\.\d+\.\d+)"')
 
 
@@ -173,22 +174,7 @@ def offline_problems(root: Path) -> list[str]:
     else:
         problems += rate_limit_problems(rl)
 
-    code = "\n".join(
-        line for line in main_tf.splitlines() if not line.lstrip().startswith("#")
-    )
-    for key in PROVIDER_FIELDS:
-        attr = PROVIDER_ATTR.get(key, key)
-        sets_it = re.search(rf"^\s*{re.escape(attr)}\s*=", code, re.M) is not None
-        if key in BOT_KEYS:
-            if f"local.bot.{key}" not in code:
-                problems.append(f"main.tf does not read bot_management.{key}")
-        elif sets_it:
-            problems.append(f"main.tf sends the unmanaged field {key}")
-    if re.search(r'^\s*resource\s+"cloudflare_ruleset"', code, re.M):
-        problems.append(
-            "main.tf must not own the http_ratelimit phase (cloudflare_ruleset): "
-            "on a shared zone that would replace other sites' rules"
-        )
+    problems += module_problems(edge, main_tf)
     if "NOT approved" not in main_tf:
         problems.append("main.tf header must say the apply path is NOT approved")
     if "desired-state.json" not in main_tf:
@@ -203,6 +189,155 @@ def offline_problems(root: Path) -> list[str]:
         problems.append("versions.tf: provider is not pinned to an exact version")
     elif locked is None or locked.group(1) != pin.group(1):
         problems.append("lock file version differs from the provider pin")
+    return problems
+
+
+ALLOWED_EDGE_FILES = frozenset(
+    {
+        ".gitignore",
+        ".terraform.lock.hcl",
+        "desired-state.json",
+        "main.tf",
+        "plan.sh",
+        "provider-fields.json",
+        "tofu.rc",
+        "variables.tf",
+        "versions.tf",
+    }
+)
+ALLOWED_BLOCKS = frozenset({"terraform", "provider", "variable", "locals", "resource"})
+# The one resource, and the exact attribute-to-key binding it must have.
+RESOURCE = ("cloudflare_bot_management", "zone")
+EXPECTED_LOCALS = {
+    "desired": 'jsondecode(file("${path.module}/desired-state.json"))',
+    "bot": "local.desired.bot_management",
+}
+_HEADER = re.compile(r'(\w+)((?:\s+"[^"]*")*)\s*\{(\s*\})?')
+_ASSIGN = re.compile(r"(\w+)\s*=\s*(.+)")
+
+
+def hcl_code(text: str) -> list[str]:
+    """Non-blank lines with # comments dropped (the files use no other style)."""
+    lines = []
+    for raw in text.splitlines():
+        line = re.sub(r"(?:^|\s)#.*$", "", raw).strip()
+        if line:
+            lines.append(line)
+    return lines
+
+
+def hcl_blocks(
+    path: str, lines: list[str]
+) -> tuple[list[tuple[str, tuple[str, ...], list[str]]], list[str]]:
+    """Top-level blocks as (kind, labels, body lines). Anything else is a problem."""
+    blocks: list[tuple[str, tuple[str, ...], list[str]]] = []
+    problems: list[str] = []
+    depth = 0
+    current: tuple[str, tuple[str, ...], list[str]] | None = None
+    for line in lines:
+        if depth == 0:
+            match = _HEADER.fullmatch(line)
+            if match is None:
+                problems.append(f"{path}: unrecognized top-level code {line!r}")
+                continue
+            labels = tuple(re.findall(r'"([^"]*)"', match.group(2)))
+            current = (match.group(1), labels, [])
+            blocks.append(current)
+            depth = 0 if match.group(3) else 1
+            continue
+        if line == "}" and depth == 1:
+            depth = 0
+            continue
+        depth += line.count("{") - line.count("}")
+        if current is not None:
+            current[2].append(line)
+    if depth != 0:
+        problems.append(f"{path}: unbalanced braces")
+    return blocks, problems
+
+
+def assignments(
+    path: str, what: str, body: list[str]
+) -> tuple[dict[str, str], list[str]]:
+    found: dict[str, str] = {}
+    problems: list[str] = []
+    for line in body:
+        match = _ASSIGN.fullmatch(line)
+        if match is None:
+            problems.append(f"{path}: {what} holds something other than assignments")
+            continue
+        name, value = match.group(1), match.group(2).strip()
+        if name in found:
+            problems.append(f"{path}: {what} assigns {name} twice")
+        found[name] = value
+    return found, problems
+
+
+def module_problems(edge: Path, main_tf: str) -> list[str]:
+    """main.tf is bound to desired-state.json by exact structure, not by substring.
+
+    Every .tf file may hold only the allowed block kinds; the only resource is
+    cloudflare_bot_management.zone, and each attribute in it must be assigned
+    exactly the matching local.bot key. Extra resources, data sources, modules,
+    provisioners, lifecycle blocks, other locals or a literal value all fail.
+    """
+    problems: list[str] = []
+    for item in sorted(edge.iterdir(), key=lambda p: p.name):
+        if item.name not in ALLOWED_EDGE_FILES or not item.is_file():
+            problems.append(
+                f"deploy/edge/{item.name}: not an expected file (saved plans and "
+                "state never belong in this directory)"
+            )
+    resources = 0
+    for tf in sorted(edge.glob("*.tf")):
+        try:
+            text = main_tf if tf.name == "main.tf" else tf.read_text("utf-8")
+        except (OSError, ValueError):
+            problems.append(f"{tf.name}: cannot be read")
+            continue
+        lines = hcl_code(text)
+        if any("/*" in x or "//" in x or "<<" in x for x in lines):
+            problems.append(f"{tf.name}: only # comments and no heredocs are allowed")
+        blocks, found = hcl_blocks(tf.name, lines)
+        problems += found
+        for kind, labels, body in blocks:
+            if kind not in ALLOWED_BLOCKS:
+                problems.append(f"{tf.name}: block kind {kind!r} is not allowed")
+            elif kind == "resource":
+                resources += 1
+                problems += resource_problems(tf.name, labels, body)
+            elif kind == "locals":
+                got, bad = assignments(tf.name, "locals", body)
+                problems += bad
+                if got != EXPECTED_LOCALS or tf.name != "main.tf":
+                    problems.append(f"{tf.name}: locals differ from the reviewed ones")
+            elif kind == "provider" and (labels != ("cloudflare",) or body):
+                problems.append(
+                    f"{tf.name}: provider must be an empty cloudflare block"
+                )
+    if resources != 1:
+        problems.append(
+            f"deploy/edge must hold exactly one resource, found {resources}"
+        )
+    return problems
+
+
+def resource_problems(name: str, labels: tuple[str, ...], body: list[str]) -> list[str]:
+    if labels != RESOURCE:
+        return [
+            f"{name}: the only resource allowed is {RESOURCE[0]}.{RESOURCE[1]} "
+            "(a cloudflare_ruleset would own the whole http_ratelimit phase and "
+            "replace other sites' rules)"
+        ]
+    got, problems = assignments(name, "the resource", body)
+    want = {"zone_id": "var.zone_id"}
+    want |= {PROVIDER_ATTR.get(k, k): f"local.bot.{k}" for k in BOT_KEYS}
+    for attr in sorted(set(want) | set(got)):
+        if got.get(attr) != want.get(attr):
+            problems.append(
+                f"{name}: {attr} must be {want.get(attr, '<absent>')!r}, "
+                f"found {got.get(attr, '<absent>')!r}"
+            )
     return problems
 
 
@@ -275,6 +410,8 @@ def rate_limit_problems(rl: dict[str, Any]) -> list[str]:
         problems.append(
             "rate_limit.requests_per_period must be an integer from 2 to 30"
         )
+    if rl["ref"] != RL_REF:
+        problems.append(f"rate_limit.ref must be {RL_REF!r}")
     for key in ("ref", "description"):
         if not isinstance(rl[key], str) or not rl[key]:
             problems.append(f"rate_limit.{key} must be a non-empty string")
@@ -484,11 +621,15 @@ def rate_differences(desired: dict[str, Any], live: Any) -> list[str]:
     """Is our rule present and right? Other rules in the phase are not ours."""
     rules = live.get("rules") if isinstance(live, dict) else None
     ours = [r for r in rules or [] if isinstance(r, dict)]
-    rule = next((r for r in ours if r.get("ref") == desired["ref"]), None)
-    if rule is None:
-        rule = next(
-            (r for r in ours if r.get("expression") == desired["expression"]), None
-        )
+    by_ref = [r for r in ours if r.get("ref") == desired["ref"]]
+    by_expression = [r for r in ours if r.get("expression") == desired["expression"]]
+    if len(by_ref) > 1 or (not by_ref and len(by_expression) > 1):
+        return [
+            "rate_limit: more than one rule claims this rule's identity "
+            f"({desired['ref']!r}); ambiguous, so not trusted"
+        ]
+    matches = by_ref or by_expression
+    rule = matches[0] if matches else None
     if rule is None:
         return [
             f"rate_limit: expected rule {desired['ref']!r} is not present in the "
@@ -554,6 +695,11 @@ def live(args: argparse.Namespace) -> int:
         desired = load_desired()
     except (OSError, ValueError):
         print("UNREADABLE desired state", file=sys.stderr)
+        return 2
+    invalid = offline_problems(ROOT)
+    if invalid:
+        for problem in invalid:
+            print(f"INVALID {problem}", file=sys.stderr)
         return 2
     try:
         bot = api_result(f"/zones/{zone}/bot_management", token)

@@ -1,6 +1,13 @@
-.terraform/
-*.tfstate
-*.tfstate.*
-*.tfplan
-*.tfvars
-crash.log
+# Everything here is ignored unless it is named below, so a saved plan under any
+# file name (tofu plan -out=anything), a state file or a crash log can never be
+# committed by accident. plan.sh saves nothing; do not save plans in this folder.
+*
+!.gitignore
+!.terraform.lock.hcl
+!desired-state.json
+!main.tf
+!plan.sh
+!provider-fields.json
+!tofu.rc
+!variables.tf
+!versions.tf
