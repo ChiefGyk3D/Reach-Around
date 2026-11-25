@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from kitpdfharness import TODAY, build_instance, fake_renderer, kit_doc, make_config
+from reach_around.config.trust import LEGEND_HEADING, LEGEND_SENTENCES
 from reach_around.kit.pdf import PdfError, build_public_kit_pdf, check_text
 from reach_around.kit.pdftext import extract_pages
 
@@ -179,3 +180,45 @@ def test_the_public_pdf_prints_the_channel_cards_and_the_check_bites(
                 check_days=(TODAY,),
             )
     check_text(kit, text, public=True, config=config, check_days=(TODAY,))
+
+
+# --- the trust legend heading is printed in capitals (#890) --------------------
+
+
+def test_the_legend_heading_is_checked_without_case_but_not_without_letters(
+    tmp_path: Path,
+) -> None:
+    config, out = public_pdf(tmp_path)
+    kit = config.kit
+    assert kit is not None
+    text = "\n".join(extract_pages(out.read_bytes()))
+    assert LEGEND_HEADING in text
+
+    def run(value: str) -> None:
+        check_text(kit, value, public=True, config=config, check_days=(TODAY,))
+
+    run(text)  # original case
+    run(text.replace(LEGEND_HEADING, LEGEND_HEADING.upper()))  # as printed
+    for bad in (
+        "",  # absent
+        LEGEND_HEADING.replace("read", "raed"),  # altered
+        LEGEND_HEADING[:-8],  # truncated
+    ):
+        with pytest.raises(PdfError, match="trust legend heading"):
+            run(text.replace(LEGEND_HEADING, bad))
+
+
+def test_the_legend_sentences_still_keep_their_case(tmp_path: Path) -> None:
+    config, out = public_pdf(tmp_path)
+    kit = config.kit
+    assert kit is not None
+    text = "\n".join(extract_pages(out.read_bytes()))
+    sentence = LEGEND_SENTENCES[0]
+    with pytest.raises(PdfError, match="as written"):
+        check_text(
+            kit,
+            text.replace(sentence, sentence.upper()),
+            public=True,
+            config=config,
+            check_days=(TODAY,),
+        )

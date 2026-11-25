@@ -812,8 +812,12 @@ def _with_legend(
     """The legend is expected once any labeled number is (#626)."""
     if labeled:
         sentences = LEGEND_SENTENCES if public else LEGEND_SENTENCES_GATED
-        lines = [("the trust legend heading", LEGEND_HEADING)]
-        lines += [("the trust legend", sentence) for sentence in sentences]
+        # The stylesheet prints the heading in capitals and the renderer puts
+        # the capitals in the text layer, so the heading is matched without
+        # case (a missing or altered heading still fails). The sentences keep
+        # their case (#890).
+        found.append(("the trust legend heading", LEGEND_HEADING))
+        lines = [("the trust legend", sentence) for sentence in sentences]
         found.extend(lines)
         if exact is not None:
             exact.extend(lines)

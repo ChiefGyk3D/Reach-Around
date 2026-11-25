@@ -1,0 +1,1 @@
+- Fixed `reach-around kit pdf` refusing to finish (#890): the text check now matches the trust legend heading without regard to case, because the stylesheet prints it in capitals and the renderer puts the capitals in the PDF text. A missing, misspelled or truncated heading still fails, and the legend sentences and the other labels are still checked with their case.
