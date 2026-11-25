@@ -4,6 +4,7 @@ Everything is synthetic."""
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from datetime import date
@@ -377,26 +378,79 @@ def test_a_private_source_field_reaches_neither_projection(
         assert not [m for m in projection["measures"] if m.block == blocks[field]]
 
 
+def _builders_in_config_package() -> dict[str, ast.AST]:
+    """Every top-level function in reach_around.config that constructs a
+    ``Measure``, found by parsing each module (not by a hand-kept list)."""
+    import pkgutil
+
+    import reach_around.config as config_package
+
+    found: dict[str, ast.AST] = {}
+    for info in pkgutil.iter_modules(config_package.__path__):
+        path = Path(config_package.__path__[0]) / f"{info.name}.py"
+        if not path.is_file():
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            if any(
+                isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Name)
+                and n.func.id == "Measure"
+                for n in ast.walk(node)
+            ):
+                found[f"{info.name}.{node.name}"] = node
+    return found
+
+
+def _names_in(node: ast.AST) -> set[str]:
+    names: set[str] = set()
+    for n in ast.walk(node):
+        if isinstance(n, ast.Name):
+            names.add(n.id)
+        elif isinstance(n, ast.Attribute):
+            names.add(n.attr)
+        elif isinstance(n, ast.alias):
+            names.add(n.name)
+    return names
+
+
 def test_every_measure_builder_derives_visibility_through_source_level() -> None:
-    """#875 parity: no measure builder reads a policy table directly, so no
-    builder can bypass the narrower-of-both-tables rule."""
-    import inspect
+    """#875 parity: every function in the config package that builds a Measure
+    calls source_level and never names a policy table, so no builder can bypass
+    the narrower-of-both-tables rule. Read from the AST, so a copy of the helper
+    elsewhere or a string in a comment cannot hide a direct read."""
+    builders = _builders_in_config_package()
+    assert {
+        "measures.numbers_measures",
+        "measures.analytics_measures",
+        "measures.live_measures",
+        "measures.engagement_measures",
+        "fediverse.fediverse_measures",
+        "channels.channel_measures",
+    } <= set(builders)
+    for name, node in builders.items():
+        names = _names_in(node)
+        assert "source_level" in names, name
+        assert not names & {"KIT_FIELD_POLICY", "DISPLAY_POLICY"}, name
 
-    from reach_around.config import measures as measures_module
 
-    source = inspect.getsource(measures_module)
-    helper = inspect.getsource(measures_module.source_level)
-    body = source.replace(helper, "")
-    assert "KIT_FIELD_POLICY" not in body.replace("``KIT_FIELD_POLICY``", "")
-    assert "DISPLAY_POLICY" not in body
-    for name in (
-        "numbers_measures",
-        "analytics_measures",
-        "live_measures",
-        "engagement_measures",
-    ):
-        built = inspect.getsource(getattr(measures_module, name))
-        assert "source_level(" in built, name
+def test_source_level_is_defined_once() -> None:
+    import pkgutil
+
+    import reach_around.config as config_package
+
+    count = 0
+    for info in pkgutil.iter_modules(config_package.__path__):
+        path = Path(config_package.__path__[0]) / f"{info.name}.py"
+        if path.is_file():
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            count += sum(
+                isinstance(n, ast.FunctionDef) and n.name == "source_level"
+                for n in ast.walk(tree)
+            )
+    assert count == 1
 
 
 @pytest.mark.parametrize(
@@ -406,6 +460,8 @@ def test_every_measure_builder_derives_visibility_through_source_level() -> None
         ("analytics", "tile"),
         ("live", "live"),
         ("engagement", "derived"),
+        ("fediverse", "fediverse"),
+        ("channels", "channels"),
     ],
 )
 def test_narrowing_the_display_policy_narrows_that_fields_measures(
@@ -421,6 +477,21 @@ def test_narrowing_the_display_policy_narrows_that_fields_measures(
             "avg_ccv": 12,
             "period_start": "2026-10-01",
             "period_end": "2026-10-31",
+        }
+    ]
+    doc["fediverse"] = [
+        {
+            "platform": "mastodon",
+            "profile_url": "https://example.com/@fake",
+            "as_of": "2026-11-01",
+            "followers": 10,
+        }
+    ]
+    doc["channels"] = [
+        {
+            "platform": "podcast",
+            "as_of": "2026-11-01",
+            "downloads": 5,
         }
     ]
     kit = KitConfig.model_validate(doc)
