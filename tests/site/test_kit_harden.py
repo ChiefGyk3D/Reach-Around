@@ -25,6 +25,7 @@ from test_kit_build import (
 )
 
 from reach_around.cli import main
+from reach_around.kit.binding import BINDING_FILE, LOCK_FILE
 from reach_around.site import build as build_module
 from reach_around.site import kit as kit_module
 from reach_around.site.build import build_site
@@ -161,9 +162,10 @@ def test_a_gated_write_failure_happens_before_the_public_tree_is_replaced(
     finally:
         gated.chmod(0o700)
     assert snapshot(out) == before
-    # the page and its policy record, and no temporary file
+    # the page, its policy record and its build binding, the persistent lock
+    # file, and no temporary file
     assert sorted(p.name for p in gated.iterdir()) == sorted(
-        [GATED_FILE.name, GATED_POLICY_FILE.name]
+        [GATED_FILE.name, GATED_POLICY_FILE.name, BINDING_FILE.name, LOCK_FILE.name]
     )
 
 
@@ -179,7 +181,8 @@ def test_a_failed_publish_step_leaves_no_temporary_file(
     with pytest.raises(OSError, match=r"simulated"):
         build_site(make_config(), out, today=TODAY, gated_out=gated)
     assert CANARY.encode() not in tree_bytes(out)
-    assert list(gated.iterdir()) == []
+    # only the persistent lock file may remain: no page, marker or temporary file
+    assert [p.name for p in gated.iterdir()] in ([], [LOCK_FILE.name])
 
 
 # --- 3: the former gated artifact -------------------------------------------------

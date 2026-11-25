@@ -28,6 +28,7 @@ import { guardRequest, originAllowList } from "./guard";
 import { normalizeEmail } from "./input";
 import { reserveBudget, checkIpMinute, utcDay, type MinuteLimiter } from "./limits";
 import { forRequest } from "./log";
+import { authorizeSession } from "./session";
 import { MIN_KEY_BYTES, readUnlockCookie, verifyToken } from "./token";
 
 export const INQUIRY_ROUTE = "/k/inquiry";
@@ -60,7 +61,7 @@ const ONE_LINE_BAD = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 const DETAILS_BAD = /[\p{Cc}\p{Zl}\p{Zp}\p{Bidi_Control}]/u;
 const REPLACEMENT = "�";
 
-export interface InquiryEnv extends AlertsEnv, Pick<KitEnv, "KIT_KILL" | "TOKEN_HMAC_KEY" | "TOKEN_HMAC_KEY_PREVIOUS"> {
+export interface InquiryEnv extends AlertsEnv, Pick<KitEnv, "KIT_KILL" | "LEADS_DB" | "TOKEN_HMAC_KEY" | "TOKEN_HMAC_KEY_PREVIOUS"> {
   /**
    * Workers Rate Limiting binding for the form: a few posts per client per
    * minute. Required; without it the form refuses (fail closed).
@@ -215,6 +216,13 @@ async function submit(request: Request, env: InquiryEnv, deps: InquiryDeps): Pro
     // CONTROL:inquiry-ip-minute
     log.log("send", "throttled", "ip_minute");
     return plain(429, { "Retry-After": "60" });
+  }
+
+  // The session must still be current: the same check the view route uses (session.ts).
+  const verdict = await authorizeSession(env.LEADS_DB, env.DB, keys, claims); // CONTROL:inquiry-session
+  if (verdict !== "ok") {
+    log.log("send", "rejected", verdict === "error" ? "other" : "expired");
+    return verdict === "error" ? plain(503) : redirect(GATE_PAGE);
   }
 
   const read = await readBoundedText(request, INQUIRY_LIMITS.maxBodyBytes, { deadlineMs: BODY_DEADLINE_MS }); // CONTROL:inquiry-size

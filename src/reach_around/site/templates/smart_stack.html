@@ -19,7 +19,44 @@
 </div>
 {%- endif %}
 {%- endmacro %}
+{# The compact grid (#873): every link is a tile, no group is collapsed or hidden. #}
+{% macro tile_grid(links, columns, watch_ids=()) -%}
+{% set count = links|length %}
+{% if count %}
+{% set cols = columns if columns else (count if count <= 5 else 3) %}
+{% set rest = count % cols %}
+{% set first_short = count - rest if rest else count %}
+<div class="smart-tiles smart-cols-{{ cols }}">
+{% for link in links %}
+{% set across = rest if (rest and loop.index0 >= first_short) else cols %}
+{{ link_anchor(link, click_tracking, " smart-tile smart-span-" ~ (60 // across), link.icon if (page.live_badges and link.id in watch_ids) else "", true) }}
+{% endfor %}
+</div>
+{% endif %}
+{%- endmacro %}
 {% block content %}
+{% if compact %}
+<div class="smart-stack smart-compact{% if page.status.schedule %} smart-has-schedule{% endif %}">
+<section class="smart-group smart-onair smart-group-watch" id="group-watch" aria-labelledby="group-watch-title">
+<h2 id="group-watch-title">{{ watch_title }}</h2>
+<section class="smart-status{{ frames.cls("hero") }}" aria-labelledby="smart-status-title">
+<h3 id="smart-status-title" class="sr-only">Status</h3>
+<p class="smart-status-text">{{ page.status.text }}</p>
+{% if page.status.schedule %}<p class="smart-status-schedule">{{ page.status.schedule }}</p>{% endif %}
+</section>
+{{ tile_grid(watch_all, watch_columns, page.watch) }}
+{% if page.live_badges %}<p class="sr-only" data-watch-status role="status" aria-live="polite" aria-atomic="true"></p>{% endif %}
+</section>
+<div class="smart-groups">
+{% for item in groups %}
+<section class="smart-group smart-group-{{ item.tab.intent }}" id="group-{{ item.tab.intent }}" aria-labelledby="group-{{ item.tab.intent }}-title">
+<h2 id="group-{{ item.tab.intent }}-title">{{ item.tab.title }}</h2>
+{{ tile_grid(item.links, item.tab.columns) }}
+</section>
+{% endfor %}
+</div>
+</div>
+{% else %}
 <div class="smart-stack{% if featured %} smart-has-featured{% endif %}">
 <div class="smart-onair">
 <p class="smart-kicker" aria-hidden="true">{{ watch_title }}</p>
@@ -64,4 +101,5 @@
 {% endfor %}
 </div>
 </div>
+{% endif %}
 {% endblock %}

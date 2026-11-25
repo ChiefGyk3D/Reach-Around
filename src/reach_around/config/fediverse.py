@@ -176,10 +176,9 @@ def _trust(key: str) -> Trust:
 def fediverse_measures(entries: Iterable[FediverseEntry]) -> list[Measure]:
     """Each entry's measures: followers, posts, the medians and, when enabled, the
     means. A value that was not typed produces no measure (never a zero)."""
-    from reach_around.config.kit import KIT_FIELD_POLICY
-    from reach_around.config.measures import REGISTRY
+    from reach_around.config.measures import REGISTRY, source_level
 
-    source = KIT_FIELD_POLICY["fediverse"].visibility
+    source = source_level("fediverse")
     out: list[Measure] = []
     for item in entries:
         period = (item.as_of - timedelta(days=WINDOW_DAYS - 1), item.as_of)

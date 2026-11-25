@@ -547,7 +547,7 @@ describe("retention order", () => {
   it("a_rollup_that_throws_or_is_cut_off_cannot_stop_the_purge_of_rolled_days", async () => {
     const now = Date.now();
     await insert([{ ts: now - 10 * DAY }]);
-    await DB.prepare("INSERT INTO view_rollup_log VALUES ('links', ?, 'UTC', 1, 1, 0, 1, 1, 1, 0, 1000000000000000, 0)").bind(day(now - 10 * DAY)).run();
+    await DB.prepare("INSERT INTO view_rollup_log (site, day, day_tz, raw_views, views, uniques, rows_core, rows_dim, rows_geo, rolled_at, max_id, rerolls) VALUES ('links', ?, 'UTC', 1, 1, 0, 1, 1, 1, 0, 1000000000000000, 0)").bind(day(now - 10 * DAY)).run();
     const pending: Promise<unknown>[] = [];
     const ctx = { waitUntil: (p: Promise<unknown>) => void pending.push(p) } as unknown as ExecutionContext;
     const order: string[] = [];
@@ -577,8 +577,8 @@ describe("retention order", () => {
   it("when_the_rollup_fails_the_raw_rows_survive_the_purge_and_nothing_throws", async () => {
     const now = Date.now();
     await insert([{ ts: now - 9 * DAY }]);
-    // Batches before the rollup's first: lead purge (1), health read and coverage (2), view purge (2).
-    const noRollup = failingBatch(6);
+    // Batches before the rollup's first: lead purge (1), click marker (1), health read and coverage (2), view purge (2).
+    const noRollup = failingBatch(7);
     const pending: Promise<unknown>[] = [];
     const ctx = { waitUntil: (p: Promise<unknown>) => void pending.push(p) } as unknown as ExecutionContext;
     await worker.scheduled({} as ScheduledController, { DB: noRollup, SITE_HOST: "x.example.test", LINK_IDS: "[]", CLICK_LIMITER: fakeLimiter() }, ctx);
@@ -626,7 +626,7 @@ describe("retention order", () => {
     }) as D1Database;
     // An old rolled day (purgeable), the stuck day and a later day.
     await insert([{ ts: ageDay(10) }, { ts: D12 + 5 }, { ts: D13 + 5 }]);
-    await DB.prepare("INSERT INTO view_rollup_log VALUES ('links', ?, 'UTC', 1, 1, 0, 1, 1, 1, 0, 1000000000000000, 0)").bind(day(ageDay(10))).run();
+    await DB.prepare("INSERT INTO view_rollup_log (site, day, day_tz, raw_views, views, uniques, rows_core, rows_dim, rows_geo, rolled_at, max_id, rerolls) VALUES ('links', ?, 'UTC', 1, 1, 0, 1, 1, 1, 0, 1000000000000000, 0)").bind(day(ageDay(10))).run();
     await expect(rollupClosedDays(envOf({ DB: failingDb }), NOW)).rejects.toThrow();
     const logged = (await q<{ day: string }>("SELECT day FROM view_rollup_log ORDER BY day")).map((r) => r.day);
     expect(logged).toContain("2027-03-13"); // the later day was still rolled
@@ -648,7 +648,7 @@ describe("retention order", () => {
   });
 
   it("aggregates_older_than_90_days_are_deleted", async () => {
-    await DB.prepare("INSERT INTO view_rollup_log VALUES ('links','2026-12-01','UTC',1,1,0,1,1,1,0,0,0), ('links','2027-03-10','UTC',1,1,0,1,1,1,0,0,0)").run();
+    await DB.prepare("INSERT INTO view_rollup_log (site, day, day_tz, raw_views, views, uniques, rows_core, rows_dim, rows_geo, rolled_at, max_id, rerolls) VALUES ('links','2026-12-01','UTC',1,1,0,1,1,1,0,0,0), ('links','2027-03-10','UTC',1,1,0,1,1,1,0,0,0)").run();
     await DB.prepare("INSERT INTO view_geo_daily VALUES ('links','2026-12-01','UTC','US','','','h',1,0), ('links','2027-03-10','UTC','US','','','h',1,0)").run();
     await purgeViews({ DB }, NOW);
     expect((await q<{ day: string }>("SELECT day FROM view_rollup_log")).map((r) => r.day)).toEqual(["2027-03-10"]);

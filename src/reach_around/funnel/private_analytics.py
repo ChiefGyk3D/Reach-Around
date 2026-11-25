@@ -31,6 +31,7 @@ nothing else; a metric name never decides. Rules, each tested:
 from __future__ import annotations
 
 import re
+import unicodedata
 from datetime import date
 from typing import Any
 
@@ -63,6 +64,22 @@ NOTES = (
     "A count under the floor is never printed. Cells under the floor are merged "
     "into one remainder line, together with the largest printed cell, so the "
     "line pins no single cell.",
+)
+
+# Platforms with no collected views, watch time or demographics figure, and why.
+# Twitch and Kick use the same wording and sit side by side (equal treatment). The
+# list says "not available" plainly instead of leaving a platform out (#397).
+NOT_AVAILABLE = (
+    (
+        "Twitch",
+        "no figure collected: live measures are hand-kept (owner decision "
+        "2026-11-20); the API offers no watch time or demographics",
+    ),
+    (
+        "Kick",
+        "no figure collected: live measures are hand-kept (owner decision "
+        "2026-11-20); the API offers no watch time or demographics",
+    ),
 )
 
 # metric prefix -> what it counts
@@ -167,6 +184,61 @@ def _withhold_pinning_shares(section: dict[str, Any], floor: int) -> None:
             g.update(state="withheld", rows=[], other=None)
 
 
+# Hosts of the platforms that are named "not available", folded to one canonical
+# name (#397). Same treatment for Twitch and Kick. A host matches exactly or as a
+# true subdomain (www, m, player), never by a loose suffix test.
+_PLATFORM_HOSTS = {"twitch.tv": "twitch", "kick.com": "kick"}
+# Marker for an identifier that cannot be one platform (non-ASCII, malformed).
+UNRECOGNIZED_PLATFORM = ""
+_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+_HOST_MAX = 253
+
+
+_SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*://")
+_PORT = re.compile(r"^[0-9]{1,5}$")
+
+
+def canonical_platform(name: object) -> str:
+    """The one canonical platform name, or UNRECOGNIZED_PLATFORM.
+
+    Supported forms, and only these: a plain name, a handle with a leading @,
+    a bare host, a host:port, a protocol-relative //host, and scheme://host
+    (any scheme), each with an optional www or m subdomain, one trailing dot,
+    path, query, fragment and trailing slash. The text is NFKC-normalized
+    first; any non-ASCII character left over (a lookalike letter) makes the
+    identifier unrecognized. Every malformed authority is unrecognized too: an
+    empty, non-numeric or out-of-range (1 to 65535) port, userinfo or any
+    other @ (a second leading @ included), brackets (IPv6 literals),
+    percent-encoding, backslashes, more than one colon, empty labels, several
+    trailing dots and invalid DNS labels (1 to 63 of a-z, 0-9 and hyphen, no
+    leading or trailing hyphen, host at most 253). A scheme without // (such
+    as ftp:twitch.tv) is not a supported form and is unrecognized.
+    """
+    text = unicodedata.normalize("NFKC", str(name)).strip().casefold()
+    if text.startswith("@"):
+        text = text[1:]  # one leading @ is a handle; any other @ is malformed
+    if not text or not text.isascii() or any(c.isspace() or c < " " for c in text):
+        return UNRECOGNIZED_PLATFORM
+    rest = text
+    scheme = _SCHEME.match(rest)
+    if scheme:
+        rest = rest[scheme.end() :]
+    elif rest.startswith("//"):
+        rest = rest[2:]
+    authority = re.split(r"[/?#]", rest, maxsplit=1)[0]
+    host, colon, port = authority.partition(":")
+    if colon and (not _PORT.match(port) or not 1 <= int(port) <= 65535):
+        return UNRECOGNIZED_PLATFORM
+    if host.endswith("."):
+        host = host[:-1]  # one trailing dot (an absolute name) is accepted
+    if len(host) > _HOST_MAX or not all(_LABEL.match(x) for x in host.split(".")):
+        return UNRECOGNIZED_PLATFORM
+    for known, canonical in _PLATFORM_HOSTS.items():
+        if host == known or host.endswith("." + known):
+            return canonical
+    return host
+
+
 def build_private(
     history: History,
     *,
@@ -179,13 +251,22 @@ def build_private(
     if floor < FLOOR:
         raise ValueError(f"the floor cannot be below {FLOOR}")
     by_metric: dict[tuple[str, str, str], list[Record]] = {}
+    unrecognized_platforms = 0
     for record in history.records:
         if record.api_provider in PRIVATE_PROVIDERS:
-            key = (record.platform, str(record.api_provider), record.metric)
+            canonical = canonical_platform(record.platform)
+            if canonical == UNRECOGNIZED_PLATFORM:
+                unrecognized_platforms += 1
+                continue
+            key = (
+                canonical,
+                str(record.api_provider),
+                record.metric,
+            )
             by_metric.setdefault(key, []).append(record)
     sections: dict[tuple[str, str], dict[str, Any]] = {}
     pending: dict[tuple[str, str, str], list[tuple[str, str, Series]]] = {}
-    unrecognized = 0
+    unrecognized = unrecognized_platforms
 
     def section(platform: str, provider: str) -> dict[str, Any]:
         return sections.setdefault(
@@ -279,6 +360,12 @@ def build_private(
         "floor": floor,
         "sections": [sections[k] for k in sorted(sections)],
         "unrecognized": unrecognized,
+        "not_available": [
+            {"platform": p, "reason": r}
+            for p, r in NOT_AVAILABLE
+            if canonical_platform(p)
+            not in {sec["platform"] for sec in sections.values()}
+        ],
         "notes": list(NOTES),
     }
 
@@ -332,6 +419,8 @@ def private_lines(block: dict[str, Any]) -> list[str]:
                 lines.append(
                     f"      {'(other, below the floor)':<22} {group['other']:>12,}"
                 )
+    for entry in block.get("not_available", ()):  # absent in a legacy block
+        lines.append(f"  {entry['platform']}: not available ({entry['reason']})")
     if block["unrecognized"]:
         lines.append(
             f"  {block['unrecognized']} private metric(s) not recognized; not shown"

@@ -47,9 +47,10 @@ import { killedResponse, originAllowList } from "./guard";
 import { assertLeadsSeparated } from "./separation";
 import { MAX_FORM_BYTES, readForm } from "./input";
 import { isBotUserAgent } from "../click";
-import { getLead, getLeadByEmail, getUnstoredSessionFloor, upsertLead } from "./leads";
+import { getLeadByEmail, upsertLead } from "./leads";
+import { authorizeSession } from "./session";
 import { coarseNetwork } from "./network";
-import { isUnstoredId, mintUnstoredId } from "./unstored";
+import { mintUnstoredId } from "./unstored";
 import { checkIpMinute, reserveBudget, utcDay, type MinuteLimiter } from "./limits";
 import { forRequest, type Reason } from "./log";
 import { readUnlockCookie, signToken, unlockCookie, verifyToken } from "./token";
@@ -471,27 +472,10 @@ async function view(request: Request, env: GateEnv, deps: GateDeps): Promise<Res
   const key = address === null ? null : await limiterKey(limiterSecret, env.VIEW_HASH_SECRET, "view", address);
   if (!(await checkIpMinute(env.KIT_VIEW_LIMITER, key))) return back("ip_minute"); // CONTROL:view-ip-minute
 
-  // The floor is in MILLISECONDS (whoever writes it must write milliseconds). The token's iat is whole
-  // seconds, so the two are compared in whole seconds and the check fails closed: only a cookie issued
-  // in a second strictly after the floor's second works. Trade-off: a fresh unlock issued in the very
-  // same second as the floor is refused once and works on the next try.
-  let floorMs: number | null;
-  try {
-    if (await isUnstoredId(cfg.keys, claims.lid)) {
-      // An unlock that stored no lead has no lead row: the one kit-wide floor in kit_meta applies. A read
-      // error refuses.
-      floorMs = await getUnstoredSessionFloor(env.DB); // CONTROL:unstored-floor
-    } else {
-      // The lead must still exist (a deleted lead's cookie is dead).
-      await assertLeadsSeparated(env); // a fresh proof right before the lead read
-      const lead = await getLead(env.LEADS_DB, claims.lid); // CONTROL:lead-exists
-      if (lead === null) return back("expired");
-      floorMs = lead.session_floor_ts;
-    }
-  } catch {
-    return back("other");
-  }
-  if (floorMs !== null && claims.iat <= Math.floor(floorMs / 1000)) return back("expired"); // CONTROL:session-floor
+  // The session must still be current (lead exists, cookie newer than the floor): the shared check in
+  // session.ts, also used by the inquiry route. A read error refuses.
+  const verdict = await authorizeSession(env.LEADS_DB, env.DB, cfg.keys, claims);
+  if (verdict !== "ok") return back(verdict === "error" ? "other" : "expired");
 
   // The shared view budget is charged only for a cookie that can still read the page: lead existence and
   // the applicable floor are checked first, so a revoked or orphaned cookie cannot spend it. The

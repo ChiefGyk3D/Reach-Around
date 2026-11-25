@@ -261,7 +261,8 @@
       "rows_geo",
       "rolled_at",
       "max_id",
-      "rerolls"
+      "rerolls",
+      "reroll_closed"
     ],
     "visitor_seen": [
       "day",
@@ -381,6 +382,7 @@
     "view_meta.value": "ms_or_small",
     "view_rollup_log.max_id": "rowid",
     "view_rollup_log.raw_views": "small",
+    "view_rollup_log.reroll_closed": "small",
     "view_rollup_log.rerolls": "small",
     "view_rollup_log.rolled_at": "ms",
     "view_rollup_log.rows_core": "small",
@@ -402,5 +404,9 @@
   ],
   "bare_number_ok": [
     "leads.email"
-  ]
+  ],
+  "triggers": {
+    "kit_meta_floor_insert": "CREATE TRIGGER kit_meta_floor_insert BEFORE INSERT ON kit_meta WHEN NEW.key = 'unstored_floor_ts' AND NEW.value < 0 BEGIN SELECT RAISE(ABORT, 'unstored_floor_ts must be >= 0'); END",
+    "kit_meta_floor_update": "CREATE TRIGGER kit_meta_floor_update BEFORE UPDATE ON kit_meta WHEN NEW.key = 'unstored_floor_ts' AND NEW.value < 0 BEGIN SELECT RAISE(ABORT, 'unstored_floor_ts must be >= 0'); END"
+  }
 }

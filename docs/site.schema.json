@@ -39,6 +39,32 @@
     },
     "Alerts": {
       "additionalProperties": false,
+      "anyOf": [
+        {
+          "properties": {
+            "channels": {
+              "maxItems": 0
+            },
+            "events": {
+              "maxItems": 0
+            }
+          }
+        },
+        {
+          "properties": {
+            "channels": {
+              "minItems": 1
+            },
+            "events": {
+              "minItems": 1
+            }
+          },
+          "required": [
+            "channels",
+            "events"
+          ]
+        }
+      ],
       "description": "Which channels receive which owner alerts. Everything off by default.",
       "properties": {
         "channels": {
@@ -83,7 +109,7 @@
           "type": "integer"
         },
         "visitor_email": {
-          "default": "full",
+          "default": "masked",
           "enum": [
             "full",
             "masked",
@@ -2614,6 +2640,15 @@
       "additionalProperties": false,
       "description": "Production link-page presentation choices.",
       "properties": {
+        "density": {
+          "default": "comfortable",
+          "enum": [
+            "comfortable",
+            "compact"
+          ],
+          "title": "Density",
+          "type": "string"
+        },
         "featured": {
           "anyOf": [
             {
@@ -3777,6 +3812,20 @@
           "title": "Collapsed",
           "type": "boolean"
         },
+        "columns": {
+          "anyOf": [
+            {
+              "maximum": 6,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Columns"
+        },
         "id": {
           "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
           "title": "Id",
@@ -3793,7 +3842,10 @@
                 "support",
                 "work",
                 "shop",
-                "blog"
+                "blog",
+                "gear",
+                "more",
+                "hire"
               ],
               "type": "string"
             },
@@ -4331,7 +4383,7 @@
           "allowed_hosts": []
         },
         "max_per_minute": 5,
-        "visitor_email": "full"
+        "visitor_email": "masked"
       }
     },
     "analytics": {
@@ -4419,6 +4471,7 @@
     "page": {
       "$ref": "#/$defs/Page",
       "default": {
+        "density": "comfortable",
         "featured": null,
         "layout": "classic",
         "live_badges": false,

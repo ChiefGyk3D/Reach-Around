@@ -5,11 +5,16 @@ from __future__ import annotations
 
 import os
 import stat
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
 
-from reach_around.kit.output import OutputError, confine_out_dir, write_private
+from reach_around.kit.output import (
+    OutputError,
+    confine_out_dir,
+    write_private,
+)
 
 
 def out_dir(tmp_path: Path) -> Path:
@@ -144,3 +149,271 @@ def test_a_failed_write_leaves_no_partial_target(
     with pytest.raises(OutputError):
         write_private(d, "kit.pdf", b"%PDF-", overwrite=False)
     assert list(d.iterdir()) == []
+
+
+# --- the walk is descriptor-relative ------------------------------------------
+
+
+def test_an_ancestor_swapped_for_a_link_after_the_check_is_not_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Just before the last component is opened, the parent is renamed away and
+    replaced by a link to another private directory. Nothing is written through
+    the link, and the directory the walk held is left with no file."""
+    real = tmp_path / "race" / "private"
+    real.mkdir(parents=True, mode=0o700)
+    evil = tmp_path / "evil" / "private"
+    evil.mkdir(parents=True, mode=0o700)
+    original = os.open
+    swapped: list[bool] = []
+
+    def swap_then_open(
+        path: str | Path, flags: int, mode: int = 0o777, *, dir_fd: int | None = None
+    ) -> int:
+        if str(path) in (str(real), "private") and not swapped:
+            swapped.append(True)
+            os.rename(tmp_path / "race", tmp_path / "race.old")
+            os.symlink(tmp_path / "evil", tmp_path / "race")
+        return original(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", swap_then_open)
+    with pytest.raises(OutputError, match="changed|symbolic"):
+        write_private(real, "kit.pdf", b"%PDF-1", overwrite=False)
+    monkeypatch.undo()
+    assert swapped
+    assert list(evil.iterdir()) == []
+    assert list((tmp_path / "race.old" / "private").iterdir()) == []
+
+
+def test_a_directory_renamed_into_a_forbidden_tree_is_not_written_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After the checks, the held directory is renamed into the published tree.
+    The write must fail and leave nothing there, temporary file included."""
+    site = tmp_path / "site"
+    site.mkdir(mode=0o700)
+    private = out_dir(tmp_path)
+    original = os.fsync
+    moved: list[bool] = []
+
+    def move_then_sync(fd: int) -> None:
+        if not moved:
+            moved.append(True)
+            os.rename(private, site / "uploaded")
+        original(fd)
+
+    monkeypatch.setattr(os, "fsync", move_then_sync)
+    with pytest.raises(OutputError, match="changed"):
+        write_private(private, "kit.pdf", b"%PDF-1", overwrite=False, forbidden=[site])
+    monkeypatch.undo()
+    assert moved
+    assert list((site / "uploaded").iterdir()) == []
+
+
+def test_a_move_right_after_the_first_check_of_the_installed_file_is_caught(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The folder is renamed into the published tree right after the first
+    verification that follows the install returns. The next verification sees it
+    and removes the installed target through the held descriptor."""
+    from reach_around.kit import output
+
+    site = tmp_path / "site"
+    site.mkdir(mode=0o700)
+    private = out_dir(tmp_path)
+    real = output.verify_unchanged
+    calls: list[int] = []
+
+    def verify_then_move(
+        directory: Path, fd: int, forbidden: Sequence[Path] = ()
+    ) -> None:
+        calls.append(1)
+        real(directory, fd, forbidden)
+        # call 1 is before the install, call 2 is the first one after it
+        if len(calls) == 2:
+            os.rename(private, site / "uploaded")
+
+    monkeypatch.setattr(output, "verify_unchanged", verify_then_move)
+    with pytest.raises(OutputError, match="changed"):
+        write_private(private, "kit.pdf", b"%PDF-1", overwrite=False, forbidden=[site])
+    monkeypatch.undo()
+    assert len(calls) >= 3
+    assert list((site / "uploaded").iterdir()) == []
+
+
+def test_an_owner_only_parent_gives_no_warning(tmp_path: Path) -> None:
+    import warnings
+
+    parent = tmp_path / "parent"
+    parent.mkdir(mode=0o700)
+    private = parent / "private"
+    private.mkdir(mode=0o700)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        write_private(private, "kit.pdf", b"%PDF-1", overwrite=False)
+
+
+def test_a_directory_replaced_by_another_at_the_same_name_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    private = out_dir(tmp_path)
+    original = os.fsync
+    moved: list[bool] = []
+
+    def swap_then_sync(fd: int) -> None:
+        if not moved:
+            moved.append(True)
+            os.rename(private, tmp_path / "old")
+            os.mkdir(private, 0o700)
+        original(fd)
+
+    monkeypatch.setattr(os, "fsync", swap_then_sync)
+    with pytest.raises(OutputError, match="changed"):
+        write_private(private, "kit.pdf", b"%PDF-1", overwrite=False)
+    monkeypatch.undo()
+    assert list(private.iterdir()) == []
+    assert list((tmp_path / "old").iterdir()) == []
+
+
+def test_a_removed_directory_is_refused(tmp_path: Path) -> None:
+    from reach_around.kit.output import open_private_dir, verify_unchanged
+
+    private = out_dir(tmp_path)
+    fd = open_private_dir(private, [], create=False)
+    try:
+        verify_unchanged(private, fd, [])  # control: still there
+        private.rmdir()
+        with pytest.raises(OutputError, match="changed"):
+            verify_unchanged(private, fd, [])
+    finally:
+        os.close(fd)
+
+
+def test_intermediate_directories_are_created_owner_only(tmp_path: Path) -> None:
+    made = confine_out_dir(tmp_path / "a" / "b" / "c", forbidden=[])
+    for path in (made, made.parent, made.parent.parent):
+        assert stat.S_IMODE(path.stat().st_mode) == 0o700, path
+
+
+def test_a_directory_holding_a_work_tree_below_it_is_refused(tmp_path: Path) -> None:
+    d = out_dir(tmp_path)
+    (d / "nested" / "deeper" / ".git").mkdir(parents=True)
+    with pytest.raises(OutputError, match="git work tree"):
+        confine_out_dir(d, forbidden=[])
+    with pytest.raises(OutputError, match="git work tree"):
+        write_private(d, "kit.pdf", b"%PDF-", overwrite=False)
+
+
+def test_a_directory_with_no_work_tree_below_it_is_fine(tmp_path: Path) -> None:
+    d = out_dir(tmp_path)
+    (d / "nested" / "deeper").mkdir(parents=True)
+    (d / "old.pdf").write_bytes(b"%PDF-")
+    assert confine_out_dir(d, forbidden=[]) == d
+
+
+def test_a_forbidden_directory_is_rechecked_at_the_write(tmp_path: Path) -> None:
+    d = out_dir(tmp_path)
+    with pytest.raises(OutputError, match="published|inside|around|same"):
+        write_private(d, "kit.pdf", b"%PDF-", overwrite=False, forbidden=[d])
+    assert list(d.iterdir()) == []
+
+
+# --- the directories above the parent (#632) -------------------------------------
+
+
+def _deep(tmp_path: Path) -> tuple[Path, Path]:
+    """tmp_path/top/mid/private; returns (top, private)."""
+    top = tmp_path / "top"
+    private = top / "mid" / "private"
+    private.mkdir(parents=True, mode=0o700)
+    for part in (top, top / "mid"):
+        part.chmod(0o700)
+    return top, private
+
+
+@pytest.mark.parametrize("mode", [0o770, 0o707, 0o777])
+def test_a_writable_ancestor_above_the_parent_is_refused(
+    tmp_path: Path, mode: int
+) -> None:
+    top, private = _deep(tmp_path)
+    top.chmod(mode)
+    try:
+        with pytest.raises(OutputError, match="or one above it"):
+            write_private(private, "kit.pdf", b"%PDF-1", overwrite=False)
+        assert not (private / "kit.pdf").exists()
+        # a missing directory below it is not created either
+        with pytest.raises(OutputError, match="or one above it"):
+            confine_out_dir(top / "mid" / "private" / "new" / "deeper", [])
+        assert not (private / "new").exists()
+    finally:
+        top.chmod(0o700)
+    write_private(private, "kit.pdf", b"%PDF-1", overwrite=False)  # control
+
+
+def test_a_sticky_writable_ancestor_is_allowed(tmp_path: Path) -> None:
+    """Like a normal temporary directory: only the owner of an entry may rename
+    it, so the sticky bit closes the move."""
+    top, private = _deep(tmp_path)
+    top.chmod(0o1777)
+    try:
+        write_private(private, "kit.pdf", b"%PDF-1", overwrite=False)
+    finally:
+        top.chmod(0o700)
+    assert (private / "kit.pdf").read_bytes() == b"%PDF-1"
+
+
+def test_an_ancestor_owned_by_someone_else_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _top, private = _deep(tmp_path)
+    monkeypatch.setattr(os, "geteuid", lambda: os.getuid() + 1)
+    with pytest.raises(OutputError, match="belongs to another user"):
+        write_private(private, "kit.pdf", b"%PDF-1", overwrite=False)
+    monkeypatch.undo()
+    assert not (private / "kit.pdf").exists()
+
+
+@pytest.mark.parametrize("mode", [0o770, 0o707, 0o777, 0o720, 0o702])
+def test_a_parent_others_can_write_to_is_refused(tmp_path: Path, mode: int) -> None:
+    """Renaming a directory needs write on its parent, not on itself: a 0700
+    folder under a writable parent can be moved by someone else."""
+    _top, private = _deep(tmp_path)
+    parent = private.parent
+    parent.chmod(mode)
+    try:
+        with pytest.raises(OutputError, match="parent of the output directory"):
+            write_private(private, "kit.pdf", b"%PDF-1", overwrite=False)
+        assert list(private.iterdir()) == []
+        with pytest.raises(OutputError, match="parent of the output directory"):
+            confine_out_dir(private, [])
+        # a missing directory is not created under it either
+        with pytest.raises(OutputError, match="parent of the output directory"):
+            confine_out_dir(parent / "new", [])
+        assert not (parent / "new").exists()
+    finally:
+        parent.chmod(0o700)
+    write_private(private, "kit.pdf", b"%PDF-1", overwrite=False)  # control
+
+
+def test_a_sticky_writable_parent_is_allowed(tmp_path: Path) -> None:
+    """The /tmp rule: in a sticky directory only the owner of an entry (this
+    user, who owns the output folder) may rename it."""
+    _top, private = _deep(tmp_path)
+    parent = private.parent
+    parent.chmod(0o1777)
+    try:
+        write_private(private, "kit.pdf", b"%PDF-1", overwrite=False)
+    finally:
+        parent.chmod(0o700)
+    assert (private / "kit.pdf").read_bytes() == b"%PDF-1"
+
+
+def test_a_parent_owned_by_someone_else_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    private = out_dir(tmp_path)
+    monkeypatch.setattr(os, "geteuid", lambda: os.getuid() + 1)
+    with pytest.raises(OutputError, match="belongs to another user"):
+        write_private(private, "kit.pdf", b"%PDF-1", overwrite=False)
+    monkeypatch.undo()
+    assert list(private.iterdir()) == []

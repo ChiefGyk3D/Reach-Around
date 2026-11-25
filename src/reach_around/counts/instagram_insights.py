@@ -29,8 +29,8 @@ below is marked UNVERIFIED and is tied to #552 (live verification by the owner):
 * UNVERIFIED: the answer shape of ``follower_demographics`` (``total_value.
   breakdowns[].dimension_keys`` and ``results[].dimension_values``/``value``),
   the label spellings (age ``13-17`` ... ``65+``, gender ``F``/``M``/``U``,
-  ISO country code), and the accepted ``timeframe`` value (the note records that
-  some timeframe values are deprecated).
+  ISO country code). The ``timeframe`` value: see TIMEFRAME (documented, not yet
+  called live).
 * UNVERIFIED: the Instagram-Login route with a numeric account id (the note
   names ``<IG_ID>``; ``me`` is not used here for insights).
 * "Profile visits" is not in the note's metric table, so it is not collected.
@@ -91,7 +91,44 @@ ACTIVITY_METRICS = {
     "profile_links_taps": "link_taps_7d",
 }
 DEMOGRAPHICS_METRIC = "follower_demographics"
-# UNVERIFIED: the timeframe value (the note: required, some values deprecated).
+# Vendor facts (developers.facebook.com, all read 2026-11-24):
+# * instagram-user/insights: the metric table lists timeframe values last_14_days,
+#   last_30_days, last_90_days, prev_month, this_month, this_week for
+#   follower_demographics and engaged_audience_demographics, and "n/a" for every
+#   other metric this collector requests (reach, views, total_interactions,
+#   accounts_engaged, profile_links_taps). It says "this_month returns the data in
+#   the last 30 days and this_week returns data in the last 7 days"; it does not say
+#   whether the window is calendar-aligned or rolling.
+# * graph-api/changelog/version20.0 (Instagram User Insights): last_14_days,
+#   last_30_days, last_90_days and prev_month are no longer supported "for the
+#   reached_audience_demographics and engaged_audience_demographics metrics"
+#   (v20.0+, all versions from 2024-08-19). It does not name follower_demographics,
+#   so nothing is removed for that metric. Removals are per metric, never global.
+# The request keeps last_30_days (the value that worked before). this_month is
+# deliberately NOT adopted: it is on the table but nothing shows it is accepted or
+# returns the same window. The window semantics are vendor-defined and UNVERIFIED;
+# #552 (live check) settles acceptance and the real window.
+TIMEFRAME_ALLOWED = {
+    "follower_demographics": frozenset(
+        {
+            "last_14_days",
+            "last_30_days",
+            "last_90_days",
+            "prev_month",
+            "this_month",
+            "this_week",
+        }
+    ),
+}
+# metric -> timeframe values the vendor changelog removed for it (v20.0).
+TIMEFRAME_REMOVED_V20 = {
+    "reached_audience_demographics": frozenset(
+        {"last_14_days", "last_30_days", "last_90_days", "prev_month"}
+    ),
+    "engaged_audience_demographics": frozenset(
+        {"last_14_days", "last_30_days", "last_90_days", "prev_month"}
+    ),
+}
 TIMEFRAME = "last_30_days"
 # UNVERIFIED: label spellings of the breakdown answers.
 AGE_LABELS = {
@@ -243,6 +280,9 @@ def _activity(reader: _Reader, first: date, last: date) -> Report:
             "unique count, not a sum of days; UNVERIFIED, #552)"
         )
         out.append(Measure(metric, value, note))
+    if not set(ACTIVITY_METRICS) <= seen:
+        # A reply that leaves out a requested metric is not a full report.
+        raise InstagramInsightsError("missing_field")
     out.sort(key=lambda m: m.metric)
     return out, skipped
 
@@ -333,8 +373,9 @@ def _demographic(reader: _Reader, dim: str, first: date, last: date) -> Report:
     if folded > MAX_VALUE:  # refused, never clamped: a clamped total is wrong
         raise InstagramInsightsError("bad_aggregate")
     note = (
-        f"followers by {dim} (timeframe {TIMEFRAME}, vendor-defined; UNVERIFIED, "
-        f"#552); cells under {FLOOR} are summed into fdemo_{dim}_other"
+        f"followers by {dim} (timeframe {TIMEFRAME}, vendor-defined window; "
+        "UNVERIFIED, #552); "
+        f"cells under {FLOOR} are summed into fdemo_{dim}_other"
     )
     out = [Measure(f"fdemo_{dim}_{key}", count, note) for key, count in sorted(ranked)]
     if folded:

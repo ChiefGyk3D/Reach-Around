@@ -30,16 +30,24 @@ def refuse(reason: str) -> int:
     return 1
 
 
+class TooLarge(Exception):
+    """An html page is over MAX_BYTES: it is refused, never read in part."""
+
+
 def built_ids(site: Path) -> set[str] | None:
     """The page ids on ALL the site's html pages (never a truncated list), or None
-    if any is outside the grammar. Only tab pages carry the attribute; 404.html
-    and the privacy page do not."""
+    if any is outside the grammar. A page over MAX_BYTES raises TooLarge, because
+    reading only its start could miss an id that sits later in the file. Only tab
+    pages carry the attribute; 404.html and the privacy page do not."""
     found: set[str] = set()
     for path in sorted(site.rglob("*.html")):
         if path.is_symlink() or not path.is_file():
             continue
-        with path.open(encoding="utf-8", errors="replace") as handle:
-            text = handle.read(MAX_BYTES)
+        with path.open("rb") as handle:
+            raw = handle.read(MAX_BYTES + 1)
+        if len(raw) > MAX_BYTES:
+            raise TooLarge
+        text = raw.decode("utf-8", errors="replace")
         for value in ATTR.findall(text):
             if ID.fullmatch(value) is None:
                 return None
@@ -61,7 +69,10 @@ def main(argv: list[str]) -> int:
     site = Path(argv[1])
     if not site.is_dir():
         return refuse("the site directory is missing")
-    built = built_ids(site)
+    try:
+        built = built_ids(site)
+    except TooLarge:
+        return refuse(f"a built page is over {MAX_BYTES} bytes and was not checked")
     if built is None:
         return refuse("the build holds a page id outside the allowed grammar")
     if not built:

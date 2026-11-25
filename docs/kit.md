@@ -102,6 +102,8 @@ because the number would be shown nowhere.
 | `kit/retry/index.html` | `--out` (published) | everyone; only when the kit has gated content |
 | `kit.html` | `--gated-out` (never published) | a visitor who passed the gate, served by the Worker |
 | `kit.pdf` | `kit pdf --out-dir` (private, never published) | you, the owner (see [The private PDF](#the-private-pdf)) |
+| `kit-binding.json` | `--gated-out` (never published) | the tools; digests that tie a measures file to this build (see [The measures file](#the-measures-file)) |
+| `kit-measures.json` | `kit private-measures --out-dir` (private, never published, never in `--out` or `--gated-out`) | you, and the sponsor page work (see [The measures file](#the-measures-file)) |
 | `kit-public-YYYY-MM-DD.pdf` | `kit pdf --public --out-dir` (the public half; you decide where it goes) | anyone you give it to (see [The public PDF](#the-public-pdf)) |
 
 ```sh
@@ -110,8 +112,8 @@ reach-around build --config site.yaml --out site-out --gated-out gated-out
 
 `--gated-out` is required when the kit has partners, case studies, packages,
 rates, testimonials, demographics or a disclosure statement. It may not be the output directory, inside it, or a parent of it.
-The build writes only `kit.html` there (and removes it if the kit no longer has
-gated content); anything else in that directory is left alone. Upload the
+The build writes only `kit.html` there, with its two records `kit-policy.txt` and
+`kit-binding.json` (and removes all three if the kit no longer has gated content), plus an empty lock file `.kit-gated.lock`; anything else in that directory is left alone. Upload the
 gated file with the Worker deploy, never with the Pages deploy: the deploy
 publishes only `--out`.
 
@@ -944,7 +946,7 @@ What it guarantees, and how each part is checked:
   2 MiB, and the browser is stopped after 120 seconds.
 - **Where it may go.** The output directory may not be, hold or sit inside the
   public output, the gated directory or the directory of the config, may not
-  be inside a git work tree (a `.git` in it or any parent), and may not go
+  be inside a git work tree (a `.git` in it or any parent) or hold one below it, and may not go
   through a symbolic link. An existing directory must be yours and closed to
   others. The file is written owner-only to a temporary name and renamed into
   place. The work directory (the page, the browser profile, the unscrubbed
@@ -967,6 +969,239 @@ a local image beyond dropping its metadata; a browser bug (the sealed page, the
 policy and the optional namespace are the defenses); and what you do with the
 file afterwards. Exit code 0 on success, 1 for any refusal (one line on standard
 error), 2 for a usage error.
+
+## The measures file
+
+`reach-around kit private-measures` writes the OWNER-ONLY private file
+`kit-measures.json`: the measures the gated kit shows, each with its trust label
+and date. (`kit measure` is a different command: it writes hand-kept public
+entries.) The sponsor page and the quote
+read this file, and nothing else, for a measure value, so a quoted number is the
+number the kit shows, with the same label and date. The kit computes no price.
+
+```sh
+reach-around build --config site.yaml --out site-out --gated-out gated-out
+reach-around kit private-measures --config site.yaml --site-out site-out \
+  --gated-out gated-out --out-dir ~/private/kit-measures
+```
+
+It prints the path and nothing else on standard output, and a reminder that the
+file is private on standard error. The options are `--config`, `--site-out`,
+`--gated-out`, `--out-dir` (all required), `--numbers` (as for the PDF),
+`--date` (the `generated` day; default `SOURCE_DATE_EPOCH`, else the day the
+gated page was built) and `--overwrite`. It needs no browser.
+
+Where it may go, and what it holds:
+
+- **Owner-only, never published.** The directory follows the private PDF's rules:
+  it may not be, hold or sit inside the public output, the gated directory, the
+  config directory or a git work tree (nor hold one below it), may not go through a link, and is created
+  owner-only (the file is mode 0600). The file name is in no page, sitemap or
+  published list; a test fails if it is.
+- **Measures only.** It holds the public and gated measures and nothing else of
+  the kit: no partner, rate, case study, demographic, inquiry detail or site
+  key. A measure of a field marked private is never in it, and the text is
+  searched for every private figure and every not-for-PDF value before anything
+  is written; a hit names the field, never the value, and writes nothing.
+- **Tied to one build.** `build --gated-out` writes `kit-binding.json` beside
+  `kit.html` (never in the public output): digests of the display policy, of the
+  resolved measures, of the gated page and of the public kit page. `kit private-measures`
+  recomputes each one from the config and numbers you pass and from the two
+  directories, and writes nothing when any differs: a changed config or numbers
+  file, a `--site-out` and `--gated-out` from different builds, an edited page or
+  a changed display policy. Rebuild, then run it again with the same inputs. The
+  file records the same digests (`binding`), but that copy is only a claim: whoever
+  can edit the file can recompute every digest in it. The reader therefore has no
+  default for the expected binding. A consumer calls `load_measures_for_build(path,
+  gated_dir)`, which reads the build's own `kit-binding.json` from the gated
+  directory (a different file in a different directory, mode 0600 there) and
+  refuses the measures file unless its binding equals that record and its rows
+  digest to it. A missing, linked, non-regular, oversized or malformed record fails closed. The
+  read is anchored: the path is walked from `/` one component at a time with
+  `openat(O_DIRECTORY | O_NOFOLLOW)`, so a link in the gated directory or in any
+  ancestor is refused (not only a link at the last name), and a directory swapped
+  for a link after the check cannot redirect the read, since the descriptor
+  already held is what is used. Every directory on the path (the root included)
+  must belong to you or root and must not be writable by the group or others
+  unless sticky, or the read is refused. The file is opened `O_NOFOLLOW |
+  O_NONBLOCK` and must be a regular file (checked with `fstat` before anything
+  is read), so a FIFO or device cannot block the reader; the size is bounded.
+  The measures file and the two kit pages the binding checks are read the same way.
+  The opened file must also belong to you or root, have no group or other write
+  bit and have one link, so a file another user planted under the same name in a
+  sticky, world-writable directory is refused.
+  **One set, one lock.** The build writes `kit.html`, `kit-policy.txt` and
+  `kit-binding.json` as one set: each new file is written and synced under a
+  temporary name first, the old files are kept as hard-linked backups, a marker
+  `.kit-commit.pending` is written, and the directory is synced (fsync on its
+  descriptor) before the first file is renamed, so a crash cannot keep a renamed
+  file while the marker and backups are lost. The files are then renamed into
+  place with the binding last and the directory synced again; the backups are
+  removed and that is synced; the marker is removed last and that is synced.
+  If any step before the set is complete fails, the previous files are put back
+  and the marker removed. If the process dies mid-way (so nothing can roll back)
+  the marker stays, or a backup or temporary copy stays (a backup is only ever
+  removed while the marker is still there), and `kit private-measures`,
+  `load_measures_for_build` and `kit pdf` refuse the directory until the next
+  build, which rewrites all three files and removes the leftover temporary and
+  backup names. Residual risk, stated plainly: in the window between the
+  backups' removal and the marker's removal a crash leaves the marker (readers
+  refuse; nothing private is left outside the set); and the durability rests on
+  the filesystem honoring `fsync` on a directory, which was tested here by a
+  model that drops unsynced directory changes, not on a real power cut on each
+  supported filesystem.
+  While a build runs it holds an exclusive `flock` on `.kit-gated.lock` in the gated
+  directory (kept there, empty); the measures file, its reader and the private PDF
+  hold it shared while they check and read, so a build cannot add a gated page
+  between the check that a public-only build has none and the write, and two builds
+  do not run at once. A process waits at most 30 seconds, then refuses. The lock
+  is advisory: it orders this tool's own processes, it does not stop another
+  user, or you with another program, from writing into the directory (keep it
+  owner-only). A crash can still leave the old page beside a new binding, which the
+  digests catch; the lock and marker do not replace them.
+  **Documented assumption:** the gated directory and every directory above it are
+  controlled by you (owned by you or root, not writable by the group or others
+  unless sticky), as the reads already require. Within that, the readers and the
+  stale-file removal do not trust the path after the lock is taken: the marker
+  lookup, the listing of leftover temporary and backup names, the look at each
+  name, the binding, the policy record and the gated page are all read through
+  a held descriptor of the directory, and that directory must contain the very
+  lock file the process holds, so a path swapped or linked after the lock is
+  refused. The build's own renames and the page staging still use paths in a
+  directory it holds locked; they rely on this assumption, not on the lock.
+  **What this defends against:** an edit of the measures file alone (accidental
+  or deliberate, with or without recomputing its own binding), and a file made
+  from another build. **What it does not defend against:** a party who can write
+  both the measures directory and the gated directory (they can forge both
+  records), or one who can change the code or the reader's call. There is no key
+  or signature: an HMAC would need a secret kept apart from both directories, and
+  with a same-user threat model (a process running as you can read every private
+  input) that adds a secret without a stronger boundary. Keep the two
+  directories owner-only; if the gated and measures directories ever need
+  different owners, a keyed MAC becomes worth adding (owner decision). A kit with no
+  gated content (public measures only) has no gated page; its binding records
+  `gated_page` as null, and the command then requires that the gated directory
+  holds no `kit.html` either. A kit with no measures writes no file.
+- **Compared as values.** Before the text is made, every string and number of the
+  document is compared, decoded and normalized (case, width and spacing folded),
+  with an inventory of the private-source values: each private field, each
+  number and free text of each private measure, the loaded imported history when
+  its block is private, and the not-for-PDF values. Numbers are compared as
+  numbers, by magnitude: a private 12.3 or -12.3 matches 12.30, "-12.30%" and
+  "12.3%", and a private 1234567 matches "1,234,567", "1 234 567", "1'234'567"
+  and "1234 567" written in a text. Before numbers are read, the text is folded
+  (Unicode NFKC, so fullwidth digits count; invisible characters such as zero
+  width joiners are dropped). Thousands may be separated by a comma, any Unicode
+  space, or one of these apostrophe-like marks: `'` (U+0027), U+2018, U+2019,
+  U+201B, U+02BB, U+02BC, U+2032 and the grave accent `` ` ``. Digit groups
+  joined by exactly one separator that is not a line break are also read as one
+  number ("1234 567"). **Fail closed (6 or more digits):** a private whole
+  number of 6 or more digits is also looked for with every separator between
+  two digits removed: any run of commas, periods used as group marks, spaces,
+  line breaks, apostrophe-like marks and invisible characters. So "9,162, 534",
+  "9162  534", "9162" newline "534" and "9.162.534" all match a private 9162534.
+  Letters are not separators ("123 apples, 456 pears" is two numbers). **The
+  price:** two unrelated numbers that only touch through punctuation ("results
+  were 123, 456 respectively" against a private 123456) are a false stop. The
+  build error says to reword the text that shows the number, in any spacing; do
+  that, since the rule is meant to err on the side of keeping a private figure
+  out. Unrelated numbers split by words are left alone.
+  **Other ways of writing a decimal:** a decimal comma ("12,3%"), a comma or
+  period with spaces around it ("12 . 3"), digits of other scripts (Arabic-Indic,
+  Devanagari and so on, read as the plain digits) and scientific notation
+  ("1.23e1", "1.23E+1", "123e-1", "1.23x10^1", "1.23 × 10^1", "1.23 * 10 ** 1";
+  exponents up to 40) are read as the numbers they mean, so a private 12.3 is
+  found in all of them. So are the spaced mantissa ("1 . 23e1"), a superscript
+  exponent ("1.23 × 10¹", "10⁻¹"), the other multiplication signs (`·`, `⋅`,
+  `∙`, `✕`, `X`, "times"), an exponent in parentheses ("10^(1)"), the Arabic
+  decimal and thousands separators (U+066B, U+066C), the Unicode minus, a
+  decimal written with a middle dot or an apostrophe ("12·3", "12'3"), a
+  decimal with groups written the other way ("1.234,5", "1 234,5") and the
+  Indian grouping ("12,34,567.5"). A false stop ("12. 3 more") is the price.
+  **A row shows what a text would:** the numeric `value` of a row is also read as
+  the figure the row shows (a `percent` row stores tenths, so 123 is 12.3%), and
+  compared with every private figure, decimals and long whole numbers included.
+  **What is not read:** the check compares digits as written. A figure spelled out in
+  words ("twelve point three"), written as a fraction ("123/10") or a ratio, as
+  Roman numerals, in another base (hex, binary), as a calculation, or inside an
+  encoded or hashed value is not found; keep such figures out of free text.
+  **Short figures:** a private whole number of fewer than 6 digits (3, 40) is in
+  the inventory, but is matched in a text only when it is written with a unit: a
+  percent sign, a currency sign or code before or after it (`$3`, `$-3`, `3
+  USD`), or a unit word (the registry units such as follows, views, viewers,
+  hours, seconds, clicks, downloads, emails and interactions, and words such as
+  followers, subscribers, minutes, posts or episodes). "3%" and "40 subscribers"
+  are refused; "3 platforms", "40 days" and a bare "40" in a sentence are not,
+  because those say nothing alone. The numbers are read by the same rules as the
+  long ones, so "1,234 followers" is 1234 (and the 234 inside a true thousands
+  group is not a number of its own). The parts of a joined span do count beside
+  a unit: "20 40 subscribers" matches a private 40, as well as the joined 2040.
+  **Rows:** a measure row's numeric `value` always has a unit, so a
+  row whose `unit` is a registry unit is compared with the short private figures
+  as it is (a `percent` row is stored in tenths: 400 is 40). The encoding of the
+  file is never part of the comparison.
+- **The directory stays put.** The output directory is held open from the walk
+  to the write, and the temporary file is made and installed only through that
+  descriptor (`openat` and `renameat`, never by path). Just before the install,
+  and twice in a row after it, the path is resolved again and must be the same
+  directory (same device and inode, still linked) and still outside the
+  forbidden directories; otherwise the installed file and the temporary file are
+  removed through the held descriptor and nothing is kept. **Residual:** each
+  check is a sample of where the folder is at one moment. A process that can
+  rename the folder (or an ancestor) can move it into a published tree and back
+  between any two samples, or after the last one, and the file is then visible
+  there for that time; every sample afterwards sees the folder where it belongs.
+  More samples only narrow the gaps; none closes them. Closing it needs the
+  kernel to refuse the move, which a user-space tool cannot ask for. So the rule
+  is on the owner's side: **write private output to a folder only you can write
+  to, and whose parent directory (and every directory above it) no other user can
+  write**, so that nobody else can rename it (renaming a folder is allowed by the
+  permissions of its parent, not of the folder). The tool refuses when the parent
+  of the output folder, or any directory above it, is owned by another user (root
+  is fine) or is writable by the group or others without the sticky bit (a sticky
+  directory such as `/tmp` is accepted: only the owner of an entry can rename it
+  there, and the output folder must be yours). Mount tricks (bind mounts, mount namespaces) are out of
+  scope as well. This is an owner-local tool with a same-user threat model: a
+  process running as you can already read the file and the private data it was
+  made from.
+- **Reproducible.** The same inputs and `--date` give the same bytes.
+
+### Schema
+
+The file is JSON. `schema_version` is 1; a change that renames, removes or
+retypes a key raises it, and a reader refuses a version it does not know.
+`load_measures_for_build(path, gated_dir)` in
+`reach_around.kit.measures_file` is the one reader (it calls
+`load_measures_file(path, expected_binding)`, whose `expected_binding` has no default). It checks the type and format
+of every field (whole numbers only, not booleans; negative only for a `percent`
+change; real `YYYY-MM-DD` days and ordered periods; a known unit and trust label;
+slugs; text limits), and refuses a link, a file over 4 MiB, nesting over 8
+levels, more than 5000 rows or none, a duplicate or unknown key, `NaN` or
+`Infinity`, another version and a `private` row.
+
+| Key | Meaning |
+| --- | --- |
+| `schema_version` | 1 |
+| `kind` | `reach-around-kit-measures` |
+| `notice` | the private reminder, printed in the file |
+| `generated` | the day the file was made, `YYYY-MM-DD` |
+| `policy` | the display-policy fingerprint the file was made under |
+| `binding` | `{policy, measures, gated_page, public_page}`: the SHA-256 digests of the build the file matches |
+| `measures` | a list, in page order, of the rows below |
+
+Each row of `measures` has these keys, all always present:
+
+| Key | Meaning |
+| --- | --- |
+| `platform`, `key`, `label` | the platform slug, the registry key and the label the kit prints |
+| `unit` | the registry unit (`follows`, `percent`, `seconds`, and so on) |
+| `value` | a whole number, or `null` for not available (never zero for missing); a `percent` is an integer in tenths |
+| `as_of` | the day the figure is for, `YYYY-MM-DD`, or `null` |
+| `period` | `[start, end]` days, or `null` |
+| `visibility` | `public` or `gated` (never `private`) |
+| `trust` | `{label, method}` (the label is `api`, `hand-kept` or `estimate`), or `null` |
+| `in_summary` | whether the figure counts toward the audience summary |
+| `formula`, `note`, `provenance`, `source_note` | the text the kit prints beside the figure, empty when none |
 
 ## The public PDF
 
@@ -1083,6 +1318,17 @@ column names are assumed from a sample export, not read from a vendor page.
 than its limit (30 days) and closes it when everything is fresh again. It reads
 only `hand-kept.json`, uses no secret and sends nothing anywhere else. See
 [the instance repository README](../examples/instance-repo/README.md).
+
+## How measure visibility is guarded
+
+Every function that builds a measure from config takes its source visibility
+from `source_level`, the narrower of the two policy tables; none reads a table
+itself. That is the actual guarantee. The tests are regression protection: each
+registered builder is run with every measure it can emit under each narrowed
+table, and a static scan flags an unregistered builder where it can see one.
+Residual risk: a builder constructed through `getattr`, `type(...)` or code
+outside `reach_around.config` escapes the scan and the registry, so a reviewer
+of a new builder checks the `source_level` call by hand.
 
 ## Old numbers
 
