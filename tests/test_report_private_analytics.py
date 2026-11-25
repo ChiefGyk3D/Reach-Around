@@ -18,7 +18,9 @@ import pytest
 from reach_around.counts.history import History, Record, append_records, read_history
 from reach_around.funnel.private_analytics import (
     CSV_HEADER,
+    UNRECOGNIZED_PLATFORM,
     build_private,
+    canonical_platform,
     private_csv_rows,
     private_lines,
 )
@@ -636,3 +638,84 @@ def test_every_spelling_of_a_platform_is_one_canonical_platform(name: str) -> No
     sections = [s["platform"] for s in b["sections"]]
     assert sections == ["twitch"]  # duplicates and aliases merge into one section
     assert [e["platform"] for e in b["not_available"]] == ["Kick"]
+
+
+def _fullwidth(text: str) -> str:
+    return "".join(chr(ord(c) + 0xFEE0) if c.isalpha() else c for c in text)
+
+
+_TWITCH_FORMS = [
+    "twitch",
+    "Twitch",
+    " twitch ",
+    "TWITCH.TV",
+    "@twitch",
+    "https://www.twitch.tv/example",
+    "HTTPS://WWW.TWITCH.TV/Example/",
+    "http://twitch.tv",
+    "www.twitch.tv",
+    "twitch.tv/example",
+    "https://twitch.tv/",
+    "m.twitch.tv/example",
+    "https://m.twitch.tv/example?x=1#top",
+    "https://www.twitch.tv:443/example",
+    "twitch.tv.",
+    _fullwidth("twitch.tv"),
+]
+_KICK_FORMS = [
+    f.replace("twitch.tv", "kick.com").replace("TWITCH.TV", "KICK.COM")
+    for f in _TWITCH_FORMS[:-1]
+]
+_KICK_FORMS = [
+    f.replace("twitch", "kick").replace("Twitch", "Kick") for f in _KICK_FORMS
+]
+_KICK_FORMS.append(_fullwidth("kick.com"))
+
+
+@pytest.mark.parametrize(
+    ("forms", "canon"), [(_TWITCH_FORMS, "twitch"), (_KICK_FORMS, "kick")]
+)
+def test_every_accepted_form_is_one_canonical_platform(
+    forms: list[str], canon: str
+) -> None:
+    for name in forms:
+        assert canonical_platform(name) == canon, name
+        b = block([rec("fdemo_age_18_24", 50, platform=name, provider=YT)])
+        assert [s["platform"] for s in b["sections"]] == [canon], name
+        listed = [e["platform"].lower() for e in b["not_available"]]
+        assert canon not in listed, name  # never both available and not available
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "nottwitch.tv",
+        "twitch.tv.evil.com",
+        "https://twitch.tv.evil.com/x",
+        "https://evil.com/twitch.tv",
+        "https://user@evil.com/twitch.tv",
+        "kick.com.evil.com",
+        "notkick.com",
+    ],
+)
+def test_lookalike_hosts_are_not_twitch_or_kick(name: str) -> None:
+    assert canonical_platform(name) not in {"twitch", "kick"}
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "tw" + chr(0x456) + "tch",  # Cyrillic i
+        "k" + chr(0x456) + "ck",
+        chr(0x442) + "witch",  # Cyrillic te
+        "twitch" + chr(0x200B),  # zero-width space
+        "tw" + chr(0x456) + "tch.tv",
+        "",
+    ],
+)
+def test_non_ascii_lookalikes_are_unrecognized_and_not_shown(name: str) -> None:
+    assert canonical_platform(name) == UNRECOGNIZED_PLATFORM
+    b = block([rec("fdemo_age_18_24", 50, platform=name, provider=YT)])
+    assert b["sections"] == []
+    assert b["unrecognized"] == 1
+    assert [e["platform"] for e in b["not_available"]] == ["Twitch", "Kick"]

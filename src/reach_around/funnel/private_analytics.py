@@ -31,8 +31,10 @@ nothing else; a metric name never decides. Rules, each tested:
 from __future__ import annotations
 
 import re
+import unicodedata
 from datetime import date
 from typing import Any
+from urllib.parse import urlsplit
 
 from reach_around.config.era import classify_era, era_text
 from reach_around.config.zones import format_instant
@@ -183,14 +185,41 @@ def _withhold_pinning_shares(section: dict[str, Any], floor: int) -> None:
             g.update(state="withheld", rows=[], other=None)
 
 
-# Alias spellings of a platform name, folded to the one canonical name (#397).
-_PLATFORM_ALIASES = {"twitch.tv": "twitch", "kick.com": "kick"}
+# Hosts of the platforms that are named "not available", folded to one canonical
+# name (#397). Same treatment for Twitch and Kick. A host matches exactly or as a
+# true subdomain (www, m, player), never by a loose suffix test.
+_PLATFORM_HOSTS = {"twitch.tv": "twitch", "kick.com": "kick"}
+# Marker for an identifier that cannot be one platform (non-ASCII, malformed).
+UNRECOGNIZED_PLATFORM = ""
+_HOSTLIKE = re.compile(r"^[a-z0-9][a-z0-9.-]*$")
 
 
 def canonical_platform(name: object) -> str:
-    """The one canonical platform name: trimmed, case-folded, alias-folded."""
-    folded = str(name).strip().casefold()
-    return _PLATFORM_ALIASES.get(folded, folded)
+    """The one canonical platform name, or UNRECOGNIZED_PLATFORM.
+
+    Accepts a plain name, a handle with a leading @, or a URL or host with any
+    scheme, www or m subdomain, port, path, query, fragment and trailing slash.
+    The text is NFKC-normalized first; any non-ASCII character left over (a
+    lookalike letter) makes the identifier unrecognized, never a different
+    platform that reads like Twitch or Kick.
+    """
+    text = unicodedata.normalize("NFKC", str(name)).strip().casefold()
+    text = text.lstrip("@").strip()
+    if not text or not text.isascii() or any(c.isspace() or c < " " for c in text):
+        return UNRECOGNIZED_PLATFORM
+    host = text
+    if any(c in text for c in "/:?#@"):
+        try:
+            host = urlsplit(text if "//" in text else "//" + text).hostname or ""
+        except ValueError:
+            return UNRECOGNIZED_PLATFORM
+    host = host.rstrip(".")
+    if not _HOSTLIKE.match(host):
+        return UNRECOGNIZED_PLATFORM
+    for known, canonical in _PLATFORM_HOSTS.items():
+        if host == known or host.endswith("." + known):
+            return canonical
+    return host
 
 
 def build_private(
@@ -205,17 +234,22 @@ def build_private(
     if floor < FLOOR:
         raise ValueError(f"the floor cannot be below {FLOOR}")
     by_metric: dict[tuple[str, str, str], list[Record]] = {}
+    unrecognized_platforms = 0
     for record in history.records:
         if record.api_provider in PRIVATE_PROVIDERS:
+            canonical = canonical_platform(record.platform)
+            if canonical == UNRECOGNIZED_PLATFORM:
+                unrecognized_platforms += 1
+                continue
             key = (
-                canonical_platform(record.platform),
+                canonical,
                 str(record.api_provider),
                 record.metric,
             )
             by_metric.setdefault(key, []).append(record)
     sections: dict[tuple[str, str], dict[str, Any]] = {}
     pending: dict[tuple[str, str, str], list[tuple[str, str, Series]]] = {}
-    unrecognized = 0
+    unrecognized = unrecognized_platforms
 
     def section(platform: str, provider: str) -> dict[str, Any]:
         return sections.setdefault(
