@@ -48,25 +48,15 @@
     );
   }
   function hasExactKeys(object, keys) {
-    var found = Object.keys(object).sort();
-    var want = keys.slice().sort();
-    if (found.length !== want.length) {
-      return false;
-    }
-    for (var i = 0; i < want.length; i += 1) {
-      if (found[i] !== want[i]) {
-        return false;
-      }
-    }
-    return true;
+    return Object.keys(object).length === keys.length && keys.every(function (k) {
+      return own(object, k);
+    });
+  }
+  function isInt(value, max) {
+    return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= max;
   }
   function isUnix(value) {
-    return (
-      typeof value === "number" &&
-      Number.isInteger(value) &&
-      value >= 1 &&
-      value <= MAX_UNIX_SECONDS
-    );
+    return isInt(value, MAX_UNIX_SECONDS);
   }
   function platformState(entry) {
     if (!isPlain(entry)) {
@@ -83,11 +73,7 @@
     if (live !== true && live !== false && live !== null) {
       return undefined;
     }
-    if (live === true) {
-      if (entry.since !== null && !isUnix(entry.since)) {
-        return undefined;
-      }
-    } else if (entry.since !== null) {
+    if (entry.since !== null && (live !== true || !isUnix(entry.since))) {
       return undefined;
     }
     return live;
@@ -112,12 +98,7 @@
     if (data.v !== 1 || !isUnix(data.as_of)) {
       return null;
     }
-    if (
-      typeof data.ttl !== "number" ||
-      !Number.isInteger(data.ttl) ||
-      data.ttl < 1 ||
-      data.ttl > MAX_TTL_SECONDS
-    ) {
+    if (!isInt(data.ttl, MAX_TTL_SECONDS)) {
       return null;
     }
     var result = {};
@@ -175,41 +156,31 @@
     }
     return step().catch(stop);
   }
-  function anyLive(status) {
-    if (status === null || typeof status !== "object") {
-      return false;
-    }
-    return PLATFORMS.some(function (p) {
-      return own(status, p.id) && status[p.id] === true;
-    });
+  function val(status, id) {
+    return status !== null && typeof status === "object" && own(status, id)
+      ? status[id]
+      : undefined;
   }
-  function allNotLive(status) {
-    if (status === null || typeof status !== "object") {
-      return false;
-    }
-    return PLATFORMS.every(function (p) {
-      return own(status, p.id) && status[p.id] === false;
+  function anyLive(status) {
+    return PLATFORMS.some(function (p) {
+      return val(status, p.id) === true;
     });
   }
   function viewState(status) {
     if (anyLive(status)) {
       return "live";
     }
-    return allNotLive(status) ? "offline" : "degraded";
-  }
-  function badgeOn(status) {
-    return anyLive(status);
+    return PLATFORMS.every(function (p) {
+      return val(status, p.id) === false;
+    })
+      ? "offline"
+      : "degraded";
   }
   var WORD_LIVE = "LIVE";
   var WORD_OFFLINE = "OFFLINE";
   function watchWord(status, id) {
-    if (status === null || typeof status !== "object" || !own(status, id)) {
-      return "";
-    }
-    if (status[id] === true) {
-      return WORD_LIVE;
-    }
-    return status[id] === false ? WORD_OFFLINE : "";
+    var v = val(status, id);
+    return v === true ? WORD_LIVE : v === false ? WORD_OFFLINE : "";
   }
   function watchBadges(status) {
     var result = {};
@@ -231,6 +202,11 @@
     });
     return parts.join(" ");
   }
+  function byId(id) {
+    return PLATFORMS.filter(function (p) {
+      return p.id === id;
+    })[0];
+  }
   function playerSrc(platform, channel, host) {
     if (typeof platform !== "string" || typeof channel !== "string") {
       return null;
@@ -238,24 +214,14 @@
     if (typeof host !== "string" || host.length < 1 || host.length > 253) {
       return null;
     }
-    for (var i = 0; i < PLATFORMS.length; i += 1) {
-      var p = PLATFORMS[i];
-      if (p.id === platform) {
-        if (!p.handle.test(channel)) {
-          return null;
-        }
-        return p.src(p.origin, channel, encodeURIComponent(host));
-      }
-    }
-    return null;
+    var p = byId(platform);
+    return p && p.handle.test(channel)
+      ? p.src(p.origin, channel, encodeURIComponent(host))
+      : null;
   }
   function playerName(platform) {
-    for (var i = 0; i < PLATFORMS.length; i += 1) {
-      if (PLATFORMS[i].id === platform) {
-        return PLATFORMS[i].name;
-      }
-    }
-    return "";
+    var p = byId(platform);
+    return p ? p.name : "";
   }
   if (typeof module === "object" && module !== null && module.exports) {
     module.exports = {
@@ -266,7 +232,7 @@
       readBounded: readBounded,
       parseStatus: parseStatus,
       viewState: viewState,
-      badgeOn: badgeOn,
+      badgeOn: anyLive,
       watchBadges: watchBadges,
       watchAnnouncement: watchAnnouncement,
       playerSrc: playerSrc
@@ -316,7 +282,7 @@
   function apply(status) {
     applyWatch(status);
     var state = viewState(status);
-    var lit = badgeOn(status);
+    var lit = anyLive(status);
     for (var b = 0; b < badges.length; b += 1) {
       badges[b].hidden = !lit;
     }
@@ -337,7 +303,7 @@
       for (var c = 0; c < cards.length; c += 1) {
         var facade = cards[c].querySelector("[data-platform]");
         var id = facade ? facade.getAttribute("data-platform") : "";
-        setSlots(cards[c], id !== null && own(status, id) && status[id] === true);
+        setSlots(cards[c], val(status, id) === true);
       }
     }
   }

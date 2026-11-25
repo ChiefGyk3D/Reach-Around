@@ -385,8 +385,8 @@ def test_the_script_writes_no_error_text_into_the_badges() -> None:
         ),
         (
             check_no_error_text,
-            'return status[id] === false ? WORD_OFFLINE : "";',
-            'return status[id] === false ? WORD_OFFLINE : "unavailable";',
+            ': v === false ? WORD_OFFLINE : "";',
+            ': v === false ? WORD_OFFLINE : "unavailable";',
         ),
     ],
 )
@@ -414,8 +414,8 @@ def _run_mutation(tmp_path: Path, old: str, new: str) -> int:
     [
         (
             "a badge on a guess (unknown counts as live)",
-            'return status[id] === false ? WORD_OFFLINE : "";',
-            "return status[id] === false ? WORD_OFFLINE : WORD_LIVE;",
+            ': v === false ? WORD_OFFLINE : "";',
+            ": v === false ? WORD_OFFLINE : WORD_LIVE;",
         ),
         (
             "a badge for one platform only",
@@ -424,13 +424,13 @@ def _run_mutation(tmp_path: Path, old: str, new: str) -> int:
         ),
         (
             "OFFLINE never shown",
-            'return status[id] === false ? WORD_OFFLINE : "";',
-            'return "";',
+            'v === true ? WORD_LIVE : v === false ? WORD_OFFLINE : "";',
+            'v === true ? WORD_LIVE : "";',
         ),
         (
             "live shown for a non-boolean",
-            "if (status[id] === true) {",
-            "if (status[id]) {",
+            "v === true ? WORD_LIVE :",
+            "v ? WORD_LIVE :",
         ),
     ],
 )

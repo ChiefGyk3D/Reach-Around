@@ -26,15 +26,15 @@
   ],
   "packageRules": [
     {
-      "description": "The image and the Worker source must move together",
-      "matchDepNames": ["ghcr.io/chiefgyk3d/reach-around", "ChiefGyk3D/Reach-Around"],
-      "groupName": "reach-around engine",
-      "commitMessageTopic": "reach-around engine"
-    },
-    {
       "description": "One pull request for all Actions bumps",
       "matchManagers": ["github-actions"],
       "groupName": "github actions"
+    },
+    {
+      "description": "The image, the Worker source and the two reusable Worker deploy calls in deploy.yml must move together. Last, so it wins over the Actions group above for the calls (a later rule overrides an earlier one).",
+      "matchDepNames": ["ghcr.io/chiefgyk3d/reach-around", "ChiefGyk3D/Reach-Around"],
+      "groupName": "reach-around engine",
+      "commitMessageTopic": "reach-around engine"
     }
   ]
 }
