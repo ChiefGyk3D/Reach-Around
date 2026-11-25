@@ -1311,6 +1311,7 @@ end. Text must be quoted if YAML would read it as a number.
 | `title` | text | required | at most 120 characters |
 | `about` | text | required | at most 1000 characters |
 | `contact` | text | none | one plain-text line for brands, at most 200 characters; see the note below |
+| `consulting_url` | https URL | none | where the "Consulting instead?" line on both kit pages points, at most 2048 characters; public; without it no line is printed; see the note below |
 | `tags` | list of text | none | at most 8 content category tags, each 1 to 30 characters, none repeated (compared ignoring case and width, so `Tech` and `Ｔech` count as the same tag); public |
 | `metrics` | list of metric | none | at most 30; each `platform` and `label` pair once |
 | `engagement` | list of engagement row | none | at most 30; each platform and period once; gated; see below |
@@ -1413,7 +1414,7 @@ nothing is printed.
 
 | Field | Shown |
 | --- | --- |
-| `title`, `about`, `photo`, `contact`, `tags`, `metrics`, the unified total | public |
+| `title`, `about`, `photo`, `contact`, `consulting_url`, `tags`, `metrics`, the unified total | public |
 | `partners`, `case_studies`, `services`, `rates`, `engagement`, `demographics`, `disclosure`, `inquiry`, `testimonials` | gated (only after the gate) |
 | `turnstile_site_key` | public (it ships in the gate form; the key is public by design) |
 | `public_pdf` | public (it is a link on the first screen of the public page) |
@@ -1459,6 +1460,13 @@ kit:
     email: owner@example.com
     pgp_fingerprint: 0123 4567 89AB CDEF 0123 4567 89AB CDEF 0123 4567
 ```
+
+**Consulting line.** `consulting_url` is optional. When set, both kit pages print
+one fixed line right after the contact block: "Consulting instead? Visit my
+consulting site." with "consulting site" as the link to your URL. The words are
+not a setting. Without the URL nothing is printed, not even the words. The line
+is for the web pages only and is left out of both PDFs (see
+[the kit page](kit.md#consulting-line)).
 
 **Contact line.** `contact` is optional and is yours to decide: write whatever
 you are willing to publish, such as `Brand deals: partners at example.com`.

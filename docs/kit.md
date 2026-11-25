@@ -768,7 +768,7 @@ cannot reach a gated field, and the two pages go to two separate directories.
 
 | Field | Visibility | Owner-report marker |
 | --- | --- | --- |
-| title, about, photo, contact, tags, metrics, analytics, unified_total, turnstile_site_key | public | no |
+| title, about, photo, contact, consulting_url, tags, metrics, analytics, unified_total, turnstile_site_key | public | no |
 | partners, case_studies, services, rates, testimonials, demographics, inquiry, disclosure | gated | no |
 | engagement | gated | `owner_report_only`; YouTube figures require `owner_supplied: true` |
 | imported_history | gated by default; public when `imported_history_public: true` | no |
@@ -881,6 +881,12 @@ It prints the path of the file and nothing else on standard output. It needs a
 Chromium or Chrome binary (the one the visual tests already use): pass
 `--chromium PATH`, set `RA_CHROMIUM`, or have `chromium` on `PATH`. It adds no
 Python dependency.
+
+Both PDFs print dark, like the screen (decision D9): the page background, text,
+link and table-rule colors are the site's own design tokens, so nothing is
+invented for print, and the text stays selectable. The browser command line is
+unchanged; the print sheet sets `print-color-adjust: exact`, which is what makes
+Chromium paint the dark background in the PDF.
 
 | Option | Meaning |
 | --- | --- |
@@ -1010,6 +1016,17 @@ the same removal of the work directory. Differences:
 Defaults the owner may change: the "Valid as of" day is the creation date, not
 the day the numbers were read (each row keeps its own "as of" date). The dated
 "valid as of" line for the deeper kit request flow is separate work (#426).
+
+## Consulting line
+
+`kit.consulting_url` is one optional https URL (checked like `kit.public_pdf`). When
+set, the public page and the gated page print the fixed line "Consulting
+instead? Visit my consulting site." right after the contact block (or after the
+buttons when there is no contact line), with "consulting site" as a link to the
+URL. The field is public. Without it no line is printed. Neither PDF prints the
+line: it is a web-page line only, and the PDF builds drop it from the public and
+the gated print. The consulting site itself is not changed by this; it carries no
+line pointing back to the kit.
 
 ## Contact line
 
