@@ -21,6 +21,20 @@ export interface ClickPurgeOptions {
 }
 
 /**
+ * A purge option may lower the work of one run, never raise it above the default: that is what
+ * keeps a run's cost at most CLICK_PURGE_ROUNDS deletes plus one marker batch. A non-finite value
+ * is refused (it would otherwise reach SQL as LIMIT NaN or an unbounded loop); a value below 1
+ * becomes 1; a value above the default is clamped to it.
+ */
+function boundedOption(name: string, value: number | undefined, max: number): number {
+  if (value === undefined) return max;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new RangeError(`${name} must be a finite number`);
+  }
+  return Math.min(max, Math.max(1, Math.trunc(value)));
+}
+
+/**
  * Delete click rows older than `keepDays` days and return how many went.
  *
  * The cutoff is compared against the indexed `ts` column with a bound
@@ -34,6 +48,10 @@ export interface ClickPurgeOptions {
  * is a predicate on age, so it resumes where this one stopped. A run that
  * finishes clears the marker. The marker is written best effort but reconciled on every run
  * (one extra query), so it is never left missing or stale for longer than one run.
+ *
+ * Query cost (each .run() and each db.batch() is one metered query): an idle run is 2 (one
+ * delete that finds nothing, one marker batch); a backlog run is at most CLICK_PURGE_ROUNDS
+ * deletes plus 1 marker batch. `batch` and `maxBatches` can only lower these bounds.
  */
 export async function purgeOldEvents(
   env: Env,
@@ -48,8 +66,8 @@ export async function purgeOldEvents(
     throw new RangeError("nowMs must be a finite number");
   }
   const cutoff = Math.floor(nowMs - keepDays * DAY_MS);
-  const batch = Math.max(1, Math.trunc(opts.batch ?? CLICK_PURGE_BATCH));
-  const rounds = Math.max(1, Math.trunc(opts.maxBatches ?? CLICK_PURGE_ROUNDS));
+  const batch = boundedOption("batch", opts.batch, CLICK_PURGE_BATCH);
+  const rounds = boundedOption("maxBatches", opts.maxBatches, CLICK_PURGE_ROUNDS);
   const meter = meterOf(env.DB);
   let deleted = 0;
   for (let i = 0; i < rounds; i++) {

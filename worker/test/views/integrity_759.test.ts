@@ -295,3 +295,38 @@ describe("F-24 the hour table counts exactly what the daily tables count", () =>
     expect((await q<{ v: number }>("SELECT SUM(views) AS v FROM view_daily"))[0]?.v).toBe(4);
   });
 });
+
+describe("F-23 click purge options and metered cost (#759 round 3)", () => {
+  const click = (ts: number) => DB.prepare("INSERT INTO click_events (ts, link_id) VALUES (?, 'example-one')").bind(ts);
+  const env = { DB, SITE_HOST: "x.example.test", LINK_IDS: "[]", CLICK_LIMITER: { limit: async () => ({ success: true }) } };
+
+  it("non_finite_options_are_refused_and_nothing_is_deleted", async () => {
+    await DB.batch([click(NOW - 200 * DAY)]);
+    for (const opts of [{ batch: Number.NaN }, { batch: Number.POSITIVE_INFINITY }, { maxBatches: Number.NaN }, { maxBatches: Number.POSITIVE_INFINITY }]) {
+      await expect(purgeOldEvents(env, NOW, 90, opts)).rejects.toThrow(RangeError);
+    }
+    expect((await q<{ n: number }>("SELECT COUNT(*) AS n FROM click_events"))[0]?.n).toBe(1);
+  });
+
+  it("oversized_options_are_clamped_to_the_defaults", async () => {
+    const meter = new QueryMeter(1000);
+    const rows = 500 * 10 + 300;
+    for (let i = 0; i < rows; i += 500) {
+      await DB.batch(Array.from({ length: Math.min(500, rows - i) }, (_, j) => click(NOW - 200 * DAY + i + j)));
+    }
+    const n = await purgeOldEvents({ ...env, DB: meteredDb(DB, meter) }, NOW, 90, { batch: 1_000_000, maxBatches: 1_000_000 });
+    expect(n).toBe(5000); // 10 rounds of 500, not everything
+    expect(meter.used).toBe(11); // 10 deletes + 1 marker batch
+    expect((await q<{ n: number }>("SELECT COUNT(*) AS n FROM click_events"))[0]?.n).toBe(300);
+  });
+
+  it("an_idle_run_costs_two_queries_and_a_backlog_run_one_more_than_its_deletes", async () => {
+    const idle = new QueryMeter(100);
+    await purgeOldEvents({ ...env, DB: meteredDb(DB, idle) }, NOW);
+    expect(idle.used).toBe(2);
+    await DB.batch(Array.from({ length: 7 }, (_, i) => click(NOW - 200 * DAY + i)));
+    const busy = new QueryMeter(100);
+    await purgeOldEvents({ ...env, DB: meteredDb(DB, busy) }, NOW, 90, { batch: 3, maxBatches: 2 });
+    expect(busy.used).toBe(3); // 2 deletes + 1 marker batch
+  });
+});
