@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -57,20 +58,41 @@ _REAL_EXEC = _capture_real_exec()
 
 # Tests of `leads delete` may start NO process at all. Every other test (the
 # erasure registry runs bash backup scripts, for one) may start what it needs,
-# except a command whose program is wrangler, npx, npm or node (a real remote
-# call); `leads._exec` is replaced for all of them.
+# except anything that runs wrangler (a real remote call; npx or npm are only
+# refused when a word of the command is wrangler). Plain node, bash and the
+# rest stay allowed there: tests/site runs node for the click JS.
+# `leads._exec` is replaced for all of them.
 _STRICT_MODULES = ("test_leads",)
-_FORBIDDEN_NAMES = ("wrangler", "npx", "npm", "node")
+_FORBIDDEN_NAMES = ("wrangler",)
+# Every word of every argument is looked at, not only the program, so an
+# allowed interpreter or launcher (`sh -c "wrangler ..."`, `env node x`,
+# `python -c "...wrangler..."`) is refused too. What this still cannot see: a
+# program that builds the name at run time, or a script file that starts one
+# (only direct Python-level process starts are guarded, not what a child does).
+_WORD = re.compile(r"[^A-Za-z0-9_./+-]+")
+
+
+def _words(command: object) -> list[str]:
+    parts: list[object]
+    if isinstance(command, (list, tuple)):
+        parts = list(command)
+    else:
+        parts = [command]
+    words: list[str] = []
+    for part in parts:
+        if isinstance(part, (str, bytes, os.PathLike)):
+            # Full-line shell comments are text, not commands: the deploy workflow
+            # steps that tests run through `bash -c` mention wrangler in them.
+            lines = os.fsdecode(part).splitlines()
+            code = "\n".join(ln for ln in lines if not ln.lstrip().startswith("#"))
+            words.extend(w for w in _WORD.split(code) if w)
+    return words
 
 
 def _is_forbidden(command: object, strict: bool) -> bool:
     if strict:
         return True
-    first = command[0] if isinstance(command, (list, tuple)) and command else command
-    if not isinstance(first, (str, bytes, os.PathLike)):
-        return False
-    text = os.fsdecode(first).split(" ")[0]
-    return os.path.basename(text) in _FORBIDDEN_NAMES
+    return any(os.path.basename(w) in _FORBIDDEN_NAMES for w in _words(command))
 
 
 @pytest.fixture

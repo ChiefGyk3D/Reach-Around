@@ -17,11 +17,24 @@ offline. With ``--yes`` the command also clears the ``alert_dedup`` hash table
    are printed. Nothing is changed by this tool, and it exits 10: the checks
    passed and the erasure is NOT done.
 2. After the owner applied the SQL, the same command with ``--finish``: it
-   checks both databases again, reads the lead tables back (must be 0 and 0),
-   checks again, clears ``alert_dedup`` with one statement that deletes only
+   reads the lead tables back for the id AND for the address (must be 0 and
+   0), checks again, clears ``alert_dedup`` with one statement that deletes only
    while the alert database holds no lead tables, reads it back (must be 0),
-   waits a moment and reads it back again, then checks the identity and schema
-   a last time. Only this step can exit 0.
+   waits a moment, reads it back again, checks the identity and schema a last
+   time and reads the lead tables once more for the address (a lead created
+   again after the erasure started fails the run). Only this step can exit 0.
+   Precondition, not checked by this tool (the kill switch is a Worker setting
+   it cannot read): the kit gate must be closed for the whole erasure.
+
+Database identity. Every remote statement runs between two identity checks of
+the same database name (``d1 info NAME`` before and after), and a changed id
+discards the answer. ``wrangler d1 execute`` takes a database NAME or binding
+(documented, read 2026-11-26), not an id, and its JSON result is not documented
+to carry the database id, so nothing proves that a given execute call ran on the
+database the checks named. The checks bind the name to the id the Worker's own
+configuration names at the moment of each check; a name that is re-pointed to
+another database and back inside one call is NOT detected. That window is a
+residual risk of this design.
 
 Trust boundary. The tool hands the Cloudflare token to the wrangler it runs,
 which is code the operator already trusts with that token (same OS user). A
@@ -31,19 +44,26 @@ symlink escape, inside the repository's ``worker/node_modules/wrangler``
 package (named from ``worker/node_modules/.bin``); the package's own
 ``package.json`` name and version and npm's install record
 (``node_modules/.package-lock.json``) must agree with
-``worker/package-lock.json``; and the file and every directory above it must
-belong to root or the current user and be unwritable by others. What it does
-NOT prove: that the files on disk are the files of the published tarball (npm
-keeps no per-file hashes, and the tarball digest in the lock file cannot be
-re-checked without downloading it), that ``node`` is genuine, or that nothing
-changes the files between the check and the run. Anyone who can write as the
-same OS user can defeat all of it.
+``worker/package-lock.json``; the file and every directory above it, and every
+file and directory of the wrangler package and of the packages it depends on
+(resolved by node's rules under ``worker/node_modules``, bounded in size), must
+belong to root or the current user, and nothing inside the repository may be
+writable by group or others. Outside the repository a sticky shared directory
+owned by root (such as ``/tmp``) or a group of your own that nobody else belongs
+to is accepted. Only the walked tree is checked: a package that is not named by
+a ``dependencies`` field is not seen. What it does NOT prove: that the files on
+disk are the files of the published tarball (npm keeps no per-file hashes, and
+the tarball digest in the lock file cannot be re-checked without downloading
+it), that ``node`` is genuine, or that nothing changes the files between the
+check and the run. Anyone who can write as the same OS user can defeat all of
+it.
 
 The tool runs one wrangler (never found through PATH or ``npx``) with a minimal
 environment (the token, the account id, HOME and a fixed PATH), a neutral working
-directory, no shell and no stdin, one statement per call, bounded output (the
-child is killed once the cap is passed), and accepts exactly one well-formed
-result block per call. It never repeats remote text.
+directory, no shell and no stdin, one statement per call, bounded output, and
+accepts exactly one well-formed result block per call. The child runs in its own
+process group; on the output cap or the time limit the whole group is killed. It
+never repeats remote text.
 
 Safety rules, all tested:
 
@@ -71,11 +91,14 @@ Exit codes: 0 the erasure verified by ``--finish`` (it is also the code of a
 dry run, which requests nothing and changes nothing, and of ``--checklist``);
 10 ``--yes`` step 1: the checks passed and the SQL was printed, the erasure is
 NOT done; 1 no lead matches; 2 usage problem, a refused export, or a refused
-alert database, database id or wrangler (nothing was changed); 3 the lead rows
-are gone but the alert hashes could not be cleared and read back as 0, or a
-database changed during ``--finish`` (the erasure is NOT complete); 4
-``--finish`` could not confirm that the lead rows are gone (the alert table was
-not touched). Only ``--yes --finish`` can return 0 for an erasure.
+alert database, database id or wrangler (step 1, or before ``--finish`` makes
+any remote call; this tool changed nothing); 3 the lead rows were read as gone
+but the alert hashes could not be cleared and read back as 0, a database changed
+or a check failed after that point, or a lead for the address exists again (the
+erasure is NOT complete); 4 ``--finish`` could not confirm that the lead rows
+are gone (any failure before that, the alert table was not touched). Once
+``--finish`` is running it never returns 2. Only ``--yes --finish`` can return 0
+for an erasure.
 """
 
 from __future__ import annotations
@@ -88,6 +111,7 @@ import pwd
 import re
 import selectors
 import shlex
+import signal
 import stat
 import subprocess
 import sys
@@ -449,6 +473,15 @@ _STATEMENTS = (
     "(SELECT COUNT(*) FROM kit_events WHERE lead_id = '<ID>') AS events_remaining;",
 )
 _SQL_EMAIL = re.compile(r"[a-z0-9_+.@-]{6,254}")
+# The read-back `--finish` uses. The printed file's read-back asks only about the
+# exported id; this one asks about the ADDRESS too, so a lead created again for
+# the same address (a new id) is seen: the erasure subject is the person.
+_FINISH_READBACK = (
+    "SELECT (SELECT COUNT(*) FROM leads WHERE id = '<ID>' OR email = '<EMAIL>') "
+    "AS leads_remaining, (SELECT COUNT(*) FROM kit_events WHERE lead_id = '<ID>' "
+    "OR lead_id IN (SELECT id FROM leads WHERE email = '<EMAIL>')) "
+    "AS events_remaining"
+)
 
 # The alert dedup table keeps a keyed hash of recent alerts, which can include
 # the address (worker/migrations/0013_alerts.sql: site, event_hash, expires_at).
@@ -523,12 +556,31 @@ class WranglerError(LeadsError):
     message is fixed text; remote output is never repeated."""
 
 
+def _kill_group(proc: Any) -> None:
+    """SIGKILL the child's whole process group (the child leads it, so the group
+    id is its pid), then reap the child. The group is signalled before the child
+    is reaped, so its id cannot have been reused yet. The plain kill is the
+    fallback when the group cannot be signalled."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    proc.wait()
+
+
 def _exec(argv: list[str], env: dict[str, str], timeout: int) -> tuple[int, bytes]:
     """The one place a process starts: argv list, no shell, no stdin, a neutral
     working directory (no wrangler config is picked up from where the operator
     stands), stderr dropped (it can carry remote text). Stdout is read in chunks
     with a hard cap: the child is killed as soon as MAX_WRANGLER_BYTES is passed
-    or the time is up, so memory stays bounded."""
+    or the time is up, so memory stays bounded. The child is its own session and
+    process group, and on the cap, the time limit or any error the whole group is
+    killed (SIGKILL) before the child is reaped, so a descendant that kept the
+    token or the pipe does not outlive the call. A descendant that left the
+    group on its own (a new session of its own) is not reached."""
     proc = subprocess.Popen(  # noqa: S603 - argv list, validated absolute binary
         argv,
         shell=False,
@@ -537,6 +589,7 @@ def _exec(argv: list[str], env: dict[str, str], timeout: int) -> tuple[int, byte
         stderr=subprocess.DEVNULL,
         env=env,
         cwd="/",
+        start_new_session=True,
     )
     deadline = time.monotonic() + timeout
     chunks: list[bytes] = []
@@ -560,8 +613,7 @@ def _exec(argv: list[str], env: dict[str, str], timeout: int) -> tuple[int, byte
                 chunks.append(data)
         code = proc.wait(timeout=max(0.1, deadline - time.monotonic()))
     except BaseException:
-        proc.kill()
-        proc.wait()
+        _kill_group(proc)
         raise
     finally:
         if proc.stdout is not None:
@@ -618,17 +670,143 @@ def _group_is_private(gid: int) -> bool:
         return False
 
 
-def _unwritable_by_others(info: os.stat_result, *, directory: bool) -> bool:
-    """Not writable by group (unless that group is private) or others. A
-    directory with the sticky bit (such as /tmp, mode 1777) is accepted whatever
-    its write bits say: nobody can rename or remove an entry they do not own
-    there, so the entries below it stay ours."""
+def _inside(path: str, root: str) -> bool:
+    """True when ``path`` is ``root`` or below it (both already real paths)."""
+    return path == root or path.startswith(os.path.join(root, ""))
+
+
+def _unwritable_by_others(
+    info: os.stat_result, *, directory: bool, path: str = "", sealed: bool = False
+) -> bool:
+    """Not writable by group (unless that group is private) or others.
+
+    ``sealed`` (the path is inside the repository): no group or other write bit
+    at all, whoever the group is, and no sticky exemption, because the tree the
+    wrangler is loaded from is ours alone. Outside the repository, a directory
+    with the sticky bit (such as /tmp, mode 1777) is accepted only when root owns
+    it: nobody can rename or remove an entry they do not own there, so the
+    entries below it stay ours."""
     mode = info.st_mode
-    if directory and mode & stat.S_ISVTX:
+    if sealed:
+        return not mode & (stat.S_IWGRP | stat.S_IWOTH)
+    if directory and mode & stat.S_ISVTX and info.st_uid == 0:
         return True
     if mode & stat.S_IWGRP and not _group_is_private(info.st_gid):
         return False
     return not mode & stat.S_IWOTH
+
+
+MAX_TREE_ENTRIES = 200_000
+_PKG_NAME = re.compile(r"(?:@[a-z0-9._-]+/)?[a-z0-9._-]+")
+_REFUSED_TREE = (
+    "the wrangler package or one it depends on has a file or directory that "
+    "belongs to another account or is writable by group or others; refusing it "
+    "(fix with: chmod -R go-w worker/node_modules)"
+)
+
+
+def _check_entry(path: str, me: int, repo_real: str) -> os.stat_result:
+    """One file or directory of the walked tree: owner root or the current user,
+    and no group or other write bit inside the repository. A symlink's own mode
+    means nothing, so the target is checked and must stay in the repository."""
+    link = os.lstat(path)
+    if stat.S_ISLNK(link.st_mode):
+        target = os.path.realpath(path, strict=True)
+        if not _inside(target, repo_real):
+            raise WranglerError(_REFUSED_TREE)
+        link = os.stat(target)
+    if link.st_uid not in (0, me) or link.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise WranglerError(_REFUSED_TREE)
+    return link
+
+
+def _walk_package(pkg: str, me: int, repo_real: str, budget: list[int]) -> None:
+    """Check every entry of one package directory, except nested ``node_modules``
+    (those packages are checked when something names them). Symlinks are not
+    followed. The entry count is bounded: past the bound the check fails closed."""
+    stack = [pkg]
+    while stack:
+        here = stack.pop()
+        _check_entry(here, me, repo_real)
+        with os.scandir(here) as entries:
+            for entry in entries:
+                budget[0] -= 1
+                if budget[0] < 0:
+                    raise WranglerError(
+                        "the wrangler dependency tree is larger than the bound "
+                        f"({MAX_TREE_ENTRIES} entries); refusing it"
+                    )
+                if entry.is_dir(follow_symlinks=False):
+                    if entry.name != "node_modules":
+                        stack.append(entry.path)
+                else:
+                    _check_entry(entry.path, me, repo_real)
+
+
+def _dependency_names(pkg: str) -> list[str]:
+    """The package names a package lists for node to load (dependencies, optional
+    and peer ones). An unreadable or malformed package.json is a refusal."""
+    try:
+        meta = json.loads(_read(Path(pkg) / "package.json", MAX_EXPORT_BYTES))
+    except (ConfigError, ValueError):
+        raise WranglerError(_REFUSED_TREE) from None
+    names: list[str] = []
+    for field in ("dependencies", "optionalDependencies", "peerDependencies"):
+        group = meta.get(field) if isinstance(meta, dict) else None
+        if group is None:
+            continue
+        if not isinstance(group, dict):
+            raise WranglerError(_REFUSED_TREE)
+        for name in group:
+            if not isinstance(name, str) or not _PKG_NAME.fullmatch(name):
+                raise WranglerError(_REFUSED_TREE)
+            names.append(name)
+    return names
+
+
+def _find_package(name: str, start: str, worker_real: str) -> str | None:
+    """Where node would load ``name`` from when asked by the package at ``start``:
+    ``node_modules/NAME`` of the package, then of each parent up to ``worker``.
+    None when it is not installed (an optional or platform package)."""
+    here = start
+    while _inside(here, worker_real):
+        base = here if os.path.basename(here) == "node_modules" else None
+        cand = os.path.join(base or os.path.join(here, "node_modules"), name)
+        if os.path.isdir(cand):
+            return os.path.realpath(cand)
+        if here == worker_real:
+            break
+        here = os.path.dirname(here)
+    return None
+
+
+def _check_package_tree(pkg_real: str, worker_real: str, me: int) -> None:
+    """Walk the wrangler package and the closure of the packages it depends on
+    (resolved under worker/node_modules, bounded), checking each entry and each
+    directory between a package and ``worker``. Only this walked tree is checked."""
+    repo_real = os.path.realpath(REPO_ROOT)
+    budget = [MAX_TREE_ENTRIES]
+    seen: set[str] = set()
+    queue = [pkg_real]
+    while queue:
+        pkg = queue.pop()
+        if pkg in seen:
+            continue
+        seen.add(pkg)
+        if not _inside(pkg, worker_real):
+            raise WranglerError(_REFUSED_TREE)
+        try:
+            up = os.path.dirname(pkg)
+            while _inside(up, worker_real) and up != worker_real:
+                _check_entry(up, me, repo_real)
+                up = os.path.dirname(up)
+            _walk_package(pkg, me, repo_real, budget)
+            for name in _dependency_names(pkg):
+                found = _find_package(name, pkg, worker_real)
+                if found is not None:
+                    queue.append(found)
+        except OSError:
+            raise WranglerError(_REFUSED_TREE) from None
 
 
 def _resolve_wrangler(arg: Path | None) -> str:
@@ -640,7 +818,10 @@ def _resolve_wrangler(arg: Path | None) -> str:
     ``worker/node_modules/wrangler`` package. That package's ``package.json`` and
     npm's install record must name wrangler at the version and tarball digest of
     ``worker/package-lock.json``. The file and every directory from the root down
-    must belong to root or the current user and not be writable by others.
+    must belong to root or the current user (the file too: a root-owned file is
+    accepted) and not be writable by others; inside the repository not by group
+    either. The wrangler package and its dependency closure are walked the same
+    way (``_check_package_tree``); only the walked tree is checked.
 
     Not proven (this is a trust boundary, not an integrity check): that the files
     are the files of the published tarball, that node is genuine, or that
@@ -682,30 +863,39 @@ def _resolve_wrangler(arg: Path | None) -> str:
             "the wrangler path resolves outside the worker/node_modules/wrangler "
             "package; refusing it"
         )
+    me = os.geteuid()
+    repo_real = os.path.realpath(REPO_ROOT)
     if (
         not stat.S_ISREG(info.st_mode)
         or not info.st_mode & stat.S_IXUSR
-        or info.st_uid != os.geteuid()
-        or not _unwritable_by_others(info, directory=False)
+        or info.st_uid not in (0, me)
+        or not _unwritable_by_others(
+            info, directory=False, path=real, sealed=_inside(real, repo_real)
+        )
     ):
         raise WranglerError(
-            "wrangler must be a regular executable you own, not writable by others"
+            "wrangler must be a regular executable owned by root or you, not "
+            "writable by group or others"
         )
-    me = os.geteuid()
     walk = Path(real).parent
     try:
         for directory in [walk, *walk.parents]:
             dinfo = os.stat(directory)
             if dinfo.st_uid not in (0, me) or not _unwritable_by_others(
-                dinfo, directory=True
+                dinfo,
+                directory=True,
+                path=os.fspath(directory),
+                sealed=_inside(os.fspath(directory), repo_real),
             ):
                 raise WranglerError(
                     "every directory above wrangler must belong to root or you and "
-                    "not be writable by others"
+                    "not be writable by others (inside the repository: not by "
+                    "group either; fix with: chmod -R go-w worker/node_modules)"
                 )
     except OSError:
         raise WranglerError("a directory above wrangler could not be checked") from None
     _check_install_record(real_pkg, os.path.join(base, ".package-lock.json"))
+    _check_package_tree(real_pkg, os.path.dirname(base), me)
     return real
 
 
@@ -777,15 +967,38 @@ def _checked_uuid(value: str | None, option: str) -> str:
     return value.lower()
 
 
+class IdentityError(LeadsError):
+    """A database name resolved to an id other than the one the owner gave."""
+
+
 def verify_identity(wrangler: str, name: str, expected: str) -> None:
     """The database NAME must resolve to the id the owner took from the Worker's
-    own configuration. This binds the name this tool clears to the database the
-    Worker reads, which a schema match alone cannot."""
+    own configuration, at the moment of this call. That binds the name to the
+    database the Worker's configuration names; it cannot bind a later
+    ``d1 execute NAME`` to it (execute takes a name or binding, not an id, and
+    its JSON answer is not documented to carry the id: Cloudflare D1 wrangler
+    commands page, read 2026-11-26). See ``_bound_rows`` for what is done about
+    that and what is left."""
     if database_uuid(wrangler, name) != expected:
-        raise LeadsError(
+        raise IdentityError(
             "a database name does not resolve to the id you gave (a different, "
-            "renamed or decoy database); nothing was changed"
+            "renamed or decoy database)"
         )
+
+
+def _bound_rows(
+    wrangler: str, database: str, expected: str, sql: str
+) -> list[dict[str, Any]]:
+    """One statement between two identity checks of the same name (check, call,
+    check). An id that differs at either check discards the answer, so a name
+    that was re-pointed and STAYED re-pointed past the call is caught. A name
+    re-pointed to another database and back inside the one call is not: nothing
+    available to this tool proves which database an execute call used (residual
+    window, stated in docs/privacy.md)."""
+    verify_identity(wrangler, database, expected)
+    rows = _wrangler_rows(wrangler, database, sql)
+    verify_identity(wrangler, database, expected)
+    return rows
 
 
 def _wrangler_rows(wrangler: str, database: str, sql: str) -> list[dict[str, Any]]:
@@ -836,8 +1049,8 @@ def _counts(rows: list[dict[str, Any]], names: tuple[str, ...]) -> tuple[int, ..
     return tuple(out)
 
 
-def _tables(wrangler: str, database: str) -> frozenset[str]:
-    rows = _wrangler_rows(wrangler, database, _SCHEMA_SQL)
+def _tables(wrangler: str, database: str, expected: str) -> frozenset[str]:
+    rows = _bound_rows(wrangler, database, expected, _SCHEMA_SQL)
     names: list[str] = []
     for row in rows:
         name = row.get("name")
@@ -852,25 +1065,23 @@ def _tables(wrangler: str, database: str) -> frozenset[str]:
 def preflight_alerts(
     wrangler: str, leads_db: str, alerts_db: str, leads_id: str, alerts_id: str
 ) -> None:
-    """Read-only. Prove that both names resolve to the ids the owner took from the
-    Worker's configuration (identity), then from the schemas that ``alerts_db`` is
-    where the alert table lives and that the lead tables are where the lead SQL
-    goes. An absent alert table is a refusal, never a clear: this tool cannot know
-    whether the site ever had one, so it never reports nothing-to-clear."""
+    """Read-only. Prove, with every schema read wrapped in two identity checks
+    (``_bound_rows``), that both names resolve to the ids the owner took from the
+    Worker's configuration and, from the schemas, that ``alerts_db`` is where the
+    alert table lives and that the lead tables are where the lead SQL goes. An
+    absent alert table is a refusal, never a clear: this tool cannot know whether
+    the site ever had one, so it never reports nothing-to-clear. The messages say
+    nothing about what was changed: the caller knows."""
     _checked_database(alerts_db)
     if (alerts_db == leads_db) != (alerts_id == leads_id):
         raise LeadsError(
             "one database cannot have two ids and two databases cannot share one: "
-            "the two names and the two ids disagree; nothing was changed"
+            "the two names and the two ids disagree"
         )
-    verify_identity(wrangler, leads_db, leads_id)
-    if alerts_db != leads_db:
-        verify_identity(wrangler, alerts_db, alerts_id)
-    leads_tables = _tables(wrangler, leads_db)
+    leads_tables = _tables(wrangler, leads_db, leads_id)
     if not _LEAD_TABLES <= leads_tables:
         raise LeadsError(
-            "the leads database does not hold the leads and kit_events tables; "
-            "nothing was changed"
+            "the leads database does not hold the leads and kit_events tables"
         )
     if alerts_db == leads_db:
         # One database holds both (a single DB binding): the alert table must be
@@ -878,25 +1089,25 @@ def preflight_alerts(
         if ALERT_TABLE not in leads_tables:
             raise LeadsError(
                 "the alert_dedup table is not in the leads database; refusing to "
-                "report the alert hashes as cleared; nothing was changed"
+                "report the alert hashes as cleared"
             )
         return
-    alert_tables = _tables(wrangler, alerts_db)
+    alert_tables = _tables(wrangler, alerts_db, alerts_id)
     if ALERT_TABLE not in alert_tables:
         raise LeadsError(
             "the named alert database does not hold the alert_dedup table; "
-            "refusing to report the alert hashes as cleared; nothing was changed"
+            "refusing to report the alert hashes as cleared"
         )
     if alert_tables & _LEAD_TABLES:
         raise LeadsError(
             "the named alert database holds lead tables, so it is not a separate "
-            "alert database; nothing was changed"
+            "alert database"
         )
     if ALERT_TABLE in leads_tables:
         raise LeadsError(
             "the leads database also holds an alert_dedup table, so the deployment "
             "is ambiguous; name the database the Worker writes alerts to and clear "
-            "the other by hand; nothing was changed"
+            "the other by hand"
         )
 
 
@@ -913,41 +1124,59 @@ def finish_erasure(
     email: str,
 ) -> tuple[int, str]:
     """The guarded step after the owner applied the lead SQL. ``ids`` is the
-    (leads, alerts) database id pair. Returns (exit code, fixed message). Order:
-    identity and schema checks, lead read-back (must be 0 and 0), the same checks
-    again right before the clear, the clear (one statement that deletes only while
-    the alert database holds no lead table), read back, repeat while rows arrive
-    (bounded), settle, read back once more, and the checks a last time.
+    (leads, alerts) database id pair. Returns (exit code, fixed message).
 
-    The checks and the statements are separate remote calls; the window between
-    the last check and the clear shrinks to one call, it does not vanish. A
-    database that is replaced inside it is caught by the final check (exit 3)."""
+    Precondition, not checked here (the kill switch is a Worker setting this tool
+    cannot read): the kit gate is closed for the whole erasure.
+
+    Exit codes once this runs (never 2): before the lead tables are read back as
+    clean, any failure is 4 (the alert table was not touched); after that, any
+    failure, a changed database or a lead for the address that exists again is 3.
+
+    Order: identity and schema checks and the lead read-back (for the id AND the
+    address; must be 0 and 0), the same checks again right before the clear, the
+    clear (one statement that deletes only while the alert database holds no lead
+    table), read back, repeat while rows arrive (bounded), settle, read back once
+    more, the checks a last time, and the lead tables read for the address one
+    last time. Every statement runs between two identity checks of its database
+    name (``_bound_rows``).
+
+    The window between a check and a statement is not closed: a name re-pointed
+    and restored inside one remote call is not seen, and a lead created after the
+    last read is not seen (see docs/privacy.md)."""
     leads_id, alerts_id = ids
-    try:
-        preflight_alerts(wrangler, leads_db, alerts_db, leads_id, alerts_id)
-    except LeadsError as exc:
-        return EXIT_USAGE, f"error: {exc}"
-    readback = _sql(lead_id, email)[-1]
-    try:
-        leads_left, events_left = _counts(
-            _wrangler_rows(wrangler, leads_db, readback),
+    lead_sql = _lead_readback_sql(lead_id, email)
+
+    def leads_present() -> bool:
+        left, events = _counts(
+            _bound_rows(wrangler, leads_db, leads_id, lead_sql),
             ("leads_remaining", "events_remaining"),
         )
-    except LeadsError:
-        return EXIT_LEADS_UNCONFIRMED, (
-            "error: could not read the lead tables back; the lead rows are NOT "
-            "confirmed erased and the alert table was not touched"
-        )
-    if leads_left or events_left:
+        return bool(left or events)
+
+    unconfirmed = (
+        "error: the lead rows are NOT confirmed erased (%s) and the alert table "
+        "was not touched; apply the SQL, then run this command with --finish again"
+    )
+    try:
+        preflight_alerts(wrangler, leads_db, alerts_db, leads_id, alerts_id)
+        present = leads_present()
+    except LeadsError as exc:
+        return EXIT_LEADS_UNCONFIRMED, unconfirmed % _why(exc)
+    if present:
         return EXIT_LEADS_UNCONFIRMED, (
             "error: lead rows remain in the leads database; apply the SQL first. "
             "The alert table was not touched"
         )
     started_ms = int(time.time() * 1000)
     incomplete = (
-        "error: the lead rows are erased but the alert hashes are NOT confirmed "
-        "cleared (%s). The erasure is NOT complete: close the kit gate, then run "
-        "this command with --finish again"
+        "error: the lead rows were read as erased but the alert hashes are NOT "
+        "confirmed cleared (%s). The erasure is NOT complete: close the kit gate, "
+        "then run this command with --finish again"
+    )
+    again = (
+        "lead rows reappeared for this address (a lead was created again after "
+        "the erasure started): apply the delete SQL again with a fresh export"
     )
     new_rows = 0
     # The same checks again, immediately before the clear (the lead read-back
@@ -955,15 +1184,18 @@ def finish_erasure(
     clear_sql = ALERT_CLEAR_SQL if alerts_db == leads_db else ALERT_CLEAR_SPLIT_SQL
     try:
         preflight_alerts(wrangler, leads_db, alerts_db, leads_id, alerts_id)
-    except LeadsError:
+    except LeadsError as exc:
         return EXIT_ALERTS_INCOMPLETE, incomplete % (
-            "a database check failed just before the clear; nothing was cleared"
+            f"a database check failed just before the clear ({_why(exc)}); "
+            "nothing was cleared"
         )
     try:
         for _ in range(ALERT_ATTEMPTS):
-            _wrangler_rows(wrangler, alerts_db, clear_sql)
+            _bound_rows(wrangler, alerts_db, alerts_id, clear_sql)
             left, new_rows = _counts(
-                _wrangler_rows(wrangler, alerts_db, alert_readback_sql(started_ms)),
+                _bound_rows(
+                    wrangler, alerts_db, alerts_id, alert_readback_sql(started_ms)
+                ),
                 ("alert_dedup_remaining", "alert_dedup_new"),
             )
             if left == 0:
@@ -977,7 +1209,7 @@ def finish_erasure(
             return EXIT_ALERTS_INCOMPLETE, incomplete % why
         pause(ALERT_SETTLE_SECONDS)
         left, new_rows = _counts(
-            _wrangler_rows(wrangler, alerts_db, alert_readback_sql(started_ms)),
+            _bound_rows(wrangler, alerts_db, alerts_id, alert_readback_sql(started_ms)),
             ("alert_dedup_remaining", "alert_dedup_new"),
         )
         if left:
@@ -987,28 +1219,37 @@ def finish_erasure(
                 else "rows reappeared"
             )
             return EXIT_ALERTS_INCOMPLETE, incomplete % why
-        leads_left2, events_left2 = _counts(
-            _wrangler_rows(wrangler, leads_db, readback),
-            ("leads_remaining", "events_remaining"),
-        )
-        if leads_left2 or events_left2:
-            return EXIT_ALERTS_INCOMPLETE, incomplete % "lead rows reappeared"
-    except LeadsError:
-        return EXIT_ALERTS_INCOMPLETE, incomplete % "a wrangler step failed"
-    # Last: the databases are still the ones that were checked, so the 0 that was
-    # read is the 0 of the Worker's own database.
-    try:
+        # Last: the databases are still the ones that were checked, and the lead
+        # tables, read after the clear and after the pause, still hold nothing for
+        # this address.
         preflight_alerts(wrangler, leads_db, alerts_db, leads_id, alerts_id)
-    except LeadsError:
-        return EXIT_ALERTS_INCOMPLETE, incomplete % (
-            "a database changed or could not be re-checked during the erasure"
-        )
+        if leads_present():
+            return EXIT_ALERTS_INCOMPLETE, incomplete % again
+    except LeadsError as exc:
+        return EXIT_ALERTS_INCOMPLETE, incomplete % _why(exc)
     return EXIT_OK, (
-        "done as far as this tool can verify: the lead rows and the alert hashes "
-        "read 0 twice, a moment apart. A person who can still open the kit or "
-        "trigger an alert can create a new hash later; keep the kit gate closed "
-        "(kill switch) while you erase"
+        "done as far as this tool can verify: the lead rows for the id and the "
+        "address and the alert hashes read 0 twice, a moment apart. A person who "
+        "can still open the kit or trigger an alert can create a new row or hash "
+        "later; the kit gate (kill switch) must stay closed while you erase, and "
+        "this tool cannot read it. Which database each call ran on cannot be "
+        "proven: the checks bind the name to the id you gave only at the moments "
+        "they ran"
     )
+
+
+def _why(exc: LeadsError) -> str:
+    """The fixed reason text of a failed step (never remote text)."""
+    if isinstance(exc, IdentityError):
+        return "a database name does not resolve to the id you gave"
+    return str(exc)
+
+
+def _lead_readback_sql(lead_id: str, email: str) -> str:
+    """The `--finish` read-back for the id and the address, from the validated
+    values only (the same checks as ``_sql``)."""
+    _sql(lead_id, email)  # validates both again at the point of use
+    return _FINISH_READBACK.replace("<ID>", lead_id).replace("<EMAIL>", email)
 
 
 def _sql(lead_id: str, email: str) -> list[str]:
@@ -1166,14 +1407,19 @@ other copy exists. Tick each item in your reply and say what you checked.
    database must hold `alert_dedup`; it may hold the lead tables only if it is
    the leads database), prints the lead SQL and exits 10: checks passed,
    NOTHING erased. After you apply the SQL, `--finish` reads the lead tables
-   back, clears the whole alert table and reads it back as 0 twice. Exit 0 from
-   `--finish` is the only complete result: exit 3 means the lead rows are erased
-   but the alert hashes are not confirmed cleared (or a database changed during
-   the run), exit 4 means the lead rows are not confirmed erased. Close the kit gate
-   (kill switch) while you erase: a person who can still open the kit or
-   trigger an alert can create a new hash after the read-back, and no tool
-   can close that window. Clearing the table only resets repeat-alert
-   suppression for up to 10 minutes.
+   back (for the id and for the address), clears the whole alert table, reads it
+   back as 0 twice and reads the lead tables once more. Exit 0 from `--finish`
+   is the only complete result: exit 3 means the lead rows were read as erased
+   but the alert hashes are not confirmed cleared, a database changed, or a
+   lead for the address exists again; exit 4 means the lead rows are not
+   confirmed erased. Close the kit gate (kill switch) BEFORE you start and keep
+   it closed until you finish: this tool cannot read the gate, and a person who
+   can still open the kit or trigger an alert can create a new lead or hash
+   after the last read, which no tool can prevent. Each remote statement runs
+   between two checks that the name still resolves to the id you gave; that
+   binds the name to the Worker's configuration at those moments and cannot
+   prove which database one call used. Clearing the table only resets
+   repeat-alert suppression for up to 10 minutes.
 8. Worker storage, as far as a text scan can show. The scripts/erasure-stores.json
    registry and its test list every file that names a KV, cache, R2, Durable
    Object or queue primitive or binding, and pin each statement that does. That
@@ -1327,7 +1573,11 @@ def run_delete(args: argparse.Namespace) -> int:
             )
             print(message, file=sys.stderr)
             return code
-        preflight_alerts(wrangler, database, alerts_database, db_ids[0], db_ids[1])
+        try:
+            preflight_alerts(wrangler, database, alerts_database, db_ids[0], db_ids[1])
+        except LeadsError as exc:
+            # Read-only step: this invocation made no remote change.
+            raise LeadsError(f"{exc}; nothing was changed") from None
     except LeadsError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
@@ -1440,11 +1690,17 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "reads it back as 0. No file written unless "
         "--sql-out; the SQL pairs the lead id with its address, so it deletes "
         "only a row that still matches both. --database and --email - are "
-        "required. Exit 0 the erasure verified by --finish (a dry run, which "
-        "requests nothing, also exits 0), 10 checks passed and SQL printed, NOT "
-        "erased, 1 no match, 2 usage problem or a refused export, database, "
-        "database id or wrangler, 3 lead rows erased but the alert hashes not "
-        "confirmed cleared (NOT complete), 4 lead rows not confirmed erased.",
+        "required. Close the kit gate (kill switch) before you start: this tool "
+        "cannot read it. Every remote statement runs between two checks that the "
+        "database name still resolves to the id you gave; that cannot prove which "
+        "database one call used. Exit 0 the erasure verified by --finish (a dry "
+        "run, which requests nothing, also exits 0), 10 checks passed and SQL "
+        "printed, NOT erased, 1 no match, 2 usage problem or a refused export, "
+        "database, database id or wrangler (step 1, or before --finish makes a "
+        "remote call; --finish never exits 2 once it runs), 3 lead rows erased "
+        "but the alert hashes not confirmed cleared, a database changed, or a "
+        "lead for the address exists again (NOT complete), 4 lead rows not "
+        "confirmed erased.",
     )
     delete.add_argument("--input", type=Path, metavar="PATH", help="leads export, JSON")
     delete.add_argument(
@@ -1507,8 +1763,10 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         help="absolute path inside worker/node_modules/.bin or "
         "worker/node_modules/wrangler of this repository (default: "
         "worker/node_modules/.bin/wrangler); never searched on PATH; its package "
-        "must match worker/package-lock.json. It receives your Cloudflare token: "
-        "this is a trust boundary, not an integrity check",
+        "must match worker/package-lock.json, and the package and its "
+        "dependencies (walked, bounded) must belong to root or you with no group "
+        "or other write bit. It receives your Cloudflare token: this is a trust "
+        "boundary, not an integrity check",
     )
     delete.add_argument(
         "--finish",

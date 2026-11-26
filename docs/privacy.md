@@ -356,16 +356,38 @@ the next alert is admitted:
    a clear. It then prints the lead SQL and its apply command and **exits 10:
    the checks passed and NOTHING is erased.** Exit 10 is never a completed
    erasure; only the `--finish` run can exit 0.
-2. After you apply the SQL, run the same command again with `--finish`. It
-   repeats the identity and schema checks, reads the lead tables back (must be
-   0 and 0, else exit 4 and the alert table is untouched), checks both databases
-   again, clears the whole alert table (not only expired rows) with one
-   statement that deletes only while the alert database holds no lead table, and
-   reads it back, repeating the clear up to three times if a row arrives. It
-   waits two seconds, reads both stores back once more and checks the identity
-   and schema a last time. Any row left, including one whose life began after
-   the erasure started, or a database that changed during the run, is exit 3:
-   the lead rows are erased but the alert hashes are NOT confirmed cleared.
+2. Close the kit gate (the kill switch) first and keep it closed until this
+   step ends: it is a Worker setting this tool cannot read, so it is a
+   precondition you must meet, not a check. After you apply the SQL, run the
+   same command again with `--finish`. It repeats the identity and schema
+   checks and reads the lead tables back for the exported id AND for the
+   address (must be 0 and 0: a lead created again for the same address, with a
+   new id, counts; else exit 4 and the alert table is untouched), checks both
+   databases again, clears the whole alert table (not only expired rows) with
+   one statement that deletes only while the alert database holds no lead
+   table, and reads it back, repeating the clear up to three times if a row
+   arrives. It waits two seconds, reads the alert table back once more, checks
+   the identity and schema a last time and reads the lead tables for the
+   address one last time. Any alert row left, including one whose life began
+   after the erasure started, a lead row for the address that exists again, or
+   a database that changed during the run, is exit 3: the lead rows were read
+   as erased but the erasure is NOT complete. Once `--finish` is running it
+   never exits 2: before the lead tables read clean every failure is exit 4,
+   after that every failure is exit 3.
+
+Database identity. `wrangler d1 execute` takes a database name or binding, not
+an id, and its JSON answer is not documented to carry the database id
+(Cloudflare D1 wrangler commands page, read 2026-11-26), so nothing available
+to this tool proves which database one execute call used. What it does: every
+remote statement runs between two checks (`d1 info NAME --json`, before and
+after) that the name resolves to the id you gave, and a changed id at either
+check discards the answer (exit 3 or 4 as above). So the ids bind the name to
+the database the Worker's configuration names at the moment of each check. A
+name that is re-pointed to another database and back inside one call is NOT
+detected (the call could then read 0 on a decoy), and neither is a change
+between the last check and the end of the run. Treat the result as verified
+only for a database whose name and bindings nobody else can change during the
+erasure.
 
 The wrangler. The command runs only the wrangler installed in this repository
 (`cd worker && npm ci --ignore-scripts`; `--wrangler PATH` takes a path inside
@@ -377,29 +399,43 @@ checks: the real path (symlinks resolved) stays inside the wrangler package; the
 package's `package.json` and npm's install record
 (`worker/node_modules/.package-lock.json`) name wrangler at the version and
 tarball digest in `worker/package-lock.json`; the file and every directory above
-it belong to root or you and are not writable by others (a sticky shared
-directory such as `/tmp`, or a group of your own that nobody else belongs to, is
-accepted). What it does not prove: that the installed files are those of the
+it belong to root or you (the file too, so a root-owned `0755` file is
+accepted) and are not writable by others; inside this repository not by group
+either (fix with `chmod -R go-w worker/node_modules`). Outside it, a sticky
+shared directory such as `/tmp` is accepted only when root owns it, and so is
+a group of your own that nobody else belongs to. The wrangler package, and the
+packages it lists in `dependencies`, `optionalDependencies` or
+`peerDependencies` (resolved the way node resolves them under
+`worker/node_modules`, recursively), are walked: every file and directory must
+belong to root or you with no group or other write bit, symlinks must stay in
+the repository, and the walk stops with a refusal past 200000 entries. Only
+that walked tree is checked: a package no `dependencies` field names, or one
+node loads from outside `worker/node_modules`, is not seen. What it does not
+prove: that the installed files are those of the
 published package (npm keeps no per-file digests and the lock file's digest
 covers the tarball, which is not re-downloaded), that `node` is genuine, or that
 nothing changes between the check and the run. Anyone who can write as your OS
 user can defeat all of it. The program gets only the token, the account id,
 `HOME` and a fixed `PATH` (node must be in `/usr/bin` or `/bin`), runs in `/`
-with no stdin, and its output is read with a hard size cap (the process is
-killed past it).
+with no stdin and in its own process group, and its output is read with a hard
+size cap (on the cap or the time limit the whole group is killed, not only the
+program; a descendant that starts a session of its own is not reached).
 
 Exit codes: 0 only for the verified erasure of `--finish` (a dry run, which
 requests nothing and changes nothing, also exits 0); 10 `--yes` step 1: checks
 passed, SQL printed, NOT erased; 1 no match; 2 usage problem, refused export,
-database, database id or wrangler (nothing changed); 3 alert hashes not
-confirmed cleared, or a database changed during `--finish`; 4 lead rows not
-confirmed erased. Residual windows: a person who can still open the kit or
-trigger an alert can create a new hash after the last read-back, and the tool
-cannot close that; and the identity check, the schema check and the clear are
-separate remote calls, so a database swapped inside one call's gap is caught only
-by the last check (exit 3). Close the kit gate (the kill switch) for the whole
-erasure. The ids bind the name to the database the Worker's configuration names;
-they cannot prove that the Worker you run uses that configuration.
+database, database id or wrangler, in step 1 or before `--finish` makes any
+remote call (this tool changed nothing); 3 the lead rows were read as erased but
+the alert hashes are not confirmed cleared, a database changed, a check failed
+after that point, or a lead for the address exists again; 4 lead rows not
+confirmed erased (any failure before that point; the alert table was not
+touched). Residual windows: a person who can still open the kit or trigger an
+alert can create a new lead or hash after the last read-back, and the tool
+cannot close that; the kit gate cannot be read by this tool, so closing it is
+your precondition; and the identity checks and the statements are separate
+remote calls (see "Database identity" for what that leaves). The ids bind the
+name to the database the Worker's configuration names; they cannot prove that
+the Worker you run uses that configuration.
 Clearing every row (not only the lead's own hashes, which cannot be told apart
 without the Worker's secret key) resets repeat-alert suppression for up to 10
 minutes for everyone; that is the cost of this step and the owner accepts it by

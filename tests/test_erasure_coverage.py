@@ -1730,7 +1730,9 @@ def finish_flow_statements() -> list[str]:
         )
     assert code == 0, "the real finish flow did not complete on the fake"
     ran = [sql for _db, sql in fake.calls if "sqlite_master" not in sql]
-    lead_readback = _sql(TARGET_LEAD, TARGET_MAIL)[-1]
+    # Test change (#905 round 3): --finish reads the lead tables back for the id AND
+    # the address (first and last), so the flow's own read-back is the one judged.
+    lead_readback = leads_mod._lead_readback_sql(TARGET_LEAD, TARGET_MAIL)
     assert ran[0] == lead_readback, "the flow must read the lead tables back first"
     return [sql for sql in ran if sql != lead_readback]
 

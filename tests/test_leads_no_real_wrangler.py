@@ -48,21 +48,72 @@ def test_the_os_level_process_starts_are_guarded() -> None:
 
 
 def test_outside_the_leads_tests_only_a_real_wrangler_is_refused() -> None:
-    """Other test files still run their own scripts; a command whose program is
-    wrangler, npx, npm or node is refused for all of them."""
+    """Other test files still run their own scripts and plain node (tests/site runs
+    the click JS with it); only a command that runs wrangler is refused for them."""
     from conftest import _is_forbidden
 
     for command in (
         ["/p/node_modules/.bin/wrangler", "d1"],
         ["npx", "wrangler"],
+        ["npm", "exec", "wrangler"],
+    ):
+        assert _is_forbidden(command, strict=False), command  # all lists
+    allowed: list[object] = [
+        ["/usr/bin/bash", "backup-d1.sh"],
+        ["git", "status"],
+        "ls -l",
         "node script.js",
         ["/usr/bin/node", "x"],
         ["npm", "ci"],
-    ):
-        assert _is_forbidden(command, strict=False), command
-    for command in (["/usr/bin/bash", "backup-d1.sh"], ["git", "status"], "ls -l"):
-        assert not _is_forbidden(command, strict=False), command
+    ]
+    for other in allowed:
+        assert not _is_forbidden(other, strict=False), other
     assert _is_forbidden(["/usr/bin/bash"], strict=True)
+
+
+def test_an_allowed_interpreter_or_launcher_cannot_start_a_real_wrangler() -> None:
+    """Review round 2 (Low): the guard looked only at the program, so `sh -c`,
+    `env wrangler` or `python -c` could still start one. Every word of every
+    argument is now looked at. Only direct Python-level process starts are guarded:
+    what a child does on its own is out of reach (stated in conftest.py)."""
+    from conftest import _is_forbidden
+
+    refused: list[object] = [
+        ["/bin/sh", "-c", "wrangler x y"],
+        ["/bin/bash", "-c", "cd w && wrangler x"],
+        ["/usr/bin/env", "wrangler", "x"],
+        ["env", "PATH=/x", "/p/node_modules/.bin/wrangler"],
+        [sys.executable, "-c", "import os; os.system('wrangler d1')"],
+        "sh -c 'npx wrangler'",
+        ["/bin/sh", "-c", "a;wrangler"],
+    ]
+    for bad in refused:
+        assert _is_forbidden(bad, strict=False), bad
+    fine: list[object] = [
+        # CI regression: a workflow step run through bash -c that only mentions
+        # wrangler in comments and file names (tests/test_deploy_config.py).
+        [
+            "/bin/bash",
+            "-c",
+            "set -eu\n# run `wrangler secret put` later\ncp wrangler.toml x",
+        ],
+        ["/bin/sh", "-c", "echo node_modules"],
+        [sys.executable, "-c", "print('nodes')"],
+    ]
+    for good in fine:
+        assert not _is_forbidden(good, strict=False), good
+
+
+def test_in_the_leads_tests_an_interpreter_running_wrangler_is_refused() -> None:
+    """Through the real Popen guard: in a `test_leads*` module every start is
+    refused whatever the program (the indirect forms included)."""
+    for command in (
+        ["/bin/sh", "-c", "wrangler d1"],
+        [sys.executable, "-c", "print('wrangler')"],
+        ["/usr/bin/env", "wrangler"],
+    ):
+        with pytest.raises(AssertionError, match="real process"):
+            subprocess.run(command, check=False)  # noqa: S603 - the guard refuses it
 
 
 def test_the_online_path_cannot_start_a_process_without_the_fake(

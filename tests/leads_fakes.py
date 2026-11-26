@@ -47,6 +47,10 @@ class FakeWrangler:
         self.before_statement: Any = None  # called with (connection, statement)
         self.on_info: Any = None  # called with (fake, name, nth ask of that name)
         self.info_body: Any = None  # replaces the `d1 info` answer when set
+        self.after_exec: Any = None  # called with (fake, name, statement) after a run
+        self.after_info: Any = None  # called with (fake, name, nth) after the answer
+        self.points: dict[str, str] = {}  # name -> database it really points at
+        self.events: list[tuple[str, str]] = []  # ("info" | "exec", name), in order
         self.path: Path = Path("/unset")  # the fake install's .bin entry
         self.root: Path = Path("/unset")  # the fake repository root
 
@@ -78,16 +82,26 @@ class FakeWrangler:
         if argv[1:3] == ["d1", "info"]:
             name = argv[3]
             self.infos.append(name)
+            self.events.append(("info", name))
+            nth = self.infos.count(name)
             if self.on_info:
-                self.on_info(self, name, self.infos.count(name))
+                self.on_info(self, name, nth)
             if self.exit_code or name not in self.dbs:
                 return 1, b""
+            real = self.points.get(name, name)
+            reply: bytes
             if self.info_body is not None:
-                return 0, self.info_body
-            answer = {"uuid": self.ids[name], "name": name, "version": "production"}
-            return 0, json.dumps(answer).encode()
-        database, statement = argv[3], argv[argv.index("--command") + 1]
-        self.calls.append((database, statement))
+                reply = self.info_body
+            else:
+                answer = {"uuid": self.ids[real], "name": name, "version": "production"}
+                reply = json.dumps(answer).encode()
+            if self.after_info:
+                self.after_info(self, name, nth)
+            return 0, reply
+        name, statement = argv[3], argv[argv.index("--command") + 1]
+        self.events.append(("exec", name))
+        database = self.points.get(name, name)  # where the name really points
+        self.calls.append((name, statement))
         if self.exit_code:
             return self.exit_code, b""
         if self.raw is not None:
@@ -105,6 +119,8 @@ class FakeWrangler:
         db.commit()
         if statement.startswith("DELETE FROM alert_dedup") and self.after_clear:
             self.after_clear(db)
+        if self.after_exec:
+            self.after_exec(self, name, statement)
         block = {"results": rows, "success": True, "meta": {}}
         body = [block, block] if self.extra_blocks else [block]
         return 0, json.dumps(body).encode()
@@ -139,4 +155,13 @@ def write_install(
         (nm / ".package-lock.json").write_text(
             json.dumps({"packages": {"node_modules/wrangler": entry}})
         )
+    # Files are made 0600 whatever the umask: the install check refuses a group or
+    # other write bit anywhere inside the repository.
+    for name in (
+        worker / "package-lock.json",
+        pkg / "package.json",
+        nm / ".package-lock.json",
+    ):
+        if name.exists():
+            os.chmod(name, 0o600)
     return link
