@@ -1,0 +1,165 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Pull requests: keep the counts history append-only. Any pull request that
+# changes history/social.jsonl must either only append to it, or be a reviewed
+# tombstone-only rewrite (an owner redaction: records replaced by tombstones).
+# A rewrite needs ALL of: the `history-tombstone` label applied by a login on
+# .github/history-approvers (read from the BASE commit), a label at least 24
+# hours old and applied after the head commit last changed (a new head needs
+# the label removed and applied again), a head branch named redact/<anything>
+# in this repository, no open counts/refresh pull request, exactly the allowed
+# paths, and the engine's exact compare (`counts history-compare`) returning
+# "valid rewrite" for the bytes. Anything else fails. The label alone changes
+# nothing: the compare is the control. The outcome is logged to the job summary
+# (short commit ids, label event number, label age, manifest name); no login,
+# no full commit id, never a value.
+#
+# This is `pull_request`, never `pull_request_target`. One job, so there is one
+# check name to require: require "History guard" in branch protection, together
+# with "branch must be up to date" (strict). A merge queue is not supported:
+# this workflow does not run under `merge_group`. The job token reads the pull
+# request and the workflow runs (`actions: read`) and cannot write.
+#
+# What is verified: a `pull_request` workflow must already exist on the default
+# branch and runs against the pull request's merge ref. The scripts, the
+# approvers file and the engine pin are read from a checkout pinned to the BASE
+# commit; the pull request's files are read from a checkout pinned to the head
+# commit and are only ever data.
+#
+# THIS WORKFLOW IS NOT A SUFFICIENT MERGE GATE ON ITS OWN. With a
+# `pull_request` trigger GitHub runs the workflow file of the pull request's
+# merge ref, so a pull request can replace this file and keep the check name.
+# Pinning the scripts to the base commit only helps once this workflow has run
+# its checkout. The first steps below compare the running copy of this file with
+# the base commit's copy and fail on any difference; that catches accidental
+# drift and costs little, but it does NOT stop a replaced workflow that omits
+# the step.
+#
+# The primary boundary is CODEOWNERS plus code-owner review: the paths .github/,
+# scripts/, engine.lock, history/redactions/ and the approvers file are covered
+# by a CODEOWNERS file (example: .github/CODEOWNERS; the history file itself is
+# not owned, so the daily refresh needs no review), with the branch rule "Require
+# review from Code Owners", an owner who is not the pull request author, stale
+# approvals dismissed, approval of the most recent reviewable push, and
+# administrators included (no bypass). A replaced workflow is a change under
+# .github/ and needs that review. This check, the engine comparison and the
+# label and age gate protect against mistakes and unreviewed paths, not against
+# a hostile workflow replacement. The ruleset rule "Require workflows to pass
+# before merging" (a workflow in a separate trusted repository) is NOT AVAILABLE
+# on a Team plan (organization or enterprise level; GitHub's page on available
+# rules for rulesets and its 2023-08-02 changelog, read 2026-11-26): an optional
+# upgrade path for Enterprise accounts only. The label is an intent record and
+# a 24 hour cooling-off signal, not a gate that GitHub enforces for this
+# workflow. GitHub does not let an author approve their own pull request, so a
+# sole owner needs a second GitHub login they control as code owner; see README.md,
+# "Who reviews when you are the only person". Until the activation checklist
+# there is complete and a test pull request that edits this file is OBSERVED to
+# be unmergeable without an independent code-owner approval, leave
+# `.github/history-approvers` empty.
+name: History guard
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+# A later push or label change cancels the older run instead of racing it.
+concurrency:
+  group: history-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  history-guard:
+    name: History guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+    # No `environment`, no secrets and no write permission, on purpose.
+    steps:
+      # The scripts, the approvers file and the engine pin come from the BASE
+      # commit, in a separate folder, before anything of the pull request runs.
+      - name: Fetch the trusted files from the base commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted-src
+          sparse-checkout: |
+            scripts/read-lock.sh
+            scripts/verify-history-rewrite.sh
+            scripts/history-guard.py
+            engine.lock
+            engine.release.json
+            .github/workflows/history-guard.yml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # The copy of this file that is running (the merge ref's), to compare.
+      - name: Fetch the running copy of this workflow
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: running-src
+          sparse-checkout: |
+            .github/workflows/history-guard.yml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # Defense in depth only: a replaced workflow can leave this step out.
+      - name: Refuse when the running workflow differs from the base copy
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -eu
+          file=.github/workflows/history-guard.yml
+          case "$WORKFLOW_REF" in
+            */"$file"@*) ;;
+            *) echo "::error::unexpected workflow reference"; exit 1 ;;
+          esac
+          if ! cmp -s "trusted-src/$file" "running-src/$file"; then
+            echo "::error::the running workflow differs from the base commit's copy"
+            exit 1
+          fi
+
+      - name: Install the trusted copies and choose the engine image
+        id: trust
+        run: |
+          set -eu
+          dir="$(mktemp -d "$RUNNER_TEMP/trusted.XXXXXX")"
+          cp -R trusted-src/scripts "$dir/scripts"
+          cp trusted-src/engine.lock "$dir/engine.lock"
+          if [ -f trusted-src/engine.release.json ]; then
+            cp trusted-src/engine.release.json "$dir/engine.release.json"
+          fi
+          chmod -R a-w "$dir"
+          if [ -f "$dir/engine.release.json" ]; then
+            bash "$dir/scripts/read-lock.sh" --release "$dir/engine.lock"
+          fi
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+
+      # The pull request's head, with all history so the base commit is there.
+      # Only ever read as data: nothing in this checkout is executed.
+      - name: Fetch the pull request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: pr
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Guard the history file
+        env:
+          TRUSTED: ${{ steps.trust.outputs.dir }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_CREATED_AT: ${{ github.event.pull_request.created_at }}
+        run: python3 -I "$TRUSTED/scripts/history-guard.py" --trusted "$TRUSTED" --pr pr

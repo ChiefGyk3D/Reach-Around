@@ -296,6 +296,51 @@ def new_redact_run_id(now: datetime) -> str:
     return f"redact-{stamp}-{secrets.token_hex(3)}"
 
 
+MANIFEST_HEADER = "history-tombstone-manifest 1"
+MANIFEST_DIR = "history/redactions"
+MAX_TRIGGER_AGE_DAYS = 366
+
+
+def rewrite_metadata(
+    keys: Sequence[tuple[str, str, str, str]],
+    reason: str,
+    trigger_date: str,
+    redacted_day: str,
+) -> tuple[str, str, str]:
+    """The fixed metadata of a labeled tombstone-only rewrite (#619).
+
+    Returns ``(run_id, redacted_at_utc, manifest_text)``. Every field is derived
+    from public inputs (the replaced keys, one of five reason codes and two
+    dates), so none of them can carry a redacted value: the run id is the day
+    plus the first six hex digits of the SHA-256 of the manifest body, the time
+    is the start of ``redacted_day`` and the manifest holds keys and codes only.
+    """
+    if type(reason) is not str or reason not in REASONS:
+        raise HistoryError("reason is not on the closed list")
+    trigger = _plain_date("trigger_date", trigger_date)
+    day = _plain_date("redacted_day", redacted_day)
+    if trigger > day:
+        raise HistoryError("trigger_date is after the redaction")
+    if (day - trigger).days > MAX_TRIGGER_AGE_DAYS:
+        raise HistoryError("trigger_date is more than 366 days before the redaction")
+    if not keys:
+        raise HistoryError("a rewrite needs at least one replaced record")
+    key_lines = sorted(" ".join(key) for key in set(keys))
+    body = "".join(
+        f"{line}\n"
+        for line in (
+            f"reason={reason}",
+            f"trigger_date={trigger_date}",
+            f"redacted_day={redacted_day}",
+            f"count={len(key_lines)}",
+            *key_lines,
+        )
+    )
+    digest = hashlib.sha256(body.encode("ascii")).hexdigest()[:6]
+    run_id = f"redact-{redacted_day.replace('-', '')}-{digest}"
+    return run_id, f"{redacted_day}T00:00:00Z", f"{MANIFEST_HEADER}\n{body}"
+
+
 def new_run_id(now: datetime) -> str:
     stamp = now.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
     return f"refresh-{stamp}-{secrets.token_hex(3)}"
@@ -1122,8 +1167,13 @@ def redact_records(
     max_bytes: int = MAX_FILE_BYTES,
     lock_wait: float = LOCK_WAIT_SECONDS,
     notices: list[str] | None = None,
+    derived: bool = False,
 ) -> int:
     """Replace the planned records with tombstones and re-chain; return the count.
+
+    With ``derived`` the tombstones carry the fixed forms of ``rewrite_metadata``
+    (day-granular time, derived run id) that the instance's reviewed
+    tombstone-only rewrite accepts (#619); the caller then writes the manifest.
 
     Owner-run only, never during a refresh. Refuses unless ``confirm`` is ``True``.
     Under the exclusive lock the whole file is checked, a new file is written
@@ -1133,7 +1183,9 @@ def redact_records(
     (rows already redacted, or any field of a planned record differs from the
     file) is refused, as is a plan with a duplicate; an empty plan writes nothing.
 
-    A failure before the rename leaves the original file. If the rename
+    A failure before the rename leaves the original file and is raised as a plain
+    ``HistoryError`` (never ``RedactDurabilityError``); callers rely on that, and
+    treat any other stop as ambiguous. If the rename
     succeeded and the folder sync failed, ``RedactDurabilityError`` is raised:
     the new file is in place, only its durability is uncertain. The new file
     keeps the old owner and group where permitted (a fixed notice is appended to
@@ -1172,6 +1224,7 @@ def redact_records(
             max_bytes,
             lock_wait,
             notices,
+            derived,
         )
     finally:
         os.close(dir_fd)
@@ -1187,6 +1240,7 @@ def _redact_locked(
     max_bytes: int,
     lock_wait: float,
     notices: list[str] | None,
+    derived: bool = False,
 ) -> int:
     sidecar = _open_sidecar(dir_fd, path.name, lock_wait)
     try:
@@ -1200,6 +1254,7 @@ def _redact_locked(
             max_bytes,
             lock_wait,
             notices,
+            derived,
         )
     finally:
         os.close(sidecar)
@@ -1215,6 +1270,7 @@ def _redact(
     max_bytes: int,
     lock_wait: float,
     notices: list[str] | None,
+    derived: bool = False,
 ) -> int:
     try:
         fd = os.open(
@@ -1246,8 +1302,13 @@ def _redact(
                 "the plan does not match the file (rows already redacted or "
                 "changed); plan again"
             )
-        stamp = moment.strftime("%Y-%m-%dT%H:%M:%SZ")
-        run_id = new_redact_run_id(moment)
+        if derived:
+            run_id, stamp, _ = rewrite_metadata(
+                sorted(keys), reason, trigger_date, moment.strftime("%Y-%m-%d")
+            )
+        else:
+            stamp = moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+            run_id = new_redact_run_id(moment)
         raws = existing[:-1].split(b"\n")
         first = next(
             i for i, e in enumerate(entries) if isinstance(e, Record) and e.key in keys

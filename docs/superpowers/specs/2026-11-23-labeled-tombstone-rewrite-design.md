@@ -9,6 +9,27 @@ no workflow change come with this document. Issue: #619. Epic: #364. Follows #58
 (the tombstone, decision 4 of `docs/research/history-tombstone-design.md`) and #621
 (the runbook for rewriting git history of the private instance repository).
 
+Implementation note (2026-11-26, issue #619): the compare (`counts history-compare`,
+rules 1 to 13 and 16), the derived writer (`history-redact --derived`, D15), the
+manifest, the `numbers.json` rule, `history-guard.yml`, `history-guard.py`,
+`verify-history-rewrite.sh` and the approvers file are built with their tests. Not
+built: the detective push job and off-GitHub notice (D7), the stale-refresh closer
+(D13), the merge watcher and authorization digest (5.5 items 4 and 5), the GYST
+reusable form (alternative H). The live gates G1, G2, G4, G5 and G6 need a scratch
+GitHub repository and are NOT run: until they are, the guard's token scope
+(`pull-requests: read`, `actions: read`) is unproved (G5), "branch must be up to date"
+is a documented requirement rather than a proven one (G1), and which revision of a
+workflow file GitHub executes for a pull request that edits it is UNVERIFIED (G1);
+only these are stated as verified: the workflow must already exist on the default
+branch and runs against the pull request's merge ref, the scripts and approvers come
+from a base-pinned checkout and the data from a head-pinned checkout.
+Approval is bound to the head: the accepted label event must come after the head last
+changed (the first workflow run for that head on this pull request, or the latest
+forced push, whichever is later; undeterminable is a refusal) and the 24 hours count
+from that event, so a new head needs a new label. The job summary carries short commit
+ids and counts, no login. The head-change time and the run listing are UNVERIFIED
+against live GitHub until G5; the commit date is never used.
+
 Claims are marked **[V]** verified (file and line read in this checkout, base
 `2f26e21`) or **[I]** inferred (not run, or a GitHub behavior not exercised here).
 Every **[I]** a design choice leans on is a named design gate (section 12) that must
@@ -951,6 +972,59 @@ no longer offers a merge queue or the watcher alone; D5's predicate is corrected
 | Redacted value encoded in permitted metadata (`run_id`, `reason`, manifest) | High | Applies; confirmed against `validate_tombstone`, which accepts any `redact-` run id and any plain date **[V]**, and against the old rule that the manifest only had to repeat the tombstone's reason. New rule 16: every field of a new tombstone is equal to the old record's, drawn from a closed vocabulary, or derived (reason from the five codes; `trigger_date` in a 366 day window; `redacted_at_utc` at day granularity on the pull request's creation day or the day before; `run_id` derived from the manifest keys, not random; one run id and one set of metadata for the whole rewrite, equal to the manifest file name stem). The manifest is reconstructed byte for byte, so it has no free line, comment or whitespace (rule 12). Residual channel stated: about 12 bits per rewrite, shared by all records, public keys, not a value of 4096 or more. Lost: time of day, random run ids, free-text reasons (they go to the PR description). New gate G8 and tests T39, T38; the writer change is D15. |
 | G2 has no binary pass condition | Medium | Applies. G2 is now an exact experiment (steps, observables `mergeStateStatus` and the merge endpoint status) with PASS (branch A: current label presence is enforced by branch protection) and FAIL (branch B: label authorization is irrevocable for `(head, base tip, manifest blob)` after the cooling period, with no claim of current-label presence at merge). Either result is a defined, buildable design; "not run" blocks the build. `cancel-in-progress` is no longer credited with revocation (5.5 item 6). T41. |
 | Rule 15 raceable, PR identity too broad | Medium | Applies. Rule 15 now defines the object (open, base `main`, same repository, head ref exactly `counts/refresh`, author `github-actions[bot]`), reads it by explicit REST pagination and not `gh pr list --head`, and is described as best-effort availability protection. The merge procedure closes the verified bot pull request immediately before the head-pinned merge; a pull request that opens after that cannot restore values (strict up-to-date plus the guard) and is cleared by the closer (D13) under the same predicate. A fork pull request with that branch name does not block a rewrite. T40. |
+
+## 19a. Implementation round 2 (Daybreak): open risks stated in the template
+
+* **The workflow is not a sufficient merge gate on its own (High, architectural).** With
+  a `pull_request` trigger GitHub runs the workflow file of the merge ref, so a pull
+  request can replace `history-guard.yml` and keep the required check name; pinning the
+  scripts to the base commit helps only after the workflow ran its checkout. Not solved
+  in code. The template says so (README "History rewrites", the workflow header).
+  Owner decision (2026-11-26, "CODEOWNERS plus code-owner review as the primary
+  boundary"): the controlling boundary is CODEOWNERS plus mandatory code-owner review of
+  `.github/`, scripts, `engine.lock`, `history/redactions/` (the manifests) and the
+  approvers file (not the history file itself or `numbers.json`: the guard decides
+  whether a rewrite is accepted, so the review covers the guard and its inputs, and the
+  daily refresh only appends and needs no human review), with the author
+  unable to satisfy it, stale approvals dismissed, approval of the most recent reviewable
+  push required, and administrators included (no bypass). A replaced workflow is a
+  change under `.github/` and needs that review. The ruleset rule "Require workflows to
+  pass before merging" is NOT AVAILABLE on the owner's Team plan (organization or
+  enterprise level, Enterprise plans only per GitHub's page and changelog read
+  2026-11-26; user reports that it does not fire on `labeled`/`unlabeled` are
+  UNVERIFIED) and is documented only as an optional upgrade path for Enterprise
+  accounts. The workflow check, the engine comparison and the label and age gate stay
+  as designed and now protect against mistakes and unreviewed paths, not a hostile
+  workflow replacement. The label is an intent record and a 24 hour cooling-off signal,
+  not a gate GitHub enforces for an external workflow: its authorization is
+  irrevocable for `(head, base tip, manifest blob)` after the cooling period (branch B
+  of G2), with no claim of current-label presence at merge.
+  Solo owner: GitHub does not let an author approve their own pull request (VERIFIED,
+  page read 2026-11-26), so with one human a code-owner review must come from a second
+  account the owner controls with write access (strongest; it reduces to the owner's
+  discipline at approval time), not from a team of one, administrator bypass (no
+  boundary) or a bot/App reviewer (UNVERIFIED that its review counts). The README
+  documents the options and their consequences. `.github/history-approvers` ships
+  empty and the README checklist demands: CODEOWNERS present and covering the paths;
+  branch protection or a ruleset with the code-owner requirement and no admin bypass;
+  and an OBSERVED block (a test pull request editing `history-guard.yml` cannot merge
+  without an independent code-owner approval) before any approver login is added. G1
+  on a scratch repository is optional and recommended, not required. A limit on who
+  can push `redact/*` branches stays defense in depth only. The High is closed in the
+  template text only when that live observation is made.
+  Defense in depth: the first job steps compare the running workflow file with the base
+  commit's copy and fail on a difference; a replaced workflow can omit that step.
+* **`actions: read` is capability-wide (Low).** It also reads the logs and artifacts of
+  the repository; there is no narrower built-in permission for the run list alone. It
+  is acceptable only together with the trust boundary above; G5 proves it is sufficient
+  and that no write call works.
+* **Crash durability (Medium, fixed).** The writer fsyncs the parent of a newly created
+  `redactions` folder and the folder itself after the temporary manifest is written,
+  before the history file is replaced.
+* **Recovery command (Medium, fixed).** The printed step compares with `cmp` and links
+  without overwriting (`ln` then `rm`); never `mv`.
+* **Head restore.** A forced push, or a deleted and restored head branch, moves the
+  head-change time; the Actions run listing is paged and fails closed at the page cap.
 
 ## 19. Not covered
 

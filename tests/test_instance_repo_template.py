@@ -74,6 +74,13 @@ JOB_PERMISSIONS: dict[str, dict[str, str]] = {
     "refresh": {"contents": "read"},
     # Pushes the counts/refresh branch and opens one pull request; no keys.
     "publish": {"contents": "write", "pull-requests": "write"},
+    # Reads the pull request's labels and events and the workflow runs of its
+    # head commit (the approval is bound to the head); never writes (issue #619).
+    "history-guard": {
+        "contents": "read",
+        "pull-requests": "read",
+        "actions": "read",
+    },
 }
 
 
@@ -157,6 +164,11 @@ def test_the_template_files_exist() -> None:
         "scripts/unmerged-history.sh",
         ".github/workflows/check-hand-kept-freshness.yml",
         "scripts/check-freshness.py",
+        ".github/workflows/history-guard.yml",
+        ".github/history-approvers",
+        ".github/CODEOWNERS",  # example owners of the rewrite-deciding paths (#619)
+        "scripts/history-guard.py",
+        "scripts/verify-history-rewrite.sh",
     ):
         assert (TEMPLATE / rel).is_file(), rel
 
@@ -186,6 +198,7 @@ def test_all_workflows_are_collected() -> None:
     assert [p.name for p in workflow_files()] == [
         "check-hand-kept-freshness.yml",
         "deploy.yml",
+        "history-guard.yml",
         "preview.yml",
         "refresh-counts.yml",
     ]

@@ -1,0 +1,11 @@
+# GitHub logins who may authorize a labeled tombstone-only rewrite of
+# history/social.jsonl (see README.md, "History rewrites").
+#
+# One login per line. Lines starting with # and blank lines are ignored; any
+# other line that is not a bare GitHub login makes the History guard fail. The
+# guard reads this file from the BASE commit (main), never from the pull
+# request, so a pull request cannot add its own author here and use it.
+#
+# Empty on purpose: until you add a login, no rewrite is accepted and the guard
+# only lets the history file append. Protect this file with CODEOWNERS and
+# required review from a second person if you have one.
