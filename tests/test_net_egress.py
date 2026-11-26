@@ -597,6 +597,30 @@ def test_tls_handshake_that_stalls_is_cut_at_the_deadline(
     assert 0.5 <= elapsed < 2.0
 
 
+def test_socket_timeout_during_the_handshake_is_a_timeout_even_if_the_watchdog_is_late(
+    tls_pair: tuple[ssl.SSLContext, ssl.SSLContext],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The handshake socket timeout can win the race against the watchdog thread.
+
+    Under load the timer thread may run after the socket timeout. Make that
+    ordering certain by giving the watchdog a far-away deadline: only the socket
+    timeout can end the stalled handshake, and it must still read as a timeout.
+    """
+
+    class LateWatchdog(egress._Watchdog):
+        def __init__(self, seconds: float) -> None:
+            super().__init__(3600.0)
+
+    monkeypatch.setattr(egress, "_Watchdog", LateWatchdog)
+    _, client_ctx = tls_pair
+    elapsed, error = _timed(
+        DripServer(_silent), tls=True, total=0.4, client_context=client_ctx
+    )
+    assert error.reason == "timeout"
+    assert 0.3 <= elapsed < 2.0
+
+
 # ---- the watchdog fails closed and never touches a recycled descriptor -------------
 
 
