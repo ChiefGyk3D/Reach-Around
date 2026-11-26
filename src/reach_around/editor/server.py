@@ -17,7 +17,6 @@ malformed request never writes and never produces a 5xx: the guard runs inside
 
 from __future__ import annotations
 
-import hashlib
 import io
 import json
 import math
@@ -65,6 +64,10 @@ _RECV_CHUNK = 8192
 MAX_ACTIVE_CONNECTIONS = 16
 MAX_OPEN_CONNECTIONS = 32
 CONFIG_READ_CAP = 8 * 1024 * 1024
+SITE_FILE_CAP = 64 * 1024 * 1024  # the largest build file the preview will send
+_FILE_CHUNK = 64 * 1024  # a build file is read and sent this much at a time
+MAX_FILE_STREAMS = 8  # build files sent at once; more get a 503
+_read_fd = os.read  # one name for the chunked read (tests watch it)
 _MODULE_FILES = (
     "app.js",
     "strings.js",
@@ -96,6 +99,7 @@ _MESSAGES = {
     417: "Expectations are not supported.",
     421: "Misdirected request.",
     431: "The request headers are too large.",
+    503: "The preview is busy. Try again.",
 }
 _PREVIEW_PAGE = (
     b'<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
@@ -643,15 +647,83 @@ class _PreviewHandler(_Handler):
             else:
                 self._send(200, _PREVIEW_PAGE, "text/html; charset=utf-8")
             return
+        slots = self.owner.file_slots
+        if not slots.acquire(blocking=False):
+            self._refuse(503)
+            return
         try:
-            data = target.read_bytes()
-        except OSError:
+            self._stream(target)
+        finally:
+            slots.release()
+
+    def _stream(self, target: Path) -> None:
+        """Send one build file from a descriptor opened once, in bounded chunks.
+
+        The file is opened with ``O_NOFOLLOW`` and the descriptor itself is
+        checked (a regular file, the same object the path names, under the
+        size cap), so the check and the read refer to the same object. A
+        ``Range`` header is ignored: the whole file is sent with a 200.
+        """
+        opened = _open_site_file(target)
+        if opened is None:
             self._refuse(404)
             return
-        kind = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-        if kind.startswith("text/") or kind == "application/json":
-            kind += "; charset=utf-8"
-        self._send(200, data, kind)
+        fd, size = opened
+        try:
+            if size > SITE_FILE_CAP:
+                self._refuse(413)
+                return
+            kind = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+            if kind.startswith("text/") or kind == "application/json":
+                kind += "; charset=utf-8"
+            self.close_connection = True
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", kind)
+                self.send_header("Content-Length", str(size))
+                self.send_header("Connection", "close")
+                for name, value in self.security_headers():
+                    self.send_header(name, value)
+                self.end_headers()
+                if self.command != "HEAD":
+                    left = size
+                    while left > 0:
+                        chunk = _read_fd(fd, min(_FILE_CHUNK, left))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        left -= len(chunk)
+            except OSError:
+                pass
+        finally:
+            os.close(fd)
+
+
+def _open_site_file(path: Path) -> tuple[int, int] | None:
+    """Open one regular build file once: ``(descriptor, size)``, or None.
+
+    Symlinks are refused at the open, and the descriptor must be the very
+    object the path names now (same device and inode), so a swap between the
+    path check and this open cannot serve another file.
+    """
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        named = os.lstat(path)
+    except OSError:
+        os.close(fd)
+        return None
+    if not stat.S_ISREG(info.st_mode) or (info.st_dev, info.st_ino) != (
+        named.st_dev,
+        named.st_ino,
+    ):
+        os.close(fd)
+        return None
+    return fd, info.st_size
 
 
 @dataclass
@@ -703,6 +775,7 @@ class EditorSession:
         self.allow_remote_images = allow_remote_images
         self.site: Preview | None = None
         self._site_digest: str | None = None
+        self.file_slots = threading.BoundedSemaphore(MAX_FILE_STREAMS)
         self._site_lock = threading.Lock()
         self.idle_seconds = idle_seconds
         self.read_timeout = read_timeout
@@ -792,8 +865,9 @@ class EditorSession:
         self._assets = {n: root.joinpath(n).read_bytes() for n in _ASSET_FILES}
         try:
             with self._site_lock:
-                start_bytes = read_config_bytes(self.config) or b""
-                self._site_digest = hashlib.sha256(start_bytes).hexdigest()
+                # No digest is recorded: the first state load rebuilds the
+                # current config, so a change between reads cannot stay served.
+                self._site_digest = None
                 self.site = Preview(self.config, self.address, None)
             editor = self._listen(_EditorHandler, "editor")
             self._editor = editor
