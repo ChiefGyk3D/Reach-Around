@@ -4,12 +4,22 @@
 The owner's way to honor a deletion request for one media kit lead (a person who
 typed an email address into the gate). It reads a local D1 export of the
 ``leads`` table, finds the one row for the address, and prints the SQL that
-deletes that lead and its kit events. It does not talk to Cloudflare, needs no
-token, exposes no route and writes no file unless ``--sql-out`` is given: the
-owner applies the printed SQL with ``wrangler d1 execute`` (docs/privacy.md,
-"Deleting one lead"). It does NOT clear the ``alert_dedup`` hash table: with
-``--yes`` it prints two constant hand commands for it, and clearing that table
-and reading it back as 0 is a mandatory manual checklist step (known gap, #905).
+deletes that lead and its kit events; the owner applies the printed SQL with
+``wrangler d1 execute`` (docs/privacy.md, "Deleting one lead"). The dry run is
+offline. With ``--yes`` the command also clears the ``alert_dedup`` hash table
+(a keyed hash of recent alerts, which can include the address), in two steps:
+
+1. ``--yes --alerts-database NAME``: a read-only schema check of both databases
+   (the named alert database must hold ``alert_dedup``, and must not hold the
+   lead tables unless it is the leads database itself), then the lead SQL and
+   its apply command are printed. Nothing is changed by this tool.
+2. After the owner applied the SQL, the same command with ``--finish``: it reads
+   the lead tables back (must be 0 and 0), clears ``alert_dedup``, reads it back
+   (must be 0), waits a moment and reads it back again.
+
+The tool runs one pinned wrangler (never found through PATH or ``npx``) with a
+minimal environment, no shell and no stdin, one statement per call, and accepts
+exactly one well-formed result block per call. It never repeats remote text.
 
 Safety rules, all tested:
 
@@ -33,8 +43,12 @@ Safety rules, all tested:
   refuses the export before a row is read.
 * Exactly one match is required. None is exit 1; more than one is exit 2.
 
-Exit codes: 0 done (dry run or SQL printed); 1 no lead matches; 2 usage problem
-or an export that was refused.
+Exit codes: 0 done (dry run, SQL printed after a passed schema check, or the
+erasure verified by ``--finish``); 1 no lead matches; 2 usage problem, a
+refused export, or a refused alert database or wrangler (nothing was changed);
+3 the lead rows are gone but the alert hashes could not be cleared and read
+back as 0 (the erasure is NOT complete); 4 ``--finish`` could not confirm that
+the lead rows are gone (the alert table was not touched).
 """
 
 from __future__ import annotations
@@ -44,7 +58,10 @@ import json
 import os
 import re
 import shlex
+import stat
+import subprocess
 import sys
+import time
 import unicodedata
 from datetime import UTC, datetime
 from pathlib import Path
@@ -55,6 +72,8 @@ from reach_around.config.loader import ConfigError, _read
 EXIT_OK = 0
 EXIT_NO_MATCH = 1
 EXIT_USAGE = 2
+EXIT_ALERTS_INCOMPLETE = 3
+EXIT_LEADS_UNCONFIRMED = 4
 
 MAX_EXPORT_BYTES = 16 * 1024 * 1024
 MAX_ROWS = 60_000
@@ -400,15 +419,23 @@ _STATEMENTS = (
 _SQL_EMAIL = re.compile(r"[a-z0-9_+.@-]{6,254}")
 
 # The alert dedup table keeps a keyed hash of recent alerts, which can include
-# the address. This tool does NOT clear it (known gap, tracked in #905): the
-# delete file does not touch it, because a statement on a missing table could
-# fail the whole erasure file and this tool cannot tell which database holds the
-# alert tables. The two constant statements below are printed as separate hand
-# commands, and running them and reading 0 back is a mandatory manual checklist
-# step. Clearing every row only resets repeat-alert suppression for up to 10
-# minutes.
+# the address (worker/migrations/0013_alerts.sql: site, event_hash, expires_at).
+# `--finish` clears the whole table (not only expired rows) with the constant
+# statements below. Clearing every row only resets repeat-alert suppression for
+# up to 10 minutes. The table has no creation column: a row's creation time is
+# expires_at minus the Worker's dedup life (DEDUP_MS in worker/src/alerts/
+# dispatcher.ts, 10 minutes), which the read-back uses to name rows made after
+# the erasure started.
+ALERT_TABLE = "alert_dedup"
+ALERT_TTL_MS = 600_000
 ALERT_CLEAR_SQL = "DELETE FROM alert_dedup"
 ALERT_READBACK_SQL = "SELECT COUNT(*) AS alert_dedup_remaining FROM alert_dedup"
+_READBACK_TEMPLATE = (
+    "SELECT COUNT(*) AS alert_dedup_remaining, "
+    "COALESCE(SUM(expires_at > <T>), 0) AS alert_dedup_new FROM alert_dedup"
+)
+ALERT_ATTEMPTS = 3
+ALERT_SETTLE_SECONDS = 2.0
 _DATABASE_NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 
@@ -416,20 +443,333 @@ def _checked_database(database: str) -> str:
     """The database name, only if it is a plain identifier (it reaches argv and
     printed shell text)."""
     if not _DATABASE_NAME.fullmatch(database):
-        raise LeadsError("internal: refusing a database name that is not an identifier")
+        raise LeadsError("a database name must be 1 to 64 letters, digits, '_' or '-'")
     return database
 
 
-def alert_clear_commands(database: str) -> list[str]:
-    """The two hand commands for the alert hash table, with a constant statement
-    each (no value from the export or the address ever reaches them). They carry
-    no `npx` prefix; the caller says to run them after it. The database name is
-    validated and shell-quoted."""
-    name = shlex.quote(_checked_database(database))
-    return [
-        f'wrangler d1 execute {name} --remote --command "{sql}"'
-        for sql in (ALERT_CLEAR_SQL, ALERT_READBACK_SQL)
+def alert_readback_sql(started_ms: int) -> str:
+    """The read-back: all rows left, and the rows made after ``started_ms`` (their
+    expires_at is later than the start plus the dedup life). Both read 0 on an
+    empty table. ``started_ms`` is an integer the tool computed, never remote text."""
+    if isinstance(started_ms, bool) or not isinstance(started_ms, int):
+        raise LeadsError("internal: the start time must be an integer")
+    threshold = max(0, started_ms) + ALERT_TTL_MS
+    return _READBACK_TEMPLATE.replace("<T>", str(threshold))
+
+
+def alert_flow_statements() -> list[str]:
+    """The statements `--finish` runs on the alert database, in order (the erasure
+    guard test runs these on the real schema after the lead SQL)."""
+    return [ALERT_CLEAR_SQL, alert_readback_sql(0)]
+
+
+# ---------------------------------------------------------------------------
+# The online part: one pinned wrangler, minimal environment, strict parsing.
+# ---------------------------------------------------------------------------
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+WRANGLER_TIMEOUT = 120
+MAX_WRANGLER_BYTES = 1024 * 1024
+MAX_RESULT_ROWS = 50
+INSTALL_WRANGLER = "cd worker && npm ci --ignore-scripts"
+_LEAD_TABLES = frozenset({"leads", "kit_events"})
+_SCHEMA_SQL = (
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN "
+    "('alert_dedup', 'leads', 'kit_events') ORDER BY name"
+)
+_VERSION = re.compile(r"\bwrangler\s+(\d+\.\d+\.\d+)\b")
+_PIN = re.compile(r"\d+\.\d+\.\d+")
+
+
+class WranglerError(LeadsError):
+    """The wrangler step failed or answered in a way that is not trusted. The
+    message is fixed text; remote output is never repeated."""
+
+
+def _exec(argv: list[str], env: dict[str, str], timeout: int) -> tuple[int, bytes]:
+    """The one place a process starts: argv list, no shell, no stdin, bounded
+    time, stdout captured, stderr dropped (it can carry remote text)."""
+    done = subprocess.run(  # noqa: S603 - argv list, validated absolute binary
+        argv,
+        shell=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        env=env,
+        timeout=timeout,
+        check=False,
+    )
+    return done.returncode, done.stdout
+
+
+def _wrangler_env() -> dict[str, str]:
+    """Only what wrangler needs: the token and account when set, HOME for its own
+    login state, and a fixed PATH (the pinned script's shebang finds node there)."""
+    env = {"PATH": "/usr/bin:/bin"}
+    for key in ("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "HOME"):
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
+    return env
+
+
+def _pinned_version() -> str:
+    """The wrangler version this repository pins (worker/package-lock.json)."""
+    lock = REPO_ROOT / "worker" / "package-lock.json"
+    try:
+        data = json.loads(_read(lock, MAX_EXPORT_BYTES * 2))
+        version = data["packages"]["node_modules/wrangler"]["version"]
+    except (ConfigError, ValueError, KeyError, TypeError):
+        raise WranglerError(
+            "cannot read the pinned wrangler version from worker/package-lock.json"
+        ) from None
+    if not isinstance(version, str) or not _PIN.fullmatch(version):
+        raise WranglerError("worker/package-lock.json has no usable wrangler pin")
+    return version
+
+
+def _resolve_wrangler(arg: Path | None) -> str:
+    """The wrangler to run: an explicit absolute path, or the repository's pinned
+    install. Never a PATH search. The resolved file must be a regular executable
+    owned by the current user, not writable by group or others, in a directory
+    others cannot write; its version must equal the lock file's pin."""
+    default = REPO_ROOT / "worker" / "node_modules" / ".bin" / "wrangler"
+    given = default if arg is None else arg
+    text = os.fspath(given)
+    if not os.path.isabs(text) or _CONTROL.search(text) or "\x00" in text:
+        raise WranglerError(
+            "--wrangler must be an absolute path with no control characters"
+        )
+    try:
+        real = os.path.realpath(text, strict=True)
+        info = os.stat(real)
+        parent = os.stat(os.path.dirname(real))
+    except OSError:
+        raise WranglerError(
+            f"the pinned wrangler is not installed; install it with: {INSTALL_WRANGLER}"
+        ) from None
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or not info.st_mode & stat.S_IXUSR
+        or info.st_uid != os.geteuid()
+        or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+        or parent.st_mode & stat.S_IWOTH
+    ):
+        raise WranglerError(
+            "wrangler must be a regular executable you own, not writable by "
+            "others, in a directory others cannot write"
+        )
+    try:
+        code, out = _exec([real, "--version"], _wrangler_env(), WRANGLER_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        raise WranglerError("wrangler could not be run to read its version") from None
+    seen = set(_VERSION.findall(out[:4096].decode("utf-8", "replace")))
+    if code != 0 or seen != {_pinned_version()}:
+        raise WranglerError(
+            "the wrangler version is not the one pinned in worker/package-lock.json"
+        )
+    return real
+
+
+def _wrangler_rows(wrangler: str, database: str, sql: str) -> list[dict[str, Any]]:
+    """Run ONE statement through the pinned wrangler and return its rows. Exactly
+    one result block with ``success: true`` is accepted; anything else is a
+    failure with a fixed message."""
+    argv = [
+        wrangler,
+        "d1",
+        "execute",
+        _checked_database(database),
+        "--remote",
+        "--json",
+        "--command",
+        sql,
     ]
+    failed = WranglerError("wrangler failed or its answer was not accepted")
+    try:
+        code, out = _exec(argv, _wrangler_env(), WRANGLER_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        raise failed from None
+    if code != 0 or len(out) > MAX_WRANGLER_BYTES:
+        raise failed
+    try:
+        data = json.loads(
+            out.decode("utf-8"),
+            object_pairs_hook=_no_duplicates,
+            parse_constant=_bad_constant,
+        )
+    except (ValueError, RecursionError):
+        raise failed from None
+    if not isinstance(data, list) or len(data) != 1:
+        raise failed
+    blk = data[0]
+    if (
+        not isinstance(blk, dict)
+        or "results" not in blk
+        or not set(blk) <= {"results", "success", "meta"}
+        or blk.get("success") is not True
+    ):
+        raise failed
+    rows = blk["results"]
+    if (
+        not isinstance(rows, list)
+        or len(rows) > MAX_RESULT_ROWS
+        or not all(isinstance(r, dict) for r in rows)
+    ):
+        raise failed
+    return rows
+
+
+def _counts(rows: list[dict[str, Any]], names: tuple[str, ...]) -> tuple[int, ...]:
+    """The one row of counts: exactly these columns, each a non-negative integer."""
+    bad = WranglerError("a count answer was not accepted")
+    if len(rows) != 1 or set(rows[0]) != set(names):
+        raise bad
+    out: list[int] = []
+    for name in names:
+        value = rows[0][name]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not (0 <= value < 10**9)
+        ):
+            raise bad
+        out.append(value)
+    return tuple(out)
+
+
+def _tables(wrangler: str, database: str) -> frozenset[str]:
+    rows = _wrangler_rows(wrangler, database, _SCHEMA_SQL)
+    names: list[str] = []
+    for row in rows:
+        name = row.get("name")
+        if set(row) != {"name"} or name not in _LEAD_TABLES | {ALERT_TABLE}:
+            raise WranglerError("a schema answer was not accepted")
+        names.append(name)
+    if len(set(names)) != len(names):
+        raise WranglerError("a schema answer was not accepted")
+    return frozenset(names)
+
+
+def preflight_alerts(wrangler: str, leads_db: str, alerts_db: str) -> None:
+    """Read-only. Prove from the schemas that ``alerts_db`` is where the alert
+    table lives, and that the lead tables are where the lead SQL goes. An absent
+    alert table is a refusal, never a clear: this tool cannot know whether the
+    site ever had one, so it never reports nothing-to-clear."""
+    _checked_database(alerts_db)
+    leads_tables = _tables(wrangler, leads_db)
+    if not _LEAD_TABLES <= leads_tables:
+        raise LeadsError(
+            "the leads database does not hold the leads and kit_events tables; "
+            "nothing was changed"
+        )
+    if alerts_db == leads_db:
+        # One database holds both (a single DB binding): the alert table must be
+        # in this very database.
+        if ALERT_TABLE not in leads_tables:
+            raise LeadsError(
+                "the alert_dedup table is not in the leads database; refusing to "
+                "report the alert hashes as cleared; nothing was changed"
+            )
+        return
+    alert_tables = _tables(wrangler, alerts_db)
+    if ALERT_TABLE not in alert_tables:
+        raise LeadsError(
+            "the named alert database does not hold the alert_dedup table; "
+            "refusing to report the alert hashes as cleared; nothing was changed"
+        )
+    if alert_tables & _LEAD_TABLES:
+        raise LeadsError(
+            "the named alert database holds lead tables, so it is not a separate "
+            "alert database; nothing was changed"
+        )
+    if ALERT_TABLE in leads_tables:
+        raise LeadsError(
+            "the leads database also holds an alert_dedup table, so the deployment "
+            "is ambiguous; name the database the Worker writes alerts to and clear "
+            "the other by hand; nothing was changed"
+        )
+
+
+def pause(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def finish_erasure(
+    wrangler: str, leads_db: str, alerts_db: str, lead_id: str, email: str
+) -> tuple[int, str]:
+    """The guarded step after the owner applied the lead SQL. Returns (exit code,
+    fixed message). Order: schema checks, lead read-back (must be 0 and 0), clear,
+    read back, repeat while rows arrive (bounded), settle, read back once more."""
+    try:
+        preflight_alerts(wrangler, leads_db, alerts_db)
+    except LeadsError as exc:
+        return EXIT_USAGE, f"error: {exc}"
+    readback = _sql(lead_id, email)[-1]
+    try:
+        leads_left, events_left = _counts(
+            _wrangler_rows(wrangler, leads_db, readback),
+            ("leads_remaining", "events_remaining"),
+        )
+    except LeadsError:
+        return EXIT_LEADS_UNCONFIRMED, (
+            "error: could not read the lead tables back; the lead rows are NOT "
+            "confirmed erased and the alert table was not touched"
+        )
+    if leads_left or events_left:
+        return EXIT_LEADS_UNCONFIRMED, (
+            "error: lead rows remain in the leads database; apply the SQL first. "
+            "The alert table was not touched"
+        )
+    started_ms = int(time.time() * 1000)
+    incomplete = (
+        "error: the lead rows are erased but the alert hashes are NOT confirmed "
+        "cleared (%s). The erasure is NOT complete: close the kit gate, then run "
+        "this command with --finish again"
+    )
+    new_rows = 0
+    try:
+        for _ in range(ALERT_ATTEMPTS):
+            _wrangler_rows(wrangler, alerts_db, ALERT_CLEAR_SQL)
+            left, new_rows = _counts(
+                _wrangler_rows(wrangler, alerts_db, alert_readback_sql(started_ms)),
+                ("alert_dedup_remaining", "alert_dedup_new"),
+            )
+            if left == 0:
+                break
+        else:
+            why = (
+                "rows were created after the erasure started"
+                if new_rows
+                else "rows remain after the clear"
+            )
+            return EXIT_ALERTS_INCOMPLETE, incomplete % why
+        pause(ALERT_SETTLE_SECONDS)
+        left, new_rows = _counts(
+            _wrangler_rows(wrangler, alerts_db, alert_readback_sql(started_ms)),
+            ("alert_dedup_remaining", "alert_dedup_new"),
+        )
+        if left:
+            why = (
+                "rows were created after the erasure started"
+                if new_rows
+                else "rows reappeared"
+            )
+            return EXIT_ALERTS_INCOMPLETE, incomplete % why
+        leads_left2, events_left2 = _counts(
+            _wrangler_rows(wrangler, leads_db, readback),
+            ("leads_remaining", "events_remaining"),
+        )
+        if leads_left2 or events_left2:
+            return EXIT_ALERTS_INCOMPLETE, incomplete % "lead rows reappeared"
+    except LeadsError:
+        return EXIT_ALERTS_INCOMPLETE, incomplete % "a wrangler step failed"
+    return EXIT_OK, (
+        "done as far as this tool can verify: the lead rows and the alert hashes "
+        "read 0 twice, a moment apart. A person who can still open the kit or "
+        "trigger an alert can create a new hash later; keep the kit gate closed "
+        "(kill switch) while you erase"
+    )
 
 
 def _sql(lead_id: str, email: str) -> list[str]:
@@ -576,20 +916,22 @@ other copy exists. Tick each item in your reply and say what you checked.
    leaves the lead tables out). Delete them and empty the trash.
 6. Shell history and notes. Check that the address is not in your shell
    history, a ticket or a note (the tools take it from stdin or a file only).
-7. Short-lived alert hash (MANDATORY MANUAL STEP: lead rows erased; the alert
-   hash step is manual and mandatory). The `alert_dedup` table holds a keyed
-   hash of each recent alert, which can include the address. A row stops
-   counting as a repeat after 10 minutes, but it is deleted only when the next
-   alert event is admitted (no timer), so on a quiet site up to 500 rows stay
-   stored until the next alert or a hand clear. `leads delete` does NOT clear
-   this table and does not touch it (known gap; the automatic clear is tracked
-   in #905). `reach-around leads delete --yes` prints the exact clearing
-   command and a read-back above its apply command, to be run after it; run
-   both against the database that holds the alert tables (the leads database
-   when they share it; docs/privacy.md has the statement) and require the
-   read-back to show 0. Clearing the table only resets repeat-alert
-   suppression for up to 10 minutes. Until you have read 0, the store is not
-   clear and the erasure is not complete.
+7. Short-lived alert hash (automated by `leads delete`, #905). The
+   `alert_dedup` table holds a keyed hash of each recent alert, which can
+   include the address. A row stops counting as a repeat after 10 minutes, but
+   it is deleted only when the next alert event is admitted (no timer), so on
+   a quiet site up to 500 rows stay stored until the next alert or a clear.
+   `leads delete --yes --alerts-database NAME` checks the schemas first (the
+   named database must hold `alert_dedup`; it may hold the lead tables only if
+   it is the leads database), prints the lead SQL, and after you apply it,
+   `--finish` reads the lead tables back, clears the whole alert table and
+   reads it back as 0 twice. Exit 0 is the only complete result: exit 3 means
+   the lead rows are erased but the alert hashes are not confirmed cleared,
+   exit 4 means the lead rows are not confirmed erased. Close the kit gate
+   (kill switch) while you erase: a person who can still open the kit or
+   trigger an alert can create a new hash after the read-back, and no tool
+   can close that window. Clearing the table only resets repeat-alert
+   suppression for up to 10 minutes.
 8. Worker storage, as far as a text scan can show. The scripts/erasure-stores.json
    registry and its test list every file that names a KV, cache, R2, Durable
    Object or queue primitive or binding, and pin each statement that does. That
@@ -621,6 +963,9 @@ def run_delete(args: argparse.Namespace) -> int:
             or args.dry_run
             or args.database is not None
             or args.sql_out is not None
+            or args.alerts_database is not None
+            or args.wrangler is not None
+            or args.finish
         ):
             print(
                 "error: --checklist prints a fixed list and takes no other option",
@@ -651,8 +996,28 @@ def run_delete(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return EXIT_USAGE
+    if (args.finish or args.wrangler is not None) and not args.yes:
+        print("error: --finish and --wrangler need --yes", file=sys.stderr)
+        return EXIT_USAGE
+    if args.finish and args.sql_out is not None:
+        print("error: --finish writes no SQL file; drop --sql-out", file=sys.stderr)
+        return EXIT_USAGE
     try:
         database = _database(args.database)
+        if args.yes and args.alerts_database is None:
+            # Fail closed before any SQL is printed: without the alert clear the
+            # erasure is not complete (docs/privacy.md).
+            raise LeadsError(
+                "--alerts-database NAME is required with --yes: the erasure is "
+                "not complete without clearing the alert hashes. Name the database "
+                "the Worker writes alerts to (the leads database if one database "
+                "holds both). Nothing was printed or changed"
+            )
+        alerts_database = (
+            None
+            if args.alerts_database is None
+            else _checked_database(args.alerts_database)
+        )
         email = _address(args.email)
         leads = load_leads(args.input)
     except LeadsError as exc:
@@ -688,6 +1053,22 @@ def run_delete(args: argparse.Namespace) -> int:
     except LeadsError as exc:  # pragma: no cover - guarded by load_leads
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    if alerts_database is None:  # pragma: no cover - refused above for --yes
+        return EXIT_USAGE
+    # Online and read-only until --finish: resolve the pinned wrangler and prove
+    # from the schemas where the alert table lives, BEFORE any SQL is printed.
+    try:
+        wrangler = _resolve_wrangler(args.wrangler)
+        if args.finish:
+            code, message = finish_erasure(
+                wrangler, database, alerts_database, ids[0], email
+            )
+            print(message, file=sys.stderr)
+            return code
+        preflight_alerts(wrangler, database, alerts_database)
+    except LeadsError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
     text = "\n".join(statements) + "\n"
     target = args.sql_out if args.sql_out is not None else "delete-lead.sql"
     if args.sql_out is not None:
@@ -704,20 +1085,14 @@ def run_delete(args: argparse.Namespace) -> int:
         "file and refuses a path that exists or ends in a symlink. "
     )
     # Printed before the apply command, which stays the last thing on stderr (the
-    # tests and operators take the command from there). The two lines carry no
-    # `npx` prefix for the same reason: the apply command is the one that does.
-    clear, readback = alert_clear_commands(database)
+    # tests and operators take the command from there).
     print(
-        "MANDATORY MANUAL STEP (checklist item 7): this tool does NOT clear the "
-        "alert hashes, so the alert hash step is manual and mandatory and the "
-        "removal is not complete until it reads 0 (known gap, #905). Run it "
-        "after the apply command below: the `alert_dedup` table can hold a keyed "
-        "hash of this address until the next alert is admitted, and the file "
-        "does not touch it. "
-        "Clearing it only resets repeat-alert suppression for up to 10 minutes. "
-        f"This tool cannot tell whether the alert tables are in {database}; "
-        "run both lines, each after `npx`, against the database that holds them. "
-        f"The store is clear only when the read-back shows 0:\n{clear}\n{readback}",
+        f"schema check passed: {alerts_database} holds the alert_dedup table "
+        "(checklist item 7). The erasure is NOT complete until, after the apply "
+        "command below, you run this same command again with --finish (the "
+        "address on stdin again): it reads the lead tables back, clears the "
+        "alert hashes and reads them back as 0. Exit 0 is the only complete "
+        "result. Close the kit gate (kill switch) while you erase.",
         file=sys.stderr,
     )
     print(
@@ -729,7 +1104,7 @@ def run_delete(args: argparse.Namespace) -> int:
         "an event can arrive after the read. Run the file again after a wait "
         "until two consecutive runs read 0 and 0 (leads_remaining 1 means "
         "nothing was deleted):\n"
-        f"npx wrangler d1 execute {database} --remote --file {quoted}",
+        f"{shlex.quote(wrangler)} d1 execute {database} --remote --file {quoted}",
         file=sys.stderr,
     )
     if args.sql_out is None:
@@ -791,16 +1166,19 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     actions = leads.add_subparsers(dest="leads_command", required=True)
     delete = actions.add_parser(
         "delete",
-        help="print the SQL that deletes one lead and its events",
+        help="erase one lead, its events and the alert hashes",
         description="Read a local export of the leads table (made with wrangler "
         "d1 execute --json, see docs/privacy.md), find the lead for one email "
-        "address and print the SQL that deletes it. Dry run by default; --yes "
-        "prints the SQL and two hand commands for the alert hash table, which "
-        "this tool does not clear (a mandatory manual step). No network call, "
-        "no file written unless --sql-out; the SQL pairs "
-        "the lead id with its address, so it deletes only a row that still "
-        "matches both. --database and --email - are required. Exit 0 done, "
-        "1 no match, 2 usage problem or a refused export.",
+        "address and print the SQL that deletes it. Dry run by default and "
+        "offline. --yes needs --alerts-database NAME: it checks the schemas "
+        "read-only through the pinned wrangler, prints the SQL for you to apply, "
+        "then --finish (after you applied it) reads the lead tables back, clears "
+        "the alert hash table and reads it back as 0. No file written unless "
+        "--sql-out; the SQL pairs the lead id with its address, so it deletes "
+        "only a row that still matches both. --database and --email - are "
+        "required. Exit 0 done, 1 no match, 2 usage problem or a refused "
+        "export, database or wrangler, 3 lead rows erased but the alert hashes "
+        "not confirmed cleared (NOT complete), 4 lead rows not confirmed erased.",
     )
     delete.add_argument("--input", type=Path, metavar="PATH", help="leads export, JSON")
     delete.add_argument(
@@ -830,6 +1208,29 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         metavar="NAME",
         help=f"required: the database the export came from; only "
         f"{LEADS_DATABASE} is accepted (your attestation, not proof)",
+    )
+    delete.add_argument(
+        "--alerts-database",
+        default=None,
+        metavar="NAME",
+        help="required with --yes: the database the Worker writes alerts to "
+        "(letters, digits, _ and -); the same name as --database if one "
+        "database holds both. Its schema is checked before anything is printed",
+    )
+    delete.add_argument(
+        "--wrangler",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="absolute path of the pinned wrangler (default: "
+        "worker/node_modules/.bin/wrangler); never searched on PATH; its "
+        "version must match worker/package-lock.json",
+    )
+    delete.add_argument(
+        "--finish",
+        action="store_true",
+        help="with --yes, after you applied the SQL: confirm the lead rows are "
+        "gone, clear the alert hashes, read them back as 0 twice",
     )
     delete.add_argument(
         "--sql-out",

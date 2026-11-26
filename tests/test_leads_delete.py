@@ -13,9 +13,10 @@ from typing import Any
 import pytest
 
 from reach_around.cli import main
+from reach_around.commands import leads as leads_cmd
 from reach_around.commands.leads import (
     LeadsError,
-    alert_clear_commands,
+    alert_readback_sql,
     mask_email,
     normalize_email,
 )
@@ -23,6 +24,17 @@ from reach_around.commands.leads import (
 ID_A = "0123456789abcdef0123456789abcdef"
 ID_B = "fedcba9876543210fedcba9876543210"
 ADDR = "partner@example.test"
+LEADS_DB = "reach-around-leads"
+ALERTS_DB = "ra-alerts"
+
+_FAKE: dict[str, Any] = {}
+
+
+@pytest.fixture(autouse=True)
+def _install_fake_wrangler(fake_wrangler: Any) -> Any:
+    """Every test here runs `leads delete` against the in-memory fake wrangler."""
+    _FAKE["w"] = fake_wrangler
+    return fake_wrangler
 
 
 def block(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -52,6 +64,13 @@ def run(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, str, str]:
     given as `--email ADDRESS` onto stdin and adds the database name. The
     assertions of the tests that use it are unchanged."""
     args = list(argv)
+    omit = "--omit-alerts-database" in args
+    args = [a for a in args if a != "--omit-alerts-database"]
+    if "--yes" in args:
+        if "--alerts-database" not in args and not omit:
+            args += ["--alerts-database", ALERTS_DB]
+        if "--wrangler" not in args:
+            args += ["--wrangler", str(_FAKE["w"].path)]
     stdin: str | None = None
     if "--email" in args:
         at = args.index("--email") + 1
@@ -64,6 +83,23 @@ def run(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, str, str]:
         sys.stdin = io.StringIO(stdin)
     try:
         code = main(["leads", "delete", *args])
+    finally:
+        sys.stdin = old
+    captured = capsys.readouterr()
+    return code, captured.out, captured.err
+
+
+def main_run_without_wrangler(
+    capsys: pytest.CaptureFixture[str], export: Path
+) -> tuple[int, str, str]:
+    """`leads delete --yes` with no --wrangler: the default resolution applies."""
+    old = sys.stdin
+    sys.stdin = io.StringIO(ADDR + "\n")
+    try:
+        code = main(
+            ["leads", "delete", "--input", str(export), "--email", "-", "--yes"]
+            + ["--database", LEADS_DB, "--alerts-database", ALERTS_DB]
+        )
     finally:
         sys.stdin = old
     captured = capsys.readouterr()
@@ -210,76 +246,339 @@ class TestYes:
         # Fixed message: no form of the address reaches stderr (it can be logged).
         assert "1 lead matches." in err and "***" not in err
 
-    def test_hands_over_the_alert_hash_clear_and_read_back(
-        self, capsys: pytest.CaptureFixture[str], export: Path
-    ) -> None:
-        """#856 round 3: the delete file never carries the alert table (it may be in
-        another database), so the tool prints the two hand commands on stderr and says
-        the store is clear only when the read-back shows 0. Round 5 (known gap #905):
-        it also says plainly that the tool does not clear the table."""
-        code, out, err = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
-        assert code == 0
-        assert "alert_dedup" not in out
-        want = "wrangler d1 execute reach-around-leads --remote --command "
-        clear = want + '"DELETE FROM alert_dedup"'  # noqa: S608 - expected text
-        look = want + '"SELECT COUNT(*) AS alert_dedup_remaining FROM alert_dedup"'  # noqa: S608
-        assert clear in err and look in err
-        # The apply command stays the last line (other tests and operators read it).
-        last = err.rstrip().splitlines()[-1]
-        assert last.startswith("npx wrangler d1 execute reach-around-leads --remote")
-        assert "read-back shows 0" in err and "example.test" not in err
-        assert "does NOT clear the alert hashes" in err and "#905" in err
-        assert "MANDATORY MANUAL STEP" in err
-        _, out2, err2 = run(capsys, "--input", str(export), "--email", ADDR)
-        assert "alert_dedup" not in out2 + err2  # a dry run prints no command
-
-    def test_delete_makes_no_network_or_subprocess_call_and_has_no_alert_option(
+    def test_the_first_step_checks_the_schemas_and_changes_nothing(
         self,
         capsys: pytest.CaptureFixture[str],
         export: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        fake_wrangler: Any,
     ) -> None:
-        """#856 (split to #905): `leads delete` stays offline. Any subprocess or
-        socket use fails the test, and the removed `--alerts-database` option is
-        refused as an unknown argument."""
-        import socket
-        import subprocess
+        """#905: `--yes` reads both schemas through the pinned wrangler (read-only,
+        one `sqlite_master` statement per database) before it prints any SQL, and
+        tells the owner the erasure is not complete until `--finish`."""
+        code, out, err = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+        assert code == 0 and "alert_dedup" not in out
+        assert [db for db, _ in fake_wrangler.calls] == [LEADS_DB, ALERTS_DB]
+        assert all("sqlite_master" in sql for _, sql in fake_wrangler.calls)
+        assert "NOT complete" in err and "--finish" in err
+        last = err.rstrip().splitlines()[-1]
+        assert last.startswith(f"{fake_wrangler.path} d1 execute {LEADS_DB} --remote")
+        assert "npx" not in err and "example.test" not in err
+        _, out2, err2 = run(capsys, "--input", str(export), "--email", ADDR)
+        assert "alert_dedup" not in out2 + err2  # a dry run prints nothing about it
+        assert len(fake_wrangler.calls) == 2  # and the dry run made no call
 
-        def boom(*_a: object, **_k: object) -> None:
-            raise AssertionError("leads delete must not run a process or open a socket")
+    def test_the_dry_run_and_the_checklist_make_no_call(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        run(capsys, "--input", str(export), "--email", ADDR)
+        run(capsys, "--input", str(export), "--email", ADDR, "--dry-run")
+        assert main(["leads", "delete", "--checklist"]) == 0
+        assert fake_wrangler.calls == [] and fake_wrangler.versions_asked == 0
 
-        monkeypatch.setattr(subprocess, "run", boom)
-        monkeypatch.setattr(subprocess, "Popen", boom)
-        monkeypatch.setattr(socket, "socket", boom)
-        monkeypatch.setattr(socket, "create_connection", boom)
-        code, out, _ = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
-        assert code == 0 and ID_A in out
-        monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
-        with pytest.raises(SystemExit) as info:
-            main(
-                ["leads", "delete", "--input", str(export), "--email", "-", "--yes"]
-                + ["--database", "reach-around-leads", "--alerts-database", "x"]
-            )
-        assert info.value.code == 2
-        capsys.readouterr()
+    def test_without_the_alert_database_nothing_is_printed(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        """Erasure is not complete without the alert clear, so `--yes` alone fails
+        closed (exit 2) before any SQL is printed or any call is made."""
+        code, out, err = run(
+            capsys,
+            "--input",
+            str(export),
+            "--email",
+            ADDR,
+            "--yes",
+            "--omit-alerts-database",
+        )
+        assert code == 2 and out == ""
+        assert "--alerts-database" in err and "DELETE" not in err
+        assert fake_wrangler.calls == [] and fake_wrangler.versions_asked == 0
 
-    def test_hand_commands_quote_the_database_name(self) -> None:
-        """Low (#856 round 4): the printed retry commands validate the name, so a
-        hostile one never reaches the shell text."""
-        for bad in (
+    @pytest.mark.parametrize(
+        "bad",
+        [
             "prod; touch /tmp/copied-command-ran #",
             "a b",
             "$(id)",
             "`id`",
             "x\ny",
             "",
-        ):
-            with pytest.raises(LeadsError):
-                alert_clear_commands(bad)
-        clear, look = alert_clear_commands("my-db_1")
-        assert clear.startswith("wrangler d1 execute my-db_1 --remote")
-        want = "SELECT COUNT(*) AS alert_dedup_remaining FROM alert_dedup"  # noqa: S608
-        assert look.endswith(f'"{want}"')
+            "x/../y",
+            "a" * 65,
+        ],
+    )
+    def test_a_hostile_alert_database_name_is_refused(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        fake_wrangler: Any,
+        bad: str,
+    ) -> None:
+        code, out, err = run(
+            capsys, "--input", str(export), "--email", ADDR, "--yes",
+            "--alerts-database", bad,
+        )  # fmt: skip
+        assert code == 2 and out == "" and fake_wrangler.calls == []
+        assert bad.strip() == "" or bad not in err
+
+    def test_wrong_database_the_leads_one_named_for_alerts_is_refused(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        """The first attempt read 'table absent' as success. Naming the leads
+        database (no alert table in it) must fail hard, not report a clear."""
+        code, out, err = run(
+            capsys, "--input", str(export), "--email", ADDR, "--yes",
+            "--alerts-database", LEADS_DB,
+        )  # fmt: skip
+        assert code == 2 and out == ""
+        assert "alert_dedup" in err and "refusing" in err
+
+    def test_a_named_database_that_holds_lead_tables_is_refused_in_a_split_site(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        fake_wrangler.add_database("mixed", ["alert_dedup", "leads", "kit_events"])
+        code, out, err = run(
+            capsys, "--input", str(export), "--email", ADDR, "--yes",
+            "--alerts-database", "mixed",
+        )  # fmt: skip
+        assert code == 2 and out == "" and "lead tables" in err
+
+    def test_a_missing_alert_table_is_a_hard_failure_never_a_clear(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        fake_wrangler.add_database("empty-db", [])
+        code, out, err = run(
+            capsys, "--input", str(export), "--email", ADDR, "--yes",
+            "--alerts-database", "empty-db",
+        )  # fmt: skip
+        assert code == 2 and out == "" and "refusing" in err
+
+    def test_an_unknown_database_fails_hard(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        code, out, _ = run(
+            capsys, "--input", str(export), "--email", ADDR, "--yes",
+            "--alerts-database", "no-such-db",
+        )  # fmt: skip
+        assert code == 2 and out == ""
+
+    def test_the_single_database_case_needs_the_alert_table_in_the_leads_database(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        """One binding holding both: allowed only when the named alert database is
+        the very database the lead SQL targets, and it holds all three tables."""
+        fake_wrangler.dbs[LEADS_DB].execute(
+            "CREATE TABLE alert_dedup (site TEXT, event_hash TEXT, expires_at INTEGER)"
+        )
+        code, out, err = run(
+            capsys, "--input", str(export), "--email", ADDR, "--yes",
+            "--alerts-database", LEADS_DB,
+        )  # fmt: skip
+        assert code == 0 and ID_A in out
+        assert [db for db, _ in fake_wrangler.calls] == [LEADS_DB]
+        # With a second alert table in the split database the site is ambiguous.
+        code, out, err = run(
+            capsys, "--input", str(export), "--email", ADDR, "--yes",
+            "--alerts-database", ALERTS_DB,
+        )  # fmt: skip
+        assert code == 2 and out == "" and "ambiguous" in err
+
+    def test_a_leads_database_without_lead_tables_is_refused(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        fake_wrangler.dbs[LEADS_DB].execute("DROP TABLE kit_events")
+        code, out, _ = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+        assert code == 2 and out == ""
+
+    def test_multiple_result_blocks_fail(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        fake_wrangler.extra_blocks = True
+        code, out, err = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+        assert code == 2 and out == "" and "not accepted" in err
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b"",
+            b"not json",
+            b"[]",
+            b'[{"results": [], "success": false}]',
+            b'[{"results": [], "success": 1}]',
+            b'[{"results": "x", "success": true}]',
+            b'[{"results": [], "success": true, "extra": 1}]',
+            b'[{"results": [], "results": [], "success": true}]',
+            b'[{"results": [], "success": NaN}]',
+            b'[{"results": [{"name": "alert_dedup"}, {"name": "alert_dedup"}],'
+            b' "success": true}]',
+            b'[{"results": [{"name": "sqlite_sequence"}], "success": true}]',
+            b'[{"results": [{"name": "alert_dedup", "x": 1}], "success": true}]',
+            b'{"results": [], "success": true}',
+            b"[" * 20000,
+            b"[" + b" " * (2 * 1024 * 1024) + b"]",
+        ],
+    )
+    def test_an_answer_that_is_not_one_good_block_fails(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        fake_wrangler: Any,
+        body: bytes,
+    ) -> None:
+        fake_wrangler.raw = body
+        code, out, err = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+        assert code == 2 and out == ""
+        assert "not accepted" in err or "failed" in err
+
+    def test_wrangler_failure_is_exit_2_and_repeats_no_remote_text(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        fake_wrangler.exit_code = 1
+        code, out, err = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+        assert code == 2 and out == "" and "wrangler failed" in err
+
+    def test_the_runner_gets_an_argv_list_a_minimal_environment_and_no_shell(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        fake_wrangler: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "token-value-x")
+        monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acct-x")
+        monkeypatch.setenv("HOME", "/home/someone")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "must-not-leak")
+        monkeypatch.setenv("GITHUB_TOKEN", "must-not-leak")
+        run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+        assert fake_wrangler.envs
+        for env in fake_wrangler.envs:
+            assert set(env) <= {
+                "PATH",
+                "CLOUDFLARE_API_TOKEN",
+                "CLOUDFLARE_ACCOUNT_ID",
+                "HOME",
+            }
+            assert env["PATH"] == "/usr/bin:/bin"
+        for argv in fake_wrangler.argvs:
+            assert isinstance(argv, list) and argv[0] == str(
+                fake_wrangler.path.resolve()
+            )
+        for argv in fake_wrangler.argvs[1:]:
+            assert argv[1:3] == ["d1", "execute"] and "--remote" in argv
+            assert "--json" in argv and "--file" not in argv
+
+    def test_the_real_runner_never_uses_a_shell_or_stdin(
+        self, monkeypatch: pytest.MonkeyPatch, real_exec: Any
+    ) -> None:
+        """The one function that starts a process, checked on its own: it asks
+        subprocess for an argv list, no shell, no stdin, a timeout, and drops
+        stderr."""
+        import subprocess
+
+        seen: dict[str, Any] = {}
+
+        def fake_run(argv: list[str], **kw: Any) -> Any:
+            seen.update(kw, argv=argv)
+            return subprocess.CompletedProcess(argv, 0, stdout=b"[]")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        real_exec(["/x/wrangler", "--version"], {"PATH": "/usr/bin:/bin"}, 120)
+        assert seen["shell"] is False and seen["timeout"] == 120
+        assert seen["stdin"] == subprocess.DEVNULL
+        assert seen["stderr"] == subprocess.DEVNULL
+        assert seen["env"] == {"PATH": "/usr/bin:/bin"}
+        assert isinstance(seen["argv"], list)
+
+    def test_the_default_wrangler_is_the_repository_install_or_a_fixed_message(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        missing = leads_cmd.REPO_ROOT / "worker" / "node_modules" / ".bin" / "wrangler"
+        if missing.exists():  # a developer machine with the install present
+            pytest.skip("the pinned install exists here")
+        code, out, err = main_run_without_wrangler(capsys, export)
+        assert code == 2 and out == ""
+        assert "cd worker && npm ci --ignore-scripts" in err
+        assert fake_wrangler.calls == []
+
+    def test_a_wrangler_is_never_searched_on_path(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        fake_wrangler: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """A `wrangler` earlier on PATH (a substitution) is never used: with no
+        --wrangler and no pinned install the command fails closed."""
+        bindir = tmp_path / "evil"
+        bindir.mkdir(mode=0o700)
+        planted = bindir / "wrangler"
+        planted.write_text("#!/bin/sh\nexit 0\n")
+        planted.chmod(0o700)
+        monkeypatch.setenv("PATH", f"{bindir}:/usr/bin:/bin")
+        if (leads_cmd.REPO_ROOT / "worker/node_modules/.bin/wrangler").exists():
+            pytest.skip("the pinned install exists here")
+        code, _, _ = main_run_without_wrangler(capsys, export)
+        assert code == 2
+        assert fake_wrangler.calls == [] and fake_wrangler.versions_asked == 0
+
+    @pytest.mark.parametrize("kind", ["relative", "dir", "group_writable", "world_dir"])
+    def test_an_untrusted_wrangler_path_is_refused(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        fake_wrangler: Any,
+        tmp_path: Path,
+        kind: str,
+    ) -> None:
+        target = fake_wrangler.path
+        if kind == "relative":
+            arg = "wrangler"
+        elif kind == "dir":
+            arg = str(tmp_path)
+        elif kind == "group_writable":
+            target.chmod(0o770)
+            arg = str(target)
+        else:
+            target.parent.chmod(0o777)
+            arg = str(target)
+        try:
+            code, out, err = run(
+                capsys, "--input", str(export), "--email", ADDR, "--yes",
+                "--wrangler", arg,
+            )  # fmt: skip
+        finally:
+            target.parent.chmod(0o700)
+        assert code == 2 and out == "" and fake_wrangler.calls == []
+        assert fake_wrangler.versions_asked == 0
+
+    def test_a_non_executable_wrangler_is_refused(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        fake_wrangler.path.chmod(0o600)
+        code, out, _ = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+        assert code == 2 and out == "" and fake_wrangler.versions_asked == 0
+
+    def test_a_wrangler_with_hostile_characters_in_its_path_is_refused(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        for arg in ("/opt/x\nrm -rf", "/opt/x\x00y", "/opt/x\x1b[0m"):
+            code, out, _ = run(
+                capsys, "--input", str(export), "--email", ADDR, "--yes",
+                "--wrangler", arg,
+            )  # fmt: skip
+            assert code == 2 and out == "" and fake_wrangler.versions_asked == 0
+
+    def test_a_wrangler_of_another_version_is_refused(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        fake_wrangler.version = "3.0.0"
+        code, out, err = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+        assert code == 2 and out == "" and "pinned" in err
+        assert fake_wrangler.calls == []
+        # A line that names two versions is not accepted either.
+        fake_wrangler.version = "4.0.0 wrangler 9.9.9"
+        code, _, _ = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+        assert code == 2 and fake_wrangler.calls == []
 
     def test_normalizes_before_matching(
         self, capsys: pytest.CaptureFixture[str], export: Path
@@ -524,3 +823,213 @@ class TestHostileExport:
         assert code == 2 and out == ""
         assert "bad address" not in err
         assert "email address" in err  # a fixed message names the problem class
+
+
+def finish(
+    capsys: pytest.CaptureFixture[str], export: Path, *extra: str
+) -> tuple[int, str, str]:
+    return run(
+        capsys, "--input", str(export), "--email", ADDR, "--yes", "--finish", *extra
+    )
+
+
+def seed_alerts(fake: Any, *, expires: int = 5, count: int = 2) -> None:
+    for n in range(count):
+        fake.dbs[ALERTS_DB].execute(
+            "INSERT INTO alert_dedup VALUES ('default', ?, ?)", (f"{n:032x}", expires)
+        )
+
+
+def alert_rows(fake: Any) -> int:
+    return int(
+        fake.dbs[ALERTS_DB].execute("SELECT COUNT(*) FROM alert_dedup").fetchone()[0]
+    )
+
+
+def seed_lead(fake: Any) -> None:
+    fake.dbs[LEADS_DB].execute("INSERT INTO leads VALUES (?, ?)", (ID_A, ADDR))
+    fake.dbs[LEADS_DB].execute("INSERT INTO kit_events (lead_id) VALUES (?)", (ID_A,))
+
+
+class TestFinish:
+    def test_success_clears_and_reads_zero_twice_after_the_lead_readback(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        seed_alerts(fake_wrangler)
+        code, out, err = finish(capsys, export)
+        assert code == 0 and out == ""
+        assert alert_rows(fake_wrangler) == 0
+        order = [(db, sql.split()[0]) for db, sql in fake_wrangler.calls]
+        first_clear = order.index((ALERTS_DB, "DELETE"))
+        assert order.index((LEADS_DB, "SELECT")) < first_clear  # lead read-back first
+        reads = [c for c in fake_wrangler.calls if "alert_dedup_remaining" in c[1]]
+        assert len(reads) == 2  # right after the clear, and again after the pause
+        assert "example.test" not in err and ID_A not in err and ID_A not in out
+        assert "kill switch" in err
+
+    def test_lead_rows_that_remain_exit_4_and_leave_the_alert_table_alone(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        seed_alerts(fake_wrangler)
+        seed_lead(fake_wrangler)
+        code, _, err = finish(capsys, export)
+        assert code == leads_cmd.EXIT_LEADS_UNCONFIRMED == 4
+        assert alert_rows(fake_wrangler) == 2
+        assert not any(sql.startswith("DELETE") for _, sql in fake_wrangler.calls)
+        assert "apply the SQL first" in err
+
+    def test_a_lead_readback_that_cannot_be_read_exits_4(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        fake_wrangler.fail_on = "leads_remaining"
+        code, _, _ = finish(capsys, export)
+        assert code == 4 and alert_rows(fake_wrangler) == 0
+        assert not any(sql.startswith("DELETE") for _, sql in fake_wrangler.calls)
+
+    def test_a_failed_clear_is_exit_3_not_success(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        seed_alerts(fake_wrangler)
+        fake_wrangler.fail_on = "DELETE FROM alert_dedup"
+        code, _, err = finish(capsys, export)
+        assert code == leads_cmd.EXIT_ALERTS_INCOMPLETE == 3
+        assert alert_rows(fake_wrangler) == 2
+        assert "NOT complete" in err and "kill switch" not in err.split("NOT")[0]
+
+    def test_rows_that_remain_after_every_clear_are_exit_3(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        # A delete that does not take effect: the old row is back at once.
+        fake_wrangler.after_clear = lambda db: db.execute(
+            "INSERT INTO alert_dedup VALUES ('default', ?, 5)", ("b" * 32,)
+        )
+        code, _, err = finish(capsys, export)
+        assert code == 3 and "rows remain after the clear" in err
+        deletes = [c for c in fake_wrangler.calls if c[1].startswith("DELETE")]
+        assert len(deletes) == leads_cmd.ALERT_ATTEMPTS
+
+    def test_rows_created_after_the_start_are_named_and_fail(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        late = int(__import__("time").time() * 1000) + leads_cmd.ALERT_TTL_MS + 60_000
+        fake_wrangler.after_clear = lambda db: db.execute(
+            "INSERT OR REPLACE INTO alert_dedup VALUES ('default', ?, ?)",
+            ("c" * 32, late),
+        )
+        code, _, err = finish(capsys, export)
+        assert code == 3 and "created after the erasure started" in err
+
+    def test_a_row_that_arrives_once_is_cleared_by_the_retry(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        hits: list[int] = []
+
+        def once(db: Any) -> None:
+            if not hits:
+                hits.append(1)
+                db.execute(
+                    "INSERT INTO alert_dedup VALUES ('default', ?, 5)", ("d" * 32,)
+                )
+
+        fake_wrangler.after_clear = once
+        code, _, _ = finish(capsys, export)
+        assert code == 0 and alert_rows(fake_wrangler) == 0
+
+    def test_a_row_that_arrives_during_the_settle_pause_fails(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        fake_wrangler: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            leads_cmd,
+            "pause",
+            lambda _s: fake_wrangler.dbs[ALERTS_DB].execute(
+                "INSERT INTO alert_dedup VALUES ('default', ?, 5)", ("e" * 32,)
+            ),
+        )
+        code, _, err = finish(capsys, export)
+        assert code == 3 and "NOT complete" in err
+
+    def test_a_lead_row_that_reappears_during_the_pause_fails(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        fake_wrangler: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(leads_cmd, "pause", lambda _s: seed_lead(fake_wrangler))
+        code, _, err = finish(capsys, export)
+        assert code == 3 and "lead rows reappeared" in err
+
+    def test_finish_runs_the_schema_checks_again(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        code, _, _ = run(
+            capsys, "--input", str(export), "--email", ADDR, "--yes", "--finish",
+            "--alerts-database", LEADS_DB,
+        )  # fmt: skip
+        assert code == 2
+        assert not any(sql.startswith("DELETE") for _, sql in fake_wrangler.calls)
+
+    def test_finish_needs_yes_and_takes_no_sql_file(
+        self, capsys: pytest.CaptureFixture[str], export: Path, tmp_path: Path
+    ) -> None:
+        code, _, _ = run(capsys, "--input", str(export), "--email", ADDR, "--finish")
+        assert code == 2
+        code, _, _ = run(
+            capsys, "--input", str(export), "--email", ADDR, "--yes", "--finish",
+            "--sql-out", str(tmp_path / "x.sql"),
+        )  # fmt: skip
+        assert code == 2 and not (tmp_path / "x.sql").exists()
+
+    @pytest.mark.parametrize(
+        "row",
+        [
+            {"alert_dedup_remaining": -1, "alert_dedup_new": 0},
+            {"alert_dedup_remaining": True, "alert_dedup_new": 0},
+            {"alert_dedup_remaining": "0", "alert_dedup_new": 0},
+            {"alert_dedup_remaining": 1.5, "alert_dedup_new": 0},
+            {"alert_dedup_remaining": 10**12, "alert_dedup_new": 0},
+            {"alert_dedup_remaining": 0},
+            {"alert_dedup_remaining": 0, "alert_dedup_new": 0, "x": 0},
+        ],
+    )
+    def test_counts_must_be_non_negative_integers_in_the_exact_shape(
+        self, row: dict[str, Any]
+    ) -> None:
+        with pytest.raises(leads_cmd.WranglerError):
+            leads_cmd._counts([row], ("alert_dedup_remaining", "alert_dedup_new"))
+        with pytest.raises(leads_cmd.WranglerError):
+            leads_cmd._counts([], ("alert_dedup_remaining", "alert_dedup_new"))
+        with pytest.raises(leads_cmd.WranglerError):
+            leads_cmd._counts(
+                [{"alert_dedup_remaining": 0, "alert_dedup_new": 0}] * 2,
+                ("alert_dedup_remaining", "alert_dedup_new"),
+            )
+
+    def test_the_readback_counts_rows_made_after_the_start(self) -> None:
+        import sqlite3
+
+        db = sqlite3.connect(":memory:")
+        db.execute(
+            "CREATE TABLE alert_dedup (site TEXT, event_hash TEXT, expires_at INTEGER)"
+        )
+        start = 1_000_000
+        sql = alert_readback_sql(start)
+        assert db.execute(sql).fetchone() == (0, 0)
+        # made before the start: expires_at <= start + ttl; after: later than that
+        db.execute(
+            "INSERT INTO alert_dedup VALUES ('s', 'a', ?)",
+            (start + leads_cmd.ALERT_TTL_MS,),
+        )
+        db.execute(
+            "INSERT INTO alert_dedup VALUES ('s', 'b', ?)",
+            (start + leads_cmd.ALERT_TTL_MS + 1,),
+        )
+        assert db.execute(sql).fetchone() == (2, 1)
+        with pytest.raises(LeadsError):
+            alert_readback_sql("1; DROP TABLE x")  # type: ignore[arg-type]
+        with pytest.raises(LeadsError):
+            alert_readback_sql(True)

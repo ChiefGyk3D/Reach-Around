@@ -25,10 +25,26 @@ VERIFIED = 1_700_003_600_000
 EVENT_TS = 1_700_002_800_000 - (1_700_002_800_000 % HOUR)  # on the hour
 
 
+_FAKE: dict[str, Any] = {}
+
+
+@pytest.fixture(autouse=True)
+def _install_fake_wrangler(fake_wrangler: Any) -> None:
+    """`leads delete --yes` checks the schemas through wrangler (#905); these tests
+    run it against the in-memory fake, never a real process."""
+    _FAKE["w"] = fake_wrangler
+
+
 def cli(argv: list[str]) -> int:
     """`main`, with the now mandatory `--database` added to `leads show` and
-    `leads delete` unless the test names one (or asks for the checklist)."""
+    `leads delete` unless the test names one (or asks for the checklist), and
+    the alert database and fake wrangler added to `leads delete --yes`."""
     args = list(argv)
+    if args[:2] == ["leads", "delete"] and "--yes" in args:
+        if "--alerts-database" not in args:
+            args += ["--alerts-database", "ra-alerts"]
+        if "--wrangler" not in args:
+            args += ["--wrangler", str(_FAKE["w"].path)]
     if (
         args[:1] == ["leads"]
         and args[1:2] in (["show"], ["delete"])
@@ -492,9 +508,10 @@ def test_delete_names_the_leads_database_and_refuses_the_analytics_one(
     assert code == 0
     assert "database: reach-around-leads" in captured.err
     assert (
-        "npx wrangler d1 execute reach-around-leads --remote --file delete-lead.sql"
-        in captured.err
+        f"{_FAKE['w'].path} d1 execute reach-around-leads --remote "
+        "--file delete-lead.sql" in captured.err
     )
+    assert "npx" not in captured.err
     assert "reach-around-clicks" not in captured.out + captured.err
     for db in ("reach-around-clicks", "analytics"):
         monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
@@ -780,11 +797,11 @@ def test_the_printed_apply_command_is_shell_safe_for_any_file_name(
     target = tmp_path / name
     assert _delete_to(monkeypatch, delete_export, target) == 0
     err = capsys.readouterr().err
-    command = err[err.index("npx wrangler") :]
+    wrangler = str(_FAKE["w"].path.resolve())
+    command = err[err.index(wrangler) :]
     tokens = shlex.split(command)
     assert tokens == [
-        "npx",
-        "wrangler",
+        wrangler,
         "d1",
         "execute",
         "reach-around-leads",
@@ -823,6 +840,7 @@ def test_a_failed_sql_write_leaves_no_partial_file(
         os.write(fd, data[: len(data) // 2])  # part of the address lands on disk
         raise OSError(28, "No space left on device")
 
+    real_write = leads_module._write_all
     monkeypatch.setattr(leads_module, "_write_all", short_write)
     target = tmp_path / "delete-lead.sql"
     assert _delete_to(monkeypatch, delete_export, target) == 2
@@ -831,7 +849,7 @@ def test_a_failed_sql_write_leaves_no_partial_file(
     assert "removed" in captured.err
     assert ADDR not in captured.err and "DELETE" not in captured.out
     # A retry is possible: the path is free again.
-    monkeypatch.undo()
+    monkeypatch.setattr(leads_module, "_write_all", real_write)
     assert _delete_to(monkeypatch, delete_export, target) == 0
 
 

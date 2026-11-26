@@ -227,15 +227,15 @@ first item:
 5. Hand-made exports, dumps and spreadsheets (including the files you made for
    the steps above).
 6. Shell history, tickets and notes that hold the address.
-7. The `alert_dedup` hash (MANDATORY MANUAL STEP; see the store table below).
-   Erasure (`leads delete`) does NOT clear this table and the delete file does
-   not touch it, so after the tool the lead rows are erased but the alert hash
-   step is manual and mandatory (known gap, tracked in #905). `reach-around
-   leads delete --yes` prints the two commands (clear the table, read it back);
-   run them against the database that holds the alert tables and require the
-   read-back to show 0. A quiet site keeps up to 500 rows until the next alert
-   or a hand clear. Clearing it only resets repeat-alert suppression for up to
-   10 minutes.
+7. The `alert_dedup` hash (automated by `leads delete`, #905; see the store
+   table below). `reach-around leads delete --yes --alerts-database NAME`
+   checks the schemas, prints the lead SQL, and after you apply it
+   `--finish` reads the lead tables back, clears the whole table and reads it
+   back as 0 twice. Only exit 0 is complete; exit 3 means the lead rows are
+   erased but the alert hashes are not confirmed cleared, and exit 4 means the
+   lead rows are not confirmed erased. A quiet site keeps up to 500 rows until
+   the next alert or a clear. Clearing it only resets repeat-alert suppression
+   for up to 10 minutes. Close the kit gate (the kill switch) while you erase.
 8. By hand, where neither this list nor the tool can look: Worker logs and any
    collector logs or exception output; alert delivery logs at the chat or mail
    provider; automated backups and exports of the database beyond Time Travel;
@@ -324,7 +324,7 @@ QUESTION 5).
 |---|---|---|---|
 | `leads` (11 columns) | the address, country, times, session floor | yes | `DELETE`, read-back counts the row; also purged by age |
 | `kit_events` (4 columns) | hour-rounded unlock, view and verify events by lead id | yes | `DELETE`, read-back counts the rows; the foreign key also cascades |
-| `alert_dedup` (3 columns) | keyed hash of a recent alert, which can include the address; a row stops counting as a repeat after 10 minutes but is deleted only when the next alert event is admitted, so on a quiet site it can stay stored (at most 500 rows) until then or until cleared by hand | no (known gap, #905: erasure does not clear it; mandatory hand step) | clear the whole table by hand and read it back to 0, against the database that holds the alert tables (statements below); a keyed hash is not erased by being hard to match |
+| `alert_dedup` (3 columns) | keyed hash of a recent alert, which can include the address; a row stops counting as a repeat after 10 minutes but is deleted only when the next alert event is admitted, so on a quiet site it can stay stored (at most 500 rows) until then or until cleared by hand | yes (#905): `leads delete --yes --alerts-database NAME`, then `--finish` | the whole table is cleared and read back to 0 twice, after the lead read-back; exit 3 if not confirmed; the owner closes the kit gate during erasure (statements below); a keyed hash is not erased by being hard to match |
 | `visitor_seen`, `view_events`, `click_events` | coarse visitor rows with no address, no IP address, no lead id | no | not matchable to a person by design (Art. 11); removed by retention |
 | 26 other tables (counters, rollups, budgets, logs, cursors) | counts and bookkeeping | no | aggregate, no row per person; counts cannot be un-counted |
 | KV, edge cache | the gated page, live status state, the public status body | no | no lead data found in the listed call sites; a text scan, not a data-flow proof (verify the namespace's keys by hand); the Worker never writes the gated page key |
@@ -335,22 +335,47 @@ QUESTION 5).
 | D1 Time Travel | the whole database, 7 days Free, 30 days Paid | no | ages out; see the checklist |
 | Alert copies, inquiry text, hand-made exports, logs | outside the Worker | no | by hand, items 2, 3, 5, 6 and 8 of the checklist |
 
-Known gap (#905): erasure (`leads delete`) does NOT clear the alert hash table.
-Clearing it and reading it back to 0 is a mandatory manual step of the checklist.
-Until the automatic clear is designed (it needs a decision for deployments that
-keep the alert tables in a different database from the leads), a quiet site keeps
-up to 500 rows until the next alert is admitted or a hand clear. For an erasure
-request, clear the whole alert hash table and read it back. Run both against the
-database that holds the alert tables (the leads database when they share it;
-`reach-around leads delete --yes` prints them with the database name; the lead
-delete file does not include them, because a statement on a table that is not in
-that database could fail the whole file). Clearing every row only resets
-repeat-alert suppression for up to 10 minutes. The store is clear when the
-read-back shows 0, and the erasure is not complete before that:
+Alert hash erasure (#905). `reach-around leads delete` clears the alert hash
+table itself, in two steps, and a quiet site otherwise keeps up to 500 rows until
+the next alert is admitted:
+
+1. `--yes --alerts-database NAME` (required with `--yes`; without it the command
+   exits 2 before it prints any SQL). It reads the schema of the leads database
+   and of the named database through the repository's pinned wrangler (the
+   version in `worker/package-lock.json`; never found through `PATH` or `npx`;
+   `--wrangler PATH` names another absolute path that must be that version,
+   owned by you and not writable by others; `cd worker && npm ci
+   --ignore-scripts` installs the default). The named database must hold
+   `alert_dedup` and must NOT hold `leads` or `kit_events`, unless it is the
+   leads database itself (one binding holding both). An absent table is a
+   refusal, never a clear. Run it from the directory whose wrangler config
+   names both databases, with the Cloudflare token in the environment (the
+   command passes only the token, the account id, `HOME` and a fixed `PATH`
+   to wrangler; node must be in `/usr/bin` or `/bin`). It then prints the lead
+   SQL and its apply command.
+2. After you apply the SQL, run the same command again with `--finish`. It
+   re-checks the schemas, reads the lead tables back (must be 0 and 0, else
+   exit 4 and the alert table is untouched), clears the whole alert table
+   (not only expired rows) and reads it back, repeating the clear up to three
+   times if a row arrives, waits two seconds, and reads both stores back once
+   more. Any row left, including one whose life began after the erasure
+   started, is exit 3: the lead rows are erased but the alert hashes are NOT
+   confirmed cleared.
+
+Exit codes: 0 verified; 1 no match; 2 usage problem, refused export, database
+or wrangler (nothing changed); 3 alert hashes not confirmed cleared; 4 lead rows
+not confirmed erased. Residual window: a person who can still open the kit or
+trigger an alert can create a new hash after the last read-back, and the tool
+cannot close that. Close the kit gate (the kill switch) for the whole erasure.
+The named database is your attestation, like `--database`: the schema check
+proves the table is there, not that the Worker writes to that database.
+Clearing every row only resets repeat-alert suppression for up to 10 minutes.
+Recovery after exit 3, against the database that holds the alert tables (the
+statements the tool runs; read back to 0 before you call the erasure complete):
 
 ```
-npx wrangler d1 execute <DATABASE> --remote --command "DELETE FROM alert_dedup"
-npx wrangler d1 execute <DATABASE> --remote --command "SELECT COUNT(*) AS alert_dedup_remaining FROM alert_dedup"
+wrangler d1 execute <DATABASE> --remote --command "DELETE FROM alert_dedup"
+wrangler d1 execute <DATABASE> --remote --command "SELECT COUNT(*) AS alert_dedup_remaining FROM alert_dedup"
 ```
 
 For routine housekeeping only, this deletes just the rows already past their 10
@@ -381,10 +406,8 @@ Needs the owner's choice.
 OPEN QUESTION 3, short-lived alert hashes. Today an expired row is removed only
 when the next alert event is admitted (checked in the code: nothing prunes it on
 a timer), so on a quiet site it stays until then. Options: (a) the whole-table
-clear and read-back as a mandatory hand step printed by the delete tool (current,
-a known gap tracked in #905: the tool cannot know which database holds the alert
-tables, and a statement on a missing table could fail the whole erasure file; an
-automatic clear needs a design for split databases); (b) prune expired
+clear and read-back run by `leads delete --finish` after a schema check of the
+named database (current, #905); (b) prune expired
 `alert_dedup` rows in the scheduled handler too, so a quiet site never holds one
 past its life (a Worker change; it would still not remove a row made minutes
 ago); (c) add `DELETE FROM alert_dedup` to the delete SQL, which is the one-command
@@ -447,10 +470,12 @@ Ctrl-C. Run it as one block from your project directory. The steps inside are:
    tables read here are the only tables this review classified as holding an
    address or a lead id (see "Every store, checked against the schema" above for
    what that classification does and does not prove).
-5. The block erases the lead rows only. The alert hash step is manual and
-   mandatory (checklist item 7, known gap #905): run the two commands the tool
-   printed and require the read-back to show 0 before you call the erasure
-   complete.
+5. The block erases the lead rows only. Run the same `leads delete` command
+   again with `--finish` (checklist item 7, #905): it reads the lead tables
+   back, clears the alert hashes and reads them back as 0 twice. Call the
+   erasure complete only on exit 0 (exit 3: the alert hashes are not confirmed
+   cleared; exit 4: the lead rows are not confirmed erased). Keep the kit gate
+   closed (the kill switch) until it exits 0.
 
 ```
 (
@@ -461,7 +486,9 @@ Ctrl-C. Run it as one block from your project directory. The steps inside are:
   trap cleanup EXIT
   trap 'exit 130' HUP INT TERM
   echo "private work directory (removed on exit): $WORK" >&2
-  npx wrangler d1 execute reach-around-leads --remote --json \
+  WRANGLER="$PWD/worker/node_modules/.bin/wrangler"   # pinned: cd worker && npm ci --ignore-scripts
+  ALERTS_DB="<the database the Worker writes alerts to>"
+  "$WRANGLER" d1 execute reach-around-leads --remote --json \
     --command "SELECT id, email FROM leads" > "$WORK/leads-export.json"
   printf 'Address to delete: ' >&2
   read -r ADDR
@@ -469,10 +496,11 @@ Ctrl-C. Run it as one block from your project directory. The steps inside are:
   printf 'Print the delete SQL and apply it? Type yes: ' >&2
   read -r OK
   [ "$OK" = yes ]
-  printf '%s\n' "$ADDR" | reach-around leads delete --input "$WORK/leads-export.json" --email - --database reach-around-leads --yes --sql-out "$WORK/delete-lead.sql"
-  npx wrangler d1 execute reach-around-leads --remote --file "$WORK/delete-lead.sql"
+  printf '%s\n' "$ADDR" | reach-around leads delete --input "$WORK/leads-export.json" --email - --database reach-around-leads --alerts-database "$ALERTS_DB" --yes --sql-out "$WORK/delete-lead.sql"
+  "$WRANGLER" d1 execute reach-around-leads --remote --file "$WORK/delete-lead.sql"
   sleep 60
-  npx wrangler d1 execute reach-around-leads --remote --file "$WORK/delete-lead.sql"
+  "$WRANGLER" d1 execute reach-around-leads --remote --file "$WORK/delete-lead.sql"
+  printf '%s\n' "$ADDR" | reach-around leads delete --input "$WORK/leads-export.json" --email - --database reach-around-leads --alerts-database "$ALERTS_DB" --yes --finish
 )
 ```
 
@@ -482,10 +510,11 @@ cleanup; the work directory is printed on the first line so you can remove it
 yourself, and you should check that it is gone before you report the request
 done.
 
-The command reads only the file you give it. It makes no network call, needs no
-token and writes no file except the `--sql-out` file. It does not clear the
-`alert_dedup` hash table: that is a mandatory manual step (checklist item 7,
-known gap #905): the block above erases the lead rows, not the alert hashes. It
+The dry run reads only the file you give it and makes no network call. With
+`--yes` the command also talks to Cloudflare, only through the pinned wrangler
+and only to read the schemas (step one) or, with `--finish`, to read the lead
+tables, clear `alert_dedup` and read both back (checklist item 7, #905). It
+writes no file except the `--sql-out` file and never prints remote text. It
 refuses an address that
 is not valid (ASCII, one `@`, a dotted domain; whitespace around it and upper
 case are normalized), and refuses an export that has a result block without
