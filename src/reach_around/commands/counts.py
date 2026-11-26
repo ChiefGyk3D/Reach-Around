@@ -79,6 +79,14 @@ from reach_around.counts.history import (
     read_history,
     redact_records,
     remove_stale_redaction_temps,
+    rewrite_metadata,
+)
+from reach_around.counts.history_compare import (
+    COMPARE_MAX_BYTES,
+    MAX_MANIFEST_BYTES,
+    MAX_NUMBERS_BYTES,
+    compare_history,
+    read_regular,
 )
 from reach_around.counts.imported_export import export_imported
 from reach_around.counts.importer import (
@@ -157,6 +165,7 @@ EXIT_SOURCE_FAILED = 3
 EXIT_DUE = 4
 EXIT_TOKEN_WARNING = 4  # counts tokens: a token is expiring (same code as counts stale)
 EXIT_REPLACED_UNSURE = 5  # history-redact: the file was replaced, durability unsure
+EXIT_REWRITE = 10  # history-compare: a valid tombstone-only rewrite (reserved)
 
 
 @dataclass(frozen=True)
@@ -818,6 +827,52 @@ def run_history_verify(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def run_history_compare(args: argparse.Namespace) -> int:
+    """Append-only (exit 0), a valid tombstone-only rewrite (10), else refuse (1).
+
+    Prints counts and fixed words only: never a value, a note or a digest.
+    """
+    try:
+        old = read_regular(args.old, COMPARE_MAX_BYTES)
+        new = read_regular(args.new, COMPARE_MAX_BYTES)
+        manifest = (
+            read_regular(args.manifest, MAX_MANIFEST_BYTES)
+            if args.manifest is not None
+            else None
+        )
+        numbers_old = (
+            read_regular(args.numbers_old, MAX_NUMBERS_BYTES)
+            if args.numbers_old is not None
+            else None
+        )
+        numbers_new = (
+            read_regular(args.numbers_new, MAX_NUMBERS_BYTES)
+            if args.numbers_new is not None
+            else None
+        )
+        result = compare_history(
+            old,
+            new,
+            allow_tombstones=args.allow_tombstones,
+            manifest=manifest,
+            manifest_name=args.manifest_name,
+            pr_day=args.pr_day,
+            numbers_old=numbers_old,
+            numbers_new=numbers_new,
+        )
+    except HistoryError as exc:
+        _say(f"refused: {exc}", sys.stderr)
+        return EXIT_WRITE
+    if result.mode == "append":
+        _say("ok: append-only")
+        return EXIT_OK
+    _say(
+        f"ok: tombstone-only rewrite, {result.replaced} records replaced, "
+        f"{result.dropped} corrections dropped"
+    )
+    return EXIT_REWRITE
+
+
 def _safe(text: str) -> str:
     """``text`` with every control or non-ASCII character escaped, for a terminal."""
     return "".join(
@@ -829,6 +884,32 @@ def _safe(text: str) -> str:
 def _say(message: str, stream: TextIO | None = None) -> None:
     """Print one control-safe line: a file name can hold an escape sequence."""
     print(_safe(message), file=stream if stream is not None else sys.stdout)
+
+
+def _write_manifest(
+    target: Path, plan: list[Record], args: argparse.Namespace, moment: datetime
+) -> None:
+    """Write ``redactions/<run-id>.manifest`` beside the history file (#619).
+
+    Keys and codes only, in the bytes the rewrite check rebuilds. Never replaces
+    an existing file.
+    """
+    run_id, _, text = rewrite_metadata(
+        [r.key for r in plan],
+        args.reason,
+        args.trigger_date,
+        moment.strftime("%Y-%m-%d"),
+    )
+    folder = target.parent / "redactions"
+    folder.mkdir(exist_ok=True)
+    fd = os.open(
+        folder / f"{run_id}.manifest",
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o644,
+    )
+    with os.fdopen(fd, "wb") as out:
+        out.write(text.encode("ascii"))
+    _say(f"wrote the manifest redactions/{run_id}.manifest (commit it with the file)")
 
 
 def run_history_redact(args: argparse.Namespace) -> int:
@@ -879,19 +960,24 @@ def run_history_redact(args: argparse.Namespace) -> int:
         if removed:
             _say(f"removed {removed} stale redaction temporary file(s)")
         notices: list[str] = []
+        moment = datetime.now(UTC)
         try:
             count = redact_records(
                 target,
                 plan,
                 reason=args.reason,
                 trigger_date=args.trigger_date,
+                now=moment,
                 confirm=True,
                 include_hand_kept=args.include_hand_kept,
                 notices=notices,
+                derived=args.derived,
             )
         finally:
             for notice in notices:
                 _say(notice)
+        if args.derived and count:
+            _write_manifest(target, plan, args, moment)
     except OldCopyRemainsError as exc:
         _say(f"error: {exc}; the file is {exc.temp_name}", sys.stderr)
         _say(
@@ -918,6 +1004,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return run_history_verify(args)
     if args.counts_command == "history-redact":
         return run_history_redact(args)
+    if args.counts_command == "history-compare":
+        return run_history_compare(args)
     if args.counts_command == "history-export-imported":
         return run_export_imported(args.file, args.out)
     if args.counts_command == "history-import-beacons":
@@ -976,6 +1064,23 @@ def _register_history(
         "1 when the file is damaged (including a truncated last line).",
     )
     _where(verify)
+    compare = actions.add_parser(
+        "history-compare",
+        help="check that a new history file only appends, or only tombstones",
+        description="Compare an old and a new history file. Exit 0 when the new "
+        "file only appends canonical records; exit 10 (reserved for this "
+        "command) when, with --allow-tombstones, it is a valid tombstone-only "
+        "rewrite whose manifest and published numbers also match; any other "
+        "status is a refusal. Prints counts and fixed words only.",
+    )
+    compare.add_argument("--old", required=True)
+    compare.add_argument("--new", required=True)
+    compare.add_argument("--allow-tombstones", action="store_true")
+    compare.add_argument("--manifest")
+    compare.add_argument("--manifest-name")
+    compare.add_argument("--pr-day", help="UTC date YYYY-MM-DD the pull request opened")
+    compare.add_argument("--numbers-old")
+    compare.add_argument("--numbers-new")
     redact = actions.add_parser(
         "history-redact",
         help="replace stored api records with tombstones (owner-run, not a refresh)",
@@ -1007,6 +1112,12 @@ def _register_history(
         help="YYYY-MM-DD of the revocation, request or expiry that started the clock",
     )
     redact.add_argument("--include-hand-kept", action="store_true")
+    redact.add_argument(
+        "--derived",
+        action="store_true",
+        help="write the fixed tombstone forms the reviewed pull request route "
+        "accepts (day-granular time, derived run id) and a manifest file (#619)",
+    )
     mode = redact.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="the default")
     mode.add_argument("--confirm", action="store_true", help="rewrite the file")

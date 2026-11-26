@@ -9,6 +9,18 @@ no workflow change come with this document. Issue: #619. Epic: #364. Follows #58
 (the tombstone, decision 4 of `docs/research/history-tombstone-design.md`) and #621
 (the runbook for rewriting git history of the private instance repository).
 
+Implementation note (2026-11-26, issue #619): the compare (`counts history-compare`,
+rules 1 to 13 and 16), the derived writer (`history-redact --derived`, D15), the
+manifest, the `numbers.json` rule, `history-guard.yml`, `history-guard.py`,
+`verify-history-rewrite.sh` and the approvers file are built with their tests. Not
+built: the detective push job and off-GitHub notice (D7), the stale-refresh closer
+(D13), the merge watcher and authorization digest (5.5 items 4 and 5), the GYST
+reusable form (alternative H). The live gates G1, G2, G4, G5 and G6 need a scratch
+GitHub repository and are NOT run: until they are, the guard's token scope
+(`pull-requests: read`) is unproved (G5), "branch must be up to date" is a
+documented requirement rather than a proven one (G1), and the README states the label
+as final for a head commit (the G2 branch B wording).
+
 Claims are marked **[V]** verified (file and line read in this checkout, base
 `2f26e21`) or **[I]** inferred (not run, or a GitHub behavior not exercised here).
 Every **[I]** a design choice leans on is a named design gate (section 12) that must

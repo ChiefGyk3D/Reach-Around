@@ -1,0 +1,107 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Pull requests: keep the counts history append-only. Any pull request that
+# changes history/social.jsonl must either only append to it, or be a reviewed
+# tombstone-only rewrite (an owner redaction: records replaced by tombstones).
+# A rewrite needs ALL of: the `history-tombstone` label applied by a login on
+# .github/history-approvers (read from the BASE commit), a label at least 24
+# hours old, a head branch named redact/<anything> in this repository, no open
+# counts/refresh pull request, exactly the allowed paths, and the engine's
+# exact compare (`counts history-compare`) returning "valid rewrite" for the
+# bytes. Anything else fails. The label alone changes nothing: the compare is
+# the control. The outcome is logged to the job summary (label event, approver,
+# label age, commits); counts only, never a value.
+#
+# This is `pull_request`, never `pull_request_target`. One job, so there is one
+# check name to require: require "History guard" in branch protection, together
+# with "branch must be up to date" (strict). A merge queue is not supported:
+# this workflow does not run under `merge_group`. The scripts, the approvers
+# file and the engine pin come from the BASE commit; the pull request's files
+# are only ever data.
+#
+# Trust that remains: with the `pull_request` trigger GitHub runs the workflow
+# file from the pull request, so anyone who can merge a change to this file, to
+# scripts/ or to engine.lock can weaken the guard. Protect `.github/`,
+# `scripts/`, `engine.lock` and `history/` with CODEOWNERS and required review
+# from a second person (README.md, docs/EDITING.md). A sole owner is not
+# protected from their own account; the guard prevents mistakes and leaves a
+# record.
+name: History guard
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+# A later push or label change cancels the older run instead of racing it.
+concurrency:
+  group: history-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  history-guard:
+    name: History guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    # No `environment`, no secrets and no write permission, on purpose.
+    steps:
+      # The scripts, the approvers file and the engine pin come from the BASE
+      # commit, in a separate folder, before anything of the pull request runs.
+      - name: Fetch the trusted files from the base commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted-src
+          sparse-checkout: |
+            scripts/read-lock.sh
+            scripts/verify-history-rewrite.sh
+            scripts/history-guard.py
+            engine.lock
+            engine.release.json
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Install the trusted copies and choose the engine image
+        id: trust
+        run: |
+          set -eu
+          dir="$(mktemp -d "$RUNNER_TEMP/trusted.XXXXXX")"
+          cp -R trusted-src/scripts "$dir/scripts"
+          cp trusted-src/engine.lock "$dir/engine.lock"
+          if [ -f trusted-src/engine.release.json ]; then
+            cp trusted-src/engine.release.json "$dir/engine.release.json"
+          fi
+          chmod -R a-w "$dir"
+          if [ -f "$dir/engine.release.json" ]; then
+            bash "$dir/scripts/read-lock.sh" --release "$dir/engine.lock"
+          fi
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+
+      # The pull request's head, with all history so the base commit is there.
+      # Only ever read as data: nothing in this checkout is executed.
+      - name: Fetch the pull request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: pr
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Guard the history file
+        env:
+          TRUSTED: ${{ steps.trust.outputs.dir }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_CREATED_AT: ${{ github.event.pull_request.created_at }}
+        run: python3 -I "$TRUSTED/scripts/history-guard.py" --trusted "$TRUSTED" --pr pr

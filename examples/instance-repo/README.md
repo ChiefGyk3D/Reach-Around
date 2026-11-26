@@ -22,8 +22,10 @@ engine repository for the reasoning.
 | `.github/workflows/deploy.yml` | On a push to `main` or a manual run: check and validate always; deploy staging only while `ALLOW_STAGING_DEPLOY` is exactly `true`; production only by a manual run with target `production` while `ALLOW_PRODUCTION_DEPLOY` is exactly `true`. Each deploy waits for its environment's reviewer. |
 | `.github/workflows/refresh-counts.yml` | Once a day (and by hand): refresh follower counts with the pinned engine and open a pull request with the new `numbers.json`. Optional; see "Daily follower counts". |
 | `.github/workflows/check-hand-kept-freshness.yml` | Once a week (and by hand): check `hand-kept.json` and keep one issue open while a number you keep by hand is past its limit. Optional; see "Hand-kept numbers". |
+| `.github/workflows/history-guard.yml` | On a pull request: fail any change to `history/social.jsonl` that is not an append, except a labeled tombstone-only rewrite. Optional; see "History rewrites". Its check is named `History guard`. |
+| `.github/history-approvers` | The GitHub logins allowed to authorize such a rewrite. Ships empty. |
 | `renovate.json` | Keeps `engine.lock` and the Actions pins current. |
-| `scripts/` | `check-freshness.py` (the stale check of the hand-kept file, standard library only), `validate-numbers.py` (the strict check on `numbers.json` the counts refresh runs twice), `refresh-counts.sh`, `verify-history.sh` (the engine's `counts history-verify` on the history file, offline), `check-config.sh` (the plain-language config check), `validate.sh` (the build CI runs), `write-result.py` (bundles the preview job's results into the one data file the comment job reads), `render-comment.py` (run by the comment job from the base commit: validates that file and writes the pull request comment from fixed text), `check-repo.sh`, `read-lock.sh`, `deploy-local.sh`. |
+| `scripts/` | `check-freshness.py` (the stale check of the hand-kept file, standard library only), `validate-numbers.py` (the strict check on `numbers.json` the counts refresh runs twice), `refresh-counts.sh`, `verify-history.sh` (the engine's `counts history-verify` on the history file, offline), `verify-history-rewrite.sh` (the engine's `counts history-compare`: append-only or a valid tombstone-only rewrite), `history-guard.py` (the pull-request guard that decides whether a rewrite is authorized, standard library only), `check-config.sh` (the plain-language config check), `validate.sh` (the build CI runs), `write-result.py` (bundles the preview job's results into the one data file the comment job reads), `render-comment.py` (run by the comment job from the base commit: validates that file and writes the pull request comment from fixed text), `check-repo.sh`, `read-lock.sh`, `deploy-local.sh`. |
 | `docs/EDITING.md` | How to change the page without touching code. |
 
 ## Adopt it
@@ -321,6 +323,70 @@ in the engine repo); without it that source is reported as skipped
   and it was not opened by the Actions bot, comes from a fork, or changes
   anything besides `numbers.json` and `history/social.jsonl`, the run stops with a message and touches
   nothing. Close that pull request or rename its branch, then run again.
+
+## History rewrites
+
+The counts history is append-only. `.github/workflows/history-guard.yml` (the
+check named `History guard`) runs on every pull request and fails any change to
+`history/social.jsonl` that is not a pure append of well-formed lines. The one
+exception is a **tombstone-only rewrite**: an owner redaction that replaces old
+`api` rows with tombstones (see `docs/social-history.md` in the engine
+repository, "Redact stored values (tombstones)").
+
+A rewrite is accepted only when ALL of these hold, and any failure is a red
+check that prints fixed words, never a value:
+
+- The head branch is named `redact/<anything>`, in this repository (not a fork),
+  and never `counts/refresh`.
+- The pull request carries the label `history-tombstone`, and the last label
+  event is a `labeled` event applied by a login listed in
+  `.github/history-approvers`. The guard reads that file from the base commit,
+  so a pull request cannot add its own author. The label and the applier are
+  read live from the API, twice, and must agree. The label must be at least 24
+  hours old (a notice period, not a second approval).
+- No pull request from the Actions bot is open on `counts/refresh`.
+- The change touches only `history/social.jsonl`, optionally `numbers.json`
+  (removal of the entry that shows a redacted value, nothing else), and adds
+  exactly one `history/redactions/<run-id>.manifest`.
+- The engine's `counts history-compare` returns "valid rewrite" for the exact
+  bytes: only `api` rows became tombstones (their corrections go with them);
+  every other line keeps its content and order; no tombstone was removed or
+  turned back into data; later lines are re-chained and canonical; at most 500
+  records and 10 percent of the rows; every tombstone field and the manifest are
+  derived from the redacted keys, one reason code and two dates, so a redacted
+  value has no field to hide in. Make such a file with
+  `reach-around counts history-redact ... --confirm --derived`.
+- The head contains the current tip of `main` (update the branch if `main`
+  moved). A stale `counts/refresh` pull request built before the rewrite no
+  longer extends `main` and fails the check.
+
+The label is a permission to attempt the rewrite; the compare is the control.
+A label alone changes nothing, and `hand_kept` and `imported` rows are never
+accepted by this route.
+
+**Set it up in this order.** First bump `engine.lock` to a release that has
+`counts history-compare` and merge the scripts (`scripts/history-guard.py`,
+`scripts/verify-history-rewrite.sh`) and `.github/history-approvers` in one pull
+request; the guard reads its scripts from the base commit, so the workflow file
+goes in a second pull request. Then require the check `History guard` and "branch
+must be up to date before merging" on `main`, and do not enable a merge queue (the
+guard does not run under `merge_group`). Add your login to
+`.github/history-approvers` when you need a rewrite; the file ships empty, which
+means no rewrite is accepted.
+
+**What this does not do.** With the `pull_request` trigger GitHub runs the
+workflow file from the pull request, so anyone who can merge a change to the
+workflow, `scripts/`, `engine.lock` or the approvers file can weaken the guard:
+protect those paths with CODEOWNERS and a required review from a second person.
+A sole owner cannot be protected from their own account; the guard prevents
+mistakes, bounds a rewrite, and leaves a record in the job summary (label event,
+approver, label age, commits; counts only). Whether removing the label after a
+green run turns the merge red depends on your branch protection; treat an
+authorized label as final for that head commit. A tombstone cleans the working
+tree only: git history, deployed copies and Actions artifacts still hold the
+old value. Removing it from the git history of this repository is a separate
+operation (see the runbook "Runbook: removing redacted history from the private
+instance repo's git history").
 
 ## The token
 

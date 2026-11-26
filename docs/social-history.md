@@ -292,9 +292,21 @@ before the tag existed have none, so for an older file also run
    lines into your own `.gitignore` if you have not started from the example.
 4. `reach-around counts history-verify --config site.yaml` must exit 0.
 5. Commit the file to the private instance repository in its own pull request.
-   The bundled workflow still refuses a file that is not a byte-prefix of the
-   committed one; accepting a labeled tombstone-only rewrite is separate work
-   (issue #586 follow-up), so until then commit this one by hand.
+   The instance's `History guard` workflow refuses a history file that is not a
+   byte-prefix of the committed one, with one exception: a labeled
+   tombstone-only rewrite. For that route add `--derived` to the `--confirm`
+   command in step 3. It writes the fixed tombstone forms the guard accepts (the
+   time is the start of the UTC day, the run id is derived from the redacted
+   keys) and a manifest `history/redactions/<run-id>.manifest` that lists the
+   redacted keys and the reason, never a value. Commit the history file, that
+   manifest and, if the redacted value is the one the page shows, the matching
+   `numbers.json` entry removal, on a branch named `redact/<anything>`, then have
+   a login listed in `.github/history-approvers` apply the `history-tombstone`
+   label and wait 24 hours. The rules, the limits (500 records and 10 percent per
+   rewrite, `api` rows only) and what the guard cannot do are in the instance
+   template's README, section "History rewrites". Without `--derived`, or for
+   hand-kept and imported rows, the guard refuses the rewrite and the route is
+   the manual, reviewed one.
 6. A tombstone meets the deletion duty in the working tree only. Git still
    holds the old versions. If the deadline needs true deletion (Social Blade,
    or any case where git history would break it), the private-repository
