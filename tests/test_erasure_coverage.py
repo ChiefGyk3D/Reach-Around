@@ -106,18 +106,137 @@ LISTING_SQL = "SELECT name FROM sqlite_master WHERE type = 'table'"
 # --- the schema, from a real SQLite -------------------------------------------
 
 
-def build_db(migrations: list[tuple[str, str]]) -> sqlite3.Connection:
-    """Run the migrations in order. A migration SQLite cannot run is a failure
-    that names it; nothing is rewritten to make it run."""
+def strip_checks(sql: str) -> str:
+    """Remove every CHECK (...) clause, with a small state machine instead of a
+    pattern: line and block comments, single, double and backtick quoted text and
+    [bracket] names are copied through untouched, so CHECK text inside a comment or a
+    literal is never mistaken for a clause, and the clause's own parentheses are
+    matched with the same awareness. Used only when SQLite refuses a migration for
+    the size of a CHECK expression (older SQLite builds have a small parser stack).
+    CHECK constrains inserted values; it adds no table, column, view or trigger, so
+    the schema read from the stripped migration is the same."""
+    out: list[str] = []
+    i, n = 0, len(sql)
+
+    def skip_quoted(j: int) -> int:
+        """Index just past the string, comment or bracket name starting at j, or j."""
+        c = sql[j]
+        if sql.startswith("--", j):
+            k = sql.find("\n", j)
+            return n if k < 0 else k
+        if sql.startswith("/*", j):
+            k = sql.find("*/", j + 2)
+            return n if k < 0 else k + 2
+        close = {"'": "'", '"': '"', "`": "`", "[": "]"}.get(c)
+        if close is None:
+            return j
+        k = j + 1
+        while k < n:
+            if sql[k] == close:
+                if close != "]" and sql.startswith(close, k + 1):
+                    k += 2  # a doubled quote is an escaped quote
+                    continue
+                return k + 1
+            k += 1
+        return n
+
+    while i < n:
+        j = skip_quoted(i)
+        if j != i:
+            out.append(sql[i:j])
+            i = j
+            continue
+        if sql[i].isalnum() or sql[i] == "_":
+            k = i
+            while k < n and (sql[k].isalnum() or sql[k] == "_"):
+                k += 1
+            word = sql[i:k]
+            if word.upper() == "CHECK":
+                m = k
+                while m < n:  # spaces and comments between CHECK and the "("
+                    if sql[m].isspace():
+                        m += 1
+                    elif sql.startswith(("--", "/*"), m):
+                        m = skip_quoted(m)
+                    else:
+                        break
+                if m < n and sql[m] == "(":
+                    depth = 0
+                    while m < n:
+                        e = skip_quoted(m)
+                        if e != m:
+                            m = e
+                            continue
+                        if sql[m] == "(":
+                            depth += 1
+                        elif sql[m] == ")":
+                            depth -= 1
+                            if depth == 0:
+                                m += 1
+                                break
+                        m += 1
+                    else:
+                        raise ValueError("unbalanced parentheses in a CHECK clause")
+                    out.append(" ")
+                    i = m
+                    continue
+            out.append(word)
+            i = k
+            continue
+        out.append(sql[i])
+        i += 1
+    return "".join(out)
+
+
+# SQLite builds with a small parser stack refuse a very large CHECK expression.
+PARSER_LIMIT = re.compile(
+    r"stack overflow|too (?:complex|deep|large)|maximum depth|nested too"
+    r"|recursion limit",
+    re.I,
+)
+
+
+def build_db(
+    migrations: list[tuple[str, str]],
+    force_strip: bool = False,
+    used: list[str] | None = None,
+) -> sqlite3.Connection:
+    """Run the migrations in order, as written. A migration SQLite cannot run is a
+    failure that names it. The one exception: when SQLite refuses a migration for
+    parser size (a very large CHECK, seen on SQLite 3.45), that migration alone is
+    run again with its CHECK clauses removed by strip_checks, on a database rebuilt
+    from the migrations before it; the names of such migrations go in `used`. If the
+    stripped copy fails too, that fails by name. `force_strip` takes that path for
+    every migration (a test of the fallback)."""
+    version = sqlite3.sqlite_version
     db = sqlite3.connect(":memory:")
+    applied: list[str] = []
     for name, sql in migrations:
+        text = strip_checks(sql) if force_strip else sql
         try:
-            db.executescript(sql)
+            db.executescript(text)
         except sqlite3.Error as exc:
-            raise AssertionError(
-                f"migration {name} does not run on SQLite "
-                f"{sqlite3.sqlite_version}: {exc}"
-            ) from exc
+            if force_strip or not PARSER_LIMIT.search(str(exc)):
+                raise AssertionError(
+                    f"migration {name} does not run on SQLite {version}: {exc}"
+                ) from exc
+            db.close()  # undo any statements of this migration that did run
+            db = sqlite3.connect(":memory:")
+            for earlier in applied:
+                db.executescript(earlier)
+            text = strip_checks(sql)
+            try:
+                db.executescript(text)
+            except sqlite3.Error as exc2:
+                raise AssertionError(
+                    f"migration {name} does not run on SQLite {version}, also "
+                    f"with its CHECK clauses removed: {exc2}"
+                ) from exc2
+            if used is not None:
+                used.append(name)
+        if force_strip and used is not None:
+            used.append(name)
+        applied.append(text)
     return db
 
 
@@ -924,6 +1043,88 @@ def test_the_real_parser_sees_through_comments_literals_alters_views_and_trigger
         objects={"view": ["everyone"], "trigger": ["copy_email"]},
     )
     assert schema_violations(schema, ok, live_objects(db)) == []
+
+
+def _same_schema(a: sqlite3.Connection, b: sqlite3.Connection) -> bool:
+    return live_schema(a) == live_schema(b) and live_objects(a) == live_objects(b)
+
+
+def test_the_check_stripper_is_not_fooled_by_comments_or_literals() -> None:
+    sql = HOSTILE[0][1]
+    stripped = strip_checks(sql)
+    # Text in comments and literals is copied through untouched.
+    assert (
+        "-- CHECK (" in stripped
+        and "/* CHECK ( CREATE TABLE in_a_block_comment" in stripped
+    )
+    assert "'a (b); CHECK (c)'" in stripped
+    assert "'semi; ) paren ( CREATE TABLE fake (id INT);'" in stripped
+    # The one real clause is gone, parentheses and quotes inside it included.
+    assert "label <> 'x(;'" not in stripped
+    # Same schema as the real parse (the statements that matter are unchanged).
+    assert _same_schema(build_db(HOSTILE), build_db(HOSTILE, force_strip=True))
+    # Odd spellings: lower case, a comment between the keyword and the parenthesis,
+    # a doubled quote, a quoted identifier that contains the word.
+    odd = (
+        "CREATE TABLE \"check\" (a INT check /* x ) */ (a > 0 AND 'it''s )' <> a),"
+        " b TEXT CHECK\n(b <> '(' ), checks INT);"
+    )
+    got = strip_checks(odd)
+    assert '"check"' in got and "checks INT" in got
+    assert "a > 0" not in got and "b <> '('" not in got
+    db = build_db([("0001.sql", got)])
+    assert live_schema(db)["check"]["columns"] == ["a", "b", "checks"]
+
+
+def test_the_fallback_gives_the_same_schema_and_digest_for_every_migration() -> None:
+    """The fallback used on SQLite builds that refuse a large CHECK (3.45.1 on the
+    CI runners, which cannot be run here) is forced for every real migration: the
+    tables, columns, types, views, triggers and the digest are the same."""
+    direct = real_db()
+    used: list[str] = []
+    forced = build_db(
+        [(m.name, m.read_text(encoding="utf-8")) for m in MIGRATIONS],
+        force_strip=True,
+        used=used,
+    )
+    assert used == [m.name for m in MIGRATIONS]
+    assert _same_schema(direct, forced)
+    want = schema_digest(live_schema(direct), live_objects(direct))
+    assert schema_digest(live_schema(forced), live_objects(forced)) == want
+    assert want == load_registry()["reviewed_schema_digest"]
+
+    # The forced run really ran without constraints: no stored table keeps a CHECK
+    # (the direct run does keep at least one, so this is not a vacuous comparison).
+    def checks(db: sqlite3.Connection) -> int:
+        return sum(
+            bool(re.search(r"\bCHECK\s*\(", sql or "", re.I))
+            for (sql,) in db.execute("SELECT sql FROM sqlite_master WHERE type='table'")
+        )
+
+    assert checks(direct) > 0 and checks(forced) == 0
+
+
+def test_a_migration_too_big_for_the_parser_is_retried_without_its_checks() -> None:
+    """A real parser-size refusal (an expression tree past SQLite's depth limit),
+    after an earlier statement of the same migration already ran: the retry starts
+    from a rebuilt database, so nothing is created twice."""
+    deep = "NOT " * 3000 + "v > 0"
+    sql = (
+        "CREATE TABLE first_t (id INTEGER PRIMARY KEY);"
+        f"CREATE TABLE deep_t (v INTEGER CHECK ({deep}));"
+    )
+    with pytest.raises(sqlite3.Error):
+        sqlite3.connect(":memory:").executescript(sql)
+    used: list[str] = []
+    db = build_db(
+        [("0001_deep.sql", sql), ("0002_next.sql", "CREATE TABLE n (a);")], used=used
+    )
+    assert used == ["0001_deep.sql"]
+    assert list(live_schema(db)) == ["deep_t", "first_t", "n"]
+    # If the stripped copy fails too, it fails by name and says so.
+    bad = sql + "CREATE TABLE ((;"
+    with pytest.raises(AssertionError, match=r"0003_bad\.sql .*CHECK clauses removed"):
+        build_db([("0003_bad.sql", bad)])
 
 
 def test_a_migration_sqlite_cannot_run_fails_by_name() -> None:
