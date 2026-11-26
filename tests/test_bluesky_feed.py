@@ -21,6 +21,7 @@ from reach_around.counts.fediverse_rows import InteractionRow, NotProvided
 from reach_around.net.fetch import FetchError, fetch_json_view
 
 NOW = datetime(2026, 11, 26, 12, 0, 0, tzinfo=UTC)
+ACTOR = "alice.example.com"
 DID = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"
 OTHER = "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb"
 DATE_OK = {"date": "Thu, 26 Nov 2026 12:00:00 GMT"}
@@ -164,28 +165,30 @@ def test_window_edges_by_indexed_at() -> None:
         post(2, NOW + timedelta(minutes=10, seconds=1), likes=2),  # beyond: dropped
         post(3, NOW, likes=3),
         post(4, START, likes=4),  # exactly the start: in
-        post(5, START - timedelta(seconds=1), likes=5),  # one second before: stop
-        post(6, NOW - timedelta(days=1), likes=6),  # after a stop: never read
+        post(5, START - timedelta(seconds=1), likes=5),  # one second before: out
+        post(6, NOW - timedelta(days=1), likes=6),  # after an old one: still in
     ]
     read = run(Pages([feed_page(items)]))
     assert read.complete
-    assert sorted(f for _, f, _ in rows_of(read)) == [1, 3, 4]
+    assert sorted(f for _, f, _ in rows_of(read)) == [1, 3, 4, 6]
     assert read.dropped_future == 1
 
 
-def test_the_walk_stops_at_the_first_old_post_and_asks_for_no_more_pages() -> None:
+def test_a_whole_page_of_old_posts_ends_the_walk_and_asks_for_no_more_pages() -> None:
+    # The rule: the walk ends at the cursor's end, the page budget, or one whole
+    # page with own posts older than the window and none inside it (#922).
     p = Pages(
         [
-            feed_page(
-                [post(1, NOW - timedelta(days=1)), post(2, START - timedelta(days=1))],
-                "c1",
-            ),
+            feed_page([post(1, NOW - timedelta(days=1))], "c1"),
+            feed_page([post(2, START - timedelta(days=1))], "c2"),
             feed_page([post(3, NOW - timedelta(days=2))]),
         ]
     )
     read = run(p)
-    assert read.complete and read.calls == 2 and len(rows_of(read)) == 1
-    assert len(p.transport.calls) == 2
+    assert read.complete and read.calls == 3 and len(rows_of(read)) == 1
+    # the profile and two pages; the third page is never requested
+    assert len(p.transport.calls) == 3
+    assert not any("cursor=c2" in c.path for c in p.transport.calls)
 
 
 def test_author_supplied_created_at_never_decides_the_window() -> None:
@@ -246,21 +249,19 @@ def test_a_failed_second_page_is_partial_and_keeps_the_prior_rows() -> None:
     assert isinstance(read.rows, NotProvided) and read.reason == "partial_pages"
     assert (read.followers, read.posts) == (321, 77)  # the profile call was whole
     prior = [InteractionRow(1, 2, 3)]
-    snap = bsky.build_snapshot(
-        read, actor="alice.example.com", as_of=date(2026, 11, 26), prior=prior
-    )
+    snap = bsky.build_snapshot(read, as_of=date(2026, 11, 26), prior=prior)
     assert snap is not None
     assert snap["complete"] is False and snap["reason"] == "partial_pages"
     assert snap["interactions"] == [{"boosts": 1, "favorites": 2, "replies": 3}]
     assert bsky.history_aggregates(read) is None  # nothing written to history
-    assert bsky.entry_from_snapshot(snap) is None  # never replaces a typed entry
+    assert (
+        bsky.entry_from_snapshot(snap, actor=ACTOR) is None
+    )  # never replaces a typed entry
 
 
 def test_an_incomplete_read_with_no_prior_has_no_interactions_at_all() -> None:
     read = run(Pages([reply({}, status=500)]))
-    snap = bsky.build_snapshot(
-        read, actor="alice.example.com", as_of=date(2026, 11, 26)
-    )
+    snap = bsky.build_snapshot(read, as_of=date(2026, 11, 26))
     assert snap is not None and "interactions" not in snap
     assert snap["complete"] is False
 
@@ -411,9 +412,7 @@ def test_hostile_extra_keys_and_text_never_reach_a_row_or_the_snapshot() -> None
     item["extra"] = {"likeCount": 10**6}
     read = run(Pages([feed_page([item])]))
     assert rows_of(read) == [(0, 2, 0)]
-    snap = bsky.build_snapshot(
-        read, actor="alice.example.com", as_of=date(2026, 11, 26)
-    )
+    snap = bsky.build_snapshot(read, as_of=date(2026, 11, 26))
     blob = repr(read) + json.dumps(snap)
     for leaked in (sentinel, "bob@", "203.0.113", "carol", "p1", DID, "at://"):
         assert leaked not in blob
@@ -439,9 +438,7 @@ def test_an_empty_account_is_a_real_zero_only_when_the_read_finished() -> None:
         "favorites_30d": 0,
         "replies_30d": 0,
     }
-    snap = bsky.build_snapshot(
-        read, actor="alice.example.com", as_of=date(2026, 11, 26)
-    )
+    snap = bsky.build_snapshot(read, as_of=date(2026, 11, 26))
     assert snap is not None and snap["interactions"] == [] and snap["complete"] is True
     # the same empty page on a broken run is not a zero
     broken = run(Pages([feed_page([])], headers={}))
@@ -483,9 +480,7 @@ def test_more_than_two_hundred_posts_is_window_truncated_and_keeps_prior() -> No
     read = run(Pages(pages))
     assert read.complete and len(rows_of(read)) == 205
     prior = [InteractionRow(0, 0, 0)]
-    snap = bsky.build_snapshot(
-        read, actor="alice.example.com", as_of=date(2026, 11, 26), prior=prior
-    )
+    snap = bsky.build_snapshot(read, as_of=date(2026, 11, 26), prior=prior)
     assert snap is not None
     assert snap["reason"] == "window_truncated" and snap["complete"] is False
     assert snap["interactions"] == [{"boosts": 0, "favorites": 0, "replies": 0}]
@@ -581,7 +576,6 @@ def test_a_bad_actor_makes_no_call_and_a_naive_now_is_refused() -> None:
 def test_the_guard_refuses_person_level_keys_and_values() -> None:
     base: dict[str, Any] = {
         "platform": "bluesky",
-        "profile_url": "https://bsky.app/profile/alice.example.com",
         "as_of": "2026-11-26",
         "complete": True,
     }
@@ -590,8 +584,12 @@ def test_the_guard_refuses_person_level_keys_and_values() -> None:
         bsky.check_snapshot({**base, "handle": "x"})
     with pytest.raises(ImportGuardError):
         bsky.check_snapshot({**base, "extra": 1})
+    with pytest.raises(ImportGuardError):  # the link is not part of a snapshot
+        bsky.check_snapshot(
+            {**base, "profile_url": "https://bsky.app/profile/alice.example.com"}
+        )
     with pytest.raises(ImportGuardError):
-        bsky.check_snapshot({**base, "profile_url": "write bob@example.com"})
+        bsky.check_snapshot({**base, "reason": "write bob@example.com"})
     with pytest.raises(ImportGuardError):
         bsky.check_snapshot({**base, "interactions": [{"boosts": 1, "handle": 2}]})
     with pytest.raises(ImportGuardError):
@@ -602,11 +600,10 @@ def test_the_guard_refuses_person_level_keys_and_values() -> None:
 
 def test_a_guard_hit_writes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     read = run(Pages([feed_page([post(1, NOW)])]))
-    monkeypatch.setattr(bsky, "profile_url", lambda a: "contact bob@example.com")
-    assert (
-        bsky.build_snapshot(read, actor="alice.example.com", as_of=date(2026, 11, 26))
-        is None
+    monkeypatch.setattr(
+        bsky, "keep_prior", lambda rows, prior: (None, "contact bob@example.com")
     )
+    assert bsky.build_snapshot(read, as_of=date(2026, 11, 26)) is None
 
 
 def test_a_complete_snapshot_feeds_the_existing_kit_block() -> None:
@@ -616,9 +613,9 @@ def test_a_complete_snapshot_feeds_the_existing_kit_block() -> None:
         post(3, NOW - timedelta(days=3), likes=20, reposts=2, replies=1),
     ]
     read = run(Pages([feed_page(items)]))
-    snap = bsky.build_snapshot(read, actor="alice.example.com", as_of=bsky.utc_day(NOW))
+    snap = bsky.build_snapshot(read, as_of=bsky.utc_day(NOW))
     assert snap is not None
-    entry = bsky.entry_from_snapshot(snap)
+    entry = bsky.entry_from_snapshot(snap, actor=ACTOR)
     assert entry is not None and entry.platform == "bluesky"
     assert entry.profile_url == "https://bsky.app/profile/alice.example.com"
     assert (entry.followers, entry.posts) == (321, 77)
@@ -626,6 +623,302 @@ def test_a_complete_snapshot_feeds_the_existing_kit_block() -> None:
     assert measures["median_favorites_30d"] == 20
     assert measures["median_boosts_30d"] == 2
     assert measures["median_replies_30d"] == 1
+
+
+# --- Daybreak round 1 fixes (#922) --------------------------------------------------
+
+
+def _strings(value: Any) -> list[str]:
+    """Every key and string leaf of a nested structure (and its repr's text)."""
+    found: list[str] = []
+    if isinstance(value, dict):
+        for key, inner in value.items():
+            found.append(str(key))
+            found.extend(_strings(inner))
+    elif isinstance(value, (list, tuple)):
+        for inner in value:
+            found.extend(_strings(inner))
+    elif isinstance(value, str):
+        found.append(value)
+    return found
+
+
+@pytest.mark.parametrize("actor", [ACTOR, DID])
+def test_no_stored_structure_holds_the_actor_or_anything_identifying(
+    actor: str,
+) -> None:
+    p = Pages([feed_page([post(1, NOW - timedelta(days=1), likes=3)])])
+    read = bsky.collect(
+        actor, now=NOW, transport=p.transport, sleep=lambda s: None, jitter=lambda: 0.0
+    )
+    assert read.complete
+    prior = [InteractionRow(1, 2, 3)]
+    complete = bsky.build_snapshot(read, as_of=date(2026, 11, 26))
+    partial = bsky.build_snapshot(
+        run(Pages([reply({}, status=500)])), as_of=date(2026, 11, 26), prior=prior
+    )
+    aggregates = bsky.history_aggregates(read)
+    assert complete is not None and partial is not None and aggregates is not None
+    for stored in (complete, partial, aggregates, [vars(read)]):
+        for text in _strings(stored):
+            for needle in (
+                actor,
+                DID,
+                "alice",
+                "example.com",
+                "bsky.app",
+                "at://",
+                "did:",
+                "http",
+                "hello",
+                "p1",
+            ):
+                assert needle not in text, (needle, text)
+    for stored in (complete, partial, aggregates):
+        for value in _walk_numbers(stored):
+            assert type(value) is int
+    assert "profile_url" not in complete and "actor" not in complete
+    assert "actor" not in bsky.build_snapshot.__annotations__
+
+
+def _walk_numbers(value: Any) -> list[Any]:
+    if isinstance(value, dict):
+        return [n for inner in value.values() for n in _walk_numbers(inner)]
+    if isinstance(value, (list, tuple)):
+        return [n for inner in value for n in _walk_numbers(inner)]
+    if isinstance(value, (bool, str)) or value is None:
+        return []
+    return [value]
+
+
+class Flaky:
+    """Answers every distinct request with a 503 once, then lets it through."""
+
+    def __init__(self, pages: list[Any]) -> None:
+        self.inner = Pages(pages).transport
+        self.seen: set[str] = set()
+        self.requests = 0
+
+    def __call__(self, request: Any) -> Any:
+        self.requests += 1
+        if request.path not in self.seen:
+            self.seen.add(request.path)
+            return reply({}, status=503)
+        return self.inner(request)
+
+
+def test_a_retry_that_succeeds_is_counted_as_a_request() -> None:
+    flaky = Flaky([feed_page([post(1, NOW - timedelta(days=1))])])
+    read = bsky.collect(
+        ACTOR, now=NOW, transport=flaky, sleep=lambda s: None, jitter=lambda: 0.0
+    )
+    assert read.complete and len(rows_of(read)) == 1
+    assert flaky.requests == 4 == read.calls  # two operations, one retry each
+
+
+def test_retries_draw_on_the_same_thirteen_request_budget() -> None:
+    pages = [
+        feed_page([post(i, NOW - timedelta(hours=i))], f"c{i + 1}") for i in range(30)
+    ]
+    flaky = Flaky(pages)
+    read = bsky.collect(
+        ACTOR, now=NOW, transport=flaky, sleep=lambda s: None, jitter=lambda: 0.0
+    )
+    assert flaky.requests == 13 == bsky.MAX_CALLS  # never 13 operations x 2 tries
+    assert read.calls == 13
+    assert isinstance(read.rows, NotProvided) and read.reason == "page_cap"
+
+
+class Clock:
+    """A fake monotonic clock; its sleep only moves the time."""
+
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def __call__(self) -> float:
+        return self.t
+
+    def sleep(self, seconds: float) -> None:
+        self.t += seconds
+
+
+class Slow:
+    """A transport that takes ``cost`` seconds per request on the fake clock."""
+
+    def __init__(self, inner: Any, clock: Clock, costs: list[float]) -> None:
+        self.inner, self.clock, self.costs = inner, clock, costs
+        self.deadlines: list[float] = []
+
+    def __call__(self, request: Any) -> Any:
+        self.deadlines.append(request.deadline)
+        self.clock.t += self.costs[min(len(self.deadlines) - 1, len(self.costs) - 1)]
+        return self.inner(request)
+
+
+def _collect_slow(
+    pages: list[Any], clock: Clock, costs: list[float]
+) -> tuple[bsky.BlueskyRead, Slow, list[float]]:
+    slow = Slow(Pages(pages).transport, clock, costs)
+    sleeps: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock.sleep(seconds)
+
+    read = bsky.collect(
+        ACTOR, now=NOW, transport=slow, sleep=sleep, jitter=lambda: 0.0, clock=clock
+    )
+    return read, slow, sleeps
+
+
+def test_one_absolute_deadline_caps_every_request_and_the_pauses() -> None:
+    pages = [
+        feed_page([post(i, NOW - timedelta(hours=i))], f"c{i + 1}") for i in range(30)
+    ]
+    clock = Clock()
+    read, slow, _ = _collect_slow(pages, clock, [40.0])
+    assert read.reason == "timeout"
+    assert all(d <= bsky.PLATFORM_DEADLINE for d in slow.deadlines)
+    # the third request started at 82 s with 8 s left: its deadline is the run's
+    assert slow.deadlines[2] == bsky.PLATFORM_DEADLINE
+    assert len(slow.deadlines) == 3  # no fourth request after the deadline
+
+
+def test_a_pause_that_would_cross_the_deadline_is_not_taken() -> None:
+    clock = Clock()
+    read, slow, sleeps = _collect_slow(
+        [feed_page([post(1, NOW)], "c1"), feed_page([])], clock, [89.5]
+    )
+    assert read.reason == "timeout" and len(slow.deadlines) == 1
+    assert sleeps == []  # the one-second pause would have ended at 90.5 s
+
+
+def test_a_retry_wait_that_would_cross_the_deadline_ends_the_run() -> None:
+    clock = Clock()
+    slow = Slow(lambda r: reply({}, status=503), clock, [89.5])
+    read = bsky.collect(
+        ACTOR,
+        now=NOW,
+        transport=slow,
+        sleep=clock.sleep,
+        jitter=lambda: 0.0,
+        clock=clock,
+    )
+    assert read.reason == "timeout" and len(slow.deadlines) == 1  # no second try
+
+
+def test_an_old_item_in_the_middle_does_not_end_the_walk() -> None:
+    items = [
+        post(1, NOW - timedelta(days=1), likes=1),
+        post(2, START - timedelta(days=3), likes=50),  # out of order
+        post(3, NOW - timedelta(days=2), likes=2),
+    ]
+    read = run(Pages([feed_page(items)]))
+    assert read.complete and sorted(f for _, f, _ in rows_of(read)) == [1, 2]
+
+
+def test_an_old_item_first_then_recent_ones_on_the_next_page_still_count() -> None:
+    pin = post(9, START - timedelta(days=90), likes=99)  # not marked as a pin
+    p = Pages(
+        [
+            feed_page([pin, post(1, NOW - timedelta(days=1), likes=4)], "c1"),
+            feed_page([post(2, NOW - timedelta(days=2), likes=6)]),
+        ]
+    )
+    read = run(p)
+    assert read.complete and sorted(f for _, f, _ in rows_of(read)) == [4, 6]
+
+
+def test_a_budget_stop_while_old_items_keep_coming_is_incomplete() -> None:
+    pages = [
+        feed_page(
+            [
+                post(i, NOW - timedelta(hours=i)),
+                post(500 + i, START - timedelta(days=2)),
+            ],
+            f"c{i + 1}",
+        )
+        for i in range(30)
+    ]
+    read = run(Pages(pages))
+    assert isinstance(read.rows, NotProvided) and read.reason == "page_cap"
+    assert bsky.history_aggregates(read) is None  # never a complete undercount
+
+
+def test_a_page_of_reposts_with_a_cursor_is_not_the_end_of_the_window() -> None:
+    repost = post(7, NOW - timedelta(days=1))
+    repost["reason"] = {"$type": "app.bsky.feed.defs#reasonRepost"}
+    p = Pages(
+        [feed_page([repost], "c1"), feed_page([post(1, NOW - timedelta(days=1))])]
+    )
+    assert len(rows_of(run(p))) == 1
+
+
+def test_a_cursor_seen_earlier_stops_the_walk_not_only_a_repeat() -> None:
+    pages = [
+        feed_page([post(1, NOW - timedelta(hours=1))], "c1"),
+        feed_page([post(2, NOW - timedelta(hours=2))], "c2"),
+        feed_page([post(3, NOW - timedelta(hours=3))], "c1"),  # A, B, A
+        feed_page([post(4, NOW - timedelta(hours=4))]),
+    ]
+    p = Pages(pages)
+    read = run(p)
+    assert isinstance(read.rows, NotProvided) and read.reason == "partial_pages"
+    assert len(p.transport.calls) == 4  # the profile and three pages, no more
+
+
+def _nest(leaf: Any, depth: int = 5) -> Any:
+    value = leaf
+    for level in range(depth):
+        value = {"k": value} if level % 2 else [value]
+    return value
+
+
+_BASE: dict[str, Any] = {"platform": "bluesky", "as_of": "2026-11-26", "complete": True}
+
+
+@pytest.mark.parametrize(
+    "leaf",
+    [
+        "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/p1",
+        "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+        "alice.example.com",
+        "https://bsky.app/profile/alice.example.com",
+        "bafyreigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi",
+        "a long piece of free text that is not a fixed reason word at all",
+        "bob@example.com",
+        "@carol",
+        1.5,
+        None,
+        b"bytes",
+    ],
+)
+@pytest.mark.parametrize("key", ["followers", "posts", "interactions", "reason"])
+def test_hostile_values_nested_five_deep_are_refused(key: str, leaf: Any) -> None:
+    bsky.check_snapshot(_BASE)  # the control: a clean snapshot passes
+    with pytest.raises(ImportGuardError):
+        bsky.check_snapshot({**_BASE, key: _nest(leaf)})
+
+
+def test_hostile_keys_and_containers_and_depth_are_refused() -> None:
+    for hostile in (
+        {"handle": 1},
+        {"zzz": 1},
+        {"ok": {"deeper": [{"email": 1}]}},
+    ):
+        with pytest.raises(ImportGuardError):
+            bsky.check_snapshot({**_BASE, "followers": _nest(hostile)})
+    with pytest.raises(ImportGuardError):  # a row hiding a tuple of a string
+        bsky.check_snapshot(
+            {**_BASE, "interactions": [{"boosts": 1, "favorites": 2, "replies": (3,)}]}
+        )
+    with pytest.raises(ImportGuardError):  # deeper than any legitimate shape
+        bsky.check_snapshot({**_BASE, "followers": _nest(1, depth=40)})
+    for bad in (True, -1, 10**13, "9"):
+        with pytest.raises(ImportGuardError):
+            bsky.check_snapshot({**_BASE, "followers": bad})
+    with pytest.raises(ImportGuardError):
+        bsky.check_snapshot({**_BASE, "reason": "not_a_reason_word"})
 
 
 # --- fetch_json_view -------------------------------------------------------------
