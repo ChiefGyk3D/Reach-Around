@@ -408,11 +408,13 @@ the repository and every directory above it included) and not by a group that
 anyone else belongs to. A group write bit is accepted only when the group is
 your effective primary group (not a supplementary group), lists no member but
 you, is no other account's primary group, and the `passwd` and `group` lines of
-`/etc/nsswitch.conf` name only `files` (or `systemd`): that is the private group
-and local account files of a normal account with umask 002, which give every
-file of a plain checkout and of `npm ci` a group write bit that no one else can
-use, so those need no `chmod`. With any directory service on either line (sss,
-ldap, winbind, nis, compat), an unreadable `nsswitch.conf` or any error from the
+`/etc/nsswitch.conf` name exactly `files`: that is the private group and local
+account files of a normal account with umask 002, which give every file of a
+plain checkout and of `npm ci` a group write bit that no one else can use, so
+those need no `chmod`. Only a local files-only identity database is accepted:
+with `systemd` (systemd-userdb can answer a targeted lookup for an account that
+enumeration never lists) or any directory service on either line (sss, ldap,
+winbind, nis, compat), an unreadable `nsswitch.conf` or any error from the
 account or group lookup, the tool cannot know the group has no other member, so
 it refuses a group write bit instead. The alternative is to remove it:
 `chmod -R g-w worker/node_modules` (and the same for the repository root,

@@ -51,9 +51,10 @@ belong to root or the current user, and none may be writable by others (world
 write is refused everywhere) or by a group that anyone else belongs to. A group
 write bit is accepted only when the group is your effective primary group (not a
 supplementary one), lists no member but you, is no other account's primary
-group, and the ``passwd`` and ``group`` lines of /etc/nsswitch.conf name only
-``files`` or ``systemd`` (so the enumeration is complete; any directory service,
-an unreadable file or a lookup error refuses). That is the user-private group of
+group, and the ``passwd`` and ``group`` lines of /etc/nsswitch.conf name exactly
+``files`` (so the enumeration is complete; ``systemd`` and any directory service
+can answer a targeted lookup without being enumerable, and an unreadable file or
+a lookup error refuses too). That is the user-private group of
 a normal account with umask 002, so an ordinary checkout and ``npm ci`` are
 accepted as they are; otherwise run ``chmod -R g-w worker/node_modules``.
 Outside the repository a sticky shared directory owned by root (such as
@@ -693,7 +694,7 @@ def _pinned_version() -> str:
 
 
 NSSWITCH_CONF = "/etc/nsswitch.conf"
-_LOCAL_NSS_SOURCES = frozenset({"files", "systemd"})
+_LOCAL_NSS_SOURCES = frozenset({"files"})  # round 6: systemd is not enumerable
 
 
 def _read_nsswitch() -> str:
@@ -704,10 +705,12 @@ def _read_nsswitch() -> str:
 
 def _nss_is_local() -> bool:
     """True only when the ``passwd`` and ``group`` lines of nsswitch.conf each
-    appear once and name only local sources (``files``, ``systemd``). A directory
-    service (sss, ldap, winbind, nis, ...) can make a group look private or hide
-    its members from the enumeration below, so anything else, an unreadable file
-    or a line this cannot parse counts as not local (fail closed)."""
+    appear once and name exactly ``files`` (bracketed action clauses are
+    ignored). ``systemd`` (systemd-userdb can answer targeted lookups for
+    accounts that enumeration never lists) and any directory service (sss, ldap,
+    winbind, nis, ...) can make a group look private or hide its members from the
+    enumeration below, so anything else, an unreadable file or a line this cannot
+    parse counts as not local (fail closed)."""
     try:
         text = _read_nsswitch()
     except Exception:
@@ -779,7 +782,8 @@ _PKG_NAME = re.compile(r"(?:@[a-z0-9._-]+/)?[a-z0-9._-]+")
 _REFUSED_TREE = (
     "the wrangler package or one it depends on has a file or directory that "
     "belongs to another account or is writable by group or others; refusing it "
-    "(fix with: chmod -R go-w worker/node_modules; for a group write bit only, "
+    "(only a local files-only identity database is accepted for a group write "
+    "bit; fix with: chmod -R go-w worker/node_modules; for a group write bit only, "
     "chmod -R g-w worker/node_modules)"
 )
 
@@ -1080,7 +1084,9 @@ def _resolve_wrangler(arg: Path | None) -> str:
                     "every directory above wrangler must belong to root or you and "
                     "not be writable by others or by a group another account "
                     "belongs to (only your own primary group, with no other member "
-                    "and on a machine whose account lists are local files, is "
+                    "and on a machine whose passwd and group lines name only "
+                    "local files, since only a local files-only identity "
+                    "database is accepted, is "
                     "fine; fix with: chmod -R go-w worker/node_modules, or "
                     "chmod -R g-w worker/node_modules)"
                 )
@@ -1963,7 +1969,8 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "must match worker/package-lock.json, and the package and its "
         "dependencies (walked, bounded) must belong to root or you with no other "
         "write bit and no write bit for a group anyone else belongs to (only your "
-        "own private primary group on a machine with local account files is "
+        "own private primary group on a machine whose passwd and group lines "
+        "name exactly files is "
         "fine; otherwise run 'chmod -R g-w worker/node_modules'). Only the "
         "layout of 'cd worker && npm ci --ignore-scripts' is supported (hoisted "
         "or workspace installs are refused). It receives your Cloudflare token: "

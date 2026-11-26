@@ -24,6 +24,9 @@ _REAL = Path(__file__).resolve().parent.parent / "worker" / "node_modules" / "wr
 # Skipped only when the dependencies are absent: cd worker && npm ci --ignore-scripts
 @pytest.mark.skipif(not _REAL.is_dir(), reason="worker/node_modules is not installed")
 def test_the_resolver_accepts_a_real_npm_ci_install_of_this_repository() -> None:
+    """Developer coverage, not a CI gate: this test is SKIPPED when
+    ``worker/node_modules`` is absent (no worker dependencies installed), and it
+    proves acceptance only, not refusal of a hidden second account."""
     assert Path(leads_cmd.REPO_ROOT).resolve() == _REAL.parents[2]
     resolved = leads_cmd._resolve_wrangler(None)
     assert os.path.relpath(resolved, leads_cmd.REPO_ROOT) == os.path.join(

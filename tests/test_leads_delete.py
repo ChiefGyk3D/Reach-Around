@@ -31,7 +31,7 @@ LEADS_DB = "reach-around-leads"
 ALERTS_DB = "ra-alerts"
 # Step 1 passed its checks and printed the SQL; nothing is erased (#905 round 2).
 CHECKED = leads_cmd.EXIT_CHECKED
-LOCAL_NSS = "passwd: files systemd\ngroup: files systemd\n"
+LOCAL_NSS = "passwd: files\ngroup: files\n"
 
 _FAKE: dict[str, Any] = {}
 
@@ -811,6 +811,11 @@ class TestYes:
             "passwd: files\ngroup: files\ngroup: files nis\n",  # two group lines
             "passwd: files\ngroup:\n",  # empty
             "passwd: files [NOTFOUND=return] sss\ngroup: files\n",
+            # Round 6 finding: systemd-userdb answers targeted lookups for accounts
+            # that enumeration never lists, so it is not a local files-only source.
+            "passwd: files systemd\ngroup: files systemd\n",
+            "passwd: files\ngroup: files [SUCCESS=merge] systemd\n",
+            "passwd: systemd\ngroup: files\n",
         ],
     )
     def test_a_directory_service_in_nsswitch_refuses_the_private_group_rule(
@@ -839,11 +844,26 @@ class TestYes:
     ) -> None:
         self._private_group(monkeypatch, os.getegid())
         for text in (
-            "# c\npasswd:  files systemd  # x\ngroup: files [SUCCESS=merge] systemd\n",
+            "# c\npasswd:  files  # x\ngroup: files [NOTFOUND=return]\n",
             "passwd: files\ngroup: files\nhosts: dns sss\n",
         ):
             monkeypatch.setattr(leads_cmd, "_read_nsswitch", lambda t=text: t)
             assert leads_cmd._group_is_private(os.getegid()) is True, text
+
+    def test_systemd_nss_cannot_hide_an_account_that_shares_the_group(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Round 6 finding (#905): with ``files systemd`` a second account that
+        shares the GID can be missing from ``pwd.getpwall()`` (not enumerable), so
+        the empty enumeration must not make the group look private."""
+        gid = os.getegid()
+        # _private_group fakes an EMPTY getpwall(): the second account sharing the
+        # GID exists for targeted lookups only and is never enumerated.
+        self._private_group(monkeypatch, gid)
+        assert leads_cmd._group_is_private(gid) is True
+        text = "passwd: files systemd\ngroup: files systemd\n"
+        monkeypatch.setattr(leads_cmd, "_read_nsswitch", lambda: text)
+        assert leads_cmd._group_is_private(gid) is False
 
     def test_an_unreadable_nsswitch_or_a_lookup_error_is_a_refusal(
         self, monkeypatch: pytest.MonkeyPatch
