@@ -6,6 +6,8 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -13,8 +15,10 @@ from typing import Any
 import pytest
 
 from reach_around.cli import main
+from reach_around.commands import leads as _leads_module
 from reach_around.commands.leads import (
     LeadsError,
+    alert_clear_commands,
     mask_email,
     normalize_email,
 )
@@ -22,6 +26,54 @@ from reach_around.commands.leads import (
 ID_A = "0123456789abcdef0123456789abcdef"
 ID_B = "fedcba9876543210fedcba9876543210"
 ADDR = "partner@example.test"
+ALERT_DB = "alerts-db"
+# The real runner, taken before the autouse conftest stub replaces it.
+REAL_RUN = _leads_module._run_wrangler
+
+_OK = '[{"results":[],"success":true,"meta":{}}]'
+
+
+def _count(column: str, value: int) -> str:
+    return f'[{{"results":[{{"{column}":{value}}}],"success":true}}]'
+
+
+class FakeWrangler:
+    """A recording stand-in for the wrangler call. `case` picks a failure; remote
+    error text carries a marker no output may repeat."""
+
+    def __init__(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        remaining: int = 0,
+        case: str = "ok",
+    ) -> None:
+        self.log: list[tuple[str, str]] = []
+        self.remaining, self.case = remaining, case
+        monkeypatch.setattr(_leads_module, "_run_wrangler", self)
+
+    def __call__(self, database: str, sql: str) -> tuple[int, str, str]:
+        self.log.append((database, sql))
+        case, secret = self.case, "secret-remote-detail"
+        if "alert_table_present" in sql:
+            if case == "schema_fails":
+                return 1, "", secret
+            present = int(case == "no_table_but_present")
+            return 0, _count("alert_table_present", present), ""
+        if case == "no_npx":
+            return 127, "", ""
+        if "alert_dedup_remaining" in sql:
+            if case == "readback_fails":
+                return 1, "", secret
+            if case == "readback_garbage":
+                return 0, "not json " + secret, ""
+            return 0, _count("alert_dedup_remaining", self.remaining), ""
+        if case == "clear_fails":
+            return 1, "", secret
+        if case in {"no_table", "no_table_but_present", "schema_fails"}:
+            return 1, "", "D1_ERROR: no such table: alert_dedup " + secret
+        if case == "auth_error":
+            return 1, "", "authentication error " + secret
+        return 0, _OK, ""
 
 
 def block(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -58,6 +110,10 @@ def run(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, str, str]:
             stdin, args[at] = args[at] + "\n", "-"
     if "--checklist" not in args and "--database" not in args:
         args += ["--database", "reach-around-leads"]
+    # #856 round 5: `--yes` also needs the database that holds the alert hashes
+    # (the conftest stub answers its wrangler calls); the assertions are unchanged.
+    if "--yes" in args and "--alerts-database" not in args:
+        args += ["--alerts-database", ALERT_DB]
     old = sys.stdin
     if stdin is not None:
         sys.stdin = io.StringIO(stdin)
@@ -209,25 +265,172 @@ class TestYes:
         # Fixed message: no form of the address reaches stderr (it can be logged).
         assert "1 lead matches." in err and "***" not in err
 
-    def test_hands_over_the_alert_hash_clear_and_read_back(
-        self, capsys: pytest.CaptureFixture[str], export: Path
+    def test_the_tool_clears_the_alert_hashes_itself_and_reads_them_back(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """#856 round 3: the delete file never carries the alert table (it may be in
-        another database), so the tool prints the two hand commands on stderr and says
-        the store is clear only when the read-back shows 0."""
+        """#856 round 5 (replaces the round 3 test that only checked printed hand
+        commands): `--yes` runs the fixed clear and the read-back against the named
+        alert database, and a read-back of 0 is what lets it exit 0."""
+        calls = FakeWrangler(monkeypatch)
         code, out, err = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
         assert code == 0
         assert "alert_dedup" not in out
-        want = "wrangler d1 execute reach-around-leads --remote --command "
-        clear = want + '"DELETE FROM alert_dedup"'  # noqa: S608 - expected text
-        look = want + '"SELECT COUNT(*) AS alert_dedup_remaining FROM alert_dedup"'  # noqa: S608
-        assert clear in err and look in err
+        assert calls.log == [
+            (ALERT_DB, "DELETE FROM alert_dedup"),  # noqa: S608 - expected text
+            (ALERT_DB, "SELECT COUNT(*) AS alert_dedup_remaining FROM alert_dedup"),  # noqa: S608
+        ]
+        assert "alert hashes: cleared, read back 0 rows" in err
         # The apply command stays the last line (other tests and operators read it).
         last = err.rstrip().splitlines()[-1]
         assert last.startswith("npx wrangler d1 execute reach-around-leads --remote")
-        assert "read-back shows 0" in err and "example.test" not in err
+        assert "example.test" not in err and ADDR not in err
+        calls.log.clear()
         _, out2, err2 = run(capsys, "--input", str(export), "--email", ADDR)
-        assert "alert_dedup" not in out2 + err2  # a dry run prints no command
+        assert calls.log == []  # a dry run never calls wrangler
+        assert "alert_dedup" not in out2 + err2
+
+    def test_a_read_back_above_zero_fails_the_erasure(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """High (#856 round 4): a row that survives the clear is exit 3 with a named
+        step, never a success; the lead SQL is still printed (it is applied apart)."""
+        FakeWrangler(monkeypatch, remaining=2)
+        code, out, err = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+        assert code == 3
+        assert ID_A in out  # lead deletion is not held back by the alert step
+        assert "ERASURE IS NOT COMPLETE" in err and "alert hash step" in err
+        assert "read-back shows 2 rows" in err
+        assert ADDR not in err
+
+    @pytest.mark.parametrize(
+        "case",
+        ["clear_fails", "readback_fails", "readback_garbage", "no_npx", "schema_fails"],
+    )
+    def test_any_alert_step_failure_is_exit_3(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        case: str,
+    ) -> None:
+        FakeWrangler(monkeypatch, case=case)
+        code, out, err = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+        assert code == 3 and ID_A in out
+        assert "ERASURE IS NOT COMPLETE" in err
+        assert "secret-remote-detail" not in err + out  # remote text is never echoed
+
+    def test_a_missing_table_counts_only_when_the_schema_confirms_it(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls = FakeWrangler(monkeypatch, case="no_table")
+        code, _, err = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+        assert code == 0 and "no alert_dedup table" in err
+        assert calls.log[-1][1].startswith("SELECT COUNT(*) AS alert_table_present")
+        # The same error text with a schema that still lists the table is a failure.
+        FakeWrangler(monkeypatch, case="no_table_but_present")
+        code, _, err = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+        assert code == 3 and "ERASURE IS NOT COMPLETE" in err
+        # An unrelated error is never taken for a missing table.
+        FakeWrangler(monkeypatch, case="auth_error")
+        code, _, err = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+        assert code == 3
+
+    def test_yes_needs_the_alerts_database_and_a_plain_name(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls = FakeWrangler(monkeypatch)
+        monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
+        code = main(
+            [
+                "leads",
+                "delete",
+                "--input",
+                str(export),
+                "--email",
+                "-",
+                "--yes",
+                "--database",
+                "reach-around-leads",
+            ]
+        )
+        captured = capsys.readouterr()
+        assert code == 2 and captured.out == ""
+        assert "--alerts-database" in captured.err and calls.log == []
+        for bad in ("prod; touch x", "a b", "$(id)", "x" * 65, "", "x\ny"):
+            code, out, err = run(
+                capsys,
+                "--input",
+                str(export),
+                "--email",
+                ADDR,
+                "--yes",
+                "--alerts-database",
+                bad,
+            )
+            assert code == 2 and out == "" and calls.log == [], bad
+        code, _, err = run(
+            capsys, "--input", str(export), "--email", ADDR, "--alerts-database", "x"
+        )
+        assert code == 2 and "needs --yes" in err
+
+    def test_hand_commands_quote_the_database_name(self) -> None:
+        """Low (#856 round 4): the printed retry commands validate the name, so a
+        hostile one never reaches the shell text."""
+        for bad in (
+            "prod; touch /tmp/copied-command-ran #",
+            "a b",
+            "$(id)",
+            "`id`",
+            "x\ny",
+            "",
+        ):
+            with pytest.raises(LeadsError):
+                alert_clear_commands(bad)
+        clear, look = alert_clear_commands("my-db_1")
+        assert clear.startswith("wrangler d1 execute my-db_1 --remote")
+        want = "SELECT COUNT(*) AS alert_dedup_remaining FROM alert_dedup"  # noqa: S608
+        assert look.endswith(f'"{want}"')
+
+    def test_the_real_runner_uses_an_argv_list_without_a_shell(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: dict[str, Any] = {}
+
+        def fake_run(argv: list[str], **kw: Any) -> Any:
+            seen["argv"], seen["kw"] = argv, kw
+
+            class Done:
+                returncode, stdout, stderr = 0, "[]", ""
+
+            return Done()
+
+        monkeypatch.setattr(shutil, "which", lambda _n: "/bin/npx")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        # The autouse stub replaces _run_wrangler; REAL_RUN was taken at import.
+        real = REAL_RUN
+        code, _, _ = real("db-1", "DELETE FROM alert_dedup")  # noqa: S608
+        assert code == 0
+        assert seen["argv"][1:] == [
+            "wrangler", "d1", "execute", "db-1", "--remote", "--json",
+            "--command", "DELETE FROM alert_dedup",
+        ]  # fmt: skip
+        assert seen["kw"].get("shell") is None
+        assert seen["kw"]["stdin"] is subprocess.DEVNULL
+        assert seen["kw"]["timeout"] > 0
+        with pytest.raises(LeadsError):
+            real("bad name; id", "DELETE FROM alert_dedup")  # noqa: S608
 
     def test_normalizes_before_matching(
         self, capsys: pytest.CaptureFixture[str], export: Path

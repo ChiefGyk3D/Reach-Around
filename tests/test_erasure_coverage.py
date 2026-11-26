@@ -27,6 +27,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -880,8 +881,11 @@ def _flatten_command_text(text: str) -> str:
 
 
 def export_texts(path: Path) -> list[str]:
-    """The text views of one file the export pattern is matched against."""
-    raw = path.read_text(encoding="utf-8")
+    """The text views of one file the export pattern is matched against. The bytes are
+    decoded with errors replaced, never skipped: a stray byte in a script must not
+    take it out of the inventory (#856 round 5). A file that cannot be read raises
+    OSError; unreadable_files names it."""
+    raw = path.read_bytes().decode("utf-8", errors="replace")
     views = [raw, _flatten_command_text(raw)]
     if path.suffix in {".json", ".jsonc"}:
         try:
@@ -946,8 +950,8 @@ def export_scan(root: Path = ROOT) -> dict[str, set[str]]:
                 if size > MAX_SCAN_BYTES
                 else export_texts(path)
             )
-        except (UnicodeDecodeError, OSError):
-            continue  # a binary file holds no command text a shell could run
+        except OSError:
+            continue  # named by unreadable_files, which the real-repository test runs
         hits = {m.group(0) for view in views for m in EXPORT_COMMAND.finditer(view)}
         if hits:
             out[path.relative_to(root).as_posix()] = {" ".join(h.split()) for h in hits}
@@ -977,30 +981,83 @@ def oversized_files(
     return found
 
 
+def unreadable_files(root: Path = ROOT) -> list[str]:
+    """Candidate files that could not be read, by name (#856 round 5): a file the
+    scan cannot open is a violation, never a silent skip. Files over MAX_FILE_BYTES
+    are oversized_files' business."""
+    found: list[str] = []
+    for path in _scan_candidates(root):
+        try:
+            if path.stat().st_size > MAX_FILE_BYTES:
+                continue
+            with path.open("rb") as handle:
+                handle.read(1)
+        except OSError:
+            found.append(f"{path.relative_to(root).as_posix()}: cannot be read")
+    return found
+
+
 D1_EXPORT_CMD = re.compile(r"wrangler\s+d1\s+export\s+\S")
 SHELL_SEPARATOR = re.compile(r"&&|\|\||[;|]")
+TABLE_FLAG = re.compile(r"(?:^|\s)--table(?:[=\s]|$)")
+
+
+def strip_shell_comment(line: str) -> str:
+    """The line without a trailing shell comment: an unquoted `#` at the start or
+    after whitespace ends the command. Single and double quotes and a backslash are
+    honoured, so a `#` inside a quoted argument stays (#856 round 5)."""
+    quote = ""
+    i = 0
+    while i < len(line):
+        c = line[i]
+        if quote:
+            if c == "\\" and quote == '"':
+                i += 1
+            elif c == quote:
+                quote = ""
+        elif c == "\\":
+            i += 1
+        elif c in "\"'":
+            quote = c
+        elif c == "#" and (i == 0 or line[i - 1].isspace()):
+            return line[:i]
+        i += 1
+    return line
 
 
 def markdown_command_views(text: str) -> list[str]:
     """The places a shell command can be written in Markdown, one string per logical
-    command line: each line of a fenced block (backslash continuations joined), each
-    inline code span (which may wrap across lines), and each piece of prose outside
-    backticks."""
+    command line: each line of a fenced block (backslash continuations joined, a
+    trailing shell comment removed), each inline code span (which may wrap across
+    lines), and each piece of prose outside backticks. A fence closes only on the
+    same character, at least as long as the opening one."""
     fenced: list[str] = []
     prose: list[str] = []
-    in_fence = False
+    fence = ""
     for line in text.splitlines():
-        if line.lstrip().startswith(("```", "~~~")):
-            in_fence = not in_fence
-            continue
-        (fenced if in_fence else prose).append(line)
+        stripped = line.lstrip()
+        marker = re.match(r"(`{3,}|~{3,})", stripped)
+        if marker:
+            mark = marker.group(1)
+            if not fence:
+                fence = mark
+                continue
+            closes = mark[0] == fence[0] and len(mark) >= len(fence)
+            if closes and not stripped[len(mark) :].strip():
+                fence = ""
+                continue
+        (fenced if fence else prose).append(line)
     views: list[str] = []
     joined = "\n".join(fenced).replace("\\\n", " ")
-    views += [ln for ln in joined.split("\n") if ln.strip()]
+    views += [
+        stripped
+        for ln in joined.split("\n")
+        if (stripped := strip_shell_comment(ln)).strip()
+    ]
     prose_text = "\n".join(prose).replace("\\\n", " ")
     for index, piece in enumerate(prose_text.split("`")):
         if index % 2:  # inside backticks: one code span, which may wrap lines
-            views.append(" ".join(piece.split()))
+            views.append(strip_shell_comment(" ".join(piece.split())))
         else:  # outside backticks: prose, judged line by line
             views += [ln for ln in piece.split("\n") if ln.strip()]
     return views
@@ -1015,13 +1072,13 @@ def whole_database_export_docs(root: Path = ROOT) -> set[str]:
     for path in root.rglob("*.md"):
         if EXPORT_SKIP_DIRS & set(path.relative_to(root).parts) or not path.is_file():
             continue
-        text = path.read_text(encoding="utf-8")
+        text = path.read_bytes().decode("utf-8", errors="replace")
         for view in markdown_command_views(text):
             for segment in SHELL_SEPARATOR.split(view):
                 starts = [m.start() for m in D1_EXPORT_CMD.finditer(segment)]
                 for i, start in enumerate(starts):
                     end = starts[i + 1] if i + 1 < len(starts) else len(segment)
-                    if "--table" not in segment[start:end]:
+                    if not TABLE_FLAG.search(segment[start:end]):
                         found.add(path.relative_to(root).as_posix())
     return found
 
@@ -1727,14 +1784,118 @@ def ts_function_body(text: str, name: str) -> str | None:
     return None if end is None else text[start + 1 : end]
 
 
-def ts_batch_args(body: str) -> str | None:
-    """The argument text of the first `.batch(...)` call in a function body."""
-    masked, _ = mask_ts(body)
-    m = re.search(r"\.batch\(", masked)
-    if not m:
+BATCH_ANCHOR = r"\bdb\s*\.\s*batch\s*\(\s*\["
+RETURN_ANCHOR = r"\breturn\s*\["
+_STATEMENT_HEAD = re.compile(
+    r"(?:(?:(?:const|let|var)\s+)?[\w$]+\s*(?::[^=;]*)?=\s*)?"
+    r"(?:return\s+)?(?:await\s+)?$"
+)
+
+
+def _code_only(text: str) -> str:
+    """The text with every string body blanked to 'x' and every comment to spaces,
+    so a statement in a comment can never be found or counted."""
+    masked, in_comment = mask_ts(text)
+    return "".join(" " if c else ch for ch, c in zip(masked, in_comment, strict=True))
+
+
+def _depth0(masked: str, upto: int) -> str:
+    """The text before `upto` with everything inside brackets blanked, so only the
+    statements of the function's own top level remain."""
+    depth, out = 0, []
+    for ch in masked[:upto]:
+        if ch in "([{":
+            depth += 1
+            out.append(" ")
+        elif ch in ")]}":
+            depth -= 1
+            # A block that closes back to the top level still ends a statement.
+            out.append("}" if ch == "}" and depth == 0 else " ")
+        else:
+            out.append(ch if depth == 0 else " ")
+    return "".join(out) if depth == 0 else ""
+
+
+def _reachable_statement(masked: str, at: int) -> bool:
+    """True when the statement starting at `at` is at the top level of the body (not
+    inside an if, loop, try or nested function), starts a statement of its own (not
+    the right side of `&&`, `||`, `?:` or a brace-less `if`), and no `return` or
+    `throw` statement precedes it at that level. Lexical: it does not evaluate
+    conditions, so a dead branch the language itself hides (a constant `if (0) {`)
+    is rejected only because the call is inside the braces."""
+    top = _depth0(masked, at)
+    if not top and masked[:at].strip():
+        return False  # the call sits inside a bracket of the body
+    head = _STATEMENT_HEAD.sub("", top).rstrip()
+    if head and head[-1] not in ";}":
+        return False
+    return re.search(r"(?:^|[;}])\s*(?:return|throw)\b", top) is None
+
+
+def _unconditional(masked_element: str) -> bool:
+    """No `?`, `&&`, `||` or `??` at the element's own level: the element is always
+    evaluated and always lands in the array."""
+    depth = 0
+    for i, ch in enumerate(masked_element):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif depth == 0 and (ch == "?" or masked_element.startswith(("&&", "||"), i)):
+            return False
+    return True
+
+
+def ts_reachable_elements(body: str, anchor: str) -> list[str] | None:
+    """The array elements of the one reachable `db.batch([...])` (BATCH_ANCHOR) or
+    `return [...]` (RETURN_ANCHOR) in a function body, in order, keeping only an
+    element that is evaluated unconditionally and is either `db.prepare(...)...` or a
+    `...fn(...)` spread. A statement in a dead branch, after a return, behind `&&`,
+    `||` or `?:`, or in a comment or string is never returned (#856 round 5). None
+    when there is not exactly one reachable anchor. Lexical, not a TypeScript
+    parse: reachability beyond this is what worker/test (vitest) proves."""
+    masked = _code_only(body)
+    hits = [
+        m
+        for m in re.finditer(anchor, masked)
+        if _reachable_statement(masked, m.start())
+    ]
+    if len(hits) != 1:
         return None
-    end = _balanced(masked, m.end() - 1, "()")
-    return None if end is None else body[m.end() : end]
+    open_at = hits[0].end() - 1
+    end = _balanced(masked, open_at, "[]")
+    if end is None:
+        return None
+    pieces: list[tuple[int, int]] = []
+    depth, start = 0, open_at + 1
+    for i in range(open_at + 1, end):
+        ch = masked[i]
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            pieces.append((start, i))
+            start = i + 1
+    pieces.append((start, end))
+    kept: list[str] = []
+    for a, b in pieces:
+        shape = masked[a:b].strip()
+        if not shape or not _unconditional(shape):
+            continue
+        if re.match(r"db\s*\.\s*prepare\s*\(", shape) or re.match(
+            r"\.\.\.\s*[\w$]+\s*\(", shape
+        ):
+            kept.append(body[a:b])
+    return kept
+
+
+def ts_batch_statements(body: str, anchor: str = BATCH_ANCHOR) -> list[str] | None:
+    """The SQL of each reachable `db.prepare(...)` element (first literal of each)."""
+    elements = ts_reachable_elements(body, anchor)
+    if elements is None:
+        return None
+    return [sql for el in elements for sql in ts_prepared_sql(el)[:1]]
 
 
 LEAD_FIXTURE_TABLES = {"leads", "kit_events"}
@@ -1746,18 +1907,21 @@ def age_purge_violations(source: Path = LEAD_RETENTION) -> list[str]:
     """Run the DELETE statements of the purge's own db.batch, in source order, on the
     migrated schema with an old lead and a fresh lead (each with events); every
     lead-class table must lose the old rows and keep the fresh ones. The statements
-    are taken from the batch inside purgeExpiredLeads, so an unused statement
-    elsewhere in the file cannot stand in for them. That the function is called, and
-    that its branches are reached, is what worker/test (vitest) covers."""
+    are taken from the batch inside purgeExpiredLeads, and only a `db.prepare(...)`
+    that is an unconditional element of the one top-level `db.batch([...])` counts: a
+    copy elsewhere in the file, in a comment, behind `&&`, `||` or `?:`, in a dead
+    branch or after a return is not used (#856 round 5). This is a lexical check, not
+    a TypeScript parse: it does not prove the function is called or that its
+    conditions hold. That is what the vitest suite in worker/test covers."""
     text = source.read_text(encoding="utf-8")
     body = ts_function_body(text, "purgeExpiredLeads")
     if body is None:
         return ["purgeExpiredLeads was not found"]
-    args = ts_batch_args(body)
-    if args is None:
+    statements = ts_batch_statements(body)
+    if statements is None:
         return ["purgeExpiredLeads no longer runs its statements in one db.batch"]
     found: list[str] = []
-    deletes = [q for q in ts_prepared_sql(args) if q.lstrip().startswith("DELETE FROM")]
+    deletes = [q for q in statements if q.lstrip().startswith("DELETE FROM")]
     tables = sorted(
         t for t, e in load_registry()["stores"].items() if e["class"] == "lead"
     )
@@ -1909,21 +2073,27 @@ def test_the_storage_conclusion_claims_only_what_the_scan_proves() -> None:
     )
 
 
-def test_the_delete_flow_hands_over_the_alert_clear_and_the_docs_agree() -> None:
+def test_the_delete_flow_clears_the_alert_hashes_and_the_docs_agree() -> None:
+    # Test change (#856 round 5): the tool now runs the clear itself and exits 3
+    # unless the read-back is 0; the printed commands are only the retry text.
     clear, readback = alert_clear_commands("reach-around-leads")
     assert clear.endswith(f'--command "{ALERT_CLEAR_SQL}"')
     assert readback.endswith(f'--command "{ALERT_READBACK_SQL}"')
     assert "reach-around-leads" in clear and "--remote" in clear
     # The delete file itself never carries it (a missing table must not fail the
-    # erasure of the lead rows); the checklist makes the step mandatory, read back.
+    # erasure of the lead rows); the tool's own alert step covers the table.
     assert "alert_dedup" not in delete_sql()
     flat = " ".join(CHECKLIST.split())
-    assert "mandatory" in flat and "read-back to show 0" in flat
+    assert "--alerts-database" in flat and "exits 3" in flat
+    assert "ERASURE IS NOT COMPLETE" in flat
     assert "without the Worker's secret key" not in flat, "no claim of harmlessness"
-    assert "Until you have read 0, the store is not clear" in flat
+    assert "until it reports a read-back of 0 the store is not clear" in flat
+    assert "by hand" not in flat.split("7. ", 1)[1].split("8. ", 1)[0]
     docs = " ".join(PRIVACY.read_text(encoding="utf-8").split())
     assert f'--command "{ALERT_CLEAR_SQL}"' in docs
     assert f'--command "{ALERT_READBACK_SQL}"' in docs
+    assert "--alerts-database" in docs and "ERASURE IS NOT COMPLETE" in docs
+    assert "--alerts-database" in " ".join(ALERTS_DOC.read_text("utf-8").split())
 
 
 # --- the alert hash lifetime, as the code really behaves -------------------------
@@ -1940,7 +2110,11 @@ def alert_retention_violations(
 ) -> list[str]:
     """Run the real prune and claim SQL of the alert code on the migrated schema with a
     clock the test controls. Checks the 10 minute boundary, that expired rows go only
-    when the next event is admitted, and the row cap after more than 500 claims."""
+    when the next event is admitted, and the row cap after more than 500 claims.
+    The statements are the unconditional elements of the reachable batch and prune
+    list (see ts_reachable_elements). This is a lexical check, not a TypeScript
+    parse: it does not prove the Worker calls these functions; the vitest suite in
+    worker/test covers that."""
     found: list[str] = []
     qtext = quota.read_text(encoding="utf-8")
     code = strip_ts_comments(qtext)
@@ -1958,25 +2132,38 @@ def alert_retention_violations(
     # correct statement elsewhere in the file is not used.
     prune_body = ts_function_body(qtext, "pruneStatements")
     claim_body = ts_function_body(qtext, "claimDedup")
-    claim_args = None if claim_body is None else ts_batch_args(claim_body)
-    if prune_body is None or claim_args is None:
+    # Only unconditional elements of the one reachable array count (#856 round 5): a
+    # correct statement behind `&&`, in a dead branch or after a return is ignored.
+    claim_elements = (
+        None if claim_body is None else ts_reachable_elements(claim_body, BATCH_ANCHOR)
+    )
+    prune_sql = (
+        None if prune_body is None else ts_batch_statements(prune_body, RETURN_ANCHOR)
+    )
+    if prune_sql is None or claim_elements is None:
         return found + ["pruneStatements or the batch in claimDedup was not found"]
     prune = [
-        q
-        for q in ts_prepared_sql(prune_body)
-        if q.startswith("DELETE FROM alert_dedup WHERE expires_at")
+        q for q in prune_sql if q.startswith("DELETE FROM alert_dedup WHERE expires_at")
     ]
-    claim = [
-        q
-        for q in ts_prepared_sql(claim_args)
-        if q.lstrip().startswith("INSERT INTO alert_dedup")
+    claim_at = [
+        i
+        for i, el in enumerate(claim_elements)
+        if any(
+            q.lstrip().startswith("INSERT INTO alert_dedup")
+            for q in ts_prepared_sql(el)[:1]
+        )
     ]
+    claim = [sql for i in claim_at for sql in ts_prepared_sql(claim_elements[i])[:1]]
     if len(prune) != 1 or len(claim) != 1:
         return found + ["the prune or claim statement was not found"]
-    batch = re.search(
-        r"\[\s*\.\.\.pruneStatements\(db, now\),", strip_ts_comments(claim_args)
-    )
-    if not batch:
+    spread_at = [
+        i
+        for i, el in enumerate(claim_elements)
+        if re.fullmatch(
+            r"\s*\.\.\.\s*pruneStatements\s*\(\s*db\s*,\s*now\s*\)\s*", _code_only(el)
+        )
+    ]
+    if not spread_at or spread_at[0] > claim_at[0]:
         found.append("claimDedup no longer prunes in the same batch, before the claim")
 
     def admit(db: sqlite3.Connection, digest: str, now: int) -> bool:
@@ -2296,6 +2483,163 @@ def test_a_later_table_flag_cannot_hide_a_whole_database_export(tmp_path: Path) 
     )
     found = whole_database_export_docs(tmp_path)
     assert found == set(cases), found
+
+
+def test_a_table_flag_in_a_comment_or_a_quote_does_not_protect_an_export(
+    tmp_path: Path,
+) -> None:
+    """Low (#856 round 4): `--table` after an unquoted `#` is a comment the shell
+    ignores, so the export is whole-database. A `#` inside quotes is not a comment,
+    and a fence closes only on its own marker."""
+    cases = {
+        "comment.md": "```sh\nwrangler d1 export prod --output=all.sql "
+        "# --table=leads\n```\n",
+        "span.md": "`wrangler d1 export prod --output=all.sql # --table=leads`\n",
+        "mixed-fence.md": "~~~sh\n```\nwrangler d1 export prod --output=a.sql "
+        "#--table=t\n~~~\n",
+        "quoted-flag.md": '```sh\nwrangler d1 export prod --output="--table=x"\n```\n',
+    }
+    for name, text in cases.items():
+        (tmp_path / name).write_text(text)
+    (tmp_path / "kept.md").write_text(
+        "```sh\nwrangler d1 export prod --output='a#b.sql' --table=t\n"
+        "wrangler d1 export prod --table=u # one table\n```\n"
+    )
+    found = whole_database_export_docs(tmp_path)
+    assert found == set(cases), found
+    assert strip_shell_comment("a 'b # c' d # e") == "a 'b # c' d "
+    assert strip_shell_comment("a#b") == "a#b"
+
+
+def test_a_script_with_an_invalid_byte_stays_in_the_inventory(tmp_path: Path) -> None:
+    """Medium (#856 round 4): a stray 0xFF byte in a small script used to drop it from
+    the inventory (UnicodeDecodeError was treated as binary). It is decoded with
+    replacement now; a file that cannot be read is named."""
+    (tmp_path / "dump.sh").write_bytes(
+        b"#!/bin/sh\n#\xff\nwrangler d1 export prod --output=all.sql\n"
+    )
+    (tmp_path / "blob.bin").write_bytes(b"\x00\xff\xfe\x80")
+    scan = export_scan(tmp_path)
+    assert "dump.sh" in scan and "blob.bin" not in scan
+    found = export_inventory_violations(
+        scan, set(), {"export_paths": EMPTY_EXPORT_PATHS}
+    )
+    assert any("dump.sh" in v and "not in export_paths" in v for v in found)
+    locked = tmp_path / "locked.sh"
+    locked.write_text("echo hi\n")
+    locked.chmod(0)
+    try:
+        if not os.access(locked, os.R_OK):  # not true for root; then nothing to prove
+            assert unreadable_files(tmp_path) == ["locked.sh: cannot be read"]
+    finally:
+        locked.chmod(0o600)
+    assert unreadable_files(tmp_path) == []
+
+
+def test_every_file_in_the_repository_can_be_read_for_the_export_scan() -> None:
+    assert unreadable_files() == []
+
+
+def _mutated(tmp_path: Path, source: Path, old: str, new: str) -> Path:
+    text = source.read_text(encoding="utf-8")
+    assert text.count(old) == 1, old
+    out = tmp_path / source.name
+    out.write_text(text.replace(old, new), encoding="utf-8")
+    return out
+
+
+_PURGE_LEAD_DELETE = '    db\n      .prepare(\n        "DELETE FROM leads WHERE id IN'
+_CLAIM_INSERT = "    db\n      .prepare(\n        `INSERT INTO alert_dedup"
+_PURGE_BATCH = "  const res = await db.batch(["
+
+
+def test_an_unreachable_statement_inside_the_purge_or_claim_is_not_used(
+    tmp_path: Path,
+) -> None:
+    """Medium (#856 round 4): a correct statement that the named function never
+    reaches (behind `&&`, `?:`, in a dead branch, after a return, in a comment) must
+    not stand in for the real one. Each mutation keeps the correct text in the
+    function and makes it unreachable."""
+    assert age_purge_violations() == []
+    for prefix in ("    false &&\n", "    (0) ? 1 :\n", "    nowMs < 0 ||\n"):
+        bad = _mutated(
+            tmp_path, LEAD_RETENTION, _PURGE_LEAD_DELETE, prefix + _PURGE_LEAD_DELETE
+        )
+        assert age_purge_violations(bad) != [], prefix
+    # A brace-less `if`, a dead block and an early return before the batch.
+    for head in (
+        "  if (nowMs < 0) await db.batch([",
+        "  return 0;\n  const res = await db.batch([",
+        '  if (nowMs < 0) { const res = await db.batch([ db.prepare("DELETE FROM '
+        'leads WHERE id IN (SELECT 1)") ]); }\n  const res2 = [',
+    ):
+        bad = _mutated(tmp_path, LEAD_RETENTION, _PURGE_BATCH, head)
+        assert age_purge_violations(bad) != [], head
+    # A statement in a comment never counts.
+    commented = _mutated(
+        tmp_path,
+        LEAD_RETENTION,
+        _PURGE_LEAD_DELETE,
+        '    /* db.prepare("DELETE FROM leads WHERE id IN (SELECT 1)"), */ 0,\n'  # noqa: S608
+        + _PURGE_LEAD_DELETE.replace("DELETE FROM leads", "SELECT 1 FROM leads"),
+    )
+    assert age_purge_violations(commented) != []
+    # The same for the dedup claim and the prune.
+    qtext = QUOTA_TS.read_text(encoding="utf-8")
+    dtext = DISPATCHER_TS.read_text(encoding="utf-8")
+    assert alert_retention_violations() == []
+
+    def alert(old: str, new: str) -> list[str]:
+        q = _mutated(tmp_path, QUOTA_TS, old, new)
+        d = tmp_path / "dispatcher.ts"
+        d.write_text(dtext, encoding="utf-8")
+        return alert_retention_violations(q, d)
+
+    assert qtext.count(_CLAIM_INSERT) == 1
+    assert alert(_CLAIM_INSERT, "    false &&\n" + _CLAIM_INSERT) != []
+    assert (
+        alert(
+            "    ...pruneStatements(db, now),", "    false && pruneStatements(db, now),"
+        )
+        != []
+    )
+    assert (
+        alert(
+            "  const res = await db.batch([",
+            "  return false;\n  const res = await db.batch([",
+        )
+        != []
+    )
+    assert (
+        alert(
+            "  return [\n    db.prepare(", "  return [];\n  return [\n    db.prepare("
+        )
+        != []
+    )
+
+
+def test_a_dead_decoy_beside_the_real_statements_does_not_break_them(
+    tmp_path: Path,
+) -> None:
+    """The check is not just stricter: a nested function or a comment holding a copy
+    of the statements leaves the real, reachable batch in charge."""
+    text = LEAD_RETENTION.read_text(encoding="utf-8")
+    extra = (
+        '  function deadCopy() { return db.batch([db.prepare("SELECT 1")]); }\n'
+        '  // db.batch([db.prepare("SELECT 2")]);\n'
+    )
+    ok = _mutated(tmp_path, LEAD_RETENTION, _PURGE_BATCH, extra + _PURGE_BATCH)
+    assert ok.read_text(encoding="utf-8") != text and age_purge_violations(ok) == []
+
+
+def test_the_python_purge_and_dedup_checks_say_what_they_do_not_prove() -> None:
+    """Medium (#856 round 4): the docstrings name the limit and the vitest suite that
+    covers reachability, so a green run is not read as proof that the Worker calls
+    these functions."""
+    for fn in (age_purge_violations, alert_retention_violations):
+        assert fn.__doc__ and "vitest" in fn.__doc__ and "lexical" in fn.__doc__
+    assert "worker/test" in " ".join(PRIVACY.read_text(encoding="utf-8").split())
+    assert (ROOT / "worker" / "test").is_dir()
 
 
 def _recording_env(tmp_path: Path, env: dict[str, str]) -> tuple[dict[str, str], Path]:

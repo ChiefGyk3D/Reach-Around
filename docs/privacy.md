@@ -227,10 +227,12 @@ first item:
 5. Hand-made exports, dumps and spreadsheets (including the files you made for
    the steps above).
 6. Shell history, tickets and notes that hold the address.
-7. The `alert_dedup` hash (mandatory, by hand; see the store table below). The
-   delete file does not touch it. `reach-around leads delete --yes` prints the
-   two commands (clear the table, read it back); run them against the database
-   that holds the alert tables and require the read-back to show 0.
+7. The `alert_dedup` hash (done by the tool, which fails if it cannot; see the
+   store table below). The delete file does not touch it. `reach-around leads
+   delete --yes --alerts-database NAME` clears the whole table in the database
+   you name, reads it back through wrangler, and exits 3 with "ERASURE IS NOT
+   COMPLETE" unless the read-back is 0 (or that database has no such table).
+   Clearing it only resets repeat-alert suppression for up to 10 minutes.
 8. By hand, where neither this list nor the tool can look: Worker logs and any
    collector logs or exception output; alert delivery logs at the chat or mail
    provider; automated backups and exports of the database beyond Time Travel;
@@ -256,6 +258,24 @@ full text of every view, trigger and index (whitespace is collapsed between
 tokens only, never inside a string, a quoted name or a comment), so changing only
 a view or trigger body fails until it is looked at again. Class "lead" means a
 row holds an address or carries a lead id; the delete tool removes those.
+
+What this classification proves, and what it only infers. The test proves that
+every table and column the migrations create is classified, that a column whose
+name, declared type or default looks like it could hold personal data needs a
+recorded reason, and that a table linked to `leads` by a foreign key is classed
+lead. It does not trace what the Worker writes into a column: a TEXT column with
+an innocuous name in a table classed aggregate, with a reviewer's reason, would
+pass. So `leads` and `kit_events` are the only tables this review classified as
+holding an address or a lead id; that is a statement about the classification,
+not a data-flow proof (Worker D1 writes are not analyzed; only storage
+primitives and bindings are inventoried). The test also runs on SQLite, which
+stands in for D1. Inferred and not tested against D1 itself: that D1's SQL
+dialect and `table_xinfo` behave as SQLite's do on these migrations, that
+foreign keys are enforced and `ON DELETE CASCADE` fires, that the statements of
+one `db.batch` run as one unit, and what D1 does with the rest of a file after
+one statement fails. The purge and dedup checks run the real statements on
+SQLite; whether the Worker calls them is covered by the vitest suite in
+`worker/test`, not by the Python test.
 
 What the test does check about the Worker's other stores: every file under
 `worker/src` that names a storage primitive or a storage binding from any
@@ -295,7 +315,7 @@ QUESTION 5).
 |---|---|---|---|
 | `leads` (11 columns) | the address, country, times, session floor | yes | `DELETE`, read-back counts the row; also purged by age |
 | `kit_events` (4 columns) | hour-rounded unlock, view and verify events by lead id | yes | `DELETE`, read-back counts the rows; the foreign key also cascades |
-| `alert_dedup` (3 columns) | keyed hash of a recent alert, which can include the address; a row stops counting as a repeat after 10 minutes but is deleted only when the next alert event is admitted, so on a quiet site it can stay stored (at most 500 rows) until then or until cleared by hand | no (mandatory hand step) | clear the whole table by hand and read it back, against the database that holds the alert tables (statements below); a keyed hash is not erased by being hard to match |
+| `alert_dedup` (3 columns) | keyed hash of a recent alert, which can include the address; a row stops counting as a repeat after 10 minutes but is deleted only when the next alert event is admitted, so on a quiet site it can stay stored (at most 500 rows) until then or until cleared | not in the delete file; `leads delete --yes --alerts-database NAME` runs a whole-table clear and a read-back itself and exits 3 unless the read-back is 0 | the tool's own step, in the database you name (statements below); a keyed hash is not erased by being hard to match |
 | `visitor_seen`, `view_events`, `click_events` | coarse visitor rows with no address, no IP address, no lead id | no | not matchable to a person by design (Art. 11); removed by retention |
 | 26 other tables (counters, rollups, budgets, logs, cursors) | counts and bookkeeping | no | aggregate, no row per person; counts cannot be un-counted |
 | KV, edge cache | the gated page, live status state, the public status body | no | no lead data found in the listed call sites; a text scan, not a data-flow proof (verify the namespace's keys by hand); the Worker never writes the gated page key |
@@ -306,13 +326,24 @@ QUESTION 5).
 | D1 Time Travel | the whole database, 7 days Free, 30 days Paid | no | ages out; see the checklist |
 | Alert copies, inquiry text, hand-made exports, logs | outside the Worker | no | by hand, items 2, 3, 5, 6 and 8 of the checklist |
 
-For an erasure request, clear the whole alert hash table and read it back. Run
-both against the database that holds the alert tables (the leads database when
-they share it; `reach-around leads delete --yes` prints them with the database
-name; the lead delete file does not include them, because a statement on a table
-that is not in that database could fail the whole file). Clearing every row only
-resets repeat-alert suppression for up to 10 minutes. The store is clear when the
-read-back shows 0:
+For an erasure request the tool clears the whole alert hash table and reads it
+back itself: `reach-around leads delete --yes --alerts-database NAME` runs the two
+statements below with `npx wrangler d1 execute NAME --remote --json` (your own
+wrangler login; no value from the export or the address is sent). `NAME` is the
+database that holds the alert tables (the Worker's `DB` binding today, the same
+database as the leads; once the leads move to their own database, name the
+analytics one). The lead delete file does not include the statement, because one
+on a table that is not in that database could fail the whole file. Exit codes: 0
+only when the read-back is 0, or when a schema query confirms that database has
+no `alert_dedup` table (an error other than "no such table" is never read as
+that); 3 with "ERASURE IS NOT COMPLETE" and the unfinished step when the clear
+or the read-back fails, shows a row, or the answer is not a single count. The lead
+SQL is printed either way, so lead deletion is never held back by the alert
+step; apply it, fix the cause and run the step again. Clearing every row only
+resets repeat-alert suppression for up to 10 minutes. The clear is a point in
+time like the lead read-back: if the person can still unlock the kit, run it
+again after the lead SQL is applied. The same statements by hand, if you need
+them:
 
 ```
 npx wrangler d1 execute <DATABASE> --remote --command "DELETE FROM alert_dedup"
@@ -347,9 +378,11 @@ Needs the owner's choice.
 OPEN QUESTION 3, short-lived alert hashes. Today an expired row is removed only
 when the next alert event is admitted (checked in the code: nothing prunes it on
 a timer), so on a quiet site it stays until then. Options: (a) the whole-table
-clear and read-back as a mandatory hand step printed by the delete tool (current:
-the tool cannot know which database holds the alert tables, and a statement on
-a missing table could fail the whole erasure file); (b) prune expired
+clear and read-back run by the delete tool itself, which fails (exit 3) when it
+cannot read 0 (current, an engineering answer the owner may veto: it needs
+`--alerts-database` and a working wrangler login, and every `--yes` run now
+clears all alert hashes, which only resets repeat-alert suppression for up to 10
+minutes); (b) prune expired
 `alert_dedup` rows in the scheduled handler too, so a quiet site never holds one
 past its life (a Worker change; it would still not remove a row made minutes
 ago); (c) add `DELETE FROM alert_dedup` to the delete SQL, which is the one-command
@@ -409,13 +442,20 @@ Ctrl-C. Run it as one block from your project directory. The steps inside are:
    `leads_remaining` 1 means the id did not belong to that address in the live
    database (a stale or wrong export): nothing was deleted, stop and re-export.
    `events_remaining` above 0 means events remain; run the block again. The two
-   tables read here are the only tables that hold an address or a lead id (see
-   "Every store, checked against the schema" above).
+   tables read here are the only tables this review classified as holding an
+   address or a lead id (see "Every store, checked against the schema" above for
+   what that classification does and does not prove).
+5. The same `--yes` call also clears the `alert_dedup` hash table and reads it
+   back (see "Every store"). It needs `ALERT_DB`, the D1 database that holds
+   that table. If that step fails the command exits 3 after printing the lead
+   SQL: the block below still applies the SQL, then stops with a failure so the
+   erasure is not reported as done. Fix the cause and run the block again.
 
 ```
 (
   set -eu
   umask 077
+  ALERT_DB="${ALERT_DB:?set ALERT_DB to the D1 database that holds alert_dedup}"
   WORK="$(mktemp -d)"
   cleanup() { rm -rf -- "$WORK"; }
   trap cleanup EXIT
@@ -429,10 +469,13 @@ Ctrl-C. Run it as one block from your project directory. The steps inside are:
   printf 'Print the delete SQL and apply it? Type yes: ' >&2
   read -r OK
   [ "$OK" = yes ]
-  printf '%s\n' "$ADDR" | reach-around leads delete --input "$WORK/leads-export.json" --email - --database reach-around-leads --yes --sql-out "$WORK/delete-lead.sql"
+  RC=0
+  printf '%s\n' "$ADDR" | reach-around leads delete --input "$WORK/leads-export.json" --email - --database reach-around-leads --alerts-database "$ALERT_DB" --yes --sql-out "$WORK/delete-lead.sql" || RC=$?
+  [ "$RC" -eq 0 ] || [ "$RC" -eq 3 ]
   npx wrangler d1 execute reach-around-leads --remote --file "$WORK/delete-lead.sql"
   sleep 60
   npx wrangler d1 execute reach-around-leads --remote --file "$WORK/delete-lead.sql"
+  [ "$RC" -eq 0 ]
 )
 ```
 
@@ -442,8 +485,10 @@ cleanup; the work directory is printed on the first line so you can remove it
 yourself, and you should check that it is gone before you report the request
 done.
 
-The command reads only the file you give it. It makes no network call, needs no
-token and writes no file except the `--sql-out` file. It refuses an address that
+The command reads only the file you give it and never runs the lead SQL. With
+`--yes` it makes one network call of its own, the alert hash clear and
+read-back through `npx wrangler` described above, using your own login; it
+writes no file except the `--sql-out` file. It refuses an address that
 is not valid (ASCII, one `@`, a dotted domain; whitespace around it and upper
 case are normalized), and refuses an export that has a result block without
 `success: true`, a column other than the `leads` columns, a duplicate key, a
