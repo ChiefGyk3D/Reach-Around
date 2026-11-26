@@ -26,6 +26,7 @@ from reach_around.counts import fediverse_window as window
 from reach_around.net.egress import EgressBlocked, RawResponse, TransportRequest
 from reach_around.net.fetch import (
     ARRAY_MAX_BYTES,
+    MAX_INT_DIGITS,
     USER_AGENT,
     FetchedArray,
     FetchError,
@@ -174,7 +175,8 @@ def test_unexpected_transport_failure_is_a_fixed_word_with_no_path() -> None:
         get(FakeTransport({"https://": boom}))
     assert caught.value.kind == "transport_error"
     assert str(caught.value) == "transport_error"
-    assert caught.value.__cause__ is None and caught.value.__suppress_context__
+    # Stronger than suppressing the display: the original is not chained at all.
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
 
     def stop(request: TransportRequest) -> RawResponse:
         raise KeyboardInterrupt
@@ -732,6 +734,8 @@ _INDIRECT = (
     re.compile(r"-m\s+scripts\b"),
     re.compile(r"\brunpy\b"),
     re.compile(r"\bfind\s+(?:\./)?scripts\b[^\n]*-exec"),
+    # find over scripts piped to xargs, or any find that names scripts/ and runs.
+    re.compile(r"\bfind\b[^\n]*\bscripts\b[^\n]*(?:\bxargs\b|-exec(?:dir)?\b)"),
 )
 
 
@@ -809,3 +813,155 @@ def test_probe_is_not_wired_into_ci_or_tests() -> None:
     source = (ROOT / "scripts" / "fediverse-probe.py").read_text(encoding="utf-8")
     assert source.rstrip().endswith("sys.exit(run(sys.argv[1:]))")
     assert 'if __name__ == "__main__":' in source
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "- run: find scripts -name '*.py' -print0 | xargs -0 -n1 python3",
+        "find ./scripts -type f | xargs -I{} python3 {}",
+        "find . -path './scripts/*' -execdir python3 {} +",
+    ],
+)
+def test_the_wiring_detector_catches_find_piped_to_xargs(text: str) -> None:
+    assert _reaches_probe(text)
+
+
+@pytest.mark.parametrize(
+    "marker", ["CI", "GITHUB_ACTIONS", "BUILD_ID", "TF_BUILD", "JENKINS_URL"]
+)
+def test_probe_refuses_the_real_network_in_automation(marker: str) -> None:
+    probe = _load_probe()
+    argv = ["mastodon", "--host", "social.example", "--acct", "person.example"]
+    out = io.StringIO()
+    with unittest.mock.patch.object(
+        probe, "HttpsTransport", side_effect=AssertionError("network")
+    ):
+        code = probe.run(argv, out=out, sleep=_no_sleep, env={marker: "true"})
+    assert code == 4 and out.getvalue() == "refused: automation\n"
+
+
+def test_probe_automation_guard_allows_fakes_overrides_and_plain_shells() -> None:
+    probe = _load_probe()
+    argv = ["mastodon", "--host", "social.example", "--acct", "person.example"]
+    # A fake transport is allowed even with a CI marker (the tests run in CI).
+    out = io.StringIO()
+    fake = FakeTransport({"https://social.example/": reply([])})
+    code = probe.run(argv, transport=fake, out=out, sleep=_no_sleep, env={"CI": "true"})
+    assert code != 4 and "refused: automation" not in out.getvalue()
+    # The owner override and a shell without markers pass the guard.
+    assert not probe._in_automation({"CI": "true", "RA_PROBE_OWNER_RUN": "1"})
+    assert not probe._in_automation({})
+    assert not probe._in_automation({"CI": ""})
+    assert probe._in_automation({"CI": "1", "RA_PROBE_OWNER_RUN": "yes"})
+
+
+_MARKER = "PRIVATE-MARKER-person.example"
+
+
+def _assert_chain_is_broken(err: BaseException) -> None:
+    import traceback
+
+    assert err.__context__ is None and err.__cause__ is None
+    rendered = "".join(traceback.format_exception(err))
+    for text in (str(err), repr(err), rendered):
+        assert _MARKER not in text and "RuntimeError" not in text
+
+
+def test_unexpected_transport_error_leaves_no_exception_chain() -> None:
+    def boom(request: TransportRequest) -> RawResponse:
+        raise RuntimeError(f"Bearer SECRET {request.host}{request.path} {_MARKER}")
+
+    with pytest.raises(FetchError) as caught:
+        fetch_json_array(
+            URL,
+            transport=boom,
+            headers={"Authorization": "Bearer SECRET"},
+            sleep=_no_sleep,
+            jitter=lambda: 0.0,
+            now=lambda: NOW,
+        )
+    assert caught.value.kind == "transport_error"
+    _assert_chain_is_broken(caught.value)
+
+
+def test_egress_block_bad_url_bad_json_and_redirect_leave_no_chain() -> None:
+    def blocked(request: TransportRequest) -> RawResponse:
+        raise EgressBlocked("non_public_address", _MARKER)
+
+    with pytest.raises(FetchError) as c1:
+        fetch_json_array(
+            URL, transport=blocked, sleep=_no_sleep, jitter=lambda: 0.0, now=lambda: NOW
+        )
+    assert c1.value.kind.startswith("egress_")
+    _assert_chain_is_broken(c1.value)
+
+    for bad_url in ("https://social.example:99999/x", "https://127.0.0.1/x"):
+        with pytest.raises(FetchError) as c2:
+            get(FakeTransport(), bad_url)
+        assert c2.value.kind == "bad_url"
+        _assert_chain_is_broken(c2.value)
+
+    with pytest.raises(FetchError) as c3:
+        get(FakeTransport({URL: reply(body=b"[" + _MARKER.encode() + b"]")}))
+    assert c3.value.kind == "bad_json"
+    _assert_chain_is_broken(c3.value)
+
+    redirect = reply(
+        body=b"",
+        status=302,
+        headers={"location": "https://127.0.0.1/" + _MARKER},
+    )
+    with pytest.raises(FetchError) as c4:
+        get(FakeTransport({URL: redirect}))
+    assert c4.value.kind == "redirect"
+    _assert_chain_is_broken(c4.value)
+
+
+def test_fetch_json_shared_path_leaves_no_chain() -> None:
+    for bad in ("https://social.example:99999/x", "https://127.0.0.1/x"):
+        with pytest.raises(FetchError) as caught:
+            fetch_json(bad, transport=FakeTransport(), sleep=_no_sleep)
+        _assert_chain_is_broken(caught.value)
+    with pytest.raises(FetchError) as c2:
+        fetch_json(
+            URL,
+            transport=FakeTransport({URL: reply(body=b"{" + _MARKER.encode() + b"}")}),
+            sleep=_no_sleep,
+            jitter=lambda: 0.0,
+            now=lambda: NOW,
+        )
+    assert c2.value.kind == "bad_json"
+    _assert_chain_is_broken(c2.value)
+
+
+@pytest.mark.parametrize(
+    ("digits", "sign", "ok"),
+    [
+        (18, "", True),
+        (19, "", False),
+        (18, "-", True),
+        (19, "-", False),
+        (1, "", True),
+        (1, "-", True),
+    ],
+)
+def test_integer_digit_limit_is_exact(digits: int, sign: str, ok: bool) -> None:
+    number = sign + "1" * digits
+    for body in (
+        f"[{number}]",
+        f'[{{"a": [{number}]}}]',
+        f"[[{number}, 2]]",
+    ):
+        t = FakeTransport({URL: reply(body=body.encode())})
+        if ok:
+            assert get(t).items
+        else:
+            assert kind(FakeTransport({URL: reply(body=body.encode())})) == "bad_json"
+
+
+def test_nineteen_digit_ids_are_refused_by_design() -> None:
+    assert MAX_INT_DIGITS == 18
+    body = b"[1234567890123456789]"  # a 64-bit-style id: read these as strings
+    assert kind(FakeTransport({URL: reply(body=body)})) == "bad_json"
+    assert get(FakeTransport({URL: reply(body=b'["1234567890123456789"]')})).items

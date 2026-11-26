@@ -4,7 +4,9 @@
 
 Run by hand, by the owner, against a named public endpoint. It is never run by
 CI or by the tests (the tests call ``run`` with a fake transport). Importing
-this file makes no call.
+this file makes no call. Without a fake transport it refuses to start when a
+CI marker is set in the environment (``CI``, ``GITHUB_ACTIONS`` and similar),
+unless ``RA_PROBE_OWNER_RUN=1`` is set for a deliberate hand run.
 
 Usage:
   python3 -I scripts/fediverse-probe.py mastodon --host social.example --acct example
@@ -22,9 +24,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import TextIO
 
 from reach_around.net.egress import (
@@ -198,13 +201,31 @@ def probe_bluesky(
     print(f"feed: cursor {'present' if has_cursor else 'absent'}", file=out)
 
 
+AUTOMATION_MARKERS = ("CI", "GITHUB_ACTIONS", "BUILD_ID", "TF_BUILD", "JENKINS_URL")
+OWNER_OVERRIDE = "RA_PROBE_OWNER_RUN"  # set to "1" by the owner for a hand run
+
+
+def _in_automation(env: Mapping[str, str]) -> bool:
+    """True when a CI marker is set and the owner override is not."""
+    if env.get(OWNER_OVERRIDE) == "1":
+        return False
+    return any(env.get(name) for name in AUTOMATION_MARKERS)
+
+
 def run(
     argv: Sequence[str],
     *,
     transport: Transport | None = None,
     out: TextIO | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    env: Mapping[str, str] | None = None,
 ) -> int:
+    sink_early = out if out is not None else sys.stdout
+    if transport is None and _in_automation(os.environ if env is None else env):
+        # Fail closed: the real network is never reached from CI or another
+        # automation. A fake transport (the tests) is always allowed.
+        print("refused: automation", file=sink_early)
+        return 4
     parser = argparse.ArgumentParser(
         description=__doc__.split("\n\n")[0] if __doc__ else ""
     )

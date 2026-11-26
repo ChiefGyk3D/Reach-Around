@@ -105,22 +105,33 @@ def _is_json_type(content_type: str | None) -> bool:
 
 def _target(url: str) -> tuple[str, str]:
     """(host, path-and-query) of a plain https URL, or FetchError."""
+    # Each handler below only records that it fired; the fixed-word error is
+    # raised after the handler is left, so the raised error has no __context__
+    # (``from None`` alone would still keep the original exception reachable).
+    parts = None
+    port = None
+    hostname = None
     try:
         parts = urlsplit(url)
         port = parts.port
         hostname = parts.hostname
     except ValueError:
-        raise FetchError("bad_url") from None
+        parts = None
+    if parts is None:
+        raise FetchError("bad_url")
     if parts.scheme != "https":
         raise FetchError("bad_url")
     if parts.username is not None or parts.password is not None or parts.fragment:
         raise FetchError("bad_url")
     if port not in (None, 443) or not hostname:
         raise FetchError("bad_url")
+    host = None
     try:
         host = validate_hostname(hostname)
     except EgressBlocked:
-        raise FetchError("bad_url") from None
+        host = None
+    if host is None:
+        raise FetchError("bad_url")
     path = parts.path or "/"
     if any(ord(ch) < 33 or ord(ch) > 126 for ch in path + parts.query):
         raise FetchError("bad_url")
@@ -219,10 +230,14 @@ def _fetch_raw(
                 deadline=clock() + timeout,
                 max_bytes=max_bytes,
             )
+            response: RawResponse | None = None
+            blocked = ""
             try:
                 response = send(request)
             except EgressBlocked as exc:
-                raise FetchError(f"egress_{exc.reason}") from None
+                blocked = str(exc.reason)
+            if response is None:
+                raise FetchError(f"egress_{blocked}")
             status = response.status
             if 300 <= status < 400:
                 location = response.headers.get("location")
@@ -233,12 +248,14 @@ def _fetch_raw(
                     or redirects >= MAX_REDIRECTS
                 ):
                     raise FetchError("redirect")
+                target: tuple[str, str] | None = None
                 try:
-                    next_host, next_path = _target(
-                        urljoin(f"https://{host}{path}", location)
-                    )
+                    target = _target(urljoin(f"https://{host}{path}", location))
                 except FetchError:
-                    raise FetchError("redirect") from None
+                    target = None
+                if target is None:
+                    raise FetchError("redirect")
+                next_host, next_path = target
                 if next_host != host:
                     raise FetchError("redirect")
                 redirects += 1
@@ -333,8 +350,9 @@ def fetch_json_array(
     GET only: there is no method or body parameter.
     """
     limit = max(1, min(max_bytes, ARRAY_MAX_BYTES))
+    fetched: RawResponse | None = None
     try:
-        response = _fetch_raw(
+        fetched = _fetch_raw(
             url,
             transport=transport,
             headers=headers,
@@ -354,10 +372,13 @@ def fetch_json_array(
         raise
     except Exception:
         # An unexpected transport failure may carry the requested path in its
-        # text. Map it to one fixed word and never format the exception.
-        raise FetchError("transport_error") from None
+        # text. Drop it here; the fixed word is raised after the handler.
+        fetched = None
     finally:
         headers = None
+    if fetched is None:
+        raise FetchError("transport_error")
+    response = fetched
     parsed = _parse(response.headers, response.body, limit, frozenset())
     if not isinstance(parsed, list) or len(parsed) > ARRAY_MAX_ITEMS:
         raise FetchError("bad_json")
@@ -393,6 +414,8 @@ def _parse(
     media = (headers.get("content-type") or "").split(";", 1)[0].strip().lower()
     if not _is_json_type(headers.get("content-type")) and media not in extra_json_types:
         raise FetchError("content_type")
+    parsed: object = None
+    ok = False
     try:
         parsed = json.loads(
             body.decode("utf-8"),
@@ -400,12 +423,18 @@ def _parse(
             parse_int=_bounded_int,
             parse_float=_finite_float,
         )
+        ok = True
     except (UnicodeDecodeError, ValueError, RecursionError):
-        raise FetchError("bad_json") from None
+        ok = False
+    if not ok:
+        raise FetchError("bad_json")
     return parsed
 
 
-_MAX_INT_DIGITS = 18
+# At most this many digits, not counting a leading minus sign. The plumbing
+# refuses every integer above 18 digits, so a 19-digit 64-bit-style id is
+# refused by design: a provider that needs larger ids must read them as strings.
+MAX_INT_DIGITS = 18
 
 
 def _refuse_constant(name: str) -> object:
@@ -424,7 +453,12 @@ def _finite_float(text: str) -> float:
 
 
 def _bounded_int(text: str) -> int:
-    """A whole number of at most 18 digits; longer ones are refused."""
-    if len(text) > _MAX_INT_DIGITS + 1:  # one more for a minus sign
+    """A whole number of at most ``MAX_INT_DIGITS`` digits; longer are refused.
+
+    JSON grammar allows an optional leading minus and no plus sign or leading
+    zeros, so the digits are the text without that one minus sign.
+    """
+    digits = text[1:] if text.startswith("-") else text
+    if len(digits) > MAX_INT_DIGITS:
         raise ValueError("integer too long")
     return int(text)
