@@ -13,6 +13,13 @@ Routes are limited to the shell, the static files, ``GET /__edit/api/state``,
 ``POST /__edit/api/history/restore`` and 404 for everything else. A refused or
 malformed request never writes and never produces a 5xx: the guard runs inside
 ``parse_request``, before any route.
+
+Deployment invariant for the preview: the build folder is a temporary folder
+owned by the current user with mode 0700, checked at start (the editor refuses
+to serve otherwise). Files are opened by a descriptor walk that refuses links
+and other devices; a same-device bind mount cannot be detected cheaply and is
+not attempted, so it is excluded by that invariant: only the same user (or
+root) could place one, and that party already controls this process.
 """
 
 from __future__ import annotations
@@ -24,7 +31,6 @@ import mimetypes
 import os
 import secrets
 import signal
-import socket
 import stat
 import sys
 import threading
@@ -62,6 +68,7 @@ HEADER_DEADLINE_SECONDS = 10.0
 BODY_DEADLINE_SECONDS = 30.0
 MAX_IDLE_SECONDS = 24 * 3600.0
 _RECV_CHUNK = 8192
+_SHUT_RDWR = 2  # the value of socket.SHUT_RDWR (no socket import in this module)
 MAX_ACTIVE_CONNECTIONS = 16
 MAX_OPEN_CONNECTIONS = 32
 CONFIG_READ_CAP = 8 * 1024 * 1024
@@ -693,9 +700,9 @@ class _PreviewHandler(_Handler):
                         if not chunk:
                             # The file shrank after the headers: the promised
                             # length cannot be met, so drop the connection.
-                            self.owner.short_transfers += 1
+                            self.owner.count_short_transfer()
                             self.close_connection = True
-                            self.connection.shutdown(socket.SHUT_RDWR)
+                            self.connection.shutdown(_SHUT_RDWR)
                             break
                         self.wfile.write(chunk)
                         left -= len(chunk)
@@ -703,6 +710,32 @@ class _PreviewHandler(_Handler):
                 pass
         finally:
             os.close(fd)
+
+
+def check_private_build_dir(path: Path) -> None:
+    """Refuse to serve unless the build folder is private to this user.
+
+    The descriptor walk below stops links and devices, but a bind mount on the
+    same filesystem keeps its device number and cannot be told apart from a
+    plain folder without mount detection, which is not attempted. The walk
+    therefore relies on one deployment invariant, checked here at start: the
+    build folder is a temporary folder owned by the current user with no group
+    or other access (mode 0700, as ``tempfile.mkdtemp`` creates it). Only that
+    user (or root) can then place a mount inside it, and a party with that
+    power already controls the editor process and its session key.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        raise EditorError("the preview build folder cannot be checked") from None
+    try:
+        info = os.fstat(fd)
+    finally:
+        os.close(fd)
+    if info.st_uid != os.geteuid() or info.st_mode & 0o077:
+        raise EditorError(
+            "the preview build folder is not private to this user, so it is not served"
+        )
 
 
 def _open_site_file(root: Path, segments: list[str]) -> tuple[int, int, str] | None:
@@ -713,7 +746,10 @@ def _open_site_file(root: Path, segments: list[str]) -> tuple[int, int, str] | N
     swapped for a symlink after the request was checked is refused (the built
     site holds no symlinks, so any link on the way is refused) and the walk
     can never leave the root. A directory as the last segment serves its
-    ``index.html``. Every descendant must stay on the root's device.
+    ``index.html``. Every descendant must stay on the root's device. Mount
+    points on the same device are not detected: the build folder is private to
+    the current user (see ``check_private_build_dir``), so none can be placed
+    there by anyone but a party that already controls this process.
     """
     parts = list(segments)
     for part in parts:
@@ -809,6 +845,7 @@ class EditorSession:
         self._site_digest: str | None = None
         self.file_slots = threading.BoundedSemaphore(MAX_FILE_STREAMS)
         self.short_transfers = 0  # files that shrank mid-send (a count, no path)
+        self._short_lock = threading.Lock()
         self._site_lock = threading.Lock()
         self.idle_seconds = idle_seconds
         self.read_timeout = read_timeout
@@ -869,6 +906,11 @@ class EditorSession:
         site = self.site
         return site.workdir if site is not None else None
 
+    def count_short_transfer(self) -> None:
+        """Count one file that shrank mid-send (the update is serialized)."""
+        with self._short_lock:
+            self.short_transfers += 1
+
     def _site_error(self, digest: str) -> str | None:
         """Build the site for this config version once; its error text, or None.
 
@@ -902,6 +944,7 @@ class EditorSession:
                 # current config, so a change between reads cannot stay served.
                 self._site_digest = None
                 self.site = Preview(self.config, self.address, None)
+                check_private_build_dir(self.site.workdir)
             editor = self._listen(_EditorHandler, "editor")
             self._editor = editor
             preview = self._listen(_PreviewHandler, "preview")

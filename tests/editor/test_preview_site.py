@@ -8,6 +8,8 @@ import os
 import re
 import socket
 import socketserver
+import stat
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -576,6 +578,154 @@ def test_a_file_that_shrinks_after_the_headers_drops_the_connection(
     assert got.headers["content-length"] == "20000"
     assert len(got.body) < 20000
     assert getattr(rig.session, "short_transfers", 0) == 1
+
+
+def test_several_concurrent_shrinking_transfers_are_all_counted(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each shrinking transfer adds exactly one, even when they overlap.
+
+    The counter's write is slowed so that an unserialized read-modify-write
+    loses updates every time; the count must still be exact.
+    """
+    total = 6
+    monkeypatch.setattr(server_module, "_FILE_CHUNK", 4096)
+    for index in range(total):
+        _build_file(rig, f"shrink{index}.bin", b"x" * 20000)
+    stored = {"value": 0}
+
+    def get_count(_self: object) -> int:
+        return stored["value"]
+
+    def set_count(_self: object, value: int) -> None:
+        time.sleep(0.05)  # widens the window between the read and the write
+        stored["value"] = value
+
+    monkeypatch.setattr(
+        EditorSession,
+        "short_transfers",
+        property(get_count, set_count),
+        raising=False,
+    )
+    real_read = os.read
+    barrier = threading.Barrier(total, timeout=20)
+    seen: dict[int, int] = {}
+
+    def shrinking(fd: int, count: int) -> bytes:
+        seen[fd] = seen.get(fd, 0) + 1
+        data = real_read(fd, count)
+        if seen[fd] == 2:
+            barrier.wait()  # every transfer reaches its shrink together
+            return b""  # the file ended early
+        return data
+
+    monkeypatch.setattr(server_module, "_read_fd", shrinking)
+    results: list[int | None] = []
+
+    def fetch(index: int) -> None:
+        results.append(
+            request(rig.session.preview_port, "GET", f"/shrink{index}.bin").status
+        )
+
+    threads = [threading.Thread(target=fetch, args=(i,)) for i in range(total)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(30)
+    assert len(results) == total
+    assert stored["value"] == total
+
+
+def test_an_intermediate_directory_swapped_for_a_link_is_never_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "build"
+    (root / "mid").mkdir(parents=True)
+    (root / "mid" / "page.txt").write_text("INSIDE", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "page.txt").write_text("OUTSIDE-SECRET", encoding="utf-8")
+    real_open = os.open
+    swapped: list[bool] = []
+
+    def swapping(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        fd = real_open(path, flags, *args, **kwargs)
+        if not swapped and kwargs.get("dir_fd") is not None and path == "mid":
+            swapped.append(True)  # after the first intermediate open
+            (root / "mid").rename(tmp_path / "moved-mid")
+            (root / "mid").symlink_to(outside, target_is_directory=True)
+        return fd
+
+    monkeypatch.setattr(os, "open", swapping)
+    opened = server_module._open_site_file(root, ["mid", "page.txt"])
+    monkeypatch.undo()
+    assert swapped, "the swap never ran"
+    if opened is not None:
+        fd, size, _name = opened
+        try:
+            assert os.read(fd, size) == b"INSIDE"
+        finally:
+            os.close(fd)
+
+
+def test_a_build_folder_that_is_private_to_this_user_is_accepted(
+    tmp_path: Path,
+) -> None:
+    folder = tmp_path / "private"
+    folder.mkdir(mode=0o700)
+    folder.chmod(0o700)
+    server_module.check_private_build_dir(folder)
+
+
+@pytest.mark.parametrize("mode", [0o755, 0o750, 0o705, 0o770, 0o777])
+def test_a_group_or_world_accessible_build_folder_is_refused(
+    tmp_path: Path, mode: int
+) -> None:
+    folder = tmp_path / "open"
+    folder.mkdir()
+    folder.chmod(mode)
+    with pytest.raises(server_module.EditorError):
+        server_module.check_private_build_dir(folder)
+
+
+def test_a_build_folder_owned_by_someone_else_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = tmp_path / "theirs"
+    folder.mkdir(mode=0o700)
+    folder.chmod(0o700)
+    monkeypatch.setattr(os, "geteuid", lambda: os.stat(folder).st_uid + 1)
+    with pytest.raises(server_module.EditorError):
+        server_module.check_private_build_dir(folder)
+
+
+def test_a_link_in_place_of_the_build_folder_is_refused(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir(mode=0o700)
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    with pytest.raises(server_module.EditorError):
+        server_module.check_private_build_dir(link)
+
+
+def test_the_session_refuses_to_start_on_a_group_accessible_build_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "site.yaml"
+    config.write_text(CONFIG, encoding="utf-8")
+    real_mkdtemp = tempfile.mkdtemp
+    group_readable = stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP
+
+    def loose(*args: Any, **kwargs: Any) -> str:
+        made = str(real_mkdtemp(*args, **kwargs))
+        os.chmod(made, group_readable)
+        return made
+
+    monkeypatch.setattr(tempfile, "mkdtemp", loose)
+    session = EditorSession(config)
+    with pytest.raises(server_module.EditorError):
+        session.start()
+    assert session.stopped.is_set()
 
 
 def test_a_file_that_grows_after_the_headers_never_sends_more_than_promised(

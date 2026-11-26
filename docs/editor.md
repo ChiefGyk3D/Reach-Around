@@ -199,6 +199,14 @@ the checks ends in 404.
 On the preview port, `GET` and `HEAD` of `/` return the placeholder page. Other
 methods are refused (405) and other paths give 404.
 
+Preview deployment invariant: the build folder is a temporary folder owned by
+the current user with mode 0700, and the editor refuses to start serving if it
+is not. Build files are opened by a descriptor walk that refuses links and
+files on another device. A bind mount on the same filesystem cannot be detected
+cheaply and is not attempted: only the same user (or root) could place one in
+that private folder, and such a party already controls the editor process and
+its session key.
+
 `GET /__edit/api/state` returns `hash` (SHA-256 of the file), `mtime`, `config`
 (the whole loaded config as plain JSON, no comments; `{}` when the file does not
 load), `build` (`{"ok": bool, "error": text or null}`; this only says whether
