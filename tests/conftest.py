@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
+import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -53,117 +55,97 @@ def _capture_real_exec() -> Any:
 
 _REAL_EXEC = _capture_real_exec()
 
+# Tests of `leads delete` may start NO process at all. Every other test (the
+# erasure registry runs bash backup scripts, for one) may start what it needs,
+# except a command whose program is wrangler, npx, npm or node (a real remote
+# call); `leads._exec` is replaced for all of them.
+_STRICT_MODULES = ("test_leads",)
+_FORBIDDEN_NAMES = ("wrangler", "npx", "npm", "node")
+
+
+def _is_forbidden(command: object, strict: bool) -> bool:
+    if strict:
+        return True
+    first = command[0] if isinstance(command, (list, tuple)) and command else command
+    if not isinstance(first, (str, bytes, os.PathLike)):
+        return False
+    text = os.fsdecode(first).split(" ")[0]
+    return os.path.basename(text) in _FORBIDDEN_NAMES
+
 
 @pytest.fixture
 def real_exec() -> Any:
-    """The real process runner, for the one test that checks how it calls
-    subprocess (with subprocess itself replaced)."""
+    """The real process runner, for the tests that check how it calls subprocess
+    (with `subprocess.Popen` replaced by the test)."""
     return _REAL_EXEC
 
 
 @pytest.fixture(autouse=True)
-def _no_real_wrangler(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`leads delete` starts a process in exactly one function, `_exec`. Every test
-    runs with it replaced by a function that fails, so a test that forgets to
-    install the fake cannot start wrangler, node or anything else. Tests that need
-    the online path use the `fake_wrangler` fixture."""
+def _no_real_wrangler(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    """No test may start a real wrangler (or node, npm, npx), whatever code path
+    asks. The guard sits at the lowest level: `subprocess.Popen` (which
+    `subprocess.run` and `check_output` use), `os.system`, `os.exec*`,
+    `os.posix_spawn*`, and the module's own `_exec`. In the `leads` tests and the
+    erasure guard every process start fails. A test that checks how `_exec` calls
+    subprocess replaces `subprocess.Popen` itself, after this guard."""
     from reach_around.commands import leads
+
+    strict = request.module.__name__.startswith(_STRICT_MODULES)
 
     def refuse(*_a: object, **_k: object) -> tuple[int, bytes]:
         raise AssertionError("a test reached the real process runner (wrangler)")
 
     monkeypatch.setattr(leads, "_exec", refuse)
 
+    class GuardedPopen(subprocess.Popen[bytes]):
+        def __init__(self, args: Any, *a: Any, **k: Any) -> None:
+            if _is_forbidden(args, strict):
+                raise AssertionError("a test started a real process (wrangler guard)")
+            super().__init__(args, *a, **k)
 
-class FakeWrangler:
-    """A stand-in for the pinned wrangler: in-memory SQLite databases, answers in
-    the `--json` shape (a list of one result block). Records every call."""
+    monkeypatch.setattr(subprocess, "Popen", GuardedPopen)
 
-    def __init__(self, version: str) -> None:
-        import sqlite3
+    def guard_path(real: Any) -> Any:
+        def guarded(path: Any, *a: Any, **k: Any) -> Any:
+            if _is_forbidden(path, strict):
+                raise AssertionError("a test started a real process (wrangler guard)")
+            return real(path, *a, **k)
 
-        self.version = version
-        self.calls: list[tuple[str, str]] = []  # (database, statement)
-        self.envs: list[dict[str, str]] = []
-        self.argvs: list[list[str]] = []
-        self.versions_asked = 0
-        self.dbs: dict[str, sqlite3.Connection] = {}
-        for name in ("reach-around-leads", "ra-alerts"):
-            self.dbs[name] = sqlite3.connect(":memory:")
-        lead = self.dbs["reach-around-leads"]
-        lead.execute("CREATE TABLE leads (id TEXT PRIMARY KEY, email TEXT)")
-        lead.execute("CREATE TABLE kit_events (id INTEGER PRIMARY KEY, lead_id TEXT)")
-        self.dbs["ra-alerts"].execute(
-            "CREATE TABLE alert_dedup (site TEXT, event_hash TEXT, expires_at INTEGER)"
-        )
-        self.raw: bytes | None = None  # answer every query with this body
-        self.exit_code = 0
-        self.extra_blocks = False
-        self.after_clear: Any = None  # called with the connection after a clear
-        self.fail_on: str | None = None  # a substring of a statement that fails
+        return guarded
 
-    def add_database(self, name: str, tables: list[str]) -> None:
-        import sqlite3
-
-        self.dbs[name] = sqlite3.connect(":memory:")
-        for table in tables:
-            cols = {
-                "alert_dedup": "site TEXT, event_hash TEXT, expires_at INTEGER",
-                "leads": "id TEXT, email TEXT",
-                "kit_events": "id INTEGER, lead_id TEXT",
-            }[table]
-            self.dbs[name].execute(f"CREATE TABLE {table} ({cols})")
-
-    def __call__(
-        self, argv: list[str], env: dict[str, str], timeout: int
-    ) -> tuple[int, bytes]:
-        import json
-
-        self.argvs.append(list(argv))
-        self.envs.append(dict(env))
-        assert timeout == 120 or timeout > 0
-        if argv[1:] == ["--version"]:
-            self.versions_asked += 1
-            return 0, f" wrangler {self.version}\n".encode()
-        database, statement = argv[3], argv[argv.index("--command") + 1]
-        self.calls.append((database, statement))
-        if self.exit_code:
-            return self.exit_code, b""
-        if self.raw is not None:
-            return 0, self.raw
-        if database not in self.dbs or (self.fail_on and self.fail_on in statement):
-            return 1, b""
-        db = self.dbs[database]
-        cur = db.execute(statement)
-        rows: list[dict[str, Any]] = []
-        if cur.description:
-            names = [d[0] for d in cur.description]
-            rows = [dict(zip(names, r, strict=True)) for r in cur.fetchall()]
-        db.commit()
-        if statement.startswith("DELETE FROM alert_dedup") and self.after_clear:
-            self.after_clear(db)
-        block = {"results": rows, "success": True, "meta": {}}
-        body = [block, block] if self.extra_blocks else [block]
-        return 0, json.dumps(body).encode()
+    for name in (
+        "execv",
+        "execve",
+        "execvp",
+        "execvpe",
+        "posix_spawn",
+        "posix_spawnp",
+        "system",
+    ):
+        if hasattr(os, name):
+            monkeypatch.setattr(os, name, guard_path(getattr(os, name)))
 
 
 @pytest.fixture
 def fake_wrangler(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
-    """Installs a FakeWrangler as the process runner and an executable file for
-    `--wrangler`. The binary is real on disk so the path checks run for real."""
+    """Installs a FakeWrangler as the process runner and a fake repository whose
+    `worker/node_modules` holds a wrangler install, so the path and install checks
+    run for real on files in a temporary directory."""
     import json
-    import os
 
+    from leads_fakes import FakeWrangler, write_install
     from reach_around.commands import leads
 
     lock = json.loads((leads.REPO_ROOT / "worker" / "package-lock.json").read_text())
-    fake = FakeWrangler(lock["packages"]["node_modules/wrangler"]["version"])
-    bindir = tmp_path / "wbin"
-    bindir.mkdir(mode=0o700)
-    binary = bindir / "wrangler"
-    binary.write_text("#!/bin/sh\nexit 0\n")
-    os.chmod(binary, 0o700)
-    fake.path = binary  # type: ignore[attr-defined]
+    version = lock["packages"]["node_modules/wrangler"]["version"]
+    fake = FakeWrangler(version)
+    root = tmp_path / "repo"
+    root.mkdir()
+    fake.path = write_install(root, version)
+    fake.root = root
+    monkeypatch.setattr(leads, "REPO_ROOT", root)
     monkeypatch.setattr(leads, "_exec", fake)
     monkeypatch.setattr(leads, "pause", lambda _s: None)
     return fake

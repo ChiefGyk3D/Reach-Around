@@ -34,15 +34,17 @@ import sys
 import tomllib
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import pytest
 
+from leads_fakes import LEADS_NAME, LEADS_UUID, FakeWrangler
+from reach_around.commands import leads as leads_mod
 from reach_around.commands.leads import (
     ALERT_CLEAR_SQL,
     ALERT_READBACK_SQL,
     CHECKLIST,
     _sql,
-    alert_flow_statements,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1703,14 +1705,42 @@ def lead_statements() -> list[str]:
     return _sql("0123456789abcdef0123456789abcdef", "nobody@example.test")
 
 
-def delete_sql() -> str:
-    """The whole erasure flow: the lead SQL, then the alert clear and read-back
-    that `leads delete --finish` runs through the same constants (#905)."""
-    return "\n".join([*lead_statements(), *(f"{s};" for s in alert_flow_statements())])
-
-
 TARGET_LEAD = "0123456789abcdef0123456789abcdef"
 TARGET_MAIL = "nobody@example.test"
+
+
+def finish_flow_statements() -> list[str]:
+    """The statements `leads delete --finish` really runs after the lead SQL,
+    RECORDED from the real orchestration (`finish_erasure`, with the real clear and
+    read-back functions) against the fake wrangler over in-memory SQLite, on one
+    database that holds every table. Nothing is restated here: a runtime that
+    stops clearing, or clears before the lead read-back, changes this list and
+    the guard tests below fail (#905 review round 1, Medium 4). The schema reads
+    are left out (they are not part of the erasure). The lead read-back that runs
+    first is dropped from the list, since the owner's SQL file ends with it."""
+    fake = FakeWrangler()
+    fake.single_database()
+    ids = (LEADS_UUID, LEADS_UUID)
+    with (
+        mock.patch.object(leads_mod, "_exec", fake),
+        mock.patch.object(leads_mod, "pause", lambda _s: None),
+    ):
+        code, _ = leads_mod.finish_erasure(
+            "/x/wrangler", LEADS_NAME, LEADS_NAME, ids, TARGET_LEAD, TARGET_MAIL
+        )
+    assert code == 0, "the real finish flow did not complete on the fake"
+    ran = [sql for _db, sql in fake.calls if "sqlite_master" not in sql]
+    lead_readback = _sql(TARGET_LEAD, TARGET_MAIL)[-1]
+    assert ran[0] == lead_readback, "the flow must read the lead tables back first"
+    return [sql for sql in ran if sql != lead_readback]
+
+
+def delete_sql() -> str:
+    """The whole erasure flow: the lead SQL, then the alert statements that
+    `leads delete --finish` really runs (recorded, not restated; #905)."""
+    return "\n".join([*lead_statements(), *(f"{s};" for s in finish_flow_statements())])
+
+
 OTHER_LEAD = "fedcba9876543210fedcba9876543210"
 OTHER_MAIL = "someone-else@example.test"
 # Values a generated row needs where a CHECK or a closed set rules out a filler.
@@ -1728,7 +1758,7 @@ def delete_statements() -> list[str]:
     (applied by the owner), then the alert clear and its read-back (`--finish`)."""
     return [
         *_sql(TARGET_LEAD, TARGET_MAIL),
-        *(f"{s};" for s in alert_flow_statements()),
+        *(f"{s};" for s in finish_flow_statements()),
     ]
 
 
@@ -2033,7 +2063,9 @@ def test_the_read_back_is_judged_at_its_position_after_the_deletes(
     lead_part = [s for s in real if s not in alert_part]
     selects = [s for s in lead_part if s.lstrip().upper().startswith("SELECT")]
     others = [s for s in lead_part if s not in selects]
-    assert len(selects) == 1 and len(alert_part) == 2
+    # The recorded flow: the clear, the read-back after it, the read-back after
+    # the pause (three statements, since the runtime is what is recorded).
+    assert len(selects) == 1 and len(alert_part) == 3
     # The same read-back ahead of every delete: it sees the rows when it runs.
     early = run([*selects, *others, *alert_part])
     assert any("when it runs in file order" in v for v in early), early
@@ -2108,14 +2140,34 @@ def test_a_lead_hash_table_the_flow_claims_to_clear_must_be_empty_after() -> Non
     out = delete_flow_violations(cleared, registry)  # cleared but never read back
     assert any("no read-back counts it after its clear" in v for v in out), out
     # A read-back that runs BEFORE the clear sees the seeded row and fails.
-    clear, readback = (s for s in full if "alert_dedup" in s)
-    early = [*lead_only, readback, clear]
+    clear, *readbacks = (s for s in full if "alert_dedup" in s)
+    early = [*lead_only, *readbacks, clear]
     assert any(
         "when it runs in file order" in v
         for v in delete_flow_violations(early, registry)
     )
     # The real flow also passes on the CHECK-stripping fallback schema path.
     assert delete_flow_violations(full, registry, None, True) == []
+
+
+def test_the_guard_runs_the_real_finish_flow_not_a_restated_one() -> None:
+    """Review round 1 (Medium 4): the guard's statements are RECORDED from
+    `finish_erasure`. If the runtime stops issuing the clear, or issues something
+    that no longer empties the seeded rows, the guard fails."""
+    registry = copy.deepcopy(load_registry())
+    assert delete_flow_violations(delete_statements(), registry) == []
+    flow = finish_flow_statements()
+    assert flow[0] == ALERT_CLEAR_SQL and "alert_dedup_remaining" in flow[1]
+    # The runtime no longer clears (the statement became a harmless read).
+    with mock.patch.object(leads_mod, "ALERT_CLEAR_SQL", "SELECT 1"):
+        out = delete_flow_violations(delete_statements(), registry)
+    assert any("alert_dedup" in v and "rows remain" in v for v in out), out
+    # The runtime clears the wrong thing.
+    with mock.patch.object(
+        leads_mod, "ALERT_CLEAR_SQL", "DELETE FROM alert_dedup WHERE 0"
+    ):
+        out = delete_flow_violations(delete_statements(), registry)
+    assert any("alert_dedup" in v and "rows remain" in v for v in out), out
 
 
 def test_the_executable_statement_splitter_drops_comments_and_keeps_literals() -> None:
@@ -2823,7 +2875,31 @@ def test_the_delete_command_help_names_the_alert_step_and_its_exit_codes() -> No
     assert "--alerts-database" in helped and "--finish" in helped
     assert "3 lead rows erased but the alert hashes not confirmed cleared" in helped
     assert "(NOT complete)" in helped and "4 lead rows not confirmed erased" in helped
+    # Review round 1: step 1 has its own code and is never a completed erasure;
+    # the database ids and the trust boundary are in the help.
+    assert "10 checks passed and SQL printed, NOT erased" in helped
+    assert "Exit 0 the erasure verified by --finish" in helped
+    assert "--alerts-database-id" in helped and "--leads-database-id" in helped
+    assert "not an integrity check" in helped
     assert not COMPLETE_CLAIM.search(helped)
+
+
+def test_the_docs_never_hand_over_an_unpinned_wrangler_command() -> None:
+    """Review round 1 (Low): a recovery command typed from the docs must use the
+    same pinned wrangler as the tool, never `wrangler` or `npx wrangler` found
+    through PATH."""
+    for page in (PRIVACY, ALERTS_DOC):
+        for line in page.read_text(encoding="utf-8").splitlines():
+            bare = line.strip().lstrip("$ ").strip()
+            if "alert_dedup" in line:  # the other commands on the page are not ours
+                assert not re.match(r"(?:npx\s+)?wrangler\s", bare), (
+                    f"{page.name}: {line}"
+                )
+    docs = PRIVACY.read_text(encoding="utf-8")
+    assert (
+        f'"$WRANGLER" d1 execute <DATABASE> --remote --command "{ALERT_CLEAR_SQL}"'
+        in docs
+    )
 
 
 def lead_hash_gap_violations(

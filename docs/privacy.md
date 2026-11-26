@@ -339,52 +339,88 @@ Alert hash erasure (#905). `reach-around leads delete` clears the alert hash
 table itself, in two steps, and a quiet site otherwise keeps up to 500 rows until
 the next alert is admitted:
 
-1. `--yes --alerts-database NAME` (required with `--yes`; without it the command
-   exits 2 before it prints any SQL). It reads the schema of the leads database
-   and of the named database through the repository's pinned wrangler (the
-   version in `worker/package-lock.json`; never found through `PATH` or `npx`;
-   `--wrangler PATH` names another absolute path that must be that version,
-   owned by you and not writable by others; `cd worker && npm ci
-   --ignore-scripts` installs the default). The named database must hold
-   `alert_dedup` and must NOT hold `leads` or `kit_events`, unless it is the
-   leads database itself (one binding holding both). An absent table is a
-   refusal, never a clear. Run it from the directory whose wrangler config
-   names both databases, with the Cloudflare token in the environment (the
-   command passes only the token, the account id, `HOME` and a fixed `PATH`
-   to wrangler; node must be in `/usr/bin` or `/bin`). It then prints the lead
-   SQL and its apply command.
+1. `--yes --alerts-database NAME --alerts-database-id UUID --leads-database-id
+   UUID` (all three are required with `--yes`; without them the command exits 2
+   before it prints any SQL). The two ids are the `database_id` values of the
+   `[[d1_databases]]` entries in the Worker's own configuration (the private
+   instance repository holds the real ones; this repository's `wrangler.toml`
+   carries placeholders): the entry for the binding the Worker reads alerts
+   from, and the one for the leads binding. The command asks Cloudflare for the
+   id behind each name (`wrangler d1 info NAME --json`) and refuses unless it
+   equals the id you gave, so a decoy database with the right tables, or a
+   name that points somewhere else, ends in exit 2 with nothing changed. If one
+   database holds both, give the same name and the same id for both. Then it
+   reads the schema of the leads database and of the named database. The named
+   database must hold `alert_dedup` and must NOT hold `leads` or `kit_events`,
+   unless it is the leads database itself. An absent table is a refusal, never
+   a clear. It then prints the lead SQL and its apply command and **exits 10:
+   the checks passed and NOTHING is erased.** Exit 10 is never a completed
+   erasure; only the `--finish` run can exit 0.
 2. After you apply the SQL, run the same command again with `--finish`. It
-   re-checks the schemas, reads the lead tables back (must be 0 and 0, else
-   exit 4 and the alert table is untouched), clears the whole alert table
-   (not only expired rows) and reads it back, repeating the clear up to three
-   times if a row arrives, waits two seconds, and reads both stores back once
-   more. Any row left, including one whose life began after the erasure
-   started, is exit 3: the lead rows are erased but the alert hashes are NOT
-   confirmed cleared.
+   repeats the identity and schema checks, reads the lead tables back (must be
+   0 and 0, else exit 4 and the alert table is untouched), checks both databases
+   again, clears the whole alert table (not only expired rows) with one
+   statement that deletes only while the alert database holds no lead table, and
+   reads it back, repeating the clear up to three times if a row arrives. It
+   waits two seconds, reads both stores back once more and checks the identity
+   and schema a last time. Any row left, including one whose life began after
+   the erasure started, or a database that changed during the run, is exit 3:
+   the lead rows are erased but the alert hashes are NOT confirmed cleared.
 
-Exit codes: 0 verified; 1 no match; 2 usage problem, refused export, database
-or wrangler (nothing changed); 3 alert hashes not confirmed cleared; 4 lead rows
-not confirmed erased. Residual window: a person who can still open the kit or
+The wrangler. The command runs only the wrangler installed in this repository
+(`cd worker && npm ci --ignore-scripts`; `--wrangler PATH` takes a path inside
+`worker/node_modules/.bin` or `worker/node_modules/wrangler`, nothing else),
+never one found through `PATH` or `npx`. It hands your Cloudflare token to that
+program, which is code you already trust with the token as the same OS user; a
+printed version number proves nothing, so the tool never asks for one. What it
+checks: the real path (symlinks resolved) stays inside the wrangler package; the
+package's `package.json` and npm's install record
+(`worker/node_modules/.package-lock.json`) name wrangler at the version and
+tarball digest in `worker/package-lock.json`; the file and every directory above
+it belong to root or you and are not writable by others (a sticky shared
+directory such as `/tmp`, or a group of your own that nobody else belongs to, is
+accepted). What it does not prove: that the installed files are those of the
+published package (npm keeps no per-file digests and the lock file's digest
+covers the tarball, which is not re-downloaded), that `node` is genuine, or that
+nothing changes between the check and the run. Anyone who can write as your OS
+user can defeat all of it. The program gets only the token, the account id,
+`HOME` and a fixed `PATH` (node must be in `/usr/bin` or `/bin`), runs in `/`
+with no stdin, and its output is read with a hard size cap (the process is
+killed past it).
+
+Exit codes: 0 only for the verified erasure of `--finish` (a dry run, which
+requests nothing and changes nothing, also exits 0); 10 `--yes` step 1: checks
+passed, SQL printed, NOT erased; 1 no match; 2 usage problem, refused export,
+database, database id or wrangler (nothing changed); 3 alert hashes not
+confirmed cleared, or a database changed during `--finish`; 4 lead rows not
+confirmed erased. Residual windows: a person who can still open the kit or
 trigger an alert can create a new hash after the last read-back, and the tool
-cannot close that. Close the kit gate (the kill switch) for the whole erasure.
-The named database is your attestation, like `--database`: the schema check
-proves the table is there, not that the Worker writes to that database.
-Clearing every row only resets repeat-alert suppression for up to 10 minutes.
-Recovery after exit 3, against the database that holds the alert tables (the
-statements the tool runs; read back to 0 before you call the erasure complete):
+cannot close that; and the identity check, the schema check and the clear are
+separate remote calls, so a database swapped inside one call's gap is caught only
+by the last check (exit 3). Close the kit gate (the kill switch) for the whole
+erasure. The ids bind the name to the database the Worker's configuration names;
+they cannot prove that the Worker you run uses that configuration.
+Clearing every row (not only the lead's own hashes, which cannot be told apart
+without the Worker's secret key) resets repeat-alert suppression for up to 10
+minutes for everyone; that is the cost of this step and the owner accepts it by
+running it.
+Recovery after exit 3: run `--finish` again (it uses the checked wrangler). To do
+it by hand, use the same pinned wrangler, in the directory whose configuration
+names the database, and read back to 0 before you call the erasure complete:
 
 ```
-wrangler d1 execute <DATABASE> --remote --command "DELETE FROM alert_dedup"
-wrangler d1 execute <DATABASE> --remote --command "SELECT COUNT(*) AS alert_dedup_remaining FROM alert_dedup"
+"$WRANGLER" d1 execute <DATABASE> --remote --command "DELETE FROM alert_dedup"
+"$WRANGLER" d1 execute <DATABASE> --remote --command "SELECT COUNT(*) AS alert_dedup_remaining FROM alert_dedup"
 ```
 
-For routine housekeeping only, this deletes just the rows already past their 10
-minute life, the point after which they no longer count as repeats; it leaves a
-recent row, so it is not the erasure step. It takes the current time in
-milliseconds as the number:
+(`WRANGLER` is the absolute path of `worker/node_modules/.bin/wrangler`, as in the
+block under "Honoring a deletion request".) For routine housekeeping only, this deletes just
+the rows already past their 10 minute life, the point after which they no longer
+count as repeats; it leaves a recent row, so it is not the erasure step. It takes
+the current time in milliseconds as the number:
 
 ```
-npx wrangler d1 execute <DATABASE> --remote --command "DELETE FROM alert_dedup WHERE expires_at <= <NOW_MS>"
+"$WRANGLER" d1 execute <DATABASE> --remote --command "DELETE FROM alert_dedup WHERE expires_at <= <NOW_MS>"
 ```
 
 OPEN QUESTION 1, backups beyond Time Travel. The checklist can only tell you to
@@ -470,12 +506,15 @@ Ctrl-C. Run it as one block from your project directory. The steps inside are:
    tables read here are the only tables this review classified as holding an
    address or a lead id (see "Every store, checked against the schema" above for
    what that classification does and does not prove).
-5. The block erases the lead rows only. Run the same `leads delete` command
-   again with `--finish` (checklist item 7, #905): it reads the lead tables
-   back, clears the alert hashes and reads them back as 0 twice. Call the
-   erasure complete only on exit 0 (exit 3: the alert hashes are not confirmed
-   cleared; exit 4: the lead rows are not confirmed erased). Keep the kit gate
-   closed (the kill switch) until it exits 0.
+5. The block erases the lead rows only. The `--yes` run inside it exits 10
+   (checks passed, SQL printed, NOTHING erased), which the block expects. Run
+   the same `leads delete` command again with `--finish` (checklist item 7,
+   #905): it reads the lead tables back, clears the alert hashes and reads them
+   back as 0 twice. Call the erasure complete only on exit 0 of that `--finish`
+   run (exit 3: the alert hashes are not confirmed cleared; exit 4: the lead
+   rows are not confirmed erased). Keep the kit gate closed (the kill switch)
+   until it exits 0. Set `ALERTS_DB`, `ALERTS_ID` and `LEADS_ID` from the
+   Worker's own configuration first (see the alert hash erasure section).
 
 ```
 (
@@ -488,6 +527,8 @@ Ctrl-C. Run it as one block from your project directory. The steps inside are:
   echo "private work directory (removed on exit): $WORK" >&2
   WRANGLER="$PWD/worker/node_modules/.bin/wrangler"   # pinned: cd worker && npm ci --ignore-scripts
   ALERTS_DB="<the database the Worker writes alerts to>"
+  ALERTS_ID="<its database_id from the Worker's own configuration>"
+  LEADS_ID="<the database_id of reach-around-leads from the same configuration>"
   "$WRANGLER" d1 execute reach-around-leads --remote --json \
     --command "SELECT id, email FROM leads" > "$WORK/leads-export.json"
   printf 'Address to delete: ' >&2
@@ -496,11 +537,13 @@ Ctrl-C. Run it as one block from your project directory. The steps inside are:
   printf 'Print the delete SQL and apply it? Type yes: ' >&2
   read -r OK
   [ "$OK" = yes ]
-  printf '%s\n' "$ADDR" | reach-around leads delete --input "$WORK/leads-export.json" --email - --database reach-around-leads --alerts-database "$ALERTS_DB" --yes --sql-out "$WORK/delete-lead.sql"
+  RC=0
+  printf '%s\n' "$ADDR" | reach-around leads delete --input "$WORK/leads-export.json" --email - --database reach-around-leads --alerts-database "$ALERTS_DB" --alerts-database-id "$ALERTS_ID" --leads-database-id "$LEADS_ID" --yes --sql-out "$WORK/delete-lead.sql" || RC=$?
+  [ "$RC" -eq 10 ]   # 10 = checks passed, SQL printed, nothing erased yet
   "$WRANGLER" d1 execute reach-around-leads --remote --file "$WORK/delete-lead.sql"
   sleep 60
   "$WRANGLER" d1 execute reach-around-leads --remote --file "$WORK/delete-lead.sql"
-  printf '%s\n' "$ADDR" | reach-around leads delete --input "$WORK/leads-export.json" --email - --database reach-around-leads --alerts-database "$ALERTS_DB" --yes --finish
+  printf '%s\n' "$ADDR" | reach-around leads delete --input "$WORK/leads-export.json" --email - --database reach-around-leads --alerts-database "$ALERTS_DB" --alerts-database-id "$ALERTS_ID" --leads-database-id "$LEADS_ID" --yes --finish
 )
 ```
 
@@ -511,9 +554,10 @@ yourself, and you should check that it is gone before you report the request
 done.
 
 The dry run reads only the file you give it and makes no network call. With
-`--yes` the command also talks to Cloudflare, only through the pinned wrangler
-and only to read the schemas (step one) or, with `--finish`, to read the lead
-tables, clear `alert_dedup` and read both back (checklist item 7, #905). It
+`--yes` the command also talks to Cloudflare, only through the repository's
+wrangler and only to read the database ids and schemas (step one, exit 10) or,
+with `--finish`, to read the lead tables, clear `alert_dedup` and read both back
+(checklist item 7, #905). It
 writes no file except the `--sql-out` file and never prints remote text. It
 refuses an address that
 is not valid (ASCII, one `@`, a dotted domain; whitespace around it and upper

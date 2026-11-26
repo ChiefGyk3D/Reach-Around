@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from reach_around.cli import main
+from reach_around.commands.leads import EXIT_CHECKED as CHECKED
 
 ID_A = "0123456789abcdef0123456789abcdef"
 ID_B = "fedcba9876543210fedcba9876543210"
@@ -43,6 +44,9 @@ def cli(argv: list[str]) -> int:
     if args[:2] == ["leads", "delete"] and "--yes" in args:
         if "--alerts-database" not in args:
             args += ["--alerts-database", "ra-alerts"]
+        # The two database ids from the Worker's configuration (#905 round 2).
+        args += ["--leads-database-id", "11111111-2222-4333-8444-555555555555"]
+        args += ["--alerts-database-id", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"]
         if "--wrangler" not in args:
             args += ["--wrangler", str(_FAKE["w"].path)]
     if (
@@ -505,10 +509,10 @@ def test_delete_names_the_leads_database_and_refuses_the_analytics_one(
     monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
     code = cli(["leads", "delete", "--input", str(export), "--email", "-", "--yes"])
     captured = capsys.readouterr()
-    assert code == 0
+    assert code == CHECKED  # step 1: checks passed, nothing erased (#905 round 2)
     assert "database: reach-around-leads" in captured.err
     assert (
-        f"{_FAKE['w'].path} d1 execute reach-around-leads --remote "
+        f"{_FAKE['w'].path.resolve()} d1 execute reach-around-leads --remote "
         "--file delete-lead.sql" in captured.err
     )
     assert "npx" not in captured.err
@@ -578,7 +582,7 @@ def test_delete_success_writes_no_form_of_the_address_to_stderr(
     argv = ["leads", "delete", "--input", str(delete_export), "--email", "-", "--yes"]
     code = cli(argv)
     err = capsys.readouterr().err
-    assert code == 0
+    assert code == CHECKED
     assert "***" not in err and "partner" not in err
 
 
@@ -654,7 +658,7 @@ def test_delete_sql_deletes_only_the_row_that_still_pairs_the_id_and_address(
     monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
     code = cli(["leads", "delete", "--input", str(forged), "--email", "-", "--yes"])
     sql = capsys.readouterr().out
-    assert code == 0
+    assert code == CHECKED
     live = _sqlite_with([(ID_A, "someone-else@example.test")], [ID_A, ID_A])
     remaining = _apply(live, sql)
     # Nothing was deleted, and the read-back says so (not (0, 0)).
@@ -676,7 +680,8 @@ def _printed_sql(
 ) -> str:
     path = write(tmp_path / "ok.json", blocks([{"id": ID_A, "email": ADDR}]))
     monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
-    assert cli(["leads", "delete", "--input", str(path), "--email", "-", "--yes"]) == 0
+    argv = ["leads", "delete", "--input", str(path), "--email", "-", "--yes"]
+    assert cli(argv) == CHECKED
     return capsys.readouterr().out
 
 
@@ -744,7 +749,7 @@ def test_sql_out_creates_a_private_file_and_prints_no_sql(
     finally:
         os.umask(old)
     captured = capsys.readouterr()
-    assert code == 0
+    assert code == CHECKED
     assert "DELETE" not in captured.out
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
     assert "DELETE FROM leads" in target.read_text(encoding="utf-8")
@@ -795,7 +800,7 @@ def test_the_printed_apply_command_is_shell_safe_for_any_file_name(
     name: str,
 ) -> None:
     target = tmp_path / name
-    assert _delete_to(monkeypatch, delete_export, target) == 0
+    assert _delete_to(monkeypatch, delete_export, target) == CHECKED
     err = capsys.readouterr().err
     wrangler = str(_FAKE["w"].path.resolve())
     command = err[err.index(wrangler) :]
@@ -850,7 +855,7 @@ def test_a_failed_sql_write_leaves_no_partial_file(
     assert ADDR not in captured.err and "DELETE" not in captured.out
     # A retry is possible: the path is free again.
     monkeypatch.setattr(leads_module, "_write_all", real_write)
-    assert _delete_to(monkeypatch, delete_export, target) == 0
+    assert _delete_to(monkeypatch, delete_export, target) == CHECKED
 
 
 def test_a_partial_file_that_cannot_be_removed_is_named_in_the_output(
@@ -882,7 +887,7 @@ def test_the_output_and_docs_claim_only_a_point_in_time_check(
     delete_export: Path,
     tmp_path: Path,
 ) -> None:
-    assert _delete_to(monkeypatch, delete_export, tmp_path / "d.sql") == 0
+    assert _delete_to(monkeypatch, delete_export, tmp_path / "d.sql") == CHECKED
     err = capsys.readouterr().err.lower()
     assert "no remaining rows at this moment" in err
     assert "erased" not in err and "is deleted" not in err
