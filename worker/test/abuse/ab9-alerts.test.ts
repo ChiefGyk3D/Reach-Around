@@ -5,6 +5,7 @@
 // reaches the sink, and a flood of unlocks or inquiries is bounded by the alert budgets. These tests
 // call the handlers with a fresh dispatcher each time, so the dispatcher's in-memory windows start
 // empty and the result does not depend on test order.
+import { env as testEnv } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDispatcher } from "../../src/alerts/dispatcher";
 import { handleGate } from "../../src/kit/gate";
@@ -248,14 +249,75 @@ describe("AB-9: floods of unlocks and inquiries produce a bounded number of aler
     expect(net.sink()).toHaveLength(1);
   });
 
-  it("when no channel takes the alert the visitor is told it failed, and the spent budget is given back", async () => {
+  it("when no channel takes the alert the visitor is told it failed, and the attempt keeps its budget unit", async () => {
     net.restore();
     net = installNetwork({ sink: 500 });
     const env = makeEnv({ DAILY_ALERT_BUDGET: "1" });
     const res = await inquire({}, env);
     expect(res.headers.get("location")).toBe(INQUIRY_ERROR_ROUTE);
+    // The inquiry counter is an attempt bound: a failed delivery is never refunded.
+    expect(await inquiryUnits()).toBe(1);
+  });
+
+  it("a failed delivery keeps its unit, so the next inquiry of the day is refused before any delivery is tried", async () => {
+    let calls = 0;
+    const env = makeEnv({ DAILY_ALERT_BUDGET: "1" });
+    const failing = (): Promise<never[]> => {
+      calls++;
+      return Promise.resolve([]);
+    };
+    const first = await handleInquiry(inquiryReq({ cookie: await signedCookie() }), env as never, { notify: failing as never });
+    expect(first.headers.get("location")).toBe(INQUIRY_ERROR_ROUTE);
+    expect(await inquiryUnits()).toBe(1);
+    const next = await handleInquiry(inquiryReq({ cookie: await signedCookie(), fields: { ...INQUIRY_GOOD, email: "again@example.com" } }), env as never, { notify: failing as never });
+    expect(next.status).toBe(503);
+    expect(next.headers.get("retry-after")).toBe("3600");
+    expect(calls).toBe(1);
+    expect(await inquiryUnits()).toBe(1);
+  });
+
+  it("with every channel failing, a flood of distinct addresses stops at the inquiry budget: reservations and delivery attempts never pass it", async () => {
+    const budget = 3;
+    let calls = 0;
+    const failing = (): Promise<never[]> => {
+      calls++;
+      return Promise.resolve([]);
+    };
+    const env = makeEnv({ DAILY_ALERT_BUDGET: String(budget) });
+    const seen: number[] = [];
+    for (let i = 0; i < budget + 7; i++) {
+      const res = await handleInquiry(inquiryReq({ cookie: await signedCookie(), fields: { ...INQUIRY_GOOD, email: `flood${i}@example.com` } }), env as never, { notify: failing as never });
+      seen.push(res.status);
+      // Never more reservations or delivery attempts than the budget, and the counter never goes back down.
+      expect(calls).toBeLessThanOrEqual(budget);
+      expect(await inquiryUnits()).toBe(Math.min(i + 1, budget));
+    }
+    expect(seen.slice(0, budget)).toEqual([303, 303, 303]);
+    expect(seen.slice(budget).every((s) => s === 503)).toBe(true);
+    expect(calls).toBe(budget);
+    expect(net.sink()).toHaveLength(0);
+  });
+
+  it("with the real dispatcher exhausted and the sink failing, the inquiry budget still caps the work", async () => {
+    net.restore();
+    net = installNetwork({ sink: 500 });
+    const env = makeEnv({ DAILY_ALERT_BUDGET: "2" });
+    const statuses: number[] = [];
+    for (let i = 0; i < 8; i++) {
+      const res = await inquire({ fields: { ...INQUIRY_GOOD, email: `real${i}@example.com` } }, env);
+      statuses.push(res.status);
+    }
+    expect(statuses.filter((s) => s === 303)).toHaveLength(2);
+    expect(statuses.slice(2).every((s) => s === 503)).toBe(true);
+    expect(await inquiryUnits()).toBe(2);
+    expect(net.sink().length).toBeLessThanOrEqual(2);
   });
 });
+
+async function inquiryUnits(): Promise<number> {
+  const row = await testEnv.DB.prepare("SELECT count FROM counters WHERE key = 'inquiry'").first<{ count: number }>();
+  return row === null ? 0 : row.count;
+}
 
 describe("AB-9: what the unlock alert contains", () => {
   it("masks the address by default and never carries the token, the client address, the user agent or the cookie", async () => {

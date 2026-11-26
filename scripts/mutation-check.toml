@@ -830,7 +830,6 @@ controls = ["kill-switch"]
 what = "the shared guard ignores the kill switch"
 find = 'if (isKitKilled(env)) return { allow: false, response: killedResponse() };'
 replace = ''
-equivalent = "handleInquiry checks isKitKilled again right after the guard and answers 503; the kill switch still closes the route, only the response body differs for GET and HEAD"
 
 [[mutation]]
 id = "guard-method-allow-list-removed"
@@ -907,6 +906,14 @@ controls = ["inquiry-size"]
 what = "the inquiry body cap is lifted"
 find = 'readBoundedText(request, INQUIRY_LIMITS.maxBodyBytes,'
 replace = 'readBoundedText(request, 10_000_000,'
+
+[[mutation]]
+id = "inquiry-failed-send-refunds-budget"
+file = "src/kit/inquiry.ts"
+group = "inquiry"
+what = "an inquiry that no channel delivered gives its daily budget unit back, so the budget stops bounding attempts"
+find = 'log.log("send", "failed", "provider");'
+replace = 'await env.DB.prepare("UPDATE counters SET count = count - 1 WHERE key = ?1 AND day = ?2 AND count > 0").bind(BUDGET_KEY, utcDay(now)).run(); log.log("send", "failed", "provider");'
 
 [[mutation]]
 id = "inquiry-daily-budget-removed"

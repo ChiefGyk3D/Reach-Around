@@ -14,6 +14,7 @@ import {
   INQUIRY_GOOD,
   KEY,
   forgeToken,
+  gateReq,
   goodClaims,
   inquiryReq,
   insertLead,
@@ -157,5 +158,28 @@ describe("the page and the form: methods and bodies", () => {
   it("the unlock page and the form share one environment: both are closed by the same kill switch", async () => {
     const env = makeEnv({ KIT_KILL: "on" });
     expect((await send(inquiryReq({ method: "GET", path: "/k/inquiry/sent" }), env)).status).toBe(503);
+  });
+
+  it("every killed inquiry route gives the one complete killed answer: fixed page, Retry-After, no-store, CSP with frame protection, content type", async () => {
+    const env = makeEnv({ KIT_KILL: "1" });
+    const requests = [
+      inquiryReq({ cookie: await signedCookie() }),
+      inquiryReq({ method: "GET", path: "/k/inquiry/sent" }),
+      inquiryReq({ method: "GET", path: "/k/inquiry/error" }),
+      inquiryReq({ method: "HEAD", path: "/k/inquiry/sent" }),
+      gateReq(),
+      viewReq({ cookie: await signedCookie() }),
+    ];
+    for (const request of requests) {
+      const label = `${request.method} ${new URL(request.url).pathname}`;
+      const res = await send(request, env);
+      expect(res.status, label).toBe(503);
+      expect(res.headers.get("retry-after"), label).toBe("3600");
+      expect(res.headers.get("cache-control"), label).toBe("private, no-store");
+      expect(res.headers.get("content-type"), label).toBe("text/html; charset=utf-8");
+      expect(res.headers.get("content-security-policy"), label).toBe("default-src 'none'; frame-ancestors 'none'");
+      expect(res.headers.get("x-content-type-options"), label).toBe("nosniff");
+      if (request.method !== "HEAD") expect(await res.text(), label).toBe("<!doctype html><title>Unavailable</title><p>Temporarily unavailable.");
+    }
   });
 });

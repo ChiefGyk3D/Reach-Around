@@ -817,7 +817,11 @@ configured the visitor sees the "not sent" page and nothing is lost silently.
 The text is neutralized like every alert (no markup, mention or link survives,
 line breaks become spaces), so a visitor cannot make the alert do anything. The
 daily alert budget (`DAILY_ALERT_BUDGET`, default 20) is also the daily cap on
-inquiries.
+inquiries. It is an attempt bound: a unit is spent before delivery is tried and
+is not given back when delivery fails. A failed delivery therefore uses up that
+unit for the day (an accepted availability trade-off that keeps the cap on the
+work the form can cause); the owner sees failures through the alert health
+signals and the budget being reached.
 
 The private PDF prints the owner details and drops the form (the form's
 `<aside>` is chrome, like the footer). The privacy page gains one entry for the

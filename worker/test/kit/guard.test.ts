@@ -46,7 +46,8 @@ describe("killed kit", () => {
     expect(r.headers.get("Retry-After")).toBe("3600");
     expect(r.headers.get("Cache-Control")).toBe("private, no-store");
     expect(r.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
-    expect(r.headers.get("Content-Security-Policy")).toBe("default-src 'none'");
+    expect(r.headers.get("Content-Security-Policy")).toBe("default-src 'none'; frame-ancestors 'none'");
+    expect(r.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect(r.headers.get("Set-Cookie")).toBeNull();
     const body = await r.text();
     expect(body).toBe("<!doctype html><title>Unavailable</title><p>Temporarily unavailable.");

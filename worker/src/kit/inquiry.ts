@@ -258,6 +258,8 @@ async function submit(request: Request, env: InquiryEnv, deps: InquiryDeps): Pro
   if (deps.fetchFn !== undefined) dispatch.fetchFn = deps.fetchFn;
   const receipt = await send(env, { kind: "inquiry_received", atMs: now, ...parsed.fields }, dispatch);
   if (!receipt.some((r) => r.ok)) {
+    // The unit reserved above is an attempt bound and is never given back, even when nothing was
+    // delivered: a refund would stop the global budget from bounding attempted work.
     log.log("send", "failed", "provider");
     return redirect(INQUIRY_ERROR_ROUTE);
   }

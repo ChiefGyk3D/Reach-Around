@@ -48,6 +48,10 @@ How a run works:
 
 A survivor has two possible answers: add a test that fails without the control, or record `equivalent = "reason"` in the list when the edit cannot change anything a caller can see or another layer covers it. The harness warns when an entry marked equivalent is in fact killed, so a stale claim gets removed.
 
+The list has 136 mutations: 129 are expected to be killed and 7 are recorded as equivalent (each with its reason). The kill-switch mutation on the shared guard is not equivalent: the inquiry routes answer the kill switch with the complete killed page, and a test pins that whole response.
+
+The inquiry budget is an attempt bound. A unit is reserved before delivery is tried and is never given back, so a failed delivery keeps its unit spent and the global budget bounds the work the form can cause, even when every alert channel is down. The accepted availability trade-off: after a failed delivery the visitor sees the "not sent" page and the day's unit is gone; legitimate senders retry the next day, and the owner sees delivery failures through the alert health signals and the budget being reached. A mutation that adds a refund back is in the list and is expected to be killed.
+
 ## What it proves
 
 - Each listed control is covered by a test that fails when that control is removed or weakened in the specific way listed (a flipped comparison, an off-by-one boundary, a skipped check, a fail-open error path, a widened allowlist).
