@@ -350,16 +350,32 @@ def fetch_json_array(
             max_attempts=max_attempts,
             error_code=False,
         )
+    except FetchError:
+        raise
+    except Exception:
+        # An unexpected transport failure may carry the requested path in its
+        # text. Map it to one fixed word and never format the exception.
+        raise FetchError("transport_error") from None
     finally:
         headers = None
     parsed = _parse(response.headers, response.body, limit, frozenset())
     if not isinstance(parsed, list) or len(parsed) > ARRAY_MAX_ITEMS:
         raise FetchError("bad_json")
+    # Names are matched case-insensitively. A name present twice (two spellings)
+    # is ambiguous, so it is dropped rather than guessed.
+    found: dict[str, list[str]] = {}
+    for raw_name, raw_value in response.headers.items():
+        if isinstance(raw_name, str) and raw_name.lower() in VIEW_HEADERS:
+            found.setdefault(raw_name.lower(), []).append(raw_value)
     view: dict[str, str] = {}
     for name in VIEW_HEADERS:
-        value = response.headers.get(name)
-        if isinstance(value, str) and len(value) <= _VIEW_VALUE_MAX:
-            view[name] = value
+        values = found.get(name, [])
+        if (
+            len(values) == 1
+            and isinstance(values[0], str)
+            and len(values[0]) <= _VIEW_VALUE_MAX
+        ):
+            view[name] = values[0]
     return FetchedArray(items=parsed, headers=MappingProxyType(view))
 
 
@@ -378,7 +394,37 @@ def _parse(
     if not _is_json_type(headers.get("content-type")) and media not in extra_json_types:
         raise FetchError("content_type")
     try:
-        parsed = json.loads(body.decode("utf-8"))
+        parsed = json.loads(
+            body.decode("utf-8"),
+            parse_constant=_refuse_constant,
+            parse_int=_bounded_int,
+            parse_float=_finite_float,
+        )
     except (UnicodeDecodeError, ValueError, RecursionError):
         raise FetchError("bad_json") from None
     return parsed
+
+
+_MAX_INT_DIGITS = 18
+
+
+def _refuse_constant(name: str) -> object:
+    """NaN, Infinity and -Infinity are not JSON."""
+    raise ValueError("not a JSON constant")
+
+
+def _finite_float(text: str) -> float:
+    """A float that is finite (``1e999`` would overflow to infinity)."""
+    if len(text) > 64:
+        raise ValueError("number too long")
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError("not finite")
+    return value
+
+
+def _bounded_int(text: str) -> int:
+    """A whole number of at most 18 digits; longer ones are refused."""
+    if len(text) > _MAX_INT_DIGITS + 1:  # one more for a minus sign
+        raise ValueError("integer too long")
+    return int(text)

@@ -14,15 +14,16 @@ zeros or an empty list made up on the spot.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import get_args
 
 from reach_around.config.fediverse import MAX_INTERACTIONS, MAX_POSTS
+from reach_around.net.egress import Reason
 
-# Closed list of reason words (design section 8). ``egress_<word>`` names come
-# from the egress guard's own fixed set.
-REASONS: frozenset[str] = frozenset(
+# Closed list of reason words (design section 8). ``egress_<word>`` names are
+# built from the egress guard's own fixed set, so an invented one is refused.
+_OWN_REASONS: frozenset[str] = frozenset(
     {
         "timeout",
         "server_error",
@@ -42,14 +43,13 @@ REASONS: frozenset[str] = frozenset(
         "guard",
     }
 )
-_EGRESS = re.compile(r"^egress_[a-z][a-z_]{0,31}$")
+EGRESS_REASONS: frozenset[str] = frozenset(f"egress_{w}" for w in get_args(Reason))
+REASONS: frozenset[str] = _OWN_REASONS | EGRESS_REASONS
 
 
 def is_reason(word: object) -> bool:
-    """True for a word on the closed list or an ``egress_*`` word."""
-    return isinstance(word, str) and (
-        word in REASONS or _EGRESS.match(word) is not None
-    )
+    """True only for a word on the closed list (own words and ``egress_*`` words)."""
+    return type(word) is str and word in REASONS
 
 
 def _count(value: object) -> int:
@@ -101,8 +101,32 @@ def keep_prior(
     returns the prior rows exactly as they were, or ``None`` when there are
     none: an incomplete read is never a zero and never an empty list.
     """
-    if isinstance(read, NotProvided):
-        return prior, read.reason
+    if type(read) is NotProvided:
+        # Re-checked here: a marker built around the constructor is not trusted.
+        return (prior, read.reason) if is_reason(read.reason) else (prior, "bad_shape")
+    if not isinstance(read, (list, tuple)):
+        return prior, "bad_shape"
     if len(read) > MAX_POSTS:
         return prior, "window_truncated"
-    return list(read), None
+    rows = list(read)
+    if not all(_is_exact_row(row) for row in rows):
+        return prior, "bad_shape"  # one bad row rejects the whole read
+    return rows, None
+
+
+def _is_exact_row(row: object) -> bool:
+    """True only for a genuine ``InteractionRow`` whose three fields are in range.
+
+    Checked at the boundary, not trusted from construction: an exact type (no
+    subclass, no stand-in with the same attribute names), no instance dict, and
+    every count a plain int in range, even if it was changed after creation.
+    """
+    if type(row) is not InteractionRow or hasattr(row, "__dict__"):
+        return False
+    try:
+        _count(row.boosts)
+        _count(row.favorites)
+        _count(row.replies)
+    except ValueError:
+        return False
+    return True

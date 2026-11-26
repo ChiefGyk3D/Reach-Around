@@ -90,17 +90,18 @@ def in_window(when: datetime | None, now: datetime, *, skew: timedelta = SKEW) -
 def server_clock_skewed(
     date_header: str | None, now: datetime, *, limit: timedelta = CLOCK_SKEW_LIMIT
 ) -> bool:
-    """True when the server's ``Date`` differs from ``now`` by more than ``limit``.
+    """True when the server's clock cannot be trusted (reason ``clock_skew``).
 
-    A missing or unreadable header is not skew: the check is only made when the
-    server gave a usable time.
+    That is when its ``Date`` differs from ``now`` by more than ``limit``, and
+    also when the header is missing or unreadable: without a usable server time
+    the window cannot be trusted, so the check fails closed.
     """
-    if date_header is None or len(date_header) > 64:
-        return False
+    if not isinstance(date_header, str) or len(date_header) > 64:
+        return True
     try:
         server = parsedate_to_datetime(date_header)
     except (TypeError, ValueError, IndexError, OverflowError):
-        return False
+        return True
     if server.tzinfo is None:
         server = server.replace(tzinfo=UTC)
     return abs(server - _aware(now)) > limit

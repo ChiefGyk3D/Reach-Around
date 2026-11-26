@@ -48,6 +48,21 @@ MASTODON_FIELDS = (
     "reblog",
 )
 BLUESKY_FIELDS = ("likeCount", "repostCount", "replyCount", "quoteCount", "indexedAt")
+HEADER_ALLOWLIST = (
+    "content-type",
+    "content-length",
+    "content-encoding",
+    "cache-control",
+    "date",
+    "link",
+    "retry-after",
+    "x-ratelimit-limit",
+    "x-ratelimit-remaining",
+    "x-ratelimit-reset",
+    "ratelimit-limit",
+    "ratelimit-remaining",
+    "ratelimit-reset",
+)
 SAFE_PATH_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._:"
 )
@@ -79,13 +94,18 @@ def _get(
     except EgressBlocked as exc:
         print(f"{label}: blocked {exc.reason}", file=out)
         return 0, None
-    names = sorted(
-        name
-        for name in response.headers
-        if name.isascii() and name.replace("-", "").isalnum() and len(name) <= 64
-    )
+    except Exception:
+        # Never format the exception: its text can hold the requested path.
+        print(f"{label}: failed transport_error", file=out)
+        return 0, None
+    # Only names from a fixed list are printed. Any other name is remote
+    # controlled text, so only how many there were is shown.
+    lowered = {str(name).lower() for name in response.headers}
+    names = sorted(lowered & set(HEADER_ALLOWLIST))
+    others = len(lowered) - len(names)
     print(f"{label}: status {response.status}", file=out)
     print(f"{label}: header names {', '.join(names)}", file=out)
+    print(f"{label}: other headers {others}", file=out)
     parsed: object = None
     if len(response.body) <= MAX_BYTES:
         try:
@@ -206,6 +226,10 @@ def run(
     except EgressBlocked as exc:
         print(f"refused: {exc.reason}", file=sink)
         return 2
+    except Exception:
+        # A fixed word only: the exception text can hold the account or actor.
+        print("failed: unexpected_error", file=sink)
+        return 3
     return 0
 
 

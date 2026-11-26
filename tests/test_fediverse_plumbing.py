@@ -9,7 +9,10 @@ import dataclasses
 import importlib.util
 import io
 import json
+import re
 import sys
+import types
+import unittest.mock
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from types import MappingProxyType
@@ -108,6 +111,76 @@ def test_header_view_is_read_only_and_holds_only_named_headers() -> None:
     writable: Any = view
     with pytest.raises(TypeError):
         writable["x"] = "y"
+
+
+def test_header_names_are_matched_case_insensitively_and_duplicates_dropped() -> None:
+    t = FakeTransport(
+        {
+            URL: reply(
+                [],
+                headers={
+                    "Link": "<https://social.example/n>",
+                    "Retry-After": "7",
+                    "DATE": "Thu, 26 Nov 2026 12:00:00 GMT",
+                    "x-ratelimit-remaining": "1",
+                    "X-RateLimit-Remaining": "999",  # two spellings: ambiguous
+                },
+            )
+        }
+    )
+    view = get(t).headers
+    assert view["link"] == "<https://social.example/n>"
+    assert view["retry-after"] == "7"
+    assert view["date"] == "Thu, 26 Nov 2026 12:00:00 GMT"
+    assert "x-ratelimit-remaining" not in view  # never guess between two values
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"[NaN]",
+        b"[Infinity]",
+        b"[-Infinity]",
+        b"[1e999]",
+        b"[-1e999]",
+        b"[" + b"9" * 40 + b"]",
+        b"[-" + b"9" * 19 + b"]",
+        b"[1." + b"0" * 100 + b"]",
+    ],
+)
+def test_non_json_numbers_and_huge_integers_are_bad_json(body: bytes) -> None:
+    assert kind(FakeTransport({URL: reply(body=body)})) == "bad_json"
+    with pytest.raises(FetchError) as caught:
+        fetch_json(
+            URL,
+            transport=FakeTransport({URL: reply(body=b'{"a": ' + body + b"}")}),
+            sleep=_no_sleep,
+            jitter=lambda: 0.0,
+            now=lambda: NOW,
+        )
+    assert caught.value.kind == "bad_json"
+
+
+def test_ordinary_numbers_still_parse() -> None:
+    body = b"[0, -5, 1.5, 1e3, " + b"9" * 18 + b"]"
+    assert len(get(FakeTransport({URL: reply(body=body)})).items) == 5
+
+
+def test_unexpected_transport_failure_is_a_fixed_word_with_no_path() -> None:
+    def boom(request: TransportRequest) -> RawResponse:
+        raise RuntimeError(f"failed for {request.host}{request.path} person.example")
+
+    with pytest.raises(FetchError) as caught:
+        get(FakeTransport({"https://": boom}))
+    assert caught.value.kind == "transport_error"
+    assert str(caught.value) == "transport_error"
+    assert caught.value.__cause__ is None and caught.value.__suppress_context__
+
+    def stop(request: TransportRequest) -> RawResponse:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        get(FakeTransport({"https://": stop}))
 
 
 def test_link_header_is_never_followed() -> None:
@@ -350,8 +423,13 @@ def test_server_clock_skew() -> None:
     assert not window.server_clock_skewed(http_date(timedelta(minutes=9)), NOW)
     assert window.server_clock_skewed(http_date(timedelta(minutes=11)), NOW)
     assert window.server_clock_skewed(http_date(-timedelta(hours=2)), NOW)
-    assert not window.server_clock_skewed(None, NOW)
-    assert not window.server_clock_skewed("garbage", NOW)
+    # Fails closed: no usable server time means the window cannot be trusted.
+    loose: Any = window.server_clock_skewed
+    assert loose(None, NOW)
+    assert loose("garbage", NOW)
+    assert loose("", NOW)
+    assert loose("x" * 200, NOW)
+    assert loose(b"Thu, 26 Nov 2026 12:00:00 GMT", NOW)
 
 
 # --- aggregate row ------------------------------------------------------------
@@ -403,6 +481,80 @@ def test_marker_accepts_only_fixed_reason_words() -> None:
     for bad in ("hello world", "<script>", "", "Timeout", "egress_" + "x" * 40):
         with pytest.raises(ValueError):
             rows.NotProvided(bad)
+
+
+def test_reason_list_is_closed_including_egress_words() -> None:
+    from typing import get_args
+
+    from reach_around.net.egress import Reason
+
+    for word in get_args(Reason):
+        assert rows.NotProvided(f"egress_{word}").reason == f"egress_{word}"
+    for invented in ("egress_completely_invented", "egress_", "egress_timeoutx"):
+        with pytest.raises(ValueError):
+            rows.NotProvided(invented)
+    assert isinstance(rows.REASONS, frozenset)
+    assert not rows.is_reason("egress_completely_invented")
+
+
+class _SubRow(rows.InteractionRow):
+    """A subclass; without slots it can carry any extra state."""
+
+
+def _bad_reads() -> list[tuple[str, list[object]]]:
+    good = rows.InteractionRow(1, 2, 3)
+    sub = _SubRow(1, 2, 3)
+    object.__setattr__(sub, "author", "@person")  # identifying state on a subclass
+    duck = types.SimpleNamespace(boosts=1, favorites=2, replies=3, author="@p")
+    mock = unittest.mock.Mock(boosts=1, favorites=2, replies=3)
+    tampered = rows.InteractionRow(1, 2, 3)
+    object.__setattr__(tampered, "boosts", "7")  # changed after construction
+    out_of_range = rows.InteractionRow(1, 2, 3)
+    object.__setattr__(out_of_range, "replies", 10**9 + 1)
+    flt = rows.InteractionRow(1, 2, 3)
+    object.__setattr__(flt, "favorites", 2.0)
+    flag = rows.InteractionRow(1, 2, 3)
+    object.__setattr__(flag, "boosts", True)
+    return [
+        ("dict", [{"boosts": 1, "favorites": 2, "replies": 3, "author": "@p"}]),
+        ("subclass", [sub]),
+        ("duck", [duck]),
+        ("mock", [mock]),
+        ("str-field", [tampered]),
+        ("range", [out_of_range]),
+        ("float-field", [flt]),
+        ("bool-field", [flag]),
+        ("tuple", [(1, 2, 3)]),
+        ("one-bad-among-good", [good, good, {"boosts": 1}, good]),
+    ]
+
+
+@pytest.mark.parametrize("name,read", _bad_reads())
+def test_keep_prior_rejects_anything_but_exact_rows(
+    name: str, read: list[object]
+) -> None:
+    prior = [rows.InteractionRow(4, 5, 6)]
+    loose: Any = read
+    kept, reason = rows.keep_prior(loose, prior)
+    assert kept is prior and reason == "bad_shape", name
+    kept, reason = rows.keep_prior(loose, None)
+    assert kept is None and reason == "bad_shape", name
+
+
+def test_keep_prior_rejects_non_sequences_and_forged_markers() -> None:
+    prior = [rows.InteractionRow(4, 5, 6)]
+    for read in ("abc", {"boosts": 1}, None, 5, iter([rows.InteractionRow(1, 1, 1)])):
+        loose: Any = read
+        assert rows.keep_prior(loose, prior) == (prior, "bad_shape")
+    forged = rows.NotProvided("timeout")
+    object.__setattr__(forged, "reason", "free text from a remote")
+    assert rows.keep_prior(forged, prior) == (prior, "bad_shape")
+
+
+def test_keep_prior_accepts_a_tuple_of_good_rows() -> None:
+    good = (rows.InteractionRow(1, 2, 3), rows.InteractionRow(0, 0, 0))
+    kept, reason = rows.keep_prior(good, None)
+    assert kept == list(good) and reason is None
 
 
 # --- the live probe -----------------------------------------------------------
@@ -459,7 +611,9 @@ def test_probe_import_makes_no_call_and_prints_no_body_text() -> None:
     assert code == 0
     assert "lookup: status 200" in text
     assert "statuses: array yes, 2 items" in text
-    assert "header names" in text and "x-secret-name" in text  # names only
+    assert "header names" in text and "content-type" in text  # allowlisted names
+    assert "x-secret-name" not in text  # a remote-chosen name is never printed
+    assert "lookup: other headers 1" in text
     for leaked in (
         "BODY-TEXT-SENTINEL",
         "VALUE-SENTINEL",
@@ -472,6 +626,66 @@ def test_probe_import_makes_no_call_and_prints_no_body_text() -> None:
         assert leaked not in text
     assert len(t.calls) == 3 and {c.method for c in t.calls} == {"GET"}
     assert all("Authorization" not in c.headers for c in t.calls)
+
+
+def test_probe_prints_only_allowlisted_header_names_and_a_count() -> None:
+    probe = _load_probe()
+    smuggled = "X-Account-alice-example-com"
+    t = FakeTransport(
+        {
+            "https://": reply(
+                {"id": "x"},
+                headers={smuggled: "v", "Retry-After": "1", "x-other-1": "v"},
+            )
+        }
+    )
+    out = io.StringIO()
+    argv = ["mastodon", "--host", "social.example", "--acct", "example"]
+    probe.run(argv, transport=t, out=out, sleep=_no_sleep)
+    text = out.getvalue()
+    assert "alice" not in text.lower() and "x-other-1" not in text.lower()
+    assert "lookup: header names content-type, retry-after" in text
+    assert "lookup: other headers 2" in text
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["mastodon", "--host", "social.example", "--acct", "person.example"],
+        ["bluesky", "--host", "public.api.bsky.app", "--actor", "person.example"],
+    ],
+)
+def test_probe_unexpected_failure_prints_a_fixed_word_only(argv: list[str]) -> None:
+    probe = _load_probe()
+
+    def boom(request: TransportRequest) -> RawResponse:
+        raise RuntimeError(f"failed for {request.host}{request.path} person.example")
+
+    out = io.StringIO()
+    code = probe.run(argv, transport=boom, out=out, sleep=_no_sleep)
+    text = out.getvalue()
+    assert code == 0 and "transport_error" in text
+    for leaked in ("person.example", "RuntimeError", "failed for", "/api/", "/xrpc/"):
+        assert leaked not in text
+
+    def parse_boom(request: TransportRequest) -> RawResponse:
+        return reply({"id": "1"})
+
+    original = probe.probe_mastodon
+    original_sky = probe.probe_bluesky
+
+    def explode(*args: object, **kwargs: object) -> None:
+        raise ValueError("person.example leaked")
+
+    probe.probe_mastodon = explode
+    probe.probe_bluesky = explode
+    try:
+        out2 = io.StringIO()
+        code2 = probe.run(argv, transport=parse_boom, out=out2, sleep=_no_sleep)
+    finally:
+        probe.probe_mastodon = original
+        probe.probe_bluesky = original_sky
+    assert code2 == 3 and out2.getvalue() == "failed: unexpected_error\n"
 
 
 def test_probe_bluesky_and_refusals() -> None:
@@ -507,9 +721,91 @@ def test_probe_bluesky_and_refusals() -> None:
         )
 
 
+_NAME = re.compile(r"fediverse[-_]probe")
+# Ways to reach a script without naming it: a glob after an interpreter, a
+# loop over scripts/, `python -m scripts...`, `runpy`, `find scripts ... -exec`.
+_INDIRECT = (
+    re.compile(
+        r"\b(?:python3?|bash|sh|xargs|exec|source)\b[^\n]*scripts/[^\s'\"]*[*?\[]"
+    ),
+    re.compile(r"\bfor\s+\w+\s+in\b[^\n;]*scripts/[^\n;]*[*?]"),
+    re.compile(r"-m\s+scripts\b"),
+    re.compile(r"\brunpy\b"),
+    re.compile(r"\bfind\s+(?:\./)?scripts\b[^\n]*-exec"),
+)
+
+
+def _reaches_probe(text: str) -> bool:
+    return bool(_NAME.search(text)) or any(p.search(text) for p in _INDIRECT)
+
+
+def _automation_files() -> list[Path]:
+    """Every file CI, a task runner or the local gate could run a script from."""
+    found: set[Path] = set()
+    for sub in ("workflows", "actions", "scripts"):
+        base = ROOT / ".github" / sub
+        if base.is_dir():
+            found.update(p for p in base.rglob("*") if p.is_file())
+    for name in (
+        "Makefile",
+        "makefile",
+        "GNUmakefile",
+        "justfile",
+        "Justfile",
+        "tox.ini",
+        "noxfile.py",
+        "pyproject.toml",
+        "setup.cfg",
+        "package.json",
+        "worker/package.json",
+        ".pre-commit-config.yaml",
+    ):
+        if (ROOT / name).is_file():
+            found.add(ROOT / name)
+    found.update(
+        p
+        for p in (ROOT / "scripts").iterdir()
+        if p.is_file() and p.name != "fediverse-probe.py"
+    )
+    return sorted(found)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "run: python3 -I scripts/fediverse-probe.py mastodon",
+        "- run: ./scripts/fediverse_probe.py",
+        "  python3 scripts/*.py",
+        "for f in scripts/*.py; do",
+        "python -m scripts.fediverse_probe",
+        "runpy.run_path(p)",
+        "find scripts -name '*.py' -exec python3 {} \\;",
+        "bash scripts/run-*.sh",
+    ],
+)
+def test_the_wiring_detector_catches_direct_and_indirect_runs(text: str) -> None:
+    assert _reaches_probe(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "run: python3 -I scripts/check-edge.py --offline",
+        "scripts/*.py | .github/scripts/*.py)",  # a case pattern, not a run
+        "run: ruff check scripts",
+    ],
+)
+def test_the_wiring_detector_has_no_false_positives(text: str) -> None:
+    assert not _reaches_probe(text)
+
+
 def test_probe_is_not_wired_into_ci_or_tests() -> None:
-    for wf in (ROOT / ".github" / "workflows").glob("*.yml"):
-        assert "fediverse-probe" not in wf.read_text(encoding="utf-8")
+    files = _automation_files()
+    names = {p.name for p in files}
+    assert "ci.yml" in names and "gate.sh" in names  # the scan sees real files
+    for path in files:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        assert not _reaches_probe(text), path.relative_to(ROOT).as_posix()
     source = (ROOT / "scripts" / "fediverse-probe.py").read_text(encoding="utf-8")
     assert source.rstrip().endswith("sys.exit(run(sys.argv[1:]))")
     assert 'if __name__ == "__main__":' in source
