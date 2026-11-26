@@ -69,6 +69,7 @@ from reach_around.counts.history import (
     OldCopyRemainsError,
     Record,
     RedactDurabilityError,
+    _open_parent,
     append_records,
     check_redaction_arguments,
     dump_new_history,
@@ -886,13 +887,62 @@ def _say(message: str, stream: TextIO | None = None) -> None:
     print(_safe(message), file=stream if stream is not None else sys.stdout)
 
 
-def _write_manifest(
-    target: Path, plan: list[Record], args: argparse.Namespace, moment: datetime
-) -> None:
-    """Write ``redactions/<run-id>.manifest`` beside the history file (#619).
+class _StagedManifest:
+    """The manifest of a derived redaction, written but not yet installed (#619).
 
-    Keys and codes only, in the bytes the rewrite check rebuilds. Never replaces
-    an existing file.
+    The order is: check every condition, write the content to a private
+    temporary file in the same folder, replace the history file, then link the
+    temporary file to its final name (never replacing a file) and remove it. The
+    folder is held as a descriptor opened without following symlinks, so a
+    ``redactions`` symlink is refused and nothing is created outside it.
+
+    Residual: the history file and the manifest are two files, so a crash or a
+    failure of the last step (after the history file was replaced) leaves the
+    rewritten history with the manifest still under its temporary name; the
+    message names the one rename that completes it.
+    """
+
+    def __init__(self, folder_fd: int, run_id: str, tmp_name: str) -> None:
+        self.folder_fd = folder_fd
+        self.final_name = f"{run_id}.manifest"
+        self.tmp_name = tmp_name
+
+    def discard(self) -> None:
+        """Remove the temporary file and close the folder."""
+        try:
+            os.unlink(self.tmp_name, dir_fd=self.folder_fd)
+        except OSError:
+            pass
+        self.close()
+
+    def close(self) -> None:
+        try:
+            os.close(self.folder_fd)
+        except OSError:
+            pass
+
+    def install(self) -> None:
+        """Give the manifest its final name. Raises ``OSError`` on failure."""
+        os.link(
+            self.tmp_name,
+            self.final_name,
+            src_dir_fd=self.folder_fd,
+            dst_dir_fd=self.folder_fd,
+            follow_symlinks=False,
+        )
+        os.unlink(self.tmp_name, dir_fd=self.folder_fd)
+        os.fsync(self.folder_fd)
+        self.close()
+
+
+def _stage_manifest(
+    target: Path, plan: list[Record], args: argparse.Namespace, moment: datetime
+) -> _StagedManifest:
+    """Check every manifest condition and write its content, before any rewrite.
+
+    Keys and codes only, in the bytes the rewrite check rebuilds. Raises
+    ``HistoryError`` (fixed words) when the folder is a symlink or not a folder,
+    the manifest already exists, or the folder cannot be written.
     """
     run_id, _, text = rewrite_metadata(
         [r.key for r in plan],
@@ -900,16 +950,76 @@ def _write_manifest(
         args.trigger_date,
         moment.strftime("%Y-%m-%d"),
     )
-    folder = target.parent / "redactions"
-    folder.mkdir(exist_ok=True)
-    fd = os.open(
-        folder / f"{run_id}.manifest",
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-        0o644,
-    )
-    with os.fdopen(fd, "wb") as out:
-        out.write(text.encode("ascii"))
-    _say(f"wrote the manifest redactions/{run_id}.manifest (commit it with the file)")
+    final = f"{run_id}.manifest"
+    tmp = f".{run_id}.manifest.tmp-{os.getpid()}"
+    try:
+        parent_fd = _open_parent(target, strict=True)
+    except OSError:
+        raise HistoryError("cannot open the history folder") from None
+    folder_fd = -1
+    try:
+        try:
+            os.mkdir("redactions", 0o755, dir_fd=parent_fd)
+        except FileExistsError:
+            pass
+        folder_fd = os.open(
+            "redactions",
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+    except OSError:
+        raise HistoryError(
+            "the redactions folder is a symlink, not a folder or not creatable; "
+            "nothing was written"
+        ) from None
+    finally:
+        os.close(parent_fd)
+    try:
+        try:
+            os.stat(final, dir_fd=folder_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise HistoryError("the manifest already exists; nothing was written")
+        out_fd = os.open(
+            tmp,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=folder_fd,
+        )
+        try:
+            with os.fdopen(out_fd, "wb") as out:
+                out.write(text.encode("ascii"))
+                out.flush()
+                os.fchmod(out.fileno(), 0o644)
+                os.fsync(out.fileno())
+        except OSError:
+            os.unlink(tmp, dir_fd=folder_fd)
+            raise
+    except HistoryError:
+        os.close(folder_fd)
+        raise
+    except OSError:
+        os.close(folder_fd)
+        raise HistoryError("cannot write the manifest; nothing was written") from None
+    return _StagedManifest(folder_fd, run_id, tmp)
+
+
+def _install_staged(staged: _StagedManifest) -> bool:
+    """Install the manifest after the rewrite; on failure name the recovery step."""
+    try:
+        staged.install()
+    except OSError:
+        _say(
+            "error: the history file was rewritten but the manifest could not be "
+            "installed; in the folder redactions/ run: "
+            f"mv {staged.tmp_name} {staged.final_name}",
+            sys.stderr,
+        )
+        staged.close()
+        return False
+    _say(f"wrote the manifest redactions/{staged.final_name} (commit it with the file)")
+    return True
 
 
 def run_history_redact(args: argparse.Namespace) -> int:
@@ -961,6 +1071,13 @@ def run_history_redact(args: argparse.Namespace) -> int:
             _say(f"removed {removed} stale redaction temporary file(s)")
         notices: list[str] = []
         moment = datetime.now(UTC)
+        # Every manifest condition is checked and its bytes written to a private
+        # temporary file BEFORE the history file is touched (#619).
+        staged = (
+            _stage_manifest(target, plan, args, moment)
+            if (args.derived and plan)
+            else None
+        )
         try:
             count = redact_records(
                 target,
@@ -973,11 +1090,23 @@ def run_history_redact(args: argparse.Namespace) -> int:
                 notices=notices,
                 derived=args.derived,
             )
+        except RedactDurabilityError:
+            # The new file is in place: complete the pair, then report.
+            if staged is not None:
+                _install_staged(staged)
+            raise
+        except BaseException:
+            if staged is not None:
+                staged.discard()  # the history file was not replaced
+            raise
         finally:
             for notice in notices:
                 _say(notice)
-        if args.derived and count:
-            _write_manifest(target, plan, args, moment)
+        if staged is not None:
+            if not count:
+                staged.discard()
+            elif not _install_staged(staged):
+                return EXIT_REPLACED_UNSURE
     except OldCopyRemainsError as exc:
         _say(f"error: {exc}; the file is {exc.temp_name}", sys.stderr)
         _say(

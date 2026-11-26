@@ -17,9 +17,18 @@ built: the detective push job and off-GitHub notice (D7), the stale-refresh clos
 (D13), the merge watcher and authorization digest (5.5 items 4 and 5), the GYST
 reusable form (alternative H). The live gates G1, G2, G4, G5 and G6 need a scratch
 GitHub repository and are NOT run: until they are, the guard's token scope
-(`pull-requests: read`) is unproved (G5), "branch must be up to date" is a
-documented requirement rather than a proven one (G1), and the README states the label
-as final for a head commit (the G2 branch B wording).
+(`pull-requests: read`, `actions: read`) is unproved (G5), "branch must be up to date"
+is a documented requirement rather than a proven one (G1), and which revision of a
+workflow file GitHub executes for a pull request that edits it is UNVERIFIED (G1);
+only these are stated as verified: the workflow must already exist on the default
+branch and runs against the pull request's merge ref, the scripts and approvers come
+from a base-pinned checkout and the data from a head-pinned checkout.
+Approval is bound to the head: the accepted label event must come after the head last
+changed (the first workflow run for that head on this pull request, or the latest
+forced push, whichever is later; undeterminable is a refusal) and the 24 hours count
+from that event, so a new head needs a new label. The job summary carries short commit
+ids and counts, no login. The head-change time and the run listing are UNVERIFIED
+against live GitHub until G5; the commit date is never used.
 
 Claims are marked **[V]** verified (file and line read in this checkout, base
 `2f26e21`) or **[I]** inferred (not run, or a GitHub behavior not exercised here).

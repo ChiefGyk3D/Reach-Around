@@ -342,8 +342,14 @@ check that prints fixed words, never a value:
   event is a `labeled` event applied by a login listed in
   `.github/history-approvers`. The guard reads that file from the base commit,
   so a pull request cannot add its own author. The label and the applier are
-  read live from the API, twice, and must agree. The label must be at least 24
-  hours old (a notice period, not a second approval).
+  read live from the API, twice, and must agree. The label event must come
+  after the head commit last changed, and be at least 24 hours old (a notice
+  period, not a second approval). The time the head changed is the later of the
+  first workflow run GitHub started for this exact head commit on this pull
+  request and the latest forced push; a commit date is never used, because the
+  author sets it. If that time cannot be determined the check fails. Pushing a
+  new head after the label therefore needs the label removed and applied again,
+  and a fresh 24 hours.
 - No pull request from the Actions bot is open on `counts/refresh`.
 - The change touches only `history/social.jsonl`, optionally `numbers.json`
   (removal of the entry that shows a redacted value, nothing else), and adds
@@ -374,15 +380,25 @@ guard does not run under `merge_group`). Add your login to
 `.github/history-approvers` when you need a rewrite; the file ships empty, which
 means no rewrite is accepted.
 
-**What this does not do.** With the `pull_request` trigger GitHub runs the
-workflow file from the pull request, so anyone who can merge a change to the
+**What is verified and what is not.** Verified from GitHub's documentation: a
+`pull_request` workflow must already exist on the default branch and runs
+against the pull request's merge ref. The guard reads its scripts and the
+approvers file from a checkout pinned to the base commit and the pull request's
+data from a checkout pinned to the head commit. UNVERIFIED until the live gate
+G1 is run: which revision of the workflow file GitHub executes for a pull
+request that edits it. Until then, assume anyone who can merge a change to the
 workflow, `scripts/`, `engine.lock` or the approvers file can weaken the guard:
 protect those paths with CODEOWNERS and a required review from a second person.
-A sole owner cannot be protected from their own account; the guard prevents
-mistakes, bounds a rewrite, and leaves a record in the job summary (label event,
-approver, label age, commits; counts only). Whether removing the label after a
-green run turns the merge red depends on your branch protection; treat an
-authorized label as final for that head commit. A tombstone cleans the working
+The job token needs `actions: read` (to read the workflow runs of the head
+commit) besides `contents` and `pull-requests`; it cannot write.
+
+**What this does not do.** A sole owner cannot be protected from their own
+account; the guard prevents mistakes, bounds a rewrite, and leaves a record in
+the job summary (short commit ids, the label event number, label age and the
+manifest name; no login, no full commit id, no value). Whether removing the label
+after a green run turns the merge red depends on your branch protection. An
+approval covers one head commit only: a different head needs the label removed
+and applied again. A tombstone cleans the working
 tree only: git history, deployed copies and Actions artifacts still hold the
 old value. Removing it from the git history of this repository is a separate
 operation (see the runbook "Runbook: removing redacted history from the private

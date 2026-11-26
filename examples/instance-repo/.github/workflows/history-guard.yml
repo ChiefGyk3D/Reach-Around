@@ -5,27 +5,34 @@
 # tombstone-only rewrite (an owner redaction: records replaced by tombstones).
 # A rewrite needs ALL of: the `history-tombstone` label applied by a login on
 # .github/history-approvers (read from the BASE commit), a label at least 24
-# hours old, a head branch named redact/<anything> in this repository, no open
-# counts/refresh pull request, exactly the allowed paths, and the engine's
-# exact compare (`counts history-compare`) returning "valid rewrite" for the
-# bytes. Anything else fails. The label alone changes nothing: the compare is
-# the control. The outcome is logged to the job summary (label event, approver,
-# label age, commits); counts only, never a value.
+# hours old and applied after the head commit last changed (a new head needs
+# the label removed and applied again), a head branch named redact/<anything>
+# in this repository, no open counts/refresh pull request, exactly the allowed
+# paths, and the engine's exact compare (`counts history-compare`) returning
+# "valid rewrite" for the bytes. Anything else fails. The label alone changes
+# nothing: the compare is the control. The outcome is logged to the job summary
+# (short commit ids, label event number, label age, manifest name); no login,
+# no full commit id, never a value.
 #
 # This is `pull_request`, never `pull_request_target`. One job, so there is one
 # check name to require: require "History guard" in branch protection, together
 # with "branch must be up to date" (strict). A merge queue is not supported:
-# this workflow does not run under `merge_group`. The scripts, the approvers
-# file and the engine pin come from the BASE commit; the pull request's files
-# are only ever data.
+# this workflow does not run under `merge_group`. The job token reads the pull
+# request and the workflow runs (`actions: read`) and cannot write.
 #
-# Trust that remains: with the `pull_request` trigger GitHub runs the workflow
-# file from the pull request, so anyone who can merge a change to this file, to
-# scripts/ or to engine.lock can weaken the guard. Protect `.github/`,
-# `scripts/`, `engine.lock` and `history/` with CODEOWNERS and required review
-# from a second person (README.md, docs/EDITING.md). A sole owner is not
-# protected from their own account; the guard prevents mistakes and leaves a
-# record.
+# What is verified: a `pull_request` workflow must already exist on the default
+# branch and runs against the pull request's merge ref. The scripts, the
+# approvers file and the engine pin are read from a checkout pinned to the BASE
+# commit; the pull request's files are read from a checkout pinned to the head
+# commit and are only ever data.
+#
+# UNVERIFIED until live gate G1 (design note section 12): which revision of this
+# workflow file GitHub executes for a pull request that edits it. Until G1 is
+# run, assume anyone who can merge a change to this file, to scripts/ or to
+# engine.lock can weaken the guard. Protect `.github/`, `scripts/`,
+# `engine.lock` and `history/` with CODEOWNERS and required review from a second
+# person (README.md, docs/EDITING.md). A sole owner is not protected from their
+# own account; the guard prevents mistakes and leaves a record.
 name: History guard
 
 on:
@@ -49,6 +56,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      actions: read
     # No `environment`, no secrets and no write permission, on purpose.
     steps:
       # The scripts, the approvers file and the engine pin come from the BASE

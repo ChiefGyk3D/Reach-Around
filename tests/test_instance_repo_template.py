@@ -74,8 +74,13 @@ JOB_PERMISSIONS: dict[str, dict[str, str]] = {
     "refresh": {"contents": "read"},
     # Pushes the counts/refresh branch and opens one pull request; no keys.
     "publish": {"contents": "write", "pull-requests": "write"},
-    # Reads the pull request's labels and events; never writes (issue #619).
-    "history-guard": {"contents": "read", "pull-requests": "read"},
+    # Reads the pull request's labels and events and the workflow runs of its
+    # head commit (the approval is bound to the head); never writes (issue #619).
+    "history-guard": {
+        "contents": "read",
+        "pull-requests": "read",
+        "actions": "read",
+    },
 }
 
 

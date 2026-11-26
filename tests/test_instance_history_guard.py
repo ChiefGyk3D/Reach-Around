@@ -87,7 +87,11 @@ def test_one_job_named_history_guard_that_cannot_write_and_holds_no_secret() -> 
     job = data["jobs"]["history-guard"]
     assert job["name"] == "History guard"
     assert data["permissions"] == {"contents": "read"}
-    assert job["permissions"] == {"contents": "read", "pull-requests": "read"}
+    assert job["permissions"] == {
+        "contents": "read",
+        "pull-requests": "read",
+        "actions": "read",  # the workflow runs of the head commit (head binding)
+    }
     body = yaml.safe_dump(data["jobs"])  # data only: comments are not read
     for bad in (": write", "secrets.", "continue-on-error", "environment", "paths"):
         assert bad not in body, bad
@@ -143,6 +147,7 @@ def ev(
 LABELS = [{"name": "history-tombstone"}]
 OLD_ENOUGH = "2026-11-20T00:00:00Z"
 NOW_G = datetime(2026, 11, 25, 12, 0, 0, tzinfo=UTC)
+HEAD_BEFORE_LABEL = datetime(2026, 11, 19, 0, 0, 0, tzinfo=UTC)
 
 
 def auth(**over: Any) -> tuple[Any, ...]:
@@ -153,6 +158,7 @@ def auth(**over: Any) -> tuple[Any, ...]:
         "now": NOW_G,
         "same_repo": True,
         "head_ref": "redact/old-rows",
+        "head_changed": HEAD_BEFORE_LABEL,
     }
     args.update(over)
     result: tuple[Any, ...] = guard.authorize(**args)
@@ -160,7 +166,27 @@ def auth(**over: Any) -> tuple[Any, ...]:
 
 
 def test_a_listed_applier_with_an_old_label_on_a_redact_branch_is_authorized() -> None:
-    assert auth() == (7, "owner", "2026-11-20T00:00:00+00:00")
+    assert auth() == (
+        7,
+        "owner",
+        "2026-11-20T00:00:00+00:00",
+        "2026-11-19T00:00:00+00:00",
+    )
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        datetime(2026, 11, 20, 0, 0, 0, tzinfo=UTC),  # the very instant of the label
+        datetime(2026, 11, 20, 0, 0, 1, tzinfo=UTC),  # a second after it
+        datetime(2026, 11, 25, 11, 0, 0, tzinfo=UTC),  # long after, an hour ago
+    ],
+)
+def test_a_label_applied_before_the_head_last_changed_is_refused(
+    changed: datetime,
+) -> None:
+    with pytest.raises(guard.Refused, match="head changed"):
+        auth(head_changed=changed)
 
 
 @pytest.mark.parametrize(
@@ -571,6 +597,24 @@ def trusted(tmp_path: Path) -> Path:
     return folder
 
 
+def run_of(
+    head: str,
+    created: str,
+    *,
+    number: int = 5,
+    repo: str = "me/inst",
+    event: str = "pull_request",
+) -> dict[str, Any]:
+    """A workflow run as the API lists it."""
+    return {
+        "head_sha": head,
+        "event": event,
+        "created_at": created,
+        "head_repository": {"full_name": repo},
+        "pull_requests": [{"number": number}],
+    }
+
+
 class Api:
     """The faked GitHub answers, shared by one guard run."""
 
@@ -578,6 +622,9 @@ class Api:
         self.events = [ev("labeled", "owner", "2026-11-20T00:00:00Z", 7)]
         self.labels: list[dict[str, Any]] = [{"name": "history-tombstone"}]
         self.pulls: list[dict[str, Any]] = []
+        # The head was pushed (its first pull_request run) before the label.
+        self.runs: list[dict[str, Any]] = [run_of(world.head, "2026-11-19T00:00:00Z")]
+        self.total: int | None = None  # None: the listing is complete
         self.tip = world.base
         self.calls = 0
         self.seen: dict[str, int] = {}
@@ -593,6 +640,10 @@ class Api:
             kind, answer = "labels", self.labels
         elif "/pulls" in path:
             kind, answer = "pulls", self.pulls
+        elif "/actions/runs" in path:
+            kind = "runs"
+            total = len(self.runs) if self.total is None else self.total
+            answer = {"total_count": total, "workflow_runs": self.runs}
         elif "/git/ref/heads/main" in path:
             kind, answer = "tip", {"object": {"sha": self.tip}}
         else:
@@ -671,7 +722,11 @@ def test_a_labeled_tombstone_only_rewrite_is_accepted_and_logged(
 ) -> None:
     assert run_guard(monkeypatch, world, Api(world), trusted) == 0
     out = capsys.readouterr().out
-    assert "ACCEPTED" in out and "label_event=7" in out and "approver=owner" in out
+    assert "ACCEPTED" in out and "label_event=7" in out
+    # Short commit ids and counts; no login and no full commit id.
+    assert f"head={world.head[:7]}" in out and f"base={world.base[:7]}" in out
+    assert world.head not in out and world.base not in out
+    assert "owner" not in out and "approver" not in out
     assert str(SECRET) not in out
 
 
@@ -830,6 +885,133 @@ def test_main_moving_during_the_run_is_refused(
         return None
 
     api.hook = move
+    refused(monkeypatch, world, api, trusted)
+
+
+def test_main_moving_during_an_append_comparison_is_refused(
+    monkeypatch: pytest.MonkeyPatch, world: World, trusted: Path
+) -> None:
+    git(world.dir, "switch", "-q", "-c", "append", world.base)
+    path = world.dir / "history" / "social.jsonl"
+    append_records(path, [rec(as_of_utc="2026-11-01T09:00:00Z", value=1)], now=NOW)
+    world.commit()
+    api = Api(world)
+    api.labels, api.events = [], []
+    assert run_guard(monkeypatch, world, api, trusted) == 0  # main stays put
+
+    moving = Api(world)
+    moving.labels, moving.events = [], []
+
+    def move(kind: str, count: int) -> Any:
+        if kind == "tip" and count == 2:  # the read just before accepting
+            return {"object": {"sha": "e" * 40}}
+        return None
+
+    moving.hook = move
+    refused(monkeypatch, world, moving, trusted)
+
+
+# --- the approval is bound to the head commit ------------------------------
+
+
+def test_a_label_kept_across_a_new_head_is_refused_until_it_is_applied_again(
+    monkeypatch: pytest.MonkeyPatch, world: World, trusted: Path
+) -> None:
+    # The label was applied to the first head and has aged more than 24 hours.
+    api = Api(world)
+    assert run_guard(monkeypatch, world, api, trusted) == 0
+    # A different, engine-valid head is pushed (its first run is after the
+    # label); the label stays exactly as it was.
+    api.runs = [run_of(world.head, "2026-11-24T23:00:00Z")]
+    refused(monkeypatch, world, api, trusted)
+    # Applied again on the new head: still refused until it has aged 24 hours.
+    api.events += [
+        ev("unlabeled", "owner", "2026-11-24T23:10:00Z", 20),
+        ev("labeled", "owner", "2026-11-24T23:20:00Z", 21),
+    ]
+    refused(monkeypatch, world, api, trusted)
+    refused(
+        monkeypatch,
+        world,
+        api,
+        trusted,
+        clock=datetime(2026, 11, 25, 23, 19, 59, tzinfo=UTC),
+    )
+    later = datetime(2026, 11, 25, 23, 20, 1, tzinfo=UTC)
+    assert run_guard(monkeypatch, world, api, trusted, clock=later) == 0
+
+
+def test_the_head_change_time_is_the_pull_requests_own_run_not_another_one() -> None:
+    head, other = "a" * 40, "b" * 40
+
+    def changed(runs: list[dict[str, Any]], total: int | None = None, **kw: Any) -> Any:
+        return guard.head_changed_at(
+            kw.get("events", []),
+            {
+                "total_count": len(runs) if total is None else total,
+                "workflow_runs": runs,
+            },
+            repo="me/inst",
+            number="5",
+            head=head,
+        )
+
+    first = datetime(2026, 11, 1, tzinfo=UTC)
+    assert (
+        changed(
+            [run_of(head, "2026-11-02T00:00:00Z"), run_of(head, "2026-11-01T00:00:00Z")]
+        )
+        == first
+    )
+    for runs in (
+        [],  # nothing found: cannot be determined
+        [run_of(other, "2026-11-01T00:00:00Z")],  # another commit
+        [run_of(head, "2026-11-01T00:00:00Z", number=6)],  # another pull request
+        [run_of(head, "2026-11-01T00:00:00Z", repo="fork/inst")],  # a fork
+        [run_of(head, "2026-11-01T00:00:00Z", event="push")],  # not a PR run
+        [run_of(head, "2026-11-01T00:00:00")],  # no time zone
+    ):
+        with pytest.raises(guard.Refused):
+            changed(runs)
+    with pytest.raises(guard.Refused):  # a listing that is not complete
+        changed([run_of(head, "2026-11-01T00:00:00Z")], total=2)
+    forced = ev("head_ref_force_pushed", "x", "2026-11-03T00:00:00Z", 30)
+    forced.pop("label")
+    assert changed([run_of(head, "2026-11-01T00:00:00Z")], events=[forced]) == datetime(
+        2026, 11, 3, tzinfo=UTC
+    )
+
+
+def test_an_undeterminable_head_time_or_a_later_force_push_refuses(
+    monkeypatch: pytest.MonkeyPatch, world: World, trusted: Path
+) -> None:
+    none = Api(world)
+    none.runs = []
+    refused(monkeypatch, world, none, trusted)
+    partial = Api(world)
+    partial.total = 2
+    refused(monkeypatch, world, partial, trusted)
+    forced = Api(world)
+    push = ev("head_ref_force_pushed", "x", "2026-11-21T00:00:00Z", 30)
+    push.pop("label")
+    forced.events.append(push)  # after the label at 2026-11-20
+    refused(monkeypatch, world, forced, trusted)
+
+
+def test_the_head_binding_is_checked_again_on_the_second_read(
+    monkeypatch: pytest.MonkeyPatch, world: World, trusted: Path
+) -> None:
+    api = Api(world)
+
+    def pushed(kind: str, count: int) -> Any:
+        if kind == "runs" and count == 2:  # a push lands during the run
+            return {
+                "total_count": 1,
+                "workflow_runs": [run_of(world.head, "2026-11-25T11:59:00Z")],
+            }
+        return None
+
+    api.hook = pushed
     refused(monkeypatch, world, api, trusted)
 
 

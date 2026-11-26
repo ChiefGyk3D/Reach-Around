@@ -20,9 +20,13 @@ What it enforces (issue #619):
   file may only append (the engine's `history-compare`, exit 0).
 * The one exception is a tombstone-only rewrite. It needs ALL of: the label
   `history-tombstone` present now; the last label event is a `labeled` by a
-  login on .github/history-approvers as it is on the BASE commit; the label at
-  least 24 hours old; a head branch `redact/*` in this repository; no open
-  counts/refresh pull request from the Actions bot; exactly the allowed paths
+  login on .github/history-approvers as it is on the BASE commit, applied AFTER
+  the head commit last changed (earliest workflow run GitHub started for this
+  exact head on this pull request, or the latest forced push, whichever is
+  later; undeterminable means refused); that label at least 24 hours old, so a
+  new head needs the label removed and applied again; a head branch `redact/*`
+  in this repository; no open counts/refresh pull request from the Actions
+  bot; exactly the allowed paths
   (the history file, optionally numbers.json, one new manifest); and the engine
   returning status 10 for the exact bytes. Anything else fails. Every failure
   prints fixed words, never a value.
@@ -99,6 +103,70 @@ def last_label_event(events: list[dict[str, Any]], label: str) -> dict[str, Any]
     return chosen
 
 
+def parse_time(text: Any) -> datetime:
+    if not isinstance(text, str):
+        raise Refused("a GitHub API answer had an unexpected shape")
+    try:
+        when = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        raise Refused("a GitHub API answer had an unexpected shape") from None
+    if when.tzinfo is None:
+        raise Refused("a GitHub API answer had an unexpected shape")
+    return when
+
+
+def head_changed_at(
+    events: list[dict[str, Any]],
+    runs: dict[str, Any],
+    *,
+    repo: str,
+    number: str,
+    head: str,
+) -> datetime:
+    """When the pull request's head became the current head commit.
+
+    Two server-side sources, never a commit date (the author sets those):
+    the earliest workflow run GitHub started for this exact head commit on this
+    pull request (a push starts one), and the latest forced push event of the
+    pull request. The later of the two is returned. When no run for the head can
+    be found, or the listing is not complete, the time cannot be determined and
+    the change is refused.
+    """
+    listed = runs.get("workflow_runs")
+    total = runs.get("total_count")
+    if (
+        not isinstance(listed, list)
+        or not isinstance(total, int)
+        or total != len(listed)
+    ):
+        raise Refused("the runs of the head commit could not be listed completely")
+    seen: list[datetime] = []
+    for run in listed:
+        if not isinstance(run, dict):
+            raise Refused("a GitHub API answer had an unexpected shape")
+        repo_of = run.get("head_repository")
+        if (
+            run.get("head_sha") != head
+            or run.get("event") != "pull_request"
+            or not isinstance(repo_of, dict)
+            or repo_of.get("full_name") != repo
+        ):
+            continue
+        linked = run.get("pull_requests")
+        if not isinstance(linked, list) or not any(
+            isinstance(p, dict) and p.get("number") == int(number) for p in linked
+        ):
+            continue
+        seen.append(parse_time(run.get("created_at")))
+    if not seen:
+        raise Refused("the time the head commit was pushed could not be determined")
+    changed = min(seen)
+    for event in events:
+        if event.get("event") == "head_ref_force_pushed":
+            changed = max(changed, parse_time(event.get("created_at")))
+    return changed
+
+
 def authorize(
     *,
     events: list[dict[str, Any]],
@@ -107,8 +175,14 @@ def authorize(
     now: datetime,
     same_repo: bool,
     head_ref: str,
+    head_changed: datetime,
 ) -> tuple[Any, ...]:
-    """Raise ``Refused`` unless the rewrite is authorized. Return what was seen."""
+    """Raise ``Refused`` unless the rewrite is authorized. Return what was seen.
+
+    The accepted approval is the last label event, by a listed approver, that
+    happened AFTER the head commit last changed; the 24 hours count from it. A
+    new head needs the label removed and applied again.
+    """
     if not same_repo:
         raise Refused("a rewrite must come from a branch in this repository")
     if head_ref == REFRESH_BRANCH or not head_ref.startswith(BRANCH_PREFIX):
@@ -122,10 +196,15 @@ def authorize(
     login = actor.get("login") if isinstance(actor, dict) else None
     if not isinstance(login, str) or login.lower() not in approvers:
         raise Refused("the label was not applied by a listed approver")
-    when = datetime.fromisoformat(event["created_at"].replace("Z", "+00:00"))
+    when = parse_time(event.get("created_at"))
+    if when <= head_changed:
+        raise Refused(
+            "the head changed after the label was applied; "
+            "remove the label and apply it again"
+        )
     if now - when < COOLING:
         raise Refused("the label is younger than 24 hours; run again later")
-    return (event["id"], login.lower(), when.isoformat())
+    return (event["id"], login.lower(), when.isoformat(), head_changed.isoformat())
 
 
 def refresh_pr_blocks(pr: dict[str, Any], repo: str) -> bool:
@@ -287,12 +366,30 @@ def run_compare(trusted: Path, *args: str) -> tuple[bool, str]:
     return result.returncode == 0, mode
 
 
-def live_state(repo: str, number: str, token: str) -> tuple[list[Any], list[Any]]:
+def live_state(
+    repo: str, number: str, token: str, head: str
+) -> tuple[list[Any], list[Any], dict[str, Any]]:
     events = api_get(f"/repos/{repo}/issues/{number}/events?per_page=100", token)
     labels = api_get(f"/repos/{repo}/issues/{number}/labels?per_page=100", token)
-    if not isinstance(events, list) or not isinstance(labels, list):
+    runs = api_get(
+        f"/repos/{repo}/actions/runs?head_sha={head}&event=pull_request&per_page=100",
+        token,
+    )
+    if (
+        not isinstance(events, list)
+        or not isinstance(labels, list)
+        or not isinstance(runs, dict)
+    ):
         raise Refused("a GitHub API answer had an unexpected shape")
-    return events, labels
+    return events, labels, runs
+
+
+def main_is_base(repo: str, token: str, base: str) -> None:
+    """Refuse unless main is still exactly the base commit (read live, now)."""
+    tip = api_get(f"/repos/{repo}/git/ref/heads/main", token)
+    obj = tip.get("object") if isinstance(tip, dict) else None
+    if not isinstance(obj, dict) or obj.get("sha") != base:
+        raise Refused("main moved while the check ran; run it again")
 
 
 def guard(trusted: Path, pr: Path) -> int:
@@ -307,9 +404,13 @@ def guard(trusted: Path, pr: Path) -> int:
         return 0
 
     # The head must contain the current tip of main (design section 5.3).
-    tip = api_get(f"/repos/{repo}/git/ref/heads/main", token)
-    sha = tip.get("object", {}).get("sha") if isinstance(tip, dict) else None
-    if sha != base or not git_ok(pr, "merge-base", "--is-ancestor", base, head):
+    try:
+        main_is_base(repo, token, base)
+    except Refused:
+        raise Refused(
+            "update the branch: main moved after this pull request began"
+        ) from None
+    if not git_ok(pr, "merge-base", "--is-ancestor", base, head):
         raise Refused("update the branch: main moved after this pull request began")
 
     with tempfile.TemporaryDirectory(prefix="history-guard.") as folder:
@@ -323,6 +424,7 @@ def guard(trusted: Path, pr: Path) -> int:
         new.write_bytes(new_bytes)
         ok, mode = run_compare(trusted, str(old), str(new))
         if ok and mode == "append":
+            main_is_base(repo, token, base)  # the last read before accepting
             summary("History guard: the history file only appends.")
             return 0
         return rewrite(trusted, pr, stage, changed, repo, number, token, head, base)
@@ -343,7 +445,7 @@ def rewrite(
     if approvers_text is None:
         raise Refused("the history is not append-only and there is no approvers file")
     approvers = parse_approvers(approvers_text.decode("utf-8", "strict"))
-    events, labels = live_state(repo, number, token)
+    events, labels, runs = live_state(repo, number, token, head)
     first = authorize(
         events=events,
         labels=labels,
@@ -351,6 +453,7 @@ def rewrite(
         now=utcnow(),
         same_repo=env("HEAD_REPO") == repo,
         head_ref=env("HEAD_REF"),
+        head_changed=head_changed_at(events, runs, repo=repo, number=number, head=head),
     )
     manifest_path = check_paths(changed)
     pulls = api_get(f"/repos/{repo}/pulls?state=open&base=main&per_page=100", token)
@@ -388,7 +491,7 @@ def rewrite(
             "the engine did not accept the change as a tombstone-only rewrite"
         )
     # Read the mutable state again: it must not have changed during the run.
-    events, labels = live_state(repo, number, token)
+    events, labels, runs = live_state(repo, number, token, head)
     again = authorize(
         events=events,
         labels=labels,
@@ -396,17 +499,17 @@ def rewrite(
         now=utcnow(),
         same_repo=env("HEAD_REPO") == repo,
         head_ref=env("HEAD_REF"),
+        head_changed=head_changed_at(events, runs, repo=repo, number=number, head=head),
     )
     if again != first:
         raise Refused("the label state changed while the check ran; run it again")
-    tip = api_get(f"/repos/{repo}/git/ref/heads/main", token)
-    if not isinstance(tip, dict) or tip.get("object", {}).get("sha") != base:
-        raise Refused("main moved while the check ran; run it again")
-    event_id, approver, labeled_at = first
+    main_is_base(repo, token, base)  # the last read before accepting
+    event_id, _approver, labeled_at, _changed = first
     age = int((utcnow() - datetime.fromisoformat(labeled_at)).total_seconds() // 3600)
+    # Short commit ids, a count and the event number; no login, no full SHA.
     summary(
         "History guard: ACCEPTED a labeled tombstone-only rewrite. "
-        f"head={head} base={base} label_event={event_id} approver={approver} "
+        f"head={head[:7]} base={base[:7]} label_event={event_id} "
         f"label_age_hours={age} manifest={Path(manifest_path).name}"
     )
     print(f"::notice::History tombstone rewrite accepted (label event {event_id}).")
