@@ -227,7 +227,10 @@ first item:
 5. Hand-made exports, dumps and spreadsheets (including the files you made for
    the steps above).
 6. Shell history, tickets and notes that hold the address.
-7. The `alert_dedup` hash (see the store table below): clear expired rows by hand.
+7. The `alert_dedup` hash (mandatory, by hand; see the store table below). The
+   delete file does not touch it. `reach-around leads delete --yes` prints the
+   two commands (clear the table, read it back); run them against the database
+   that holds the alert tables and require the read-back to show 0.
 8. By hand, where neither this list nor the tool can look: Worker logs and any
    collector logs or exception output; alert delivery logs at the chat or mail
    provider; automated backups and exports of the database beyond Time Travel;
@@ -244,25 +247,40 @@ it (not from the migration text), and fails when something appears that
 `scripts/erasure-stores.json` has not classified, when a column in a table not
 classed lead or lead_hash has a personal-looking name, a blob or untyped
 declaration or an expression default without its own recorded reason, or when
-the recorded column lists or the schema digest no longer match. The schema
-digest covers every column, type, default and key, and the full text of every
-view, trigger and index, so changing only a view or trigger body fails until it
-is looked at again. Class "lead" means a row holds an address or carries a lead
-id; the delete tool removes those.
+the recorded column lists or the schema digest no longer match. Columns are read
+with `table_xinfo`, so generated (virtual or stored) and hidden columns are in
+the inventory; each one needs its own recorded reason, and a table that has one
+also pins its normalized CREATE text, which holds the generating expression. The
+schema digest covers every column, type, default, key and hidden flag, and the
+full text of every view, trigger and index (whitespace is collapsed between
+tokens only, never inside a string, a quoted name or a comment), so changing only
+a view or trigger body fails until it is looked at again. Class "lead" means a
+row holds an address or carries a lead id; the delete tool removes those.
 
 What the test does check about the Worker's other stores: every file under
 `worker/src` that names a storage primitive or a storage binding from any
 wrangler config is listed, and so is each statement that mentions one (a short
 hash of the statement text, comments and spacing removed). A new write through an
 already approved binding, or an edit to a reviewed one, fails until it is read
-and recorded. This is lexical: it pins statement text, it does not follow data
-flow, and a write that never names a primitive or a binding is not seen.
+and recorded. This is a lexical inventory of where storage is named. It is not a
+proof of where data flows: it pins statement text, it does not follow data, and
+a write that never names a primitive or a binding (an indirect call through an
+object passed in, a computed method name) is not seen. What an operator must
+still verify by hand: that the KV namespace holds only the gated page and live
+status state (list its keys), that no R2, Durable Object or queue binding exists
+in the deployed configuration, and that nothing outside this repository was wired
+to the Worker to store requests or alert payloads.
 
 Every export command is found by scanning every text file in the repository
 outside dependency and cache directories and Markdown (scripts anywhere, every
 `package.json`, Makefile and justfile, workflows, composite actions, a
-Containerfile, deploy files, JSON and YAML command arrays). A command built at
-run time from pieces that never appear together is not seen.
+Containerfile, deploy files, JSON and YAML command arrays). A file larger than
+2 MB is scanned in overlapping chunks, not skipped; a file larger than 64 MB is
+not read and fails the test by name unless it is listed with a reason under
+`export_paths.unscanned_large_files`. In Markdown, each command line is judged
+on its own (a fenced line, an inline code span, a piece of prose), so a later
+`--table` on another command does not hide a whole-database export. A command
+built at run time from pieces that never appear together is not seen.
 
 What the test cannot do: it cannot tell that a person read a registry change.
 The registry carries a digest of itself, so the schema digest, the column lists
@@ -277,10 +295,10 @@ QUESTION 5).
 |---|---|---|---|
 | `leads` (11 columns) | the address, country, times, session floor | yes | `DELETE`, read-back counts the row; also purged by age |
 | `kit_events` (4 columns) | hour-rounded unlock, view and verify events by lead id | yes | `DELETE`, read-back counts the rows; the foreign key also cascades |
-| `alert_dedup` (3 columns) | keyed hash of a recent alert, which can include the address; a row stops counting as a repeat after 10 minutes but is deleted only when the next alert event is admitted, so on a quiet site it can stay stored (at most 500 rows) until then or until cleared by hand | no | cannot be matched without the secret key; clear expired rows by hand (below) |
+| `alert_dedup` (3 columns) | keyed hash of a recent alert, which can include the address; a row stops counting as a repeat after 10 minutes but is deleted only when the next alert event is admitted, so on a quiet site it can stay stored (at most 500 rows) until then or until cleared by hand | no (mandatory hand step) | clear the whole table by hand and read it back, against the database that holds the alert tables (statements below); a keyed hash is not erased by being hard to match |
 | `visitor_seen`, `view_events`, `click_events` | coarse visitor rows with no address, no IP address, no lead id | no | not matchable to a person by design (Art. 11); removed by retention |
 | 26 other tables (counters, rollups, budgets, logs, cursors) | counts and bookkeeping | no | aggregate, no row per person; counts cannot be un-counted |
-| KV, edge cache | the gated page, live status state, the public status body | no | no lead data; the Worker never writes the gated page key |
+| KV, edge cache | the gated page, live status state, the public status body | no | no lead data found in the listed call sites; a text scan, not a data-flow proof (verify the namespace's keys by hand); the Worker never writes the gated page key |
 | R2, Durable Objects, queues | not used | not applicable | the test fails if one is added without review |
 | Unlock cookie | a signed token, no server copy | not applicable | stops opening the kit once the `leads` row is gone |
 | `scripts/backup-d1.sh` exports | `leads`, `kit_events`, `visitor_seen`, `view_events` are never exported | not applicable | the only lead-related data this script exports is the `alert_dedup` hashes; the test runs the script against a recording stub and judges every wrangler call it makes, and inventories every export command in any text file of the repository |
@@ -288,10 +306,23 @@ QUESTION 5).
 | D1 Time Travel | the whole database, 7 days Free, 30 days Paid | no | ages out; see the checklist |
 | Alert copies, inquiry text, hand-made exports, logs | outside the Worker | no | by hand, items 2, 3, 5, 6 and 8 of the checklist |
 
-Clear expired alert hashes now, against the database that holds the alert
-tables (this deletes only rows already past their 10 minute life, the point
-after which they no longer count as repeats; it takes the current time in
-milliseconds as the number):
+For an erasure request, clear the whole alert hash table and read it back. Run
+both against the database that holds the alert tables (the leads database when
+they share it; `reach-around leads delete --yes` prints them with the database
+name; the lead delete file does not include them, because a statement on a table
+that is not in that database could fail the whole file). Clearing every row only
+resets repeat-alert suppression for up to 10 minutes. The store is clear when the
+read-back shows 0:
+
+```
+npx wrangler d1 execute <DATABASE> --remote --command "DELETE FROM alert_dedup"
+npx wrangler d1 execute <DATABASE> --remote --command "SELECT COUNT(*) AS alert_dedup_remaining FROM alert_dedup"
+```
+
+For routine housekeeping only, this deletes just the rows already past their 10
+minute life, the point after which they no longer count as repeats; it leaves a
+recent row, so it is not the erasure step. It takes the current time in
+milliseconds as the number:
 
 ```
 npx wrangler d1 execute <DATABASE> --remote --command "DELETE FROM alert_dedup WHERE expires_at <= <NOW_MS>"
@@ -315,12 +346,15 @@ Needs the owner's choice.
 
 OPEN QUESTION 3, short-lived alert hashes. Today an expired row is removed only
 when the next alert event is admitted (checked in the code: nothing prunes it on
-a timer), so on a quiet site it stays until then. Options: (a) leave it to the
-next alert and the hand-clear statement above (current); (b) prune expired
+a timer), so on a quiet site it stays until then. Options: (a) the whole-table
+clear and read-back as a mandatory hand step printed by the delete tool (current:
+the tool cannot know which database holds the alert tables, and a statement on
+a missing table could fail the whole erasure file); (b) prune expired
 `alert_dedup` rows in the scheduled handler too, so a quiet site never holds one
-past its life (a Worker change); (c) add the statement to the delete SQL, which
-fails if alert tables ever move to another database than the leads one. Needs
-the owner's choice.
+past its life (a Worker change; it would still not remove a row made minutes
+ago); (c) add `DELETE FROM alert_dedup` to the delete SQL, which is the one-command
+erasure but fails the whole file if the alert tables are in another database than
+the leads one. Needs the owner's choice.
 
 OPEN QUESTION 5, who reviews the registry. A test cannot enforce that a second
 person approves a change to `scripts/erasure-stores.json`. Options: (a) add the

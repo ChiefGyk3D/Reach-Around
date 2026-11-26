@@ -2,7 +2,8 @@
 """Erasure coverage (#856): every store that can hold lead data is classified.
 
 The schema comes from running the Worker migrations in order in an in-memory
-SQLite database and reading sqlite_master, table_info and foreign_key_list (the
+SQLite database and reading sqlite_master, table_xinfo (generated and hidden
+columns included) and foreign_key_list (the
 migration text is never rewritten or pattern-matched, so comments, string
 literals and CHECK text cannot hide an object). scripts/erasure-stores.json is
 the registry: every table, view and trigger must be classified, every column
@@ -15,8 +16,10 @@ so); the registry digest only shows that its records were recomputed together.
 It also cannot follow data flow: the Worker storage scan is lexical (it pins each
 statement that names a storage primitive, not what the data does next). The age
 purge and the alert dedup checks run the SQL statements taken from the Worker
-source against the migrated schema with a controlled clock; they do not execute
-the TypeScript, which worker/test (vitest) does. Synthetic data only; no network.
+source (from the named function's own db.batch, so an unused copy elsewhere is
+ignored) against the migrated schema with a controlled clock; they do not execute
+the TypeScript or prove the function is called, which worker/test (vitest) does.
+Synthetic data only; no network.
 """
 
 from __future__ import annotations
@@ -33,7 +36,13 @@ from typing import Any
 
 import pytest
 
-from reach_around.commands.leads import CHECKLIST, _sql
+from reach_around.commands.leads import (
+    ALERT_CLEAR_SQL,
+    ALERT_READBACK_SQL,
+    CHECKLIST,
+    _sql,
+    alert_clear_commands,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS = sorted((ROOT / "worker" / "migrations").glob("*.sql"))
@@ -106,6 +115,61 @@ LISTING_SQL = "SELECT name FROM sqlite_master WHERE type = 'table'"
 # --- the schema, from a real SQLite -------------------------------------------
 
 
+def _skip_quoted(sql: str, j: int) -> int:
+    """Index just past the string, comment or bracket name starting at j, or j."""
+    n = len(sql)
+    c = sql[j]
+    if sql.startswith("--", j):
+        k = sql.find("\n", j)
+        return n if k < 0 else k
+    if sql.startswith("/*", j):
+        k = sql.find("*/", j + 2)
+        return n if k < 0 else k + 2
+    close = {"'": "'", '"': '"', "`": "`", "[": "]"}.get(c)
+    if close is None:
+        return j
+    k = j + 1
+    while k < n:
+        if sql[k] == close:
+            if close != "]" and sql.startswith(close, k + 1):
+                k += 2  # a doubled quote is an escaped quote
+                continue
+            return k + 1
+        k += 1
+    return n
+
+
+def norm_sql(sql: str) -> str:
+    """Collapse whitespace between tokens only. Text inside a string literal, a
+    quoted or bracketed identifier and a comment is copied exactly, so two bodies
+    that differ only inside a literal (a doubled space in a string) never collapse
+    to the same text (#856 round 3)."""
+    out: list[str] = []
+    i, n = 0, len(sql)
+    pending_space = False
+    while i < n:
+        j = _skip_quoted(sql, i)
+        if j != i:
+            if pending_space and out:
+                out.append(" ")
+            pending_space = False
+            out.append(sql[i:j])
+            if sql.startswith("--", i) and j < n:
+                out.append("\n")  # the newline is what ends a line comment: keep it
+                j += 1
+            i = j
+        elif sql[i].isspace():
+            pending_space = True
+            i += 1
+        else:
+            if pending_space and out:
+                out.append(" ")
+            pending_space = False
+            out.append(sql[i])
+            i += 1
+    return "".join(out)
+
+
 def strip_checks(sql: str) -> str:
     """Remove every CHECK (...) clause, with a small state machine instead of a
     pattern: line and block comments, single, double and backtick quoted text and
@@ -119,26 +183,7 @@ def strip_checks(sql: str) -> str:
     i, n = 0, len(sql)
 
     def skip_quoted(j: int) -> int:
-        """Index just past the string, comment or bracket name starting at j, or j."""
-        c = sql[j]
-        if sql.startswith("--", j):
-            k = sql.find("\n", j)
-            return n if k < 0 else k
-        if sql.startswith("/*", j):
-            k = sql.find("*/", j + 2)
-            return n if k < 0 else k + 2
-        close = {"'": "'", '"': '"', "`": "`", "[": "]"}.get(c)
-        if close is None:
-            return j
-        k = j + 1
-        while k < n:
-            if sql[k] == close:
-                if close != "]" and sql.startswith(close, k + 1):
-                    k += 2  # a doubled quote is an escaped quote
-                    continue
-                return k + 1
-            k += 1
-        return n
+        return _skip_quoted(sql, j)
 
     while i < n:
         j = skip_quoted(i)
@@ -245,30 +290,42 @@ def real_db() -> sqlite3.Connection:
 
 
 def live_schema(db: sqlite3.Connection) -> dict[str, dict[str, Any]]:
-    """table -> columns, types, defaults and foreign keys, as SQLite sees them."""
+    """table -> columns, types, defaults and foreign keys, as SQLite sees them.
+
+    Uses table_xinfo, not table_info: table_info leaves out generated and hidden
+    columns, which can hold a copy of another column's value (#856 round 3). Each
+    column row carries SQLite's hidden flag (0 normal, 1 hidden, 2 generated
+    virtual, 3 generated stored). A table with a generated column also pins its
+    normalized CREATE text, which holds the generating expression."""
     out: dict[str, dict[str, Any]] = {}
-    for (name,) in db.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
-    ):
-        info = db.execute(f"PRAGMA table_info('{name}')").fetchall()  # noqa: S608
+    for name, create in db.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'table' ORDER BY name"
+    ).fetchall():
+        info = db.execute(f"PRAGMA table_xinfo('{name}')").fetchall()  # noqa: S608
         fks = db.execute(f"PRAGMA foreign_key_list('{name}')").fetchall()  # noqa: S608
+        hidden = {c[1]: int(c[6]) for c in info}
+        rows = [list(c) for c in info] + [list(r) for r in fks]
+        if any(h in (2, 3) for h in hidden.values()):
+            rows.append(["create", norm_sql(create or "")])
         out[name] = {
             "columns": [c[1] for c in info],
             "types": {c[1]: c[2] for c in info},
             "defaults": {c[1]: c[4] for c in info},
+            "hidden": hidden,
             "fk_parents": [r[2] for r in fks],
-            "digest_rows": [list(c) for c in info] + [list(r) for r in fks],
+            "digest_rows": rows,
         }
     return out
 
 
 def live_objects(db: sqlite3.Connection) -> dict[str, dict[str, str]]:
     """The views, triggers and indexes the migrations leave behind: name -> the full
-    CREATE text from sqlite_master with whitespace collapsed. A view or trigger body
+    CREATE text from sqlite_master with whitespace between tokens collapsed (never
+    inside a literal, a quoted name or a comment, see norm_sql). A view or trigger body
     can expose or copy rows, so the text is part of what is reviewed and pinned."""
     return {
         kind: {
-            n: " ".join(sql.split())
+            n: norm_sql(sql)
             for n, sql in db.execute(
                 "SELECT name, sql FROM sqlite_master "
                 "WHERE type = ? AND sql IS NOT NULL ORDER BY name",
@@ -343,9 +400,15 @@ def consistency_violations(
     return found
 
 
-def review_reasons(name: str, ctype: str | None, default: str | None) -> list[str]:
+def review_reasons(
+    name: str, ctype: str | None, default: str | None, hidden: int = 0
+) -> list[str]:
     """Why a column cannot be waved through on its table's class alone."""
     why: list[str] = []
+    if hidden in (2, 3):
+        why.append("generated column (its expression can copy another column)")
+    elif hidden:
+        why.append("hidden column")
     if PERSONAL_COLUMN.search(name):
         why.append("looks personal")
     if not (ctype or "").strip() or (ctype or "").strip().upper() == "BLOB":
@@ -397,6 +460,7 @@ def schema_violations(
                     col,
                     info.get("types", {}).get(col),
                     info.get("defaults", {}).get(col),
+                    info.get("hidden", {}).get(col, 0),
                 )
                 if why and len(str(reviewed.get(col, "")).strip()) < MIN_REASON:
                     found.append(
@@ -779,7 +843,15 @@ EXPORT_SKIP_DIRS = SKIP_DIRS | {
 # Prose, not executable: docs are inventoried by whole_database_export_docs, the
 # changelog fragments describe the change. A Markdown file cannot run anything.
 EXPORT_PROSE = {".md", ".markdown"}
+# A file up to MAX_SCAN_BYTES is read whole (and parsed as JSON where it is JSON). A
+# larger one is scanned in overlapping chunks, raw text only, so no size hides a
+# command (#856 round 3). Past MAX_FILE_BYTES a file is not read at all: it fails
+# the oversized check by name unless it is listed with a reason under
+# export_paths.unscanned_large_files (a lockfile or a snapshot, for example).
 MAX_SCAN_BYTES = 2_000_000
+CHUNK_BYTES = 1_000_000
+CHUNK_OVERLAP = 65_536  # longer than any command line the pattern must see whole
+MAX_FILE_BYTES = 64_000_000
 
 
 def _json_strings(node: Any, out: list[str]) -> None:
@@ -821,12 +893,28 @@ def export_texts(path: Path) -> list[str]:
     return views
 
 
-def export_scan(root: Path = ROOT) -> dict[str, set[str]]:
-    """file -> export-capable commands it contains, over every text file in the
-    repository outside dependency and cache directories (scripts anywhere, package.json
-    files, Makefile and justfile, workflows, composite actions, Containerfile, deploy
-    files, JSON and YAML command arrays, tests, the CLI)."""
-    out: dict[str, set[str]] = {}
+def _chunked_export_texts(path: Path) -> list[str]:
+    """The text of a large file in overlapping chunks, each in its raw and its
+    flattened spelling. Undecodable bytes are replaced, not skipped."""
+    views: list[str] = []
+    step = CHUNK_BYTES - CHUNK_OVERLAP
+    with path.open("rb") as handle:
+        offset = 0
+        while True:
+            handle.seek(offset)
+            data = handle.read(CHUNK_BYTES)
+            if not data:
+                break
+            text = data.decode("utf-8", errors="replace")
+            views += [text, _flatten_command_text(text)]
+            if len(data) < CHUNK_BYTES:
+                break
+            offset += step
+    return views
+
+
+def _scan_candidates(root: Path) -> list[Path]:
+    found: list[Path] = []
     for path in sorted(root.rglob("*")):
         rel = path.relative_to(root)
         if (
@@ -836,30 +924,105 @@ def export_scan(root: Path = ROOT) -> dict[str, set[str]]:
             or path.suffix in EXPORT_PROSE
         ):
             continue
+        found.append(path)
+    return found
+
+
+def export_scan(root: Path = ROOT) -> dict[str, set[str]]:
+    """file -> export-capable commands it contains, over every text file in the
+    repository outside dependency and cache directories (scripts anywhere, package.json
+    files, Makefile and justfile, workflows, composite actions, Containerfile, deploy
+    files, JSON and YAML command arrays, tests, the CLI). A file over MAX_SCAN_BYTES
+    is scanned in chunks; a file over MAX_FILE_BYTES is reported by
+    oversized_files, never skipped without a word."""
+    out: dict[str, set[str]] = {}
+    for path in _scan_candidates(root):
         try:
-            if path.stat().st_size > MAX_SCAN_BYTES:
-                continue
-            views = export_texts(path)
+            size = path.stat().st_size
+            if size > MAX_FILE_BYTES:
+                continue  # oversized_files names it
+            views = (
+                _chunked_export_texts(path)
+                if size > MAX_SCAN_BYTES
+                else export_texts(path)
+            )
         except (UnicodeDecodeError, OSError):
             continue  # a binary file holds no command text a shell could run
         hits = {m.group(0) for view in views for m in EXPORT_COMMAND.finditer(view)}
         if hits:
-            out[rel.as_posix()] = {" ".join(h.split()) for h in hits}
+            out[path.relative_to(root).as_posix()] = {" ".join(h.split()) for h in hits}
     return out
 
 
+def oversized_files(
+    root: Path = ROOT, registry: dict[str, Any] | None = None
+) -> list[str]:
+    """Files too large to read at all, by name, unless listed with a reason under
+    export_paths.unscanned_large_files."""
+    allowed = (registry or load_registry())["export_paths"].get(
+        "unscanned_large_files", {}
+    )
+    found: list[str] = []
+    for path in _scan_candidates(root):
+        try:
+            big = path.stat().st_size > MAX_FILE_BYTES
+        except OSError:
+            continue
+        rel = path.relative_to(root).as_posix()
+        if big and len(str(allowed.get(rel, "")).strip()) < MIN_REASON:
+            found.append(
+                f"{rel}: larger than {MAX_FILE_BYTES} bytes and not scanned; list it "
+                "under export_paths.unscanned_large_files with a reason"
+            )
+    return found
+
+
+D1_EXPORT_CMD = re.compile(r"wrangler\s+d1\s+export\s+\S")
+SHELL_SEPARATOR = re.compile(r"&&|\|\||[;|]")
+
+
+def markdown_command_views(text: str) -> list[str]:
+    """The places a shell command can be written in Markdown, one string per logical
+    command line: each line of a fenced block (backslash continuations joined), each
+    inline code span (which may wrap across lines), and each piece of prose outside
+    backticks."""
+    fenced: list[str] = []
+    prose: list[str] = []
+    in_fence = False
+    for line in text.splitlines():
+        if line.lstrip().startswith(("```", "~~~")):
+            in_fence = not in_fence
+            continue
+        (fenced if in_fence else prose).append(line)
+    views: list[str] = []
+    joined = "\n".join(fenced).replace("\\\n", " ")
+    views += [ln for ln in joined.split("\n") if ln.strip()]
+    prose_text = "\n".join(prose).replace("\\\n", " ")
+    for index, piece in enumerate(prose_text.split("`")):
+        if index % 2:  # inside backticks: one code span, which may wrap lines
+            views.append(" ".join(piece.split()))
+        else:  # outside backticks: prose, judged line by line
+            views += [ln for ln in piece.split("\n") if ln.strip()]
+    return views
+
+
 def whole_database_export_docs(root: Path = ROOT) -> set[str]:
-    """Markdown showing a `wrangler d1 export` with no --table: it dumps every table."""
+    """Markdown showing a `wrangler d1 export` with no --table: it dumps every table.
+    Each command is judged on its own logical command: a view is split at shell
+    separators and at the next `wrangler d1 export`, so a later --table on another
+    command can never hide a whole-database one (#856 round 3)."""
     found: set[str] = set()
     for path in root.rglob("*.md"):
         if EXPORT_SKIP_DIRS & set(path.relative_to(root).parts) or not path.is_file():
             continue
         text = path.read_text(encoding="utf-8")
-        for m in re.finditer(
-            r"wrangler d1 export +([^`\s][^`\n]*(?:\n[^`\n]*)?)", text
-        ):
-            if "--table" not in m.group(1):
-                found.add(path.relative_to(root).as_posix())
+        for view in markdown_command_views(text):
+            for segment in SHELL_SEPARATOR.split(view):
+                starts = [m.start() for m in D1_EXPORT_CMD.finditer(segment)]
+                for i, start in enumerate(starts):
+                    end = starts[i + 1] if i + 1 < len(starts) else len(segment)
+                    if "--table" not in segment[start:end]:
+                        found.add(path.relative_to(root).as_posix())
     return found
 
 
@@ -1177,6 +1340,116 @@ def test_a_blob_or_untyped_column_and_an_expression_default_need_a_reason() -> N
     assert any("stash.c: default is an expression" in v for v in found)
 
 
+def _generated_table(expr: str = "json_extract(label, '$.email')") -> str:
+    return (
+        "CREATE TABLE gauges (id INTEGER PRIMARY KEY, label TEXT, "
+        f"slot_a TEXT GENERATED ALWAYS AS ({expr}) VIRTUAL, "
+        f"slot_b TEXT GENERATED ALWAYS AS ({expr}) STORED);"
+    )
+
+
+def test_generated_columns_are_in_the_inventory_and_need_a_review() -> None:
+    """High (#856 round 3): PRAGMA table_info hides generated columns, so a VIRTUAL or
+    STORED column holding a copy of an address went unseen. The inventory reads
+    table_xinfo; each such column fails until it has its own recorded reason."""
+    db = build_db([("0001.sql", _generated_table())])
+    schema = live_schema(db)
+    assert [c[1] for c in db.execute("PRAGMA table_info('gauges')")] == ["id", "label"]
+    assert schema["gauges"]["columns"] == ["id", "label", "slot_a", "slot_b"]
+    assert schema["gauges"]["hidden"] == {"id": 0, "label": 0, "slot_a": 2, "slot_b": 3}
+    found = schema_violations(schema, fixture_registry(schema, {"gauges": "aggregate"}))
+    assert any(v.startswith("gauges.slot_a: generated column") for v in found), found
+    assert any(v.startswith("gauges.slot_b: generated column") for v in found), found
+    # A registry that recorded only what table_info shows is stale.
+    stale = fixture_registry(schema, {"gauges": "aggregate"})
+    stale["stores"]["gauges"]["columns"] = ["id", "label"]
+    assert any(
+        v.startswith("gauges: columns differ")
+        for v in review_violations(schema, stale, live_objects(db))
+    )
+    reviewed = fixture_registry(
+        schema,
+        {"gauges": "aggregate"},
+        reviewed={
+            "gauges": {
+                "slot_a": "synthetic: reviewed, copies a closed label",
+                "slot_b": "synthetic: reviewed, copies a closed label",
+            }
+        },
+    )
+    assert schema_violations(schema, reviewed) == []
+
+
+def test_a_generated_column_changes_the_digest_by_flag_and_by_expression() -> None:
+    base = _digest_of(_generated_table())
+    other_expr = _digest_of(_generated_table("json_extract(label, '$.n')"))
+    assert base != other_expr
+    plain = _digest_of("CREATE TABLE gauges (id INTEGER PRIMARY KEY, label TEXT);")
+    assert base != plain
+    virtual_only = _digest_of(
+        "CREATE TABLE gauges (id INTEGER PRIMARY KEY, label TEXT, "
+        "slot_a TEXT GENERATED ALWAYS AS (json_extract(label, '$.email')) VIRTUAL, "
+        "slot_b TEXT GENERATED ALWAYS AS (json_extract(label, '$.email')) VIRTUAL);"
+    )
+    assert base != virtual_only
+
+
+def test_a_generated_column_added_to_a_real_table_fails_the_real_registry() -> None:
+    db = real_db()
+    first_text = next(
+        c
+        for _, c, t, *_ in db.execute("PRAGMA table_info('counters')")
+        if "TEXT" in (t or "").upper()
+    )
+    db.execute(
+        "ALTER TABLE counters ADD COLUMN slot_a TEXT GENERATED ALWAYS AS "
+        f"(substr({first_text}, 1, 3)) VIRTUAL"
+    )
+    registry = load_registry()
+    schema, objects = live_schema(db), live_objects(db)
+    assert any(
+        v.startswith("counters: columns differ")
+        for v in review_violations(schema, registry, objects)
+    )
+    assert any(
+        v.startswith("counters.slot_a: generated column")
+        for v in schema_violations(schema, registry, objects)
+    )
+
+
+def test_the_fallback_sees_generated_columns_too() -> None:
+    direct = build_db([("0001.sql", _generated_table())])
+    forced = build_db([("0001.sql", _generated_table())], force_strip=True)
+    assert _same_schema(direct, forced)
+    assert live_schema(forced)["gauges"]["hidden"]["slot_b"] == 3
+
+
+def test_whitespace_inside_a_literal_or_quoted_name_changes_the_digest() -> None:
+    """Medium (#856 round 3): only whitespace between tokens is collapsed."""
+    one = (
+        _BASE  # noqa: S608 - synthetic migration text, no query is built
+        + "CREATE TRIGGER t AFTER INSERT ON leads BEGIN "
+        + "INSERT INTO notes_log (label) VALUES ('address  copied'); END;"
+    )
+    two = one.replace("address  copied", "address copied")
+    assert _digest_of(one) != _digest_of(two)
+    for quote_open, quote_close in (('"', '"'), ("`", "`"), ("[", "]")):
+        a = (
+            _BASE
+            + f"CREATE VIEW v AS SELECT COUNT(*) AS {quote_open}n  x{quote_close} "  # noqa: S608
+            "FROM leads;"
+        )
+        b = a.replace("n  x", "n x")
+        assert _digest_of(a) != _digest_of(b), quote_open
+    # A line comment's end is kept, so commenting out the next token is a change.
+    live = _BASE + "CREATE VIEW v AS SELECT 1 AS n -- note\n FROM leads;"  # noqa: S608
+    dead = _BASE + "CREATE VIEW v AS SELECT 1 AS n -- note FROM leads\n;"  # noqa: S608
+    assert norm_sql("a -- x\n b") != norm_sql("a -- x b")
+    assert _digest_of(live) != _digest_of(dead)
+    # Whitespace between tokens still does not count.
+    assert norm_sql("SELECT   a\n FROM\tt") == "SELECT a FROM t"
+
+
 def test_a_lead_link_forces_the_lead_class_in_a_real_database() -> None:
     db = build_db(
         [
@@ -1423,21 +1696,68 @@ def ts_prepared_sql(text: str) -> list[str]:
     return found
 
 
+def _balanced(masked: str, open_at: int, pair: str) -> int | None:
+    """Index of the bracket that closes the one at open_at, in masked text."""
+    depth = 0
+    for i in range(open_at, len(masked)):
+        if masked[i] == pair[0]:
+            depth += 1
+        elif masked[i] == pair[1]:
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
+def ts_function_body(text: str, name: str) -> str | None:
+    """The body text of `function NAME(...) { ... }` (exported or not), or None.
+    Comments and string bodies are blanked for matching, so a brace in a literal or
+    a comment cannot end the body early."""
+    masked, _ = mask_ts(text)
+    m = re.search(rf"\bfunction\s+{re.escape(name)}\s*\(", masked)
+    if not m:
+        return None
+    close = _balanced(masked, m.end() - 1, "()")
+    if close is None:
+        return None
+    start = masked.find("{", close)
+    if start < 0:
+        return None
+    end = _balanced(masked, start, "{}")
+    return None if end is None else text[start + 1 : end]
+
+
+def ts_batch_args(body: str) -> str | None:
+    """The argument text of the first `.batch(...)` call in a function body."""
+    masked, _ = mask_ts(body)
+    m = re.search(r"\.batch\(", masked)
+    if not m:
+        return None
+    end = _balanced(masked, m.end() - 1, "()")
+    return None if end is None else body[m.end() : end]
+
+
 LEAD_FIXTURE_TABLES = {"leads", "kit_events"}
 AGE_DAYS = 30
 DAY_MS = 86_400_000
 
 
 def age_purge_violations(source: Path = LEAD_RETENTION) -> list[str]:
-    """Run the purge's own DELETE statements, in source order, on the migrated schema
-    with an old lead and a fresh lead (each with events); every lead-class table must
-    lose the old rows and keep the fresh ones."""
+    """Run the DELETE statements of the purge's own db.batch, in source order, on the
+    migrated schema with an old lead and a fresh lead (each with events); every
+    lead-class table must lose the old rows and keep the fresh ones. The statements
+    are taken from the batch inside purgeExpiredLeads, so an unused statement
+    elsewhere in the file cannot stand in for them. That the function is called, and
+    that its branches are reached, is what worker/test (vitest) covers."""
+    text = source.read_text(encoding="utf-8")
+    body = ts_function_body(text, "purgeExpiredLeads")
+    if body is None:
+        return ["purgeExpiredLeads was not found"]
+    args = ts_batch_args(body)
+    if args is None:
+        return ["purgeExpiredLeads no longer runs its statements in one db.batch"]
     found: list[str] = []
-    deletes = [
-        q
-        for q in ts_prepared_sql(source.read_text(encoding="utf-8"))
-        if q.lstrip().startswith("DELETE FROM")
-    ]
+    deletes = [q for q in ts_prepared_sql(args) if q.lstrip().startswith("DELETE FROM")]
     tables = sorted(
         t for t, e in load_registry()["stores"].items() if e["class"] == "lead"
     )
@@ -1504,6 +1824,16 @@ def test_the_age_purge_check_bites_on_a_dead_or_missing_delete(tmp_path: Path) -
     off = tmp_path / "off.ts"
     off.write_text(text.replace("created_ts < ?1", "created_ts <= ?1"))
     assert any("not expired lost rows" in v for v in age_purge_violations(off))
+    # Low (#856 round 3): an unused, correct lead DELETE elsewhere in the file cannot
+    # stand in for the active one, which here no longer deletes anything.
+    decoy = tmp_path / "decoy.ts"
+    decoy.write_text(
+        text.replace("DELETE FROM leads WHERE id IN", "SELECT 1 WHERE 0 AND id IN", 1)  # noqa: S608
+        + '\nfunction unusedDecoy(db: D1Database) {\n  db.prepare("DELETE FROM leads '
+        "WHERE id IN (SELECT l.id FROM leads l WHERE l.created_ts < ?1 AND NOT "
+        'EXISTS (SELECT 1 FROM kit_events e WHERE e.lead_id = l.id) LIMIT ?2)");\n}\n'
+    )
+    assert age_purge_violations(decoy) != []
 
 
 # --- the checklist and the docs name every store -------------------------------
@@ -1540,6 +1870,62 @@ def test_the_checklist_prints_no_statement_and_no_address() -> None:
     assert "@" not in CHECKLIST
 
 
+def test_the_alert_hash_step_clears_a_fresh_row_and_reads_back_zero() -> None:
+    """High (#856 round 3): the expired-rows statement the docs gave leaves a row
+    made seconds ago, which holds a keyed hash that can include the address. The
+    erasure step is the whole-table clear with a read-back, run on the real schema."""
+    db = real_db()
+    now = 1_000_000_000
+    db.execute(
+        "INSERT INTO alert_dedup (site, event_hash, expires_at) VALUES (?, ?, ?)",
+        (ALERT_SITE, "a" * 32, now + ALERT_TTL_MS),
+    )
+    db.execute("DELETE FROM alert_dedup WHERE expires_at <= ?", (now,))
+    assert db.execute(ALERT_READBACK_SQL).fetchone() == (
+        1,
+    )  # the old step: still there
+    db.execute(ALERT_CLEAR_SQL)
+    assert db.execute(ALERT_READBACK_SQL).fetchone() == (0,)
+    # Both are constant statements on the one table; nothing else is touched.
+    assert ALERT_CLEAR_SQL == "DELETE FROM alert_dedup"
+    assert db.execute("SELECT COUNT(*) FROM leads").fetchone() == (0,)
+
+
+def test_the_storage_conclusion_claims_only_what_the_scan_proves() -> None:
+    """Medium (#856 round 3): a lexical scan names where storage is mentioned; it is
+    not a data-flow proof, and the operator is told what to verify by hand."""
+    flat = " ".join(CHECKLIST.split())
+    assert "Checked and clear" not in flat
+    assert "lexical inventory of where storage is named" in flat
+    assert "not a proof of where data flows" in flat
+    assert "Verify by hand" in flat
+    assert "keep this list in step" not in flat
+    privacy = " ".join(PRIVACY.read_text(encoding="utf-8").split())
+    assert "not a proof of where data flows" in privacy
+    assert "verify by hand" in privacy.lower()
+    note = load_registry()["runtime_stores"].get("_comment", "")
+    assert "proof" in note or "lexical" in note, (
+        "the registry comment must not overclaim"
+    )
+
+
+def test_the_delete_flow_hands_over_the_alert_clear_and_the_docs_agree() -> None:
+    clear, readback = alert_clear_commands("reach-around-leads")
+    assert clear.endswith(f'--command "{ALERT_CLEAR_SQL}"')
+    assert readback.endswith(f'--command "{ALERT_READBACK_SQL}"')
+    assert "reach-around-leads" in clear and "--remote" in clear
+    # The delete file itself never carries it (a missing table must not fail the
+    # erasure of the lead rows); the checklist makes the step mandatory, read back.
+    assert "alert_dedup" not in delete_sql()
+    flat = " ".join(CHECKLIST.split())
+    assert "mandatory" in flat and "read-back to show 0" in flat
+    assert "without the Worker's secret key" not in flat, "no claim of harmlessness"
+    assert "Until you have read 0, the store is not clear" in flat
+    docs = " ".join(PRIVACY.read_text(encoding="utf-8").split())
+    assert f'--command "{ALERT_CLEAR_SQL}"' in docs
+    assert f'--command "{ALERT_READBACK_SQL}"' in docs
+
+
 # --- the alert hash lifetime, as the code really behaves -------------------------
 
 ALERT_TTL_MS = 600_000
@@ -1567,12 +1953,29 @@ def alert_retention_violations(
         found.append(f"the row cap is not {ALERT_CAP}")
     if not ttl_m or int(ttl_m.group(1)) * 60_000 != ALERT_TTL_MS:
         found.append("the repeat window is not 10 minutes")
-    sql = ts_prepared_sql(qtext)
-    prune = [q for q in sql if q.startswith("DELETE FROM alert_dedup WHERE expires_at")]
-    claim = [q for q in sql if q.lstrip().startswith("INSERT INTO alert_dedup")]
+    # The statements come from the function that runs them: the prune list from
+    # pruneStatements, the claim from the db.batch inside claimDedup. A copy of a
+    # correct statement elsewhere in the file is not used.
+    prune_body = ts_function_body(qtext, "pruneStatements")
+    claim_body = ts_function_body(qtext, "claimDedup")
+    claim_args = None if claim_body is None else ts_batch_args(claim_body)
+    if prune_body is None or claim_args is None:
+        return found + ["pruneStatements or the batch in claimDedup was not found"]
+    prune = [
+        q
+        for q in ts_prepared_sql(prune_body)
+        if q.startswith("DELETE FROM alert_dedup WHERE expires_at")
+    ]
+    claim = [
+        q
+        for q in ts_prepared_sql(claim_args)
+        if q.lstrip().startswith("INSERT INTO alert_dedup")
+    ]
     if len(prune) != 1 or len(claim) != 1:
         return found + ["the prune or claim statement was not found"]
-    batch = re.search(r"db\.batch\(\[\s*\.\.\.pruneStatements\(db, now\),", code)
+    batch = re.search(
+        r"\[\s*\.\.\.pruneStatements\(db, now\),", strip_ts_comments(claim_args)
+    )
     if not batch:
         found.append("claimDedup no longer prunes in the same batch, before the claim")
 
@@ -1664,6 +2067,34 @@ def test_the_alert_retention_check_bites(tmp_path: Path) -> None:
     )
     assert wrong_boundary != qtext
     assert any("10 minute mark" in v for v in run(wrong_boundary, dtext))
+    # Low (#856 round 3): a correct copy of the claim in a function that is never
+    # run cannot stand in for the real one. The active claim is changed so that it
+    # no longer begins with the expected text; the decoy keeps the old text.
+    full_claim = re.search(r"`INSERT INTO alert_dedup.*?`", qtext, re.S)
+    assert full_claim
+    decoy = (
+        "\nfunction unusedDecoy(db: D1Database) {\n  db.prepare("
+        + full_claim.group(0)
+        + ");\n}\n"
+    )
+    live_claim = "`INSERT INTO alert_dedup (site, event_hash, expires_at)"
+    assert live_claim in qtext
+    swapped = qtext.replace(
+        live_claim, "`INSERT OR REPLACE INTO alert_dedup (site, event_hash, expires_at)"
+    )
+    assert run(swapped + decoy, dtext) != []
+    # The same for the prune: a correct DELETE outside pruneStatements is ignored.
+    pruned = qtext.replace(
+        '"DELETE FROM alert_dedup WHERE expires_at <= ?1"',
+        '"DELETE FROM alert_dedup WHERE site = ?1"',
+        1,
+    )
+    assert pruned != qtext
+    prune_decoy = (
+        '\nfunction unusedPrune(db: D1Database) {\n  db.prepare("DELETE FROM '
+        'alert_dedup WHERE expires_at <= ?1");\n}\n'
+    )
+    assert run(pruned + prune_decoy, dtext) != []
 
 
 def test_the_alert_hash_claim_in_the_docs_matches_the_behavior() -> None:
@@ -1796,6 +2227,75 @@ def test_the_export_inventory_skips_dependencies_and_prose(tmp_path: Path) -> No
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(EXPORT + "\n")
     assert export_scan(tmp_path) == {}
+
+
+def test_a_large_file_is_scanned_in_chunks_not_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Medium (#856 round 3): a file over the whole-read size used to be skipped
+    without a word. Here a command sits at the end of a file past the cap and one
+    straddles a chunk boundary."""
+    monkeypatch.setattr(sys.modules[__name__], "MAX_SCAN_BYTES", 10_000)
+    monkeypatch.setattr(sys.modules[__name__], "CHUNK_BYTES", 4_000)
+    monkeypatch.setattr(sys.modules[__name__], "CHUNK_OVERLAP", 500)
+    tail = tmp_path / "tools" / "generated-runner.sh"
+    tail.parent.mkdir()
+    tail.write_text("#" * 20_000 + "\n" + EXPORT + "\n")
+    straddle = tmp_path / "tools" / "straddle.sh"
+    pad = 4_000 - 13  # the first chunk ends right after "wrangler d1 ", mid-command
+    straddle.write_text("#" * pad + "\n" + EXPORT + "\n" + "#" * 20_000)
+    quiet = tmp_path / "tools" / "quiet.sh"
+    quiet.write_text("#" * 30_000 + "\n")
+    scan = export_scan(tmp_path)
+    assert "tools/generated-runner.sh" in scan
+    assert "tools/straddle.sh" in scan
+    assert "tools/quiet.sh" not in scan
+
+
+def test_a_file_too_large_to_read_fails_by_name_unless_listed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys.modules[__name__], "MAX_FILE_BYTES", 5_000)
+    (tmp_path / "package-lock.json").write_text("x" * 6_000)
+    (tmp_path / "small.sh").write_text("echo hi\n")
+    registry: dict[str, Any] = {
+        "export_paths": {"commands": {}, "whole_database_docs": {}}
+    }
+    found = oversized_files(tmp_path, registry)
+    assert len(found) == 1 and found[0].startswith("package-lock.json:")
+    registry["export_paths"]["unscanned_large_files"] = {
+        "package-lock.json": "a lockfile: dependency pins, no command text"
+    }
+    assert oversized_files(tmp_path, registry) == []
+    registry["export_paths"]["unscanned_large_files"] = {"package-lock.json": " "}
+    assert oversized_files(tmp_path, registry) != []
+
+
+def test_no_file_in_the_repository_is_too_large_to_scan() -> None:
+    assert oversized_files() == []
+
+
+def test_a_later_table_flag_cannot_hide_a_whole_database_export(tmp_path: Path) -> None:
+    """Low (#856 round 3): the docs scan judges each command line on its own."""
+    cases = {
+        "fenced.md": "```sh\nwrangler d1 export prod --output=all.sql\n"
+        "wrangler d1 export prod --table=counters --output=counters.sql\n```\n",
+        "same-line.md": "`wrangler d1 export prod --output=a.sql && "
+        "wrangler d1 export prod --table=t --output=t.sql`\n",
+        "continued.md": "```sh\nwrangler d1 export prod \\\n  --output=all.sql\n"
+        "wrangler d1 export prod --table=t\n```\n",
+        "prose.md": "First wrangler d1 export prod --output=a.sql then "
+        "wrangler d1 export prod --table=t --output=t.sql\n",
+    }
+    for name, text in cases.items():
+        (tmp_path / name).write_text(text)
+    (tmp_path / "scoped.md").write_text(
+        "```sh\nwrangler d1 export prod --table=a\n"
+        "wrangler d1 export prod \\\n  --table=b --output=b.sql\n```\n"
+        "Inline: `wrangler d1 export prod\n  --table=c`.\n"
+    )
+    found = whole_database_export_docs(tmp_path)
+    assert found == set(cases), found
 
 
 def _recording_env(tmp_path: Path, env: dict[str, str]) -> tuple[dict[str, str], Path]:

@@ -209,6 +209,26 @@ class TestYes:
         # Fixed message: no form of the address reaches stderr (it can be logged).
         assert "1 lead matches." in err and "***" not in err
 
+    def test_hands_over_the_alert_hash_clear_and_read_back(
+        self, capsys: pytest.CaptureFixture[str], export: Path
+    ) -> None:
+        """#856 round 3: the delete file never carries the alert table (it may be in
+        another database), so the tool prints the two hand commands on stderr and says
+        the store is clear only when the read-back shows 0."""
+        code, out, err = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+        assert code == 0
+        assert "alert_dedup" not in out
+        want = "wrangler d1 execute reach-around-leads --remote --command "
+        clear = want + '"DELETE FROM alert_dedup"'  # noqa: S608 - expected text
+        look = want + '"SELECT COUNT(*) AS alert_dedup_remaining FROM alert_dedup"'  # noqa: S608
+        assert clear in err and look in err
+        # The apply command stays the last line (other tests and operators read it).
+        last = err.rstrip().splitlines()[-1]
+        assert last.startswith("npx wrangler d1 execute reach-around-leads --remote")
+        assert "read-back shows 0" in err and "example.test" not in err
+        _, out2, err2 = run(capsys, "--input", str(export), "--email", ADDR)
+        assert "alert_dedup" not in out2 + err2  # a dry run prints no command
+
     def test_normalizes_before_matching(
         self, capsys: pytest.CaptureFixture[str], export: Path
     ) -> None:

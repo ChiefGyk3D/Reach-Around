@@ -396,6 +396,25 @@ _STATEMENTS = (
 )
 _SQL_EMAIL = re.compile(r"[a-z0-9_+.@-]{6,254}")
 
+# The alert dedup table keeps a keyed hash of recent alerts, which can include
+# the address. The delete file does not touch it: this tool cannot know which
+# database holds the alert tables, and a statement on a missing table could fail
+# the whole erasure file. The two constant statements below are printed as
+# separate hand commands instead. Clearing every row only resets repeat-alert
+# suppression for up to 10 minutes.
+ALERT_CLEAR_SQL = "DELETE FROM alert_dedup"
+ALERT_READBACK_SQL = "SELECT COUNT(*) AS alert_dedup_remaining FROM alert_dedup"
+
+
+def alert_clear_commands(database: str) -> list[str]:
+    """The two hand commands for the alert hash table, with a constant statement
+    each (no value from the export or the address ever reaches them). They carry
+    no `npx` prefix; the caller says to run them after it."""
+    return [
+        f'wrangler d1 execute {database} --remote --command "{sql}"'
+        for sql in (ALERT_CLEAR_SQL, ALERT_READBACK_SQL)
+    ]
+
 
 def _sql(lead_id: str, email: str) -> list[str]:
     # Both already passed validation; check again at the point of use so a
@@ -541,18 +560,28 @@ other copy exists. Tick each item in your reply and say what you checked.
    leaves the lead tables out). Delete them and empty the trash.
 6. Shell history and notes. Check that the address is not in your shell
    history, a ticket or a note (the tools take it from stdin or a file only).
-7. Short-lived alert hash. The `alert_dedup` table holds a keyed hash of each
-   recent alert, which can include the address. A row stops counting as a
-   repeat after 10 minutes, but it is deleted only when the next alert event is
-   admitted (no timer), so on a quiet site it can stay stored until then. It
-   cannot be matched to an address without the Worker's secret key, and the
-   delete SQL does not touch it. Clear expired rows by hand with the statement
-   in docs/privacy.md ("Every store, checked against the schema").
-8. Checked and clear: the Worker's KV namespace holds only the gated page and
-   live status state, and the Worker uses no R2, Durable Object or queue
-   storage. An unlock cookie is a signed token with no server copy; it stops
-   opening the kit once the `leads` row is gone. The scripts/erasure-stores.json
-   registry and its test keep this list in step with the database schema.
+7. Short-lived alert hash (mandatory, by hand). The `alert_dedup` table holds a
+   keyed hash of each recent alert, which can include the address. A row stops
+   counting as a repeat after 10 minutes, but it is deleted only when the next
+   alert event is admitted (no timer), so on a quiet site it can stay stored
+   until then. The delete SQL does not touch it, because this tool cannot tell
+   which database holds the alert tables and a statement on a missing table
+   could fail the whole erasure file. `reach-around leads delete --yes` prints
+   the exact clearing command and a read-back (above its apply command, to be
+   run after it); run both against the database that holds the alert tables
+   (the leads database when they share it; docs/privacy.md has the statement)
+   and require the read-back to show 0. Clearing the table only resets repeat-alert
+   suppression for up to 10 minutes. Until you have read 0, the store is not
+   clear.
+8. Worker storage, as far as a text scan can show. The scripts/erasure-stores.json
+   registry and its test list every file that names a KV, cache, R2, Durable
+   Object or queue primitive or binding, and pin each statement that does. That
+   is a lexical inventory of where storage is named, not a proof of where data
+   flows: a write that never names a primitive or binding is not seen. Verify
+   by hand that the KV namespace holds only the gated page and live status
+   state and that nothing else was wired to store requests. An unlock cookie is
+   a signed token with no server copy; it stops opening the kit once the
+   `leads` row is gone.
 9. By hand, places this tool and this list cannot see. Look in each and
    record the result, even when it is "nothing found": Worker logs and any
    collector logs or exception output; alert delivery logs at the chat or mail
@@ -656,6 +685,20 @@ def run_delete(args: argparse.Namespace) -> int:
         if args.sql_out is not None
         else "The SQL is on stdout; prefer --sql-out, which creates a private "
         "file and refuses a path that exists or ends in a symlink. "
+    )
+    # Printed before the apply command, which stays the last thing on stderr (the
+    # tests and operators take the command from there). The two lines carry no
+    # `npx` prefix for the same reason: the apply command is the one that does.
+    clear, readback = alert_clear_commands(database)
+    print(
+        "Also clear the short-lived alert hashes (checklist item 7), after the "
+        "apply command below: the `alert_dedup` table can hold a keyed hash of "
+        "this address until the next alert is admitted, and the file does not "
+        "touch it. Clearing it only resets repeat-alert suppression for up to 10 "
+        f"minutes. This tool cannot tell whether the alert tables are in {database}; "
+        "run both lines, each after `npx`, against the database that holds them. "
+        f"The store is clear only when the read-back shows 0:\n{clear}\n{readback}",
+        file=sys.stderr,
     )
     print(
         f"1 lead matches. {where}It holds the address, so delete it afterward. "
