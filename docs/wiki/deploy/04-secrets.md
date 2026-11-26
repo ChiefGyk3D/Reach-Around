@@ -65,7 +65,7 @@ gh api repos/<owner>/<repo>/actions/oidc/customization/sub
 The immutable form includes the numeric owner and repository ids, so a renamed or
 recreated repository cannot reuse it:
 
-```
+```text
 repo:<owner>@<owner-id>/<repo>@<repo-id>:environment:<exact-environment>
 ```
 

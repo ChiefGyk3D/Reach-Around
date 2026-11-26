@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Compare the links in a built site with an owner-supplied export.
 
-Stdlib only. Nothing here touches the network: a redirect is known only if the
-owner lists it in a redirect map. Results carry counts and ids, never a URL or
+Standard library only, plus the hop label rule shared with the config. Nothing
+here touches the network: a redirect is known only if the owner lists it in a
+redirect map. Results carry counts and ids, never a URL or
 a label, because the output is pasted into a public pull request.
 
 The scope of the comparison is a fixed list (see ``SCOPE``). An anchor outside
@@ -21,6 +22,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+from reach_around.config.hoplabel import HOP_PARAM, check_hop_label
 
 MAX_FILE_BYTES = 5 * 1024 * 1024
 MAX_ROWS = 10_000
@@ -69,6 +72,28 @@ def normalize_url(url: str) -> str:
         if not (k.lower().startswith("utm_") or k.lower() in _TRACKING_EXACT)
     ]
     return urlunsplit((scheme, netloc, parts.path or "/", urlencode(query), ""))
+
+
+def strip_hop(url: str) -> str:
+    """Drop the one ``h=<label>`` the build writes on an internal link (#593).
+
+    Only a built page can carry it, so only the built side is stripped; the
+    export is compared as the owner wrote it. A repeated or malformed ``h`` is
+    left alone (the writer never produces one), so it still shows as a diff.
+    """
+    parts = urlsplit(url.strip())
+    pairs = parse_qsl(parts.query, keep_blank_values=True)
+    ours = [i for i, (k, v) in enumerate(pairs) if k == HOP_PARAM]
+    if len(ours) != 1:
+        return url
+    try:
+        check_hop_label(pairs[ours[0]][1])
+    except ValueError:
+        return url
+    kept = [p for i, p in enumerate(parts.query.split("&")) if i != ours[0]]
+    if len(kept) != len(pairs) - 1:
+        return url  # the query did not split the way it parsed: do not guess
+    return urlunsplit(parts._replace(query="&".join(kept)))
 
 
 def normalize_label(label: str) -> str:
@@ -324,7 +349,9 @@ def read_site(site: Path) -> SiteLinks:
             if not _valid_url(raw.href) or not raw.text:
                 raise ParityError(f"anchor {ref} has no usable target or label")
             result.entries.append(
-                Entry(ref, normalize_url(raw.href), normalize_label(raw.text))
+                Entry(
+                    ref, normalize_url(strip_hop(raw.href)), normalize_label(raw.text)
+                )
             )
         if root_once is None:
             root_once = once_here

@@ -134,7 +134,7 @@ checks this (`changelog-assemble.py check-pr`). Do not edit the
 When an agent drafted a commit, the commit message ends with a co-author
 trailer naming the model:
 
-```
+```text
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 ```
 
