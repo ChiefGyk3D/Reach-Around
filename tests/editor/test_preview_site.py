@@ -321,7 +321,7 @@ def test_a_directory_swapped_for_a_link_after_the_check_is_not_followed(
     (outside / "secret.txt").write_text("SECRET-OUTSIDE", encoding="utf-8")
     _build_file(rig, "assets/secret.txt", b"inside")
     root = _root(rig)
-    real_resolve = server_module._resolve
+    real_resolve = preview_module._resolve  # the same function server.py imports
 
     def swap_after_check(base: Path, segments: list[str]) -> Path | None:
         found = real_resolve(base, segments)  # the request passes the check ...

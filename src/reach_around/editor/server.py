@@ -642,7 +642,7 @@ class _PreviewHandler(_Handler):
         # The last good build, even while the newest one fails (the editor
         # shows that error); only the build output is reachable, nothing else.
         target = _resolve(site.root, segments) if site is not None else None
-        if target is None:
+        if site is None or target is None:
             if segments:
                 self._refuse(404)
             else:
