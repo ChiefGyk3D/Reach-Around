@@ -31,6 +31,7 @@ LEADS_DB = "reach-around-leads"
 ALERTS_DB = "ra-alerts"
 # Step 1 passed its checks and printed the SQL; nothing is erased (#905 round 2).
 CHECKED = leads_cmd.EXIT_CHECKED
+LOCAL_NSS = "passwd: files systemd\ngroup: files systemd\n"
 
 _FAKE: dict[str, Any] = {}
 
@@ -753,6 +754,8 @@ class TestYes:
         above.chmod(0o775)
         gid = above.stat().st_gid
         monkeypatch.setattr(os, "getegid", lambda: gid)
+        # Test setup (#905): the local-files check reads nsswitch.conf; fake it.
+        monkeypatch.setattr(leads_cmd, "_read_nsswitch", lambda: LOCAL_NSS)
         monkeypatch.setattr(pwd, "getpwuid", lambda _u: SimpleNamespace(pw_name="me"))
         monkeypatch.setattr(
             grp, "getgrgid", lambda _g: SimpleNamespace(gr_mem=["someone-else"])
@@ -792,9 +795,99 @@ class TestYes:
         from types import SimpleNamespace
 
         monkeypatch.setattr(os, "getegid", lambda: gid)
+        monkeypatch.setattr(leads_cmd, "_read_nsswitch", lambda: LOCAL_NSS)
         monkeypatch.setattr(pwd, "getpwuid", lambda _u: SimpleNamespace(pw_name="me"))
         monkeypatch.setattr(grp, "getgrgid", lambda _g: SimpleNamespace(gr_mem=[]))
         monkeypatch.setattr(pwd, "getpwall", lambda: [])
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "passwd: files sss\ngroup: files\n",
+            "passwd: files\ngroup: files ldap\n",
+            "passwd: files winbind\ngroup: files winbind\n",
+            "passwd: compat\ngroup: compat\n",
+            "passwd: files\n",  # no group line
+            "passwd: files\ngroup: files\ngroup: files nis\n",  # two group lines
+            "passwd: files\ngroup:\n",  # empty
+            "passwd: files [NOTFOUND=return] sss\ngroup: files\n",
+        ],
+    )
+    def test_a_directory_service_in_nsswitch_refuses_the_private_group_rule(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        fake_wrangler: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        text: str,
+    ) -> None:
+        """A directory service can hide members or accounts from the enumeration,
+        so the group write bit is refused unless both lines name only local
+        sources (the reader is faked; the real file is never read)."""
+        target: Path = fake_wrangler.path.resolve()
+        target.chmod(0o775)
+        self._private_group(monkeypatch, target.stat().st_gid)
+        assert leads_cmd._group_is_private(target.stat().st_gid) is True
+        monkeypatch.setattr(leads_cmd, "_read_nsswitch", lambda: text)
+        assert leads_cmd._group_is_private(target.stat().st_gid) is False
+        code, out, err = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+        assert code == 2 and out == "" and "g-w" in err
+        assert not fake_wrangler.calls
+
+    def test_nsswitch_variants_that_stay_local_are_accepted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._private_group(monkeypatch, os.getegid())
+        for text in (
+            "# c\npasswd:  files systemd  # x\ngroup: files [SUCCESS=merge] systemd\n",
+            "passwd: files\ngroup: files\nhosts: dns sss\n",
+        ):
+            monkeypatch.setattr(leads_cmd, "_read_nsswitch", lambda t=text: t)
+            assert leads_cmd._group_is_private(os.getegid()) is True, text
+
+    def test_an_unreadable_nsswitch_or_a_lookup_error_is_a_refusal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import grp
+        import pwd
+
+        gid = os.getegid()
+        self._private_group(monkeypatch, gid)
+        assert leads_cmd._group_is_private(gid) is True
+
+        def broken() -> str:
+            raise OSError("no file")
+
+        monkeypatch.setattr(leads_cmd, "_read_nsswitch", broken)
+        assert leads_cmd._group_is_private(gid) is False
+        monkeypatch.setattr(leads_cmd, "_read_nsswitch", lambda: LOCAL_NSS)
+        assert leads_cmd._group_is_private(gid) is True
+
+        def fail(*_a: Any) -> Any:
+            raise RuntimeError("directory service down")
+
+        for module, name in ((grp, "getgrgid"), (pwd, "getpwuid"), (pwd, "getpwall")):
+            with monkeypatch.context() as patch:
+                patch.setattr(module, name, fail)
+                assert leads_cmd._group_is_private(gid) is False, name
+
+    def test_a_supplementary_group_is_not_private(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        fake_wrangler: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Only the effective primary group counts: a group the process merely
+        belongs to, with no other member listed, is refused."""
+        target: Path = fake_wrangler.path.resolve()
+        target.chmod(0o775)
+        gid = target.stat().st_gid
+        self._private_group(monkeypatch, gid + 1000)  # primary group is another
+        monkeypatch.setattr(os, "getgroups", lambda: [gid + 1000, gid])
+        assert leads_cmd._group_is_private(gid) is False
+        code, out, _ = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+        assert code == 2 and out == "" and not fake_wrangler.calls
 
     def test_a_normal_umask_002_tree_is_accepted(
         self,

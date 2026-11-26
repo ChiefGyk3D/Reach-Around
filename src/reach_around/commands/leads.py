@@ -49,10 +49,13 @@ file and directory of the wrangler package and of the packages it depends on
 (resolved by node's rules under ``worker/node_modules``, bounded in size), must
 belong to root or the current user, and none may be writable by others (world
 write is refused everywhere) or by a group that anyone else belongs to. A group
-write bit is accepted when the group is private to you (one of your own groups
-that lists no other member and is no other account's primary group, the
-user-private group of a normal account with umask 002), so an ordinary checkout
-and ``npm ci`` are accepted as they are. Outside the repository a sticky shared
+write bit is accepted only when the group is your effective primary group (not a
+supplementary one), lists no member but you, is no other account's primary
+group, and the ``passwd`` and ``group`` lines of /etc/nsswitch.conf name only
+``files`` or ``systemd`` (so the enumeration is complete; any directory service,
+an unreadable file or a lookup error refuses). That is the user-private group of
+a normal account with umask 002, so an ordinary checkout and ``npm ci`` are
+accepted as they are; otherwise run ``chmod -R g-w worker/node_modules``. Outside the repository a sticky shared
 directory owned by root (such as ``/tmp``) is accepted too. A required
 dependency (``dependencies``, non-optional peers) that is not installed under
 ``worker/node_modules`` is refused, as is a ``node_modules`` in the repository root or any directory above it (or a legacy
@@ -688,14 +691,50 @@ def _pinned_version() -> str:
     return version
 
 
-def _group_is_private(gid: int) -> bool:
-    """True when the group is one of the process's own groups (its primary group
-    or one it belongs to) and no other account belongs to it: the group lists no
-    member but you, and no other account has it as its primary group (the user
-    private group many systems give each account), so a group write bit lets no
-    other account write."""
+NSSWITCH_CONF = "/etc/nsswitch.conf"
+_LOCAL_NSS_SOURCES = frozenset({"files", "systemd"})
+
+
+def _read_nsswitch() -> str:
+    """The text of the name service switch file (tests replace this function)."""
+    with open(NSSWITCH_CONF, encoding="utf-8", errors="replace") as handle:
+        return handle.read(65536)
+
+
+def _nss_is_local() -> bool:
+    """True only when the ``passwd`` and ``group`` lines of nsswitch.conf each
+    appear once and name only local sources (``files``, ``systemd``). A directory
+    service (sss, ldap, winbind, nis, ...) can make a group look private or hide
+    its members from the enumeration below, so anything else, an unreadable file
+    or a line this cannot parse counts as not local (fail closed)."""
     try:
-        if gid != os.getegid() and gid not in os.getgroups():
+        text = _read_nsswitch()
+    except Exception:
+        return False
+    for database in ("passwd", "group"):
+        lines = [
+            line.split("#", 1)[0].strip()
+            for line in text.splitlines()
+            if line.split("#", 1)[0].strip().startswith(database + ":")
+        ]
+        if len(lines) != 1:
+            return False
+        rest = re.sub(r"\[[^\]]*\]", " ", lines[0].split(":", 1)[1])
+        sources = rest.split()
+        if not sources or not set(sources) <= _LOCAL_NSS_SOURCES:
+            return False
+    return True
+
+
+def _group_is_private(gid: int) -> bool:
+    """True when a group write bit lets no other account write: the group is the
+    process's EFFECTIVE primary group (not a supplementary one), its member list
+    is empty or only you, no other account has it as its primary group (the user
+    private group many systems give each account), and the account and group
+    databases are local files (``_nss_is_local``), so the enumeration is
+    complete. Any error from the group or account lookups is a refusal."""
+    try:
+        if gid != os.getegid() or not _nss_is_local():
             return False
         uid = os.geteuid()
         me = pwd.getpwuid(uid).pw_name
@@ -704,7 +743,7 @@ def _group_is_private(gid: int) -> bool:
         return all(
             account.pw_uid == uid for account in pwd.getpwall() if account.pw_gid == gid
         )
-    except (KeyError, OSError):
+    except Exception:
         return False
 
 
@@ -716,7 +755,7 @@ def _inside(path: str, root: str) -> bool:
 def _unwritable_by_others(
     info: os.stat_result, *, directory: bool, path: str = "", sealed: bool = False
 ) -> bool:
-    """Not writable by group (unless that group is private to you) or others.
+    """Not writable by group (unless that group is private, see below) or others.
 
     A group write bit is accepted anywhere when the group is private (see
     ``_group_is_private``: a normal checkout and install on an account with its
@@ -739,7 +778,8 @@ _PKG_NAME = re.compile(r"(?:@[a-z0-9._-]+/)?[a-z0-9._-]+")
 _REFUSED_TREE = (
     "the wrangler package or one it depends on has a file or directory that "
     "belongs to another account or is writable by group or others; refusing it "
-    "(fix with: chmod -R go-w worker/node_modules)"
+    "(fix with: chmod -R go-w worker/node_modules; for a group write bit only, "
+    "chmod -R g-w worker/node_modules)"
 )
 
 
@@ -965,7 +1005,8 @@ def _resolve_wrangler(arg: Path | None) -> str:
     ``worker/package-lock.json``. The file and every directory from the root down
     must belong to root or the current user (the file too: a root-owned file is
     accepted) and not be writable by others, nor by a group another account
-    belongs to (a group write bit is accepted for a group private to you). The
+    belongs to (a group write bit is accepted only for your effective primary
+    group under local account files; see ``_group_is_private``). The
     wrangler package and its dependency closure are walked the same
     way (``_check_package_tree``); only the walked tree is checked.
 
@@ -1021,7 +1062,8 @@ def _resolve_wrangler(arg: Path | None) -> str:
     ):
         raise WranglerError(
             "wrangler must be a regular executable owned by root or you, not "
-            "writable by group or others"
+            "writable by group or others (alternative: chmod -R g-w "
+            "worker/node_modules)"
         )
     walk = Path(real).parent
     try:
@@ -1036,8 +1078,10 @@ def _resolve_wrangler(arg: Path | None) -> str:
                 raise WranglerError(
                     "every directory above wrangler must belong to root or you and "
                     "not be writable by others or by a group another account "
-                    "belongs to (a group of your own that nobody else belongs to is "
-                    "fine; fix with: chmod -R go-w worker/node_modules)"
+                    "belongs to (only your own primary group, with no other member "
+                    "and on a machine whose account lists are local files, is "
+                    "fine; fix with: chmod -R go-w worker/node_modules, or "
+                    "chmod -R g-w worker/node_modules)"
                 )
     except OSError:
         raise WranglerError("a directory above wrangler could not be checked") from None
@@ -1917,8 +1961,9 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "worker/node_modules/.bin/wrangler); never searched on PATH; its package "
         "must match worker/package-lock.json, and the package and its "
         "dependencies (walked, bounded) must belong to root or you with no other "
-        "write bit and no write bit for a group anyone else belongs to (a group "
-        "private to you is fine). Only the layout of 'cd worker && npm ci "
+        "write bit and no write bit for a group anyone else belongs to (only your "
+        "own private primary group on a machine with local account files is "
+        "fine; otherwise run 'chmod -R g-w worker/node_modules'). Only the layout of 'cd worker && npm ci "
         "--ignore-scripts' is supported (hoisted or workspace installs are "
         "refused). It receives your Cloudflare token: this is a trust "
         "boundary, not an integrity check",

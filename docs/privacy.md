@@ -405,13 +405,20 @@ tarball digest in `worker/package-lock.json`; the file and every directory above
 it belong to root or you (the file too, so a root-owned `0755` file is
 accepted) and are not writable by others (world write is refused everywhere,
 the repository and every directory above it included) and not by a group that
-anyone else belongs to. A group write bit is accepted when the group is private
-to you: one of your own groups that lists no other member and is no other
-account's primary group, which is what a normal account with its own group and
-umask 002 gives every file of a plain checkout and of `npm ci`, so those need no
-`chmod`. A file or directory in a shared group is refused (fix with
-`chmod -R go-w worker/node_modules`). Outside the repository, a sticky shared
-directory such as `/tmp` is accepted only when root owns it. The wrangler package, and the
+anyone else belongs to. A group write bit is accepted only when the group is
+your effective primary group (not a supplementary group), lists no member but
+you, is no other account's primary group, and the `passwd` and `group` lines of
+`/etc/nsswitch.conf` name only `files` (or `systemd`): that is the private group
+and local account files of a normal account with umask 002, which give every
+file of a plain checkout and of `npm ci` a group write bit that no one else can
+use, so those need no `chmod`. With any directory service on either line (sss,
+ldap, winbind, nis, compat), an unreadable `nsswitch.conf` or any error from the
+account or group lookup, the tool cannot know the group has no other member, so
+it refuses a group write bit instead. The alternative is to remove it:
+`chmod -R g-w worker/node_modules` (and the same for the repository root,
+`worker` and every directory above it that is group-writable). World write is
+refused in every case. Outside the repository, a sticky shared directory such as
+`/tmp` is accepted only when root owns it. The wrangler package, and the
 packages it lists in `dependencies`, `optionalDependencies` or
 `peerDependencies` (resolved the way node resolves them under
 `worker/node_modules`, recursively), are walked: every file and directory must
