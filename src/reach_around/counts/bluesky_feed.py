@@ -123,6 +123,73 @@ def _is_did(value: object) -> bool:
     return match is not None and _is_did_web_authority(match.group(1), match.group(2))
 
 
+# An at:// URI is ``at://<authority>/<collection>/<rkey>``: the authority is a DID
+# or a handle, the collection a dotted name (an NSID), the record key a short run
+# of plain characters that is not ``.`` or ``..``; the whole is bounded (shape
+# INFERRED from the public AT Protocol notes, not read live). Anything else is not
+# evidence of one post and is never used as a key.
+_AT_URI = re.compile(r"at://([^/]{1,512})/([^/]{1,317})/([^/]{1,512})")
+_NSID = re.compile(
+    r"[A-Za-z](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z][A-Za-z0-9-]*){2,}"
+)
+_RKEY = re.compile(r"[A-Za-z0-9._:~-]{1,512}")
+_CID = re.compile(r"[A-Za-z0-9]{1,128}")
+_URI_MAX = 512
+_POST_COLLECTION = "app.bsky.feed.post"
+
+
+def _at_uri_parts(value: object) -> tuple[str, str, str] | None:
+    """The (authority, collection, rkey) of a well formed at:// URI, else None."""
+    if type(value) is not str or not 0 < len(value) <= _URI_MAX:
+        return None
+    match = _AT_URI.fullmatch(value)
+    if match is None:
+        return None
+    authority, collection, rkey = match.groups()
+    if not (
+        _is_did(authority) or (len(authority) <= 253 and _HANDLE.fullmatch(authority))
+    ):
+        return None
+    if not _NSID.fullmatch(collection):
+        return None
+    if not _RKEY.fullmatch(rkey) or rkey in {".", ".."}:
+        return None
+    return authority, collection, rkey
+
+
+def _is_ref(value: object, *, view: bool) -> bool:
+    """A reply's root or parent: an object with a well formed at:// uri and a cid.
+
+    In a feed view (``view``) a blocked or not-found parent has a uri but no cid
+    (INFERRED from the public app.bsky.feed.defs notes), so the cid is optional
+    only when the object says it is one of those two and the flag is a real bool.
+    """
+    if not isinstance(value, dict) or _at_uri_parts(value.get("uri")) is None:
+        return False
+    cid = value.get("cid")
+    if type(cid) is str and _CID.fullmatch(cid):
+        return True
+    gone = value.get("notFound") is True or value.get("blocked") is True
+    return view and "cid" not in value and gone
+
+
+def _is_reply(value: object, *, view: bool) -> bool:
+    """A reply object is real only with a well formed root and a well formed parent."""
+    return (
+        isinstance(value, dict)
+        and _is_ref(value.get("root"), view=view)
+        and _is_ref(value.get("parent"), view=view)
+    )
+
+
+def _own_post_uri(value: object, did: str) -> str | None:
+    """The uri of an own post: its DID, the post collection and a valid rkey."""
+    parts = _at_uri_parts(value)
+    if parts is None or parts[0] != did or parts[1] != _POST_COLLECTION:
+        return None
+    return str(value)
+
+
 _CURSOR = re.compile(r"^[A-Za-z0-9._:+=-]{1,128}$")
 
 
@@ -397,17 +464,22 @@ def _item(
     if author_did != did:
         return None
     record = post.get("record")
-    # A reply marker that is present must be an object (the lexicon has no null
-    # reply): a present null or scalar is malformed, never an original post.
-    markers = [item["reply"]] if "reply" in item else []
+    # A reply object is evidence of a reply only when it is well formed (a root
+    # and a parent, each with a valid at:// uri and a cid): {}, a missing root or
+    # parent, a scalar or a bad uri is malformed, never a skipped reply.
     if not isinstance(record, dict):
         # Without the record there is no evidence the post is an original one.
         raise _Stop("bad_shape")
+    is_reply = False
+    if "reply" in item:
+        if not _is_reply(item["reply"], view=True):
+            raise _Stop("bad_shape")
+        is_reply = True
     if "reply" in record:
-        markers.append(record["reply"])
-    if any(not isinstance(marker, dict) for marker in markers):
-        raise _Stop("bad_shape")
-    if markers:
+        if not _is_reply(record["reply"], view=False):
+            raise _Stop("bad_shape")
+        is_reply = True
+    if is_reply:
         return None  # a reply to someone else is not counted
     when = post_time(post, "indexedAt")
     placed = classify(when, now)
@@ -417,9 +489,9 @@ def _item(
         return None  # out of the window (a pin comes out of order, still not counted)
     if placed == "future":
         return "future"
-    uri = post.get("uri")
-    if type(uri) is not str or not 0 < len(uri) <= 512:
-        raise _Stop("bad_shape")
+    uri = _own_post_uri(post.get("uri"), did)
+    if uri is None:
+        raise _Stop("bad_shape")  # the duplicate rule keys on it: it must be exact
     reposts = _int(post.get("repostCount"), MAX_INTERACTIONS)
     likes = _int(post.get("likeCount"), MAX_INTERACTIONS)
     replies = _int(post.get("replyCount"), MAX_INTERACTIONS)

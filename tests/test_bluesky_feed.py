@@ -371,7 +371,7 @@ def test_an_object_reply_marker_is_a_skipped_reply_and_a_missing_one_is_original
     where: str,
 ) -> None:
     reply_item = post(1, NOW - timedelta(days=1), likes=50)
-    marker = {"root": {"uri": "at://x"}, "parent": {"uri": "at://y"}}
+    marker = good_reply()
     if where == "item":
         reply_item["reply"] = marker
     else:
@@ -379,6 +379,149 @@ def test_an_object_reply_marker_is_a_skipped_reply_and_a_missing_one_is_original
     own = post(2, NOW - timedelta(days=2), likes=4)  # no reply key at all
     read = run(Pages([feed_page([reply_item, own])]))
     assert read.complete and rows_of(read) == [(0, 4, 0)]
+
+
+def ref(n: int = 1, **over: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "uri": f"at://{OTHER}/app.bsky.feed.post/r{n}",
+        "cid": "bafyreiabcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrs",
+    }
+    base.update(over)
+    return base
+
+
+def good_reply() -> dict[str, Any]:
+    return {"root": ref(1), "parent": ref(2)}
+
+
+_BAD_REF_VALUES: list[Any] = [
+    None,
+    "x",
+    7,
+    [],
+    {},
+    {"uri": "x"},
+    {"cid": "bafy"},
+    {"uri": 5, "cid": "bafy"},
+    {"uri": "at://x", "cid": "bafy"},
+    {"uri": f"at://{OTHER}/app.bsky.feed.post/r1"},  # no cid
+    {"uri": f"at://{OTHER}/app.bsky.feed.post/r1", "cid": ""},
+    {"uri": f"at://{OTHER}/app.bsky.feed.post/r1", "cid": 5},
+    {"uri": f"at://{OTHER}/app.bsky.feed.post/r1", "cid": "bad cid!"},
+    {"uri": f"at://{OTHER}/app.bsky.feed.post/r1", "cid": ["a"]},
+]
+
+
+@pytest.mark.parametrize("where", ["item", "record"])
+@pytest.mark.parametrize(
+    "marker",
+    [
+        {},
+        {"unrelated": True},
+        {"root": ref(1)},  # no parent
+        {"parent": ref(2)},  # no root
+        *[{"root": bad, "parent": ref(2)} for bad in _BAD_REF_VALUES],
+        *[{"root": ref(1), "parent": bad} for bad in _BAD_REF_VALUES],
+    ],
+)
+def test_a_malformed_reply_object_is_incomplete_never_a_skipped_reply(
+    where: str, marker: Any
+) -> None:
+    # #922 round 6: {} or a reply without a real root and parent is not evidence
+    # of a reply: the read ends bad_shape instead of a complete undercount.
+    bad = post(1, NOW - timedelta(days=1), likes=500)
+    if where == "item":
+        bad["reply"] = marker
+    else:
+        bad["post"]["record"]["reply"] = marker
+    good = post(2, NOW - timedelta(days=2), likes=4)
+    read = run(Pages([feed_page([good, bad])]))
+    assert isinstance(read.rows, NotProvided) and read.reason == "bad_shape"
+    assert bsky.history_aggregates(read) is None
+
+
+def test_a_feed_view_blocked_or_missing_parent_is_a_reply_without_a_cid() -> None:
+    gone = {"uri": f"at://{OTHER}/app.bsky.feed.post/r9", "notFound": True}
+    blocked = {"uri": f"at://{OTHER}/app.bsky.feed.post/r8", "blocked": True}
+    one = post(1, NOW - timedelta(days=1), likes=50)
+    one["reply"] = {"root": ref(1), "parent": gone}
+    two = post(3, NOW - timedelta(days=1), likes=60)
+    two["reply"] = {"root": blocked, "parent": ref(2)}
+    own = post(2, NOW - timedelta(days=2), likes=4)
+    read = run(Pages([feed_page([one, two, own])]))
+    assert read.complete and rows_of(read) == [(0, 4, 0)]
+    # but not a record-level reference, and not a flag that is not a real bool
+    bad = post(4, NOW - timedelta(days=1), likes=70)
+    bad["reply"] = {"root": ref(1), "parent": {**gone, "notFound": "yes"}}
+    assert run(Pages([feed_page([bad, own])])).reason == "bad_shape"
+    rec = post(5, NOW - timedelta(days=1), likes=70)
+    rec["post"]["record"]["reply"] = {"root": ref(1), "parent": gone}
+    assert run(Pages([feed_page([rec, own])])).reason == "bad_shape"
+
+
+def _uri_cases() -> list[Any]:
+    base = f"at://{DID}/app.bsky.feed.post/"
+    return [
+        None,
+        5,
+        [],
+        {},
+        True,
+        "",
+        "x",
+        "p1",
+        f"at://{DID}",
+        f"at://{DID}/",
+        f"at://{DID}/app.bsky.feed.post",
+        f"at://{DID}/app.bsky.feed.post/",
+        base + "a" * 600,  # overlong
+        "at://" + "d" * 600 + "/app.bsky.feed.post/p1",
+        f"at://{OTHER}/app.bsky.feed.post/p1",  # the wrong authority
+        "at://alice.example.com/app.bsky.feed.post/p1",  # a handle, not our DID
+        f"at://{DID}/app.bsky.feed.like/p1",  # the wrong collection
+        f"at://{DID}/post/p1",
+        f"https://{DID}/app.bsky.feed.post/p1",
+        f"AT://{DID}/app.bsky.feed.post/p1",
+        base + "p1/extra",
+        base + "p1?x=1",
+        base + "p1#frag",
+        base + "p 1",
+        base + "p1\n",
+        base + "..",
+        base + ".",
+        base + "pé",
+        " " + base + "p1",
+        base + "p1 ",
+    ]
+
+
+@pytest.mark.parametrize("uri", _uri_cases())
+def test_a_missing_or_malformed_post_uri_is_incomplete(uri: Any) -> None:
+    bad = post(2, NOW - timedelta(days=2))
+    if uri is None:
+        del bad["post"]["uri"]
+    else:
+        bad["post"]["uri"] = uri
+    good = post(1, NOW - timedelta(days=1), likes=4)
+    read = run(Pages([feed_page([good, bad])]))
+    assert isinstance(read.rows, NotProvided) and read.reason == "bad_shape"
+
+
+def test_two_distinct_posts_with_the_same_malformed_uri_do_not_collapse() -> None:
+    # #922 round 6: both entries returned the same "x"; one row (3, 20, 4) and
+    # posts_30d == 1 was recorded as complete.
+    one = post(1, NOW - timedelta(days=1), likes=10, reposts=1, replies=2)
+    two = post(2, NOW - timedelta(days=2), likes=20, reposts=3, replies=4)
+    one["post"]["uri"] = two["post"]["uri"] = "x"
+    read = run(Pages([feed_page([one, two])]))
+    assert isinstance(read.rows, NotProvided) and read.reason == "bad_shape"
+    assert bsky.history_aggregates(read) is None
+
+
+def test_a_well_formed_uri_with_a_handle_style_rkey_is_counted() -> None:
+    ok = post(1, NOW - timedelta(days=1), likes=4)
+    ok["post"]["uri"] = f"at://{DID}/app.bsky.feed.post/3kabc.def_~:x-1"
+    assert rows_of(run(Pages([feed_page([ok])]))) == [(0, 4, 0)]
 
 
 @pytest.mark.parametrize("record", ["missing", None, "bad", [], ["a"], 7, 7.5, True])
@@ -412,9 +555,9 @@ def test_reposts_other_authors_and_replies_are_never_counted() -> None:
     repost["reason"] = {"$type": "app.bsky.feed.defs#reasonRepost"}
     stranger = post(2, NOW - timedelta(days=1), did=OTHER, likes=600)  # no reason
     reply_item = post(3, NOW - timedelta(days=1), likes=700)
-    reply_item["reply"] = {"parent": {}}
+    reply_item["reply"] = good_reply()
     reply_record = post(4, NOW - timedelta(days=1), likes=800)
-    reply_record["post"]["record"]["reply"] = {"parent": {"uri": "x"}}
+    reply_record["post"]["record"]["reply"] = good_reply()
     own = post(6, NOW - timedelta(days=1), likes=3)
     read = run(Pages([feed_page([repost, stranger, reply_item, reply_record, own])]))
     assert rows_of(read) == [(0, 3, 0)]
