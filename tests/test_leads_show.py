@@ -511,9 +511,11 @@ def test_delete_names_the_leads_database_and_refuses_the_analytics_one(
     captured = capsys.readouterr()
     assert code == CHECKED  # step 1: checks passed, nothing erased (#905 round 2)
     assert "database: reach-around-leads" in captured.err
+    # Round 4 (#905): the printed command names wrangler relative to the root.
+    rel = _FAKE["w"].path.resolve().relative_to(_FAKE["w"].root.resolve())
     assert (
-        f"{_FAKE['w'].path.resolve()} d1 execute reach-around-leads --remote "
-        "--file delete-lead.sql" in captured.err
+        f"{rel} d1 execute reach-around-leads --remote --file delete-lead.sql"
+        in captured.err
     )
     assert "npx" not in captured.err
     assert "reach-around-clicks" not in captured.out + captured.err
@@ -802,8 +804,9 @@ def test_the_printed_apply_command_is_shell_safe_for_any_file_name(
     target = tmp_path / name
     assert _delete_to(monkeypatch, delete_export, target) == CHECKED
     err = capsys.readouterr().err
-    wrangler = str(_FAKE["w"].path.resolve())
-    command = err[err.index(wrangler) :]
+    # Round 4 (#905): wrangler is printed relative to the repository root.
+    wrangler = str(_FAKE["w"].path.resolve().relative_to(_FAKE["w"].root.resolve()))
+    command = err[err.rindex("\n" + wrangler) + 1 :]
     tokens = shlex.split(command)
     assert tokens == [
         wrangler,

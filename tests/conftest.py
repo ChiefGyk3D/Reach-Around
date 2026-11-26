@@ -64,6 +64,7 @@ _REAL_EXEC = _capture_real_exec()
 # `leads._exec` is replaced for all of them.
 _STRICT_MODULES = ("test_leads",)
 _FORBIDDEN_NAMES = ("wrangler",)
+_ENTRYPOINTS = ("wrangler.js", "wrangler.mjs", "wrangler.cjs")
 # Every word of every argument is looked at, not only the program, so an
 # allowed interpreter or launcher (`sh -c "wrangler ..."`, `env node x`,
 # `python -c "...wrangler..."`) is refused too. What this still cannot see: a
@@ -92,7 +93,16 @@ def _words(command: object) -> list[str]:
 def _is_forbidden(command: object, strict: bool) -> bool:
     if strict:
         return True
-    return any(os.path.basename(w) in _FORBIDDEN_NAMES for w in _words(command))
+    return any(_names_wrangler(w) for w in _words(command))
+
+
+def _names_wrangler(word: str) -> bool:
+    """A word that is the wrangler program or a file of the wrangler package: the
+    bin shim, its real entry file (`wrangler.js` and its module variants) started
+    through node, or anything under the package or its `wrangler-dist` folder."""
+    if os.path.basename(word) in _FORBIDDEN_NAMES + _ENTRYPOINTS:
+        return True
+    return any(p in ("wrangler", "wrangler-dist") for p in word.split("/"))
 
 
 @pytest.fixture
@@ -168,6 +178,10 @@ def fake_wrangler(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     fake.path = write_install(root, version)
     fake.root = root
     monkeypatch.setattr(leads, "REPO_ROOT", root)
+    # An empty HOME: the install check refuses legacy node folders in it (#905).
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(leads, "_exec", fake)
     monkeypatch.setattr(leads, "pause", lambda _s: None)
     return fake

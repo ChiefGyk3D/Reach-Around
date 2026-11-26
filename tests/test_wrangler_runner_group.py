@@ -117,6 +117,25 @@ def test_outside_the_leads_tests_plain_node_still_starts() -> None:
             subprocess.run(command, check=False)  # noqa: S603 - the guard refuses it
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["node", "/nonexistent/node_modules/wrangler/bin/wrangler.js", "d1", "info"],
+        ["/usr/bin/node", "/nonexistent/node_modules/wrangler/bin/wrangler.mjs"],
+        ["node", "/nonexistent/node_modules/wrangler/wrangler-dist/cli.js", "d1"],
+    ],
+)
+def test_outside_the_leads_tests_the_real_entry_file_is_refused(
+    command: list[str],
+) -> None:
+    """Round 4 (#905, Low): `node .../wrangler.js` has no word named exactly
+    `wrangler`, so the real entry file started through node used to pass the guard
+    here. Through the real Popen guard, in a module that is not a leads test (the
+    paths do not exist, so a guard that failed would start nothing real)."""
+    with pytest.raises(AssertionError, match="real process"):
+        subprocess.run(command, check=False)  # noqa: S603 - the guard refuses it
+
+
 def test_the_child_is_its_own_session_leader(real_exec: Any) -> None:
     """The group id is the child's pid only when it leads a session of its own."""
     code = (

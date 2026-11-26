@@ -319,8 +319,12 @@ class TestYes:
         assert "NOTHING HAS BEEN REMOVED YET" in err and "--finish" in err
         assert f"exit {CHECKED}" in err and "Exit 0 is" not in err
         last = err.rstrip().splitlines()[-1]
+        # Round 4 (#905, Low): the apply command names wrangler relative to the
+        # repository root, never by its absolute path.
         real = fake_wrangler.path.resolve()
-        assert last.startswith(f"{real} d1 execute {LEADS_DB} --remote")
+        rel = real.relative_to(fake_wrangler.root.resolve())
+        assert last.startswith(f"{rel} d1 execute {LEADS_DB} --remote")
+        assert str(fake_wrangler.root.resolve()) not in err + out
         assert "npx" not in err and "example.test" not in err
         _, out2, err2 = run(capsys, "--input", str(export), "--email", ADDR)
         assert "alert_dedup" not in out2 + err2  # a dry run prints nothing about it
@@ -1383,6 +1387,100 @@ class TestFinish:
         code, _, _ = finish(capsys, export)
         assert code == 4
 
+    SPELLINGS = (
+        "PARTNER@EXAMPLE.TEST",
+        "Partner@Example.test",
+        "partner@example.test ",
+        " partner@example.test",
+        "partner@example.test\t",
+        "\t Partner@Example.Test \n",
+    )
+
+    @pytest.mark.parametrize("spelling", SPELLINGS)
+    @pytest.mark.parametrize("when", ["before_finish", "during_pause"])
+    def test_a_lead_recreated_with_another_case_or_spacing_is_seen(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        fake_wrangler: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        spelling: str,
+        when: str,
+    ) -> None:
+        """Round 4 (#905, Medium): the final read-back compared the address byte for
+        byte, so a row for the same person stored with another case or surrounding
+        white space (a new id) read 0 and `--finish` could exit 0. Both sides are
+        now compared trimmed and lower-cased, as the store keeps them."""
+        seed_alerts(fake_wrangler)
+
+        def recreate(*_a: Any) -> None:
+            fake_wrangler.dbs[LEADS_DB].execute(
+                "INSERT INTO leads VALUES (?, ?)", (ID_B, spelling)
+            )
+            fake_wrangler.dbs[LEADS_DB].execute(
+                "INSERT INTO kit_events (lead_id) VALUES (?)", (ID_B,)
+            )
+
+        if when == "before_finish":
+            recreate()
+        else:
+            monkeypatch.setattr(leads_cmd, "pause", recreate)
+        code, out, err = finish(capsys, export)
+        assert code == (4 if when == "before_finish" else 3), err
+        if when == "before_finish":
+            assert alert_rows(fake_wrangler) == 2  # untouched
+        text = (err + out).lower()
+        assert "example.test" not in text and ID_B not in text
+
+    def test_the_read_back_compares_the_normalized_form_not_the_raw_text(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        """The statement itself folds the stored value, and the address side is the
+        tool's own normalized form (an upper-case or padded input is the same
+        person: `leads delete` normalizes it before it builds anything)."""
+        seed_alerts(fake_wrangler)
+        code, _, _ = run(
+            capsys,
+            "--input",
+            str(export),
+            "--email",
+            "  PARTNER@Example.TEST ",
+            "--yes",
+            "--finish",
+        )
+        assert code == 0
+        reads = [s for _, s in fake_wrangler.calls if "leads_remaining" in s]
+        assert reads and all("lower(trim(email" in s for s in reads)
+        assert all(f"'{ADDR}'" in s for s in reads)  # the normalized address
+        assert not any("PARTNER" in s for _, s in fake_wrangler.calls)
+
+    @pytest.mark.parametrize(
+        "other",
+        [
+            "partner+tag@example.test",
+            "p.artner@example.test",
+            "partner@example.test.evil.test",
+            "partnér@example.test",  # a different character, not a case variant
+            "аrtner@example.test",  # Cyrillic a: a look-alike, never the same
+            "Ｐartner@example.test",  # full-width P
+        ],
+    )
+    def test_other_addresses_are_not_folded_into_the_match(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        fake_wrangler: Any,
+        other: str,
+    ) -> None:
+        """The read-back is not widened: the store treats no plus-address, dot or
+        look-alike spelling as the same address, so neither does the check."""
+        seed_alerts(fake_wrangler)
+        fake_wrangler.dbs[LEADS_DB].execute(
+            "INSERT INTO leads VALUES (?, ?)", (ID_B, other)
+        )
+        code, _, _ = finish(capsys, export)
+        assert code == 0 and alert_rows(fake_wrangler) == 0
+
     def test_finish_runs_the_schema_checks_again(
         self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
     ) -> None:
@@ -1923,16 +2021,26 @@ class TestDependencyWalk:
         deps: list[str] | None = None,
         *,
         nested: Path | None = None,
+        optional: list[str] | None = None,
+        peers: list[str] | None = None,
+        optional_peers: list[str] | None = None,
     ) -> Path:
         nm = nested or (root / "worker" / "node_modules")
         pkg = nm / name
         (pkg / "lib" / "deep").mkdir(parents=True)
         for directory in (pkg, pkg / "lib", pkg / "lib" / "deep"):
             directory.chmod(0o700)
-        meta = {
+        meta: dict[str, Any] = {
             "name": name,
             "version": "1.0.0",
             "dependencies": dict.fromkeys(deps or [], "1"),
+            "optionalDependencies": dict.fromkeys(optional or [], "1"),
+            "peerDependencies": dict.fromkeys(
+                (peers or []) + (optional_peers or []), "1"
+            ),
+            "peerDependenciesMeta": {
+                n: {"optional": True} for n in optional_peers or []
+            },
         }
         (pkg / "package.json").write_text(json.dumps(meta))
         (pkg / "lib" / "deep" / "x.js").write_text("module.exports = 1;\n")
@@ -1952,7 +2060,15 @@ class TestDependencyWalk:
         self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
     ) -> None:
         root: Path = fake_wrangler.root
-        self.add_package(root, "dep-a", ["dep-b", "@scope/dep-c", "not-installed"])
+        # Round 4 (#905): a dependency that is listed but absent is now a refusal
+        # unless it is optional, so "not-installed" moved to optionalDependencies.
+        self.add_package(
+            root,
+            "dep-a",
+            ["dep-b", "@scope/dep-c"],
+            optional=["not-installed"],
+            optional_peers=["also-not-installed"],
+        )
         self.add_package(root, "dep-b")
         scope = root / "worker" / "node_modules" / "@scope"
         scope.mkdir()
@@ -2038,3 +2154,233 @@ class TestDependencyWalk:
         code, out, err = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
         assert code == 2 and out == "" and fake_wrangler.argvs == []
         assert "larger than the bound" in err
+
+
+def _no_local_path(err: str, root: Path, tmp_path: Path) -> None:
+    """Round 4 (#905, Low): nothing printed names the repository's absolute path or
+    the directories above it (they hold the local account's name)."""
+    assert str(root.resolve()) not in err and str(root) not in err
+    assert str(tmp_path) not in err and str(tmp_path.resolve()) not in err
+
+
+class TestSymlinkedDirectories:
+    """Round 4 (#905, Medium): a symlink to a directory inside a package used to be
+    checked as one stat of its target and never walked, so a writable file below it
+    was never seen. The target is now resolved, must stay inside
+    ``worker/node_modules``, and is walked with the shared seen set and budget."""
+
+    @staticmethod
+    def shared(root: Path) -> Path:
+        base = root / "worker" / "node_modules" / "shared-lib"
+        sub = base / "sub"
+        sub.mkdir(parents=True)
+        for directory in (base, sub):
+            directory.chmod(0o700)
+        leaf = sub / "x.js"
+        leaf.write_text("module.exports = 1;\n")
+        leaf.chmod(0o600)
+        return sub
+
+    @staticmethod
+    def link(root: Path, target: Path, name: str = "lib") -> None:
+        bin_dir = root / "worker" / "node_modules" / "wrangler" / "bin"
+        (bin_dir / name).symlink_to(target)
+
+    def go(
+        self, capsys: pytest.CaptureFixture[str], export: Path
+    ) -> tuple[int, str, str]:
+        return run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+
+    def test_a_clean_symlinked_directory_is_accepted(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        self.link(fake_wrangler.root, self.shared(fake_wrangler.root))
+        code, _, err = self.go(capsys, export)
+        assert code == CHECKED, err
+
+    @pytest.mark.parametrize("what", ["child_file", "deep_dir", "ancestor_dir"])
+    def test_an_unsafe_entry_below_a_symlinked_directory_is_refused(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        fake_wrangler: Any,
+        tmp_path: Path,
+        what: str,
+    ) -> None:
+        sub = self.shared(fake_wrangler.root)
+        self.link(fake_wrangler.root, sub)
+        if what == "child_file":
+            (sub / "x.js").chmod(0o666)
+        elif what == "deep_dir":
+            deep = sub / "deeper"
+            deep.mkdir()
+            deep.chmod(0o777)
+        else:
+            sub.parent.chmod(0o777)  # between the target and the repository root
+        code, out, err = self.go(capsys, export)
+        assert code == 2 and out == "" and fake_wrangler.argvs == [], err
+        _no_local_path(err, fake_wrangler.root, tmp_path)
+
+    @pytest.mark.parametrize("where", ["in_repository", "outside_repository"])
+    def test_a_symlinked_directory_that_leaves_node_modules_is_refused(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        fake_wrangler: Any,
+        tmp_path: Path,
+        where: str,
+    ) -> None:
+        base = fake_wrangler.root if where == "in_repository" else tmp_path
+        target = base / "unchecked"
+        target.mkdir()
+        target.chmod(0o700)
+        (target / "payload.js").write_text("1\n")
+        (target / "payload.js").chmod(0o600)
+        self.link(fake_wrangler.root, target)
+        code, out, err = self.go(capsys, export)
+        assert code == 2 and out == "" and fake_wrangler.argvs == [], err
+        _no_local_path(err, fake_wrangler.root, tmp_path)
+
+    def test_a_symlink_loop_ends_and_is_accepted(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        root: Path = fake_wrangler.root
+        sub = self.shared(root)
+        (sub / "up").symlink_to(sub.parent)  # sub/up -> shared-lib (holds sub)
+        self.link(root, sub)
+        self.link(root, root / "worker" / "node_modules" / "wrangler", "self")
+        code, _, err = self.go(capsys, export)
+        assert code == CHECKED, err
+
+    def test_the_entries_below_a_symlink_count_against_the_bound(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        fake_wrangler: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        sub = self.shared(fake_wrangler.root)
+        for n in range(30):
+            (sub / f"f{n}.js").write_text("1\n")
+            (sub / f"f{n}.js").chmod(0o600)
+        self.link(fake_wrangler.root, sub)
+        monkeypatch.setattr(leads_cmd, "MAX_TREE_ENTRIES", 12)
+        code, out, err = self.go(capsys, export)
+        assert code == 2 and out == "" and "larger than the bound" in err
+
+
+class TestResolutionOutsideTheCheckedTree:
+    """Round 4 (#905, Medium): node resolves a missing package from every
+    ``node_modules`` above the package, up to ``/``. A required dependency that is
+    absent under ``worker/node_modules`` is now a refusal, and so is any
+    ``node_modules`` above ``worker`` (or a legacy folder in HOME)."""
+
+    add = staticmethod(TestDependencyWalk.add_package)
+    need = staticmethod(TestDependencyWalk.need)
+
+    def go(
+        self, capsys: pytest.CaptureFixture[str], export: Path
+    ) -> tuple[int, str, str]:
+        return run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+
+    @pytest.mark.parametrize("kind", ["dependency", "peer"])
+    def test_a_required_dependency_that_is_not_installed_is_refused(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        fake_wrangler: Any,
+        tmp_path: Path,
+        kind: str,
+    ) -> None:
+        root: Path = fake_wrangler.root
+        if kind == "dependency":
+            self.need(root, ["gone-dep"])
+        else:
+            self.add(root, "dep-a", peers=["gone-dep"])
+            self.need(root, ["dep-a"])
+        code, out, err = self.go(capsys, export)
+        assert code == 2 and out == "" and fake_wrangler.argvs == [], err
+        assert "gone-dep" in err and "not installed under worker/node_modules" in err
+        _no_local_path(err, root, tmp_path)
+
+    def test_a_package_that_exists_only_above_worker_is_refused(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        fake_wrangler: Any,
+        tmp_path: Path,
+    ) -> None:
+        root: Path = fake_wrangler.root
+        outer = root / "node_modules"
+        outer.mkdir()
+        outer.chmod(0o700)
+        self.add(root, "dep-a", nested=outer)
+        self.need(root, ["dep-a"])  # not under worker/node_modules
+        code, out, err = self.go(capsys, export)
+        assert code == 2 and out == "" and fake_wrangler.argvs == [], err
+        _no_local_path(err, root, tmp_path)
+
+    @pytest.mark.parametrize("above", ["repository_root", "parent", "dangling_link"])
+    def test_a_node_modules_above_worker_is_refused_even_when_nothing_needs_it(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        fake_wrangler: Any,
+        tmp_path: Path,
+        above: str,
+    ) -> None:
+        root: Path = fake_wrangler.root
+        if above == "repository_root":
+            (root / "node_modules").mkdir()
+        elif above == "parent":
+            (tmp_path / "node_modules").mkdir()
+        else:
+            (root / "node_modules").symlink_to(tmp_path / "missing-target")
+        code, out, err = self.go(capsys, export)
+        assert code == 2 and out == "" and fake_wrangler.argvs == [], err
+        assert "node_modules directory exists" in err
+        _no_local_path(err, root, tmp_path)
+
+    @pytest.mark.parametrize("folder", [".node_modules", ".node_libraries"])
+    def test_a_legacy_module_folder_in_home_is_refused(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        fake_wrangler: Any,
+        tmp_path: Path,
+        folder: str,
+    ) -> None:
+        (tmp_path / "home" / folder).mkdir()
+        code, out, err = self.go(capsys, export)
+        assert code == 2 and out == "" and fake_wrangler.argvs == [], err
+        assert "legacy node module folder" in err
+        _no_local_path(err, fake_wrangler.root, tmp_path)
+
+    def test_the_child_never_gets_a_module_path_or_node_or_npm_setting(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        fake_wrangler: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        for key in (
+            "NODE_PATH",
+            "NODE_OPTIONS",
+            "NODE_EXTRA_CA_CERTS",
+            "NPM_CONFIG_PREFIX",
+            "NPM_CONFIG_REGISTRY",
+            "npm_config_cache",
+            "LD_PRELOAD",
+        ):
+            monkeypatch.setenv(key, "/somewhere/else")
+        monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "token-value-x")
+        code, _, err = self.go(capsys, export)
+        assert code == CHECKED, err
+        assert fake_wrangler.envs
+        for env in fake_wrangler.envs:
+            assert set(env) <= {
+                "PATH",
+                "CLOUDFLARE_API_TOKEN",
+                "CLOUDFLARE_ACCOUNT_ID",
+                "HOME",
+            }

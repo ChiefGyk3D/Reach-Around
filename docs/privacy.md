@@ -362,7 +362,10 @@ the next alert is admitted:
    same command again with `--finish`. It repeats the identity and schema
    checks and reads the lead tables back for the exported id AND for the
    address (must be 0 and 0: a lead created again for the same address, with a
-   new id, counts; else exit 4 and the alert table is untouched), checks both
+   new id, counts; else exit 4 and the alert table is untouched). The address
+   is compared trimmed and lower-cased on both sides, which is how the Worker
+   stores it (the table refuses any other spelling); plus-addresses and dots are
+   not folded together, because the store does not treat them as equal. It checks both
    databases again, clears the whole alert table (not only expired rows) with
    one statement that deletes only while the alert database holds no lead
    table, and reads it back, repeating the clear up to three times if a row
@@ -407,10 +410,22 @@ a group of your own that nobody else belongs to. The wrangler package, and the
 packages it lists in `dependencies`, `optionalDependencies` or
 `peerDependencies` (resolved the way node resolves them under
 `worker/node_modules`, recursively), are walked: every file and directory must
-belong to root or you with no group or other write bit, symlinks must stay in
-the repository, and the walk stops with a refusal past 200000 entries. Only
-that walked tree is checked: a package no `dependencies` field names, or one
-node loads from outside `worker/node_modules`, is not seen. What it does not
+belong to root or you with no group or other write bit, a symlink to a file must
+stay in the repository, a symlink to a directory must resolve inside
+`worker/node_modules` (the directories between its target and the repository
+root are checked, and the target is walked like any other directory), and the
+walk stops with a refusal past 200000 entries. A dependency a package requires
+(`dependencies`, or a peer dependency not marked optional) that is not installed
+under `worker/node_modules` is a refusal; only `optionalDependencies` and
+optional peers may be absent. A `node_modules` directory in the repository root
+or in any directory above it, or a `.node_modules` or `.node_libraries` folder
+in your home directory, is a refusal too, because node would search it and it is
+not checked (the message names no path). The program's environment never holds
+`NODE_PATH`, `NODE_OPTIONS` or `NPM_CONFIG_*`. Only that walked tree is checked:
+a package no `dependencies` field names, or one node loads from outside
+`worker/node_modules` (for example the system module folder next to node
+itself), is not seen. Step 1 prints the apply command with the wrangler path
+relative to the repository root, never an absolute path. What it does not
 prove: that the installed files are those of the
 published package (npm keeps no per-file digests and the lock file's digest
 covers the tarball, which is not re-downloaded), that `node` is genuine, or that

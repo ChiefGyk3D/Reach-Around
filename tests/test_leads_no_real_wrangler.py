@@ -86,6 +86,14 @@ def test_an_allowed_interpreter_or_launcher_cannot_start_a_real_wrangler() -> No
         [sys.executable, "-c", "import os; os.system('wrangler d1')"],
         "sh -c 'npx wrangler'",
         ["/bin/sh", "-c", "a;wrangler"],
+        # Round 4 (#905, Low): the real entry file started through node.
+        ["node", "worker/node_modules/wrangler/bin/wrangler.js", "d1", "info", "prod"],
+        ["/usr/bin/node", "/r/worker/node_modules/wrangler/bin/wrangler.js"],
+        ["node", "x/wrangler.mjs"],
+        ["node", "x/wrangler.cjs", "d1"],
+        ["node", "/r/worker/node_modules/wrangler/wrangler-dist/cli.js", "d1"],
+        ["/usr/bin/env", "node", "./wrangler-dist/cli.js"],
+        "node worker/node_modules/wrangler/bin/wrangler.js d1 info prod",
     ]
     for bad in refused:
         assert _is_forbidden(bad, strict=False), bad
@@ -98,6 +106,8 @@ def test_an_allowed_interpreter_or_launcher_cannot_start_a_real_wrangler() -> No
             "set -eu\n# run `wrangler secret put` later\ncp wrangler.toml x",
         ],
         ["/bin/sh", "-c", "echo node_modules"],
+        ["node", "worker/wrangler.toml"],  # a config file is not the program
+        ["node", "tests/site/click.js"],
         [sys.executable, "-c", "print('nodes')"],
     ]
     for good in fine:

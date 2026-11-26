@@ -50,13 +50,17 @@ file and directory of the wrangler package and of the packages it depends on
 belong to root or the current user, and nothing inside the repository may be
 writable by group or others. Outside the repository a sticky shared directory
 owned by root (such as ``/tmp``) or a group of your own that nobody else belongs
-to is accepted. Only the walked tree is checked: a package that is not named by
-a ``dependencies`` field is not seen. What it does NOT prove: that the files on
-disk are the files of the published tarball (npm keeps no per-file hashes, and
-the tarball digest in the lock file cannot be re-checked without downloading
-it), that ``node`` is genuine, or that nothing changes the files between the
-check and the run. Anyone who can write as the same OS user can defeat all of
-it.
+to is accepted. A required dependency (``dependencies``, non-optional peers) that
+is not installed under ``worker/node_modules`` is refused, as is a
+``node_modules`` in the repository root or any directory above it (or a legacy
+module folder in HOME); a symlink to a directory must resolve inside
+``worker/node_modules`` and is walked. Only the walked tree is checked: a package
+that is not named by a ``dependencies`` field is not seen. What it does NOT
+prove: that the files on disk are the files of the published tarball (npm keeps
+no per-file hashes, and the tarball digest in the lock file cannot be re-checked
+without downloading it), that ``node`` is genuine, or that nothing changes the
+files between the check and the run. Anyone who can write as the same OS user
+can defeat all of it.
 
 The tool runs one wrangler (never found through PATH or ``npx``) with a minimal
 environment (the token, the account id, HOME and a fixed PATH), a neutral working
@@ -476,12 +480,23 @@ _SQL_EMAIL = re.compile(r"[a-z0-9_+.@-]{6,254}")
 # The read-back `--finish` uses. The printed file's read-back asks only about the
 # exported id; this one asks about the ADDRESS too, so a lead created again for
 # the same address (a new id) is seen: the erasure subject is the person.
+#
+# The address is compared in the form the store keeps it: the Worker stores
+# trimmed ASCII lower-case addresses only, and the leads table refuses any other
+# spelling (worker/migrations/0009_kit.sql: `email = lower(email)` and a character
+# class check), with no plus or dot folding. The read-back also compares the
+# stored value trimmed and lower-cased, so a copy of the row written with another
+# case or surrounding white space (an older or hand-made row) is still counted.
+# Nothing wider: no plus-address or dot folding, and SQLite's lower() and trim()
+# touch ASCII only, so a look-alike character never matches.
+_STORED_EMAIL = "lower(trim(email, char(9, 10, 11, 12, 13, 32)))"
 _FINISH_READBACK = (
-    "SELECT (SELECT COUNT(*) FROM leads WHERE id = '<ID>' OR email = '<EMAIL>') "
+    "SELECT (SELECT COUNT(*) FROM leads WHERE id = '<ID>' "
+    "OR <STORED> = '<EMAIL>') "
     "AS leads_remaining, (SELECT COUNT(*) FROM kit_events WHERE lead_id = '<ID>' "
-    "OR lead_id IN (SELECT id FROM leads WHERE email = '<EMAIL>')) "
+    "OR lead_id IN (SELECT id FROM leads WHERE <STORED> = '<EMAIL>')) "
     "AS events_remaining"
-)
+).replace("<STORED>", _STORED_EMAIL)
 
 # The alert dedup table keeps a keyed hash of recent alerts, which can include
 # the address (worker/migrations/0013_alerts.sql: site, event_hash, expires_at).
@@ -623,7 +638,10 @@ def _exec(argv: list[str], env: dict[str, str], timeout: int) -> tuple[int, byte
 
 def _wrangler_env() -> dict[str, str]:
     """Only what wrangler needs: the token and account when set, HOME for its own
-    login state, and a fixed PATH (the pinned script's shebang finds node there)."""
+    login state, and a fixed PATH (the pinned script's shebang finds node there).
+    Nothing else is passed on, so a NODE_PATH, NODE_OPTIONS or NPM_CONFIG_* value of
+    the parent never reaches the child (they would change where node loads code
+    from)."""
     env = {"PATH": "/usr/bin:/bin"}
     for key in ("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "HOME"):
         value = os.environ.get(key)
@@ -720,13 +738,38 @@ def _check_entry(path: str, me: int, repo_real: str) -> os.stat_result:
     return link
 
 
-def _walk_package(pkg: str, me: int, repo_real: str, budget: list[int]) -> None:
+def _check_above(path: str, me: int, repo_real: str) -> None:
+    """Every directory from the parent of ``path`` up to the repository root."""
+    up = os.path.dirname(path)
+    while _inside(up, repo_real):
+        _check_entry(up, me, repo_real)
+        if up == repo_real:
+            break
+        up = os.path.dirname(up)
+
+
+def _walk_package(
+    pkg: str,
+    me: int,
+    repo_real: str,
+    budget: list[int],
+    node_root: str,
+    seen_dirs: set[str],
+) -> None:
     """Check every entry of one package directory, except nested ``node_modules``
-    (those packages are checked when something names them). Symlinks are not
-    followed. The entry count is bounded: past the bound the check fails closed."""
+    (those packages are checked when something names them). A symlink to a
+    directory is resolved: its target must stay inside ``node_root`` (the real
+    ``worker/node_modules``), the directories between the target and the
+    repository root are checked, and the target is walked like any directory (the
+    set ``seen_dirs``, shared by the whole walk, catches loops, and the entries
+    count against the same bound). The entry count is bounded: past the bound the
+    check fails closed."""
     stack = [pkg]
     while stack:
         here = stack.pop()
+        if here in seen_dirs:
+            continue
+        seen_dirs.add(here)
         _check_entry(here, me, repo_real)
         with os.scandir(here) as entries:
             for entry in entries:
@@ -739,20 +782,36 @@ def _walk_package(pkg: str, me: int, repo_real: str, budget: list[int]) -> None:
                 if entry.is_dir(follow_symlinks=False):
                     if entry.name != "node_modules":
                         stack.append(entry.path)
+                elif entry.is_symlink() and entry.is_dir():
+                    target = os.path.realpath(entry.path, strict=True)
+                    if not _inside(target, node_root):
+                        raise WranglerError(_REFUSED_TREE)
+                    _check_entry(entry.path, me, repo_real)
+                    _check_above(target, me, repo_real)
+                    if entry.name != "node_modules":
+                        stack.append(target)
                 else:
                     _check_entry(entry.path, me, repo_real)
 
 
-def _dependency_names(pkg: str) -> list[str]:
-    """The package names a package lists for node to load (dependencies, optional
-    and peer ones). An unreadable or malformed package.json is a refusal."""
+def _dependency_names(pkg: str) -> list[tuple[str, bool]]:
+    """The package names a package lists for node to load, each with whether it is
+    required: ``dependencies`` and the peer dependencies not marked optional in
+    ``peerDependenciesMeta`` are required; ``optionalDependencies`` and optional
+    peers may be absent (a platform package). An unreadable or malformed
+    package.json is a refusal."""
     try:
         meta = json.loads(_read(Path(pkg) / "package.json", MAX_EXPORT_BYTES))
     except (ConfigError, ValueError):
         raise WranglerError(_REFUSED_TREE) from None
-    names: list[str] = []
+    if not isinstance(meta, dict):
+        raise WranglerError(_REFUSED_TREE)
+    peer_meta = meta.get("peerDependenciesMeta")
+    if peer_meta is not None and not isinstance(peer_meta, dict):
+        raise WranglerError(_REFUSED_TREE)
+    found: list[tuple[str, bool]] = []
     for field in ("dependencies", "optionalDependencies", "peerDependencies"):
-        group = meta.get(field) if isinstance(meta, dict) else None
+        group = meta.get(field)
         if group is None:
             continue
         if not isinstance(group, dict):
@@ -760,8 +819,40 @@ def _dependency_names(pkg: str) -> list[str]:
         for name in group:
             if not isinstance(name, str) or not _PKG_NAME.fullmatch(name):
                 raise WranglerError(_REFUSED_TREE)
-            names.append(name)
-    return names
+            required = field == "dependencies"
+            if field == "peerDependencies":
+                note = (peer_meta or {}).get(name)
+                required = not (isinstance(note, dict) and note.get("optional") is True)
+            found.append((name, required))
+    return found
+
+
+def _check_no_ancestor_node_modules(repo_real: str) -> None:
+    """Refuse when node would also search a ``node_modules`` outside the checked
+    install: one in the repository root or any directory above it (node walks up
+    to ``/``), or in the account's own legacy module folders under HOME. Those
+    are never walked, so a package found there would run with the token
+    unchecked. Only the existence is looked at; the message names no path."""
+    up = repo_real
+    while True:
+        if os.path.lexists(os.path.join(up, "node_modules")):
+            raise WranglerError(
+                "a node_modules directory exists in the repository root or in a "
+                "directory above it; node would search it, and it is not checked. "
+                "Move it away or run from a checkout without one"
+            )
+        parent = os.path.dirname(up)
+        if parent == up:
+            break
+        up = parent
+    home = os.environ.get("HOME")
+    for legacy in (".node_modules", ".node_libraries"):
+        if home and os.path.lexists(os.path.join(home, legacy)):
+            raise WranglerError(
+                "a legacy node module folder exists in the home directory "
+                "(.node_modules or .node_libraries); node would search it, and it "
+                "is not checked. Move it away"
+            )
 
 
 def _find_package(name: str, start: str, worker_real: str) -> str | None:
@@ -783,10 +874,19 @@ def _find_package(name: str, start: str, worker_real: str) -> str | None:
 def _check_package_tree(pkg_real: str, worker_real: str, me: int) -> None:
     """Walk the wrangler package and the closure of the packages it depends on
     (resolved under worker/node_modules, bounded), checking each entry and each
-    directory between a package and ``worker``. Only this walked tree is checked."""
+    directory between a package and ``worker``. Only this walked tree is checked.
+
+    A dependency a package requires (``dependencies``, non-optional peers) that is
+    not installed under ``worker/node_modules`` is a refusal, because node would
+    look for it in the directories above ``worker`` too; and a ``node_modules``
+    above ``worker`` is a refusal for the same reason (see
+    ``_check_no_ancestor_node_modules``)."""
     repo_real = os.path.realpath(REPO_ROOT)
+    _check_no_ancestor_node_modules(repo_real)
+    node_root = os.path.join(worker_real, "node_modules")
     budget = [MAX_TREE_ENTRIES]
     seen: set[str] = set()
+    seen_dirs: set[str] = set()
     queue = [pkg_real]
     while queue:
         pkg = queue.pop()
@@ -800,11 +900,17 @@ def _check_package_tree(pkg_real: str, worker_real: str, me: int) -> None:
             while _inside(up, worker_real) and up != worker_real:
                 _check_entry(up, me, repo_real)
                 up = os.path.dirname(up)
-            _walk_package(pkg, me, repo_real, budget)
-            for name in _dependency_names(pkg):
+            _walk_package(pkg, me, repo_real, budget, node_root, seen_dirs)
+            for name, required in _dependency_names(pkg):
                 found = _find_package(name, pkg, worker_real)
                 if found is not None:
                     queue.append(found)
+                elif required:
+                    raise WranglerError(
+                        f"the dependency {name} is required by an installed "
+                        "package but is not installed under worker/node_modules; "
+                        f"refusing it (reinstall with: {INSTALL_WRANGLER})"
+                    )
         except OSError:
             raise WranglerError(_REFUSED_TREE) from None
 
@@ -1590,6 +1696,9 @@ def run_delete(args: argparse.Namespace) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return EXIT_USAGE
     quoted = shlex.quote(os.fspath(target))
+    # Only the path inside the repository is shown (never the absolute path, which
+    # holds the local account's directories); the command runs from the root.
+    shown = os.path.relpath(wrangler, os.path.realpath(REPO_ROOT))
     where = (
         f"The SQL is in {quoted} (new file, mode 0600). "
         if args.sql_out is not None
@@ -1609,6 +1718,8 @@ def run_delete(args: argparse.Namespace) -> int:
     )
     print(
         f"1 lead matches. {where}It holds the address, so delete it afterward. "
+        "The apply command names wrangler relative to the repository root: run "
+        "it from that directory (adjust the SQL file path if you are elsewhere). "
         "It deletes only a row in the live database that still pairs that id "
         f"with that address. Apply it to the leads database {database} only. "
         "Reading 0 and 0 means no remaining rows at this moment; it is not proof "
@@ -1616,7 +1727,7 @@ def run_delete(args: argparse.Namespace) -> int:
         "an event can arrive after the read. Run the file again after a wait "
         "until two consecutive runs read 0 and 0 (leads_remaining 1 means "
         "nothing was deleted):\n"
-        f"{shlex.quote(wrangler)} d1 execute {database} --remote --file {quoted}",
+        f"{shlex.quote(shown)} d1 execute {database} --remote --file {quoted}",
         file=sys.stderr,
     )
     if args.sql_out is None:
