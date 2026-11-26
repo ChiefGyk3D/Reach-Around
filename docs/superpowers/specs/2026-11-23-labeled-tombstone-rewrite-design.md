@@ -980,18 +980,20 @@ no longer offers a merge queue or the watcher alone; D5's predicate is corrected
   request can replace `history-guard.yml` and keep the required check name; pinning the
   scripts to the base commit helps only after the workflow ran its checkout. Not solved
   in code. The template says so (README "History rewrites", the workflow header) and
-  requires the owner to configure a trust boundary, in order of preference: (1) the
-  ruleset rule "Require workflows to pass before merging" pointing at a workflow in a
-  separate trusted repository (organization or enterprise level per GitHub's page read
-  2026-11-26; plan availability INFERRED; UNVERIFIED until G1), (2) protected
-  `.github/`, `history/`, scripts, lock and approvers paths with mandatory code-owner
-  approval the author cannot satisfy or dismiss (CODEOWNERS entries, "Require review
-  from Code Owners", the author is not a code owner of them, dismiss stale reviews on,
-  administrators included). A limit on who can push `redact/*` branches is defense in
-  depth only, not a trust boundary (a pull request from any branch can replace the
-  workflow). The High stays open pending the owner decision.
-  `.github/history-approvers` ships empty and the README carries a
-  checklist (boundary configured, G1 and G5 run) to finish before the first approver.
+  requires one trust boundary, decided by the owner (2026-11-26): the ruleset rule
+  "Require workflows to pass before merging" pointing at a workflow in a separate
+  trusted repository, so a pull request cannot replace it (organization or enterprise
+  level per GitHub's page read 2026-11-26; plan availability INFERRED and UNVERIFIED;
+  gates G1 and G5 not yet run). It is the sole accepted boundary. CODEOWNERS entries
+  for `.github/`, `history/`, scripts, lock and approvers paths with "Require review
+  from Code Owners" (author not a code owner, dismiss stale reviews on, administrators
+  included) and a limit on who can push `redact/*` branches are defense in depth only,
+  not a boundary (a pull request from any branch can replace the workflow, and a
+  privileged author can satisfy or dismiss a review). `.github/history-approvers`
+  ships empty and the README checklist demands an OBSERVED block by the external
+  workflow (a test pull request that replaces the guard workflow fails the required
+  check), plus G1 and G5, before any approver login is added. The High is closed in
+  the template text only when that live observation is made.
   Defense in depth: the first job steps compare the running workflow file with the base
   commit's copy and fail on a difference; a replaced workflow can omit that step.
 * **`actions: read` is capability-wide (Low).** It also reads the logs and artifacts of

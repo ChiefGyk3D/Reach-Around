@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import sys
 import time
 from collections.abc import Callable, Mapping, MutableMapping
@@ -909,8 +910,13 @@ class _StagedManifest:
     and a newly created folder are fsynced before the history file is replaced.
     """
 
-    def __init__(self, folder_fd: int, run_id: str, tmp_name: str) -> None:
+    def __init__(
+        self, folder_fd: int, run_id: str, tmp_name: str, folder_path: str
+    ) -> None:
         self.folder_fd = folder_fd
+        # The absolute path of the redactions folder (shell-quoted), for the
+        # operator-facing text only; the code works through folder_fd.
+        self.folder_path = folder_path
         self.final_name = f"{run_id}.manifest"
         self.tmp_name = tmp_name
         # The last completed step of install(), for recovery guidance.
@@ -1028,13 +1034,16 @@ def _stage_manifest(
     except OSError:
         os.close(folder_fd)
         raise HistoryError("cannot write the manifest; nothing was written") from None
-    return _StagedManifest(folder_fd, run_id, tmp)
+    folder_path = shlex.quote(
+        os.path.join(os.path.abspath(target.parent), "redactions")
+    )
+    return _StagedManifest(folder_fd, run_id, tmp, folder_path)
 
 
 def _recovery_step(staged: _StagedManifest) -> str:
     """The no-overwrite step that gives a retained manifest its final name."""
     return (
-        "in the folder redactions/ first compare any existing "
+        f"in the folder {staged.folder_path} first compare any existing "
         f"{staged.final_name} with {staged.tmp_name} using cmp (never "
         "overwrite it), then run: "
         f"ln {staged.tmp_name} {staged.final_name} && rm {staged.tmp_name}"
@@ -1047,8 +1056,8 @@ def _retain_after_interruption(staged: _StagedManifest) -> None:
         "error: the redaction stopped and it is not known whether the history "
         "file was rewritten; the manifest was kept under its temporary name. "
         "Run history-verify. If the history file was not rewritten, remove "
-        f"{staged.tmp_name} from redactions/. If it was rewritten, "
-        + _recovery_step(staged),
+        f"{staged.tmp_name} from the folder {staged.folder_path}. If it was "
+        "rewritten, " + _recovery_step(staged),
         sys.stderr,
     )
     staged.close()
@@ -1089,14 +1098,15 @@ def _install_failure_message(staged: _StagedManifest) -> str:
         return (
             "error: the history file was rewritten and the manifest was linked "
             f"as {staged.final_name} but the temporary name {staged.tmp_name} "
-            "was not removed; in the folder redactions/ verify the two files "
+            f"was not removed; in the folder {staged.folder_path} verify the two files "
             "are identical with cmp, then run: "
             f"cmp {staged.tmp_name} {staged.final_name} && rm {staged.tmp_name}"
         )
     if state in (INSTALL_UNLINKED, INSTALL_SYNCED):
         return (
             "error: the history file was rewritten and the manifest is "
-            f"installed as redactions/{staged.final_name}, but the folder was "
+            f"installed as {staged.final_name} in the folder {staged.folder_path}, "
+            "but the folder was "
             "not confirmed durable; nothing else to do: run sync on the "
             "folder or run history-verify again"
         )

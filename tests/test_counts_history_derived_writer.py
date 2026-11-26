@@ -487,6 +487,46 @@ def test_an_interrupt_after_the_replacement_keeps_the_manifest_and_names_the_ste
     assert [p.name for p in folder.iterdir()] == [final]
 
 
+@pytest.mark.parametrize("where", ["retained", "not-linked", "linked"])
+def test_recovery_text_names_the_full_directory_not_a_bare_redactions(
+    history: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    where: str,
+) -> None:
+    """Every recovery message names the absolute folder, shell-quoted, so
+    following it from the wrong working directory cannot misdirect (#619)."""
+    if where == "retained":
+        replace_then_stop(monkeypatch, RuntimeError("late"))
+    elif where == "not-linked":
+
+        def refuse(self: Any) -> None:
+            raise OSError("no")
+
+        monkeypatch.setattr(counts_cmd._StagedManifest, "install", refuse)
+    else:
+        real_unlink = os.unlink
+
+        def no_unlink(path: Any, *a: Any, **k: Any) -> None:
+            if str(path).startswith("."):
+                raise OSError("no")
+            real_unlink(path, *a, **k)
+
+        real_install = counts_cmd._StagedManifest.install
+
+        def install(self: Any) -> None:
+            monkeypatch.setattr(os, "unlink", no_unlink)
+            real_install(self)
+
+        monkeypatch.setattr(counts_cmd._StagedManifest, "install", install)
+    assert main(argv(history)) == 5
+    monkeypatch.undo()
+    err = capsys.readouterr().err
+    folder = str(history.parent / "redactions")
+    assert f"folder {folder}" in err
+    assert "folder redactions/" not in err and " from redactions/" not in err
+
+
 def test_an_unexpected_error_after_the_replacement_exits_five_and_keeps_it(
     history: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

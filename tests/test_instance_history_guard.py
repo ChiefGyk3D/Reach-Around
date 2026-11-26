@@ -1143,18 +1143,24 @@ def test_the_readme_and_the_workflow_say_it_is_not_a_sufficient_gate() -> None:
     for text in (readme, header):
         assert STATEMENT in text
         assert "require workflows to pass before merging" in text
+        # The external required workflow is the only accepted boundary.
+        assert "separate trusted repository" in text
+        assert "only accepted trust boundary" in text
+        assert "unverified" in text
+        # CODEOWNERS and the push restriction are labeled defense in depth.
+        assert "defense in depth (not a boundary)" in text
         assert "codeowners" in text
         assert "redact/*" in text
-        # The push restriction is defense in depth, never a trust boundary, and
-        # the code-owner boundary names what the author cannot do.
-        assert "defense in depth only" in text
-        assert "not a trust boundary" in text
-        assert "cannot satisfy or dismiss" in text
-        assert "administrators are included" in text
-        assert "dismiss stale pull request approvals" in text
+        # No wording presents CODEOWNERS as an alternative boundary.
+        assert "in this order of preference" not in text
+        assert "a trust boundary from the list above" not in text
+        assert "2. protected" not in text
         assert "3. restrict" not in text and "3. restricting" not in text
     assert "checklist before you list the first approver" in readme
-    for item in ("trust boundary", "gate g1", "gate g5"):
+    # The checklist demands an observed block before any approver is added.
+    assert "you observed it block" in readme
+    assert "do not add any approver login until you have seen the block" in readme
+    for item in ("gate g1", "gate g5", "not yet run"):
         assert item in readme
     assert "actions: read` is wide" in (TEMPLATE / "README.md").read_text("utf-8")
     assert "no narrower" in readme

@@ -33,23 +33,18 @@
 # its checkout. The first steps below compare the running copy of this file with
 # the base commit's copy and fail on any difference; that catches accidental
 # drift and costs little, but it does NOT stop a replaced workflow that omits
-# the step. The repository owner must configure a trust boundary, in this order
-# of preference:
-#   1. A ruleset rule "Require workflows to pass before merging" that points at
-#      a workflow in a separate trusted repository, so a pull request cannot
-#      replace it (UNVERIFIED until live gate G1; availability by plan and
-#      level is to be confirmed, see README.md, "History rewrites").
-#   2. Protected `.github/`, `history/`, `scripts/`, `engine.lock` and
-#      `.github/history-approvers` paths with mandatory code-owner approval
-#      that the pull request author cannot satisfy or dismiss: CODEOWNERS
-#      entries for those paths, "Require review from Code Owners", the author
-#      is not a code owner of them, "Dismiss stale pull request approvals" is
-#      on, and administrators are included in the rules.
-# Restricting who can push `redact/*` branches is defense in depth only, not a
-# trust boundary: a pull request from any branch can replace this workflow.
-# Until one is in place, leave `.github/history-approvers` empty. A sole owner
-# is not protected from their own account; the guard prevents mistakes and
-# leaves a record.
+# the step. The ONLY accepted trust boundary is a ruleset rule "Require
+# workflows to pass before merging" that points at a workflow in a separate
+# trusted repository, so a pull request cannot replace it. Live gates G1 and G5
+# are not yet run, and availability of ruleset workflows on your plan is
+# unverified (GitHub's page on available rules for rulesets, read 2026-11-26,
+# says they are configured at organization or enterprise level); see README.md,
+# "History rewrites". Until that external workflow is OBSERVED to block a test
+# pull request that replaces this file, leave `.github/history-approvers`
+# empty. CODEOWNERS with code-owner review and a restriction on who can push
+# `redact/*` branches are defense in depth, not a boundary (README.md,
+# "Defense in depth (not a boundary)"). A sole owner is not protected from
+# their own account; the guard prevents mistakes and leaves a record.
 name: History guard
 
 on:

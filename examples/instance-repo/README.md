@@ -387,37 +387,43 @@ check name; the guard scripts are pinned to the base commit, but that only
 helps after the workflow has run its checkout. The first steps of the job
 compare the running copy of the workflow with the base commit's copy and fail on
 any difference: that catches accidental drift, and it does not stop a replaced
-workflow that leaves the step out. The instance owner must configure a trust
-boundary, in this order of preference:
+workflow that leaves the step out. The only accepted trust boundary is a ruleset
+rule "Require workflows to pass before merging" that points at a workflow in a
+**separate trusted repository**, so a pull request cannot replace it. Nothing
+else on this page is a boundary.
 
-1. A ruleset rule "Require workflows to pass before merging" that points at a
-   workflow in a separate trusted repository, so a pull request cannot replace
-   it. UNVERIFIED until live gate G1. Read from
-   <https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets>
-   (read 2026-11-26): the rule is named "Require workflows to pass before
-   merging"; ruleset workflows "can be configured at the organization or
-   enterprise level"; the workflow file must be in a repository whose
-   visibility matches the target repositories; supported events are
-   `pull_request`, `pull_request_target` and `merge_group`. Availability by
-   plan is not stated on that page and is INFERRED to need an organization
-   (and a plan with organization rulesets): confirm it for your account first.
-2. Protected `.github/`, `history/`, `scripts/`, `engine.lock` and
-   `.github/history-approvers` paths with mandatory code-owner approval that the
-   pull request author cannot satisfy or dismiss: CODEOWNERS entries for those
-   paths, the branch rule "Require review from Code Owners", the author is not a
-   code owner of them, "Dismiss stale pull request approvals" is on, and
-   administrators are included in the rules. A sole owner is not protected from
-   their own account.
+Read from
+<https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets>
+(read 2026-11-26): the rule is named "Require workflows to pass before
+merging"; ruleset workflows "can be configured at the organization or
+enterprise level"; the workflow file must be in a repository whose visibility
+matches the target repositories; supported events are `pull_request`,
+`pull_request_target` and `merge_group`. Plan availability is UNVERIFIED: that
+page does not state it, and it is INFERRED to need an organization with a plan
+that has organization rulesets. Confirm it for your account first. Live gates G1
+(which revision of the workflow GitHub executes for a pull request that edits
+it) and G5 (`actions: read` is enough and every write is refused) are NOT yet
+run. A sole owner is not protected from their own account.
 
-Restricting who can push `redact/*` branches is defense in depth only and is not
-a trust boundary: a pull request from any branch can replace the workflow.
+**Defense in depth (not a boundary).** These add friction and a record; none of
+them replaces the external required workflow, and none lets you skip the
+checklist:
+
+- CODEOWNERS entries for `.github/`, `history/`, `scripts/`, `engine.lock` and
+  `.github/history-approvers`, with the branch rule "Require review from Code
+  Owners", the author not a code owner of them, "Dismiss stale pull request
+  approvals" on, and administrators included in the rules.
+- Restricting who can push `redact/*` branches. A pull request from any branch
+  can replace the workflow, so this is not a trust boundary.
 
 **Checklist before you list the first approver.** `.github/history-approvers`
-ships empty so that nothing is accepted. Complete all of these first:
+ships empty so that nothing is accepted. Complete all of these first, in order:
 
-- [ ] A trust boundary from the list above (not a `redact/*` push restriction
-      alone) is configured and you have seen it block a pull request that
-      edits `history-guard.yml`.
+- [ ] The ruleset rule "Require workflows to pass before merging" points at the
+      guard workflow in a separate trusted repository, and you OBSERVED it
+      block: a test pull request that replaces or edits `history-guard.yml`
+      fails that required check. Configuration alone does not count; do not
+      add any approver login until you have seen the block.
 - [ ] Live gate G1 was run: which revision of the workflow GitHub executes for a
       pull request that edits it.
 - [ ] Live gate G5 was run: `actions: read` is enough to list the runs of the
