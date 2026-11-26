@@ -164,7 +164,7 @@ def test_card_is_after_the_links_and_before_the_footer(
     browser: Browser, base_url: str
 ) -> None:
     page = _open(browser, f"{base_url}dark/", 390)
-    last_link = page.locator("a.link").last.bounding_box()
+    last_link = page.locator("a.link:visible").last.bounding_box()
     card = page.locator(".profile-card").bounding_box()
     footer = page.locator("main > footer").bounding_box()
     assert last_link and card and footer
