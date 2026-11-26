@@ -123,7 +123,7 @@ Steps, using a 30 day month:
 A plain-table version is in [Costs-Worksheet](Costs-Worksheet.md). An optional
 calculator does the same arithmetic offline:
 
-```
+```bash
 python3 -I scripts/cost_estimate.py --example medium
 python3 -I scripts/cost_estimate.py --views 50000 --sites 2 --clicks 6000 --leads 100
 ```
@@ -176,7 +176,7 @@ Inputs: V = 10,000,000, S = 5, C = 1,500,000, L = 20,000, R = 7, T = 30, H = 4,0
 7. Average views an hour is 13,889, under the budget of min(5 x 4,000, 20,000) = 20,000. Fine.
 8. Plan: **Paid**, with two settings that must be raised from the defaults. Rows written a day are 2,333,366, over the default `D1_DAILY_WRITE_QUOTA` of 1,600,000. Click rows charged a day are 1,500,000 x 9 / 30 = 450,000, over the default `CLICK_DAILY_WRITE_CEILING` of 300,000. Raising them is a choice to accept this bill. The engine's deploy check totals the worst case for the settings you give it, and you should run it after changing them. This page did not run it for the busy example, so whether those exact settings pass is unverified.
 
-| | Small | Medium | Busy |
+| Line item | Small | Medium | Busy |
 |---|---|---|---|
 | Workers floor | $5.00 | $5.00 | $5.00 |
 | Workers requests over | $0.00 | $0.00 | $0.46 |

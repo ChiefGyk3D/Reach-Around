@@ -117,13 +117,13 @@ Cloudflare zone; an apex custom domain must be a zone in the same account.
 
 Before:
 
-```
+```text
 <prod-host>.   300   IN   CNAME   <old-target>.
 ```
 
 After:
 
-```
+```text
 <prod-host>.   300   IN   CNAME   <pages-project>.pages.dev.
 ```
 
