@@ -174,99 +174,107 @@ def test_window_edges_by_indexed_at() -> None:
     assert read.dropped_future == 1
 
 
-def test_two_old_pages_in_newest_first_order_end_the_walk_complete() -> None:
-    # The rule (#922, round 2): the walk ends at the cursor's end, the page
-    # budget, or two whole pages of own posts older than the window and none
-    # inside, with the order newest first all the way. The third old page is
-    # never requested.
+def test_posts_behind_old_pages_are_counted_when_the_cursor_chain_ends() -> None:
+    # #922 round 3: the walk never ends early on old posts. An account whose
+    # in-window post sits on page 3 behind two old pages (a re-indexed backlog,
+    # a pin-like out-of-order feed) is counted completely when the cursor chain
+    # ends inside the budget.
     p = Pages(
         [
-            feed_page([post(1, NOW - timedelta(days=1))], "c1"),
-            feed_page([post(2, START - timedelta(days=1))], "c2"),
-            feed_page([post(3, START - timedelta(days=2))], "c3"),
-            feed_page([post(4, START - timedelta(days=3))]),
+            feed_page([post(1, START - timedelta(days=1))], "c1"),
+            feed_page([post(2, START - timedelta(days=2))], "c2"),
+            feed_page([post(3, NOW - timedelta(days=1), likes=9)]),
         ]
     )
     read = run(p)
-    assert read.complete and read.calls == 4 and len(rows_of(read)) == 1
-    assert not any("cursor=c3" in c.path for c in p.transport.calls)
+    assert read.complete and read.calls == 4  # the profile and three pages
+    assert rows_of(read) == [(0, 9, 0)]
+    assert bsky.history_aggregates(read) == {
+        "posts_30d": 1,
+        "boosts_30d": 0,
+        "favorites_30d": 9,
+        "replies_30d": 0,
+    }
 
 
-def test_an_old_page_then_a_newer_post_is_incomplete_not_a_count() -> None:
-    # Misordered: a post inside the window after a whole old page (round 2).
+def test_every_page_is_requested_even_when_all_of_them_are_old() -> None:
+    # No order check and no run of old pages shortens the walk: all pages up to
+    # the end of the chain are requested, and an all-old chain is a true zero.
     p = Pages(
         [
-            feed_page([post(1, START - timedelta(days=5))], "c1"),
-            feed_page([post(2, NOW - timedelta(days=1), likes=9)], "c2"),
-            feed_page([post(3, NOW - timedelta(days=2), likes=4)]),
+            feed_page([post(1, START - timedelta(days=1))], "c1"),
+            feed_page([post(2, START - timedelta(days=2))], "c2"),
+            feed_page([post(3, START - timedelta(days=3))], "c3"),
+            feed_page([post(4, START - timedelta(days=4))]),
         ]
     )
     read = run(p)
-    assert isinstance(read.rows, NotProvided) and read.reason == "ordering_unverified"
+    assert read.complete and read.rows == () and read.calls == 5
+    assert any("cursor=c3" in c.path for c in p.transport.calls)
+
+
+def test_the_page_budget_ending_first_is_incomplete_never_a_zero() -> None:
+    # The same account, but the chain is longer than the budget: the in-window
+    # post is never reached, and the read must not look like a finished window.
+    pages = [feed_page([post(1, START - timedelta(days=1))], "c1")]
+    pages += [
+        feed_page([post(i + 1, START - timedelta(days=i + 1))], f"c{i + 1}")
+        for i in range(1, 12)
+    ]
+    pages.append(feed_page([post(99, NOW - timedelta(days=1), likes=9)]))
+    read = run(Pages(pages))
+    assert isinstance(read.rows, NotProvided) and read.reason == "page_cap"
+    assert bsky.history_aggregates(read) is None
+    prior = [InteractionRow(1, 2, 3)]
+    snap = bsky.build_snapshot(read, as_of=date(2026, 11, 26), prior=prior)
+    assert snap is not None and snap["complete"] is False
+    assert snap["reason"] == "page_cap" and snap["interactions"] == [
+        {"boosts": 1, "favorites": 2, "replies": 3}
+    ]
+
+
+def test_the_deadline_ending_first_is_incomplete_never_a_zero() -> None:
+    # Two old pages, then a cursor to an in-window page the time budget never
+    # reaches (20 s per request on the fake clock).
+    pages = [
+        feed_page([post(1, START - timedelta(days=1))], "c1"),
+        feed_page([post(2, START - timedelta(days=2))], "c2"),
+        feed_page([post(3, START - timedelta(days=3))], "c3"),
+        feed_page([post(4, NOW - timedelta(days=1), likes=9)]),
+    ]
+    read, slow, _ = _collect_slow(pages, Clock(), [20.0])
+    assert isinstance(read.rows, NotProvided) and read.reason == "timeout"
+    assert len(slow.deadlines) == 5  # the profile and four pages; the last one late
     assert bsky.history_aggregates(read) is None
     snap = bsky.build_snapshot(read, as_of=date(2026, 11, 26))
     assert snap is not None and snap["complete"] is False
-    assert snap["reason"] == "ordering_unverified" and "interactions" not in snap
+    assert "interactions" not in snap
 
 
-def test_a_newer_post_across_a_page_boundary_stops_an_early_end() -> None:
-    # Page 2's first post is newer than page 1's last: the order is violated
-    # across the boundary, so the early end is refused even though both pages
-    # are entirely old.
-    misordered = Pages(
-        [
-            feed_page([post(1, START - timedelta(days=9))], "c1"),
-            feed_page([post(2, START - timedelta(days=2))], "c2"),
-            feed_page([post(3, START - timedelta(days=12))]),
-        ]
-    )
-    assert run(misordered).reason == "ordering_unverified"
-    ordered_pages = Pages(
-        [
-            feed_page([post(1, START - timedelta(days=2))], "c1"),
-            feed_page([post(2, START - timedelta(days=9))], "c2"),
-            feed_page([post(3, START - timedelta(days=12))]),
-        ]
-    )
-    assert run(ordered_pages).complete
-    # a misorder inside one old page is refused the same way
-    inside = Pages(
-        [
-            feed_page(
-                [
-                    post(1, START - timedelta(days=9)),
-                    post(2, START - timedelta(days=2)),
-                ],
-                "c1",
-            ),
-            feed_page([post(3, START - timedelta(days=12))]),
-        ]
-    )
-    assert run(inside).reason == "ordering_unverified"
-
-
-def test_one_old_page_with_a_next_cursor_is_never_a_complete_count_alone() -> None:
-    # A single all-old page followed by a cursor and then an in-window post:
-    # the reviewer's reproduction. It must not be a complete empty window.
-    # The next page is read, so the in-window post is counted, not missed.
+def test_two_old_pages_with_a_next_cursor_never_yield_a_complete_zero() -> None:
+    # The round 3 reproduction: two ordered old pages and a cursor that proves
+    # an unread page. Nothing is recorded as a verified zero.
     p = Pages(
         [
-            feed_page([post(1, START - timedelta(days=5))], "c1"),
-            feed_page([post(2, NOW - timedelta(days=1), likes=9)]),
+            feed_page([post(1, START - timedelta(days=1))], "c1"),
+            feed_page([post(2, START - timedelta(days=2))], "c2"),
+            feed_page([post(3, NOW - timedelta(days=1), likes=9)]),
         ]
     )
     read = run(p)
-    assert read.complete and rows_of(read) == [(0, 9, 0)]
-    # with more pages behind it the order cannot be trusted: incomplete
-    more = Pages(
+    assert any("cursor=c2" in c.path for c in p.transport.calls)  # c2 was followed
+    assert rows_of(read) == [(0, 9, 0)]  # the page behind the cursor was counted
+    # and when that page cannot be read, the read is incomplete, not zero
+    broken = Pages(
         [
-            feed_page([post(1, START - timedelta(days=5))], "c1"),
-            feed_page([post(2, NOW - timedelta(days=1), likes=9)], "c2"),
-            feed_page([]),
+            feed_page([post(1, START - timedelta(days=1))], "c1"),
+            feed_page([post(2, START - timedelta(days=2))], "c2"),
+            reply({}, status=500),
         ]
     )
-    again = run(more)
-    assert not again.complete and bsky.history_aggregates(again) is None
+    cut = run(broken)
+    assert not cut.complete and cut.reason == "partial_pages"
+    assert bsky.history_aggregates(cut) is None
 
 
 def test_author_supplied_created_at_never_decides_the_window() -> None:
@@ -307,13 +315,50 @@ def test_reposts_other_authors_and_replies_are_never_counted() -> None:
     reply_item["reply"] = {"parent": {}}
     reply_record = post(4, NOW - timedelta(days=1), likes=800)
     reply_record["post"]["record"]["reply"] = {"parent": {"uri": "x"}}
-    unknown = post(5, NOW - timedelta(days=1), likes=900)
-    unknown["reason"] = {"$type": "app.bsky.feed.defs#somethingNew"}
     own = post(6, NOW - timedelta(days=1), likes=3)
-    read = run(
-        Pages([feed_page([repost, stranger, reply_item, reply_record, unknown, own])])
-    )
+    read = run(Pages([feed_page([repost, stranger, reply_item, reply_record, own])]))
     assert rows_of(read) == [(0, 3, 0)]
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        {"$type": "app.bsky.feed.defs#somethingNew"},  # an unknown type
+        {"$type": 5},
+        {"x": "no type"},
+        {},
+        "garbage",
+        "app.bsky.feed.defs#reasonRepost",  # right word, wrong shape (not an object)
+        None,  # present but null
+        7,
+        ["app.bsky.feed.defs#reasonPin"],
+    ],
+)
+def test_an_unknown_or_malformed_reason_makes_the_read_incomplete(
+    reason: Any,
+) -> None:
+    # #922 round 3: only a missing reason (a plain post) and the two known
+    # reasons are understood. Any other value is never a silent skip of what
+    # may be an own post: the read ends bad_shape and keeps the prior rows.
+    item = post(1, NOW - timedelta(days=1), likes=900)
+    item["reason"] = reason
+    read = run(Pages([feed_page([item, post(2, NOW - timedelta(days=2))])]))
+    assert isinstance(read.rows, NotProvided) and read.reason == "bad_shape"
+    assert bsky.history_aggregates(read) is None
+    prior = [InteractionRow(1, 2, 3)]
+    snap = bsky.build_snapshot(read, as_of=date(2026, 11, 26), prior=prior)
+    assert snap is not None and snap["complete"] is False
+    assert snap["interactions"] == [{"boosts": 1, "favorites": 2, "replies": 3}]
+
+
+def test_the_known_reasons_and_a_missing_reason_still_work() -> None:
+    repost = post(1, NOW - timedelta(days=1), did=OTHER, likes=500)
+    repost["reason"] = {"$type": "app.bsky.feed.defs#reasonRepost"}
+    pinned = post(2, NOW - timedelta(days=2), likes=5)
+    pinned["reason"] = {"$type": "app.bsky.feed.defs#reasonPin"}
+    plain = post(3, NOW - timedelta(days=3), likes=2)  # no reason key at all
+    read = run(Pages([feed_page([repost, pinned, plain])]))
+    assert read.complete and sorted(f for _, f, _ in rows_of(read)) == [2, 5]
 
 
 # --- incomplete reads keep prior values and are never zero ----------------------
@@ -496,12 +541,53 @@ def test_hostile_extra_keys_and_text_never_reach_a_row_or_the_snapshot() -> None
         assert leaked not in blob
 
 
-def test_a_deleted_post_is_simply_absent_and_a_tombstone_entry_is_bad_shape() -> None:
-    gone = {"post": {"$type": "app.bsky.feed.defs#notFoundPost", "uri": "x"}}
-    assert run(Pages([feed_page([gone])])).reason is None  # not the account's own
-    broken = post(1, NOW)
-    broken["post"].pop("author")
-    assert run(Pages([feed_page([broken])])).complete  # no author: not counted
+def test_a_deleted_post_is_absent_from_the_feed_so_nothing_is_to_be_found() -> None:
+    # A deleted post simply is not listed: a clean read counts the others.
+    read = run(Pages([feed_page([post(2, NOW - timedelta(days=1), likes=3)])]))
+    assert read.complete and rows_of(read) == [(0, 3, 0)]
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda p: p.pop("author"),  # no author: it could be the account's own
+        lambda p: p.update(author=None),
+        lambda p: p.update(author="did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"),
+        lambda p: p.update(author=[DID]),
+        lambda p: p.update(author={}),
+        lambda p: p.update(author={"handle": "alice.example.com"}),
+        lambda p: p.update(author={"did": None}),
+        lambda p: p.update(author={"did": 7}),
+        lambda p: p.update(author={"did": "not-a-did"}),
+        lambda p: p.update(author={"did": "did:plc:"}),
+        lambda p: p.clear(),  # an empty post object
+        lambda p: (p.clear(), p.update({"$type": "app.bsky.feed.defs#notFoundPost"})),
+    ],
+)
+def test_a_malformed_or_authorless_entry_is_incomplete_never_absence(
+    mutate: Any,
+) -> None:
+    # #922 round 3: an entry whose author cannot be read could be the account's
+    # own, so it is never turned into "no post" (a lower or zero count).
+    bad = post(1, NOW - timedelta(days=1), likes=5)
+    mutate(bad["post"])
+    good = post(2, NOW - timedelta(days=2), likes=4)
+    read = run(Pages([feed_page([good, bad])]))
+    assert isinstance(read.rows, NotProvided) and read.reason == "bad_shape"
+    assert bsky.history_aggregates(read) is None
+    prior = [InteractionRow(1, 2, 3)]
+    snap = bsky.build_snapshot(read, as_of=date(2026, 11, 26), prior=prior)
+    assert snap is not None and snap["complete"] is False
+    assert snap["interactions"] == [{"boosts": 1, "favorites": 2, "replies": 3}]
+
+
+def test_a_foreign_author_with_a_valid_did_is_still_skipped_cleanly() -> None:
+    stranger = post(1, NOW - timedelta(days=1), did=OTHER, likes=600)
+    read = run(Pages([feed_page([stranger])]))
+    assert read.complete and read.rows == ()
+    # a well formed did:web author is also a clean skip
+    web = post(2, NOW - timedelta(days=1), did="did:web:example.com", likes=7)
+    assert run(Pages([feed_page([web])])).complete
 
 
 # --- empty accounts and zeros ----------------------------------------------------
@@ -1078,7 +1164,7 @@ LEGAL = [
     _snap(),  # a finished empty window
     _snap(interactions=_ROWS),
     _snap(complete=False, reason="partial_pages", interactions=GONE),  # no prior
-    _snap(complete=False, reason="ordering_unverified", interactions=_ROWS),
+    _snap(complete=False, reason="page_cap", interactions=_ROWS),
     _snap(complete=False, reason="egress_timeout", interactions=_ROWS),
 ]
 ILLEGAL = {

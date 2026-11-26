@@ -72,7 +72,12 @@ PLATFORM_DEADLINE = 90.0
 PAUSE = 1.0  # seconds between two calls to the host, plus up to one more of jitter
 MAX_COUNT = 10**12  # the profile's own follower and post counts
 
+# The two feed reasons the walk knows (lexicon names INFERRED from the public
+# app.bsky.feed.defs notes, not read live): a repost is another entry for a post
+# that is not the account's own listing, a pin is the account's own pinned post.
+# Any other reason value is a shape the walk does not understand.
 _PIN = "app.bsky.feed.defs#reasonPin"
+_REPOST = "app.bsky.feed.defs#reasonRepost"
 _LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
 # A handle is two or more dot-joined labels and the last one starts with a letter.
 _HANDLE = re.compile(rf"^(?:{_LABEL}\.)+[A-Za-z](?:[A-Za-z0-9-]{{0,61}}[A-Za-z0-9])?$")
@@ -263,9 +268,6 @@ def collect(
         seen: set[str] = set()
         seen_cursors: set[str] = set()  # bounded by the page cap
         cursor: str | None = None
-        newest: datetime | None = None  # indexedAt of the last own post seen
-        ordered = True  # every own post seen was no newer than the one before
-        confirming = False  # the next page must confirm an all-old page
         for page in range(1, MAX_PAGES + 1):
             query = (
                 "app.bsky.feed.getAuthorFeed?actor="
@@ -278,28 +280,18 @@ def collect(
             feed = data.get("feed")
             if not isinstance(feed, list) or len(feed) > 100:
                 raise _Stop("bad_shape")
-            # The end of the window is never read from one item: the feed's
-            # order is not guaranteed, so a single old post (a pin, a late
-            # re-index) must not end the walk. The walk ends when the cursor
-            # ends, when the budget does (incomplete), or after one whole page
-            # that held own posts older than the window and none inside it.
-            # That early end is complete only when the order seen is newest
-            # first all the way (see ``ordered`` below); otherwise it is
-            # ``ordering_unverified``.
-            recent = old = 0
+            # The feed's order is never trusted, so nothing ends the walk early:
+            # not an old post, not a whole old page, not an observed order. The
+            # walk ends only when the feed has no next cursor (then every item
+            # was read, so the window is read in full) or when a budget ends it
+            # (``page_cap`` or ``timeout``: incomplete, never a count). A
+            # malformed item, or a reason value the walk does not know, ends it
+            # as ``bad_shape`` inside ``_item``.
             for item in feed:
-                outcome, when = _item(item, did, now)
-                if when is not None:
-                    if newest is not None and when > newest:
-                        ordered = False  # a post newer than the one before it
-                    newest = when
-                if outcome == "old":
-                    old += 1
-                elif outcome == "future":
+                outcome = _item(item, did, now)
+                if outcome == "future":
                     dropped += 1
-                    recent += 1
                 elif isinstance(outcome, tuple):
-                    recent += 1
                     key, row = outcome
                     if key not in seen:
                         seen.add(key)
@@ -307,22 +299,6 @@ def collect(
             nxt = data.get("cursor")
             if nxt is None or nxt == "":
                 break  # the end of the feed: the window was read in full
-            if confirming:
-                # The page after a whole old page: any own post inside the
-                # window proves the order is not newest first.
-                if recent or not ordered:
-                    raise _Stop("ordering_unverified")
-                if old:
-                    break  # two old pages in order, none inside: read in full
-            elif old and not recent:
-                # A whole page of out-of-window posts with more pages behind it.
-                # The server's order is not trusted, so one such page is never
-                # enough: the walk may stop early only when every own post seen
-                # was no newer than the one before it (across pages too) and the
-                # next page confirms it. Otherwise the read is incomplete.
-                if not ordered:
-                    raise _Stop("ordering_unverified")
-                confirming = True
             if type(nxt) is not str or not _CURSOR.fullmatch(nxt):
                 raise _Stop("bad_shape")
             if nxt in seen_cursors:
@@ -339,47 +315,48 @@ def collect(
 
 def _item(
     item: object, did: str, now: datetime
-) -> tuple[tuple[str, InteractionRow] | str | None, datetime | None]:
-    """One feed entry: ``(outcome, when)``.
+) -> tuple[str, InteractionRow] | str | None:
+    """One feed entry: a row, ``future``, or None (not counted).
 
-    ``outcome`` is a row, ``old`` (before the window), ``future``, or None (the
-    entry is not the account's own plain post). ``when`` is the server time of
-    an own, unpinned, non-reply post (used only to check the feed order; a pin
-    comes first and out of order) and None for everything else. A malformed
-    entry that would have been counted raises ``_Stop('bad_shape')``.
+    None means the entry is, by a well formed answer, not a counted post of the
+    account: a repost entry, a post by another author, a reply, or a post before
+    the window. Anything that cannot be read as one of those or as an own post
+    (not an object, no post object, a reason that is present but not a known
+    word, no author or a malformed one, a bad time, a bad count) raises
+    ``_Stop('bad_shape')``: a malformed entry is never absence.
     """
     if not isinstance(item, dict):
         raise _Stop("bad_shape")
     post = item.get("post")
     if not isinstance(post, dict):
         raise _Stop("bad_shape")
-    reason = item.get("reason")
-    pinned = False
-    if reason is not None:
+    if "reason" in item:  # a missing reason is a plain post; None is malformed
+        reason = item["reason"]
         kind = reason.get("$type") if isinstance(reason, dict) else None
+        if kind == _REPOST:
+            return None  # a repost entry is not the account's own listing
         if kind != _PIN:
-            return (
-                None,
-                None,
-            )  # a repost (or anything unknown) is not the account's post
-        pinned = True
+            raise _Stop("bad_shape")
+        # a pin is the account's own post: read it like any other below
     author = post.get("author")
-    if not isinstance(author, dict) or author.get("did") != did:
-        return None, None
+    author_did = author.get("did") if isinstance(author, dict) else None
+    if type(author_did) is not str or not _DID.fullmatch(author_did):
+        raise _Stop("bad_shape")  # who wrote it is unknown: it could be ours
+    if author_did != did:
+        return None
     record = post.get("record")
     if item.get("reply") is not None or (
         isinstance(record, dict) and record.get("reply") is not None
     ):
-        return None, None  # a reply to someone else is not counted
+        return None  # a reply to someone else is not counted
     when = post_time(post, "indexedAt")
     placed = classify(when, now)
     if placed == "invalid":
         raise _Stop("bad_shape")
-    order_time = None if pinned else when
     if placed == "before":
-        return (None if pinned else "old"), order_time  # pins come out of order
+        return None  # out of the window (a pin comes out of order, still not counted)
     if placed == "future":
-        return "future", order_time
+        return "future"
     uri = post.get("uri")
     if type(uri) is not str or not 0 < len(uri) <= 512:
         raise _Stop("bad_shape")
@@ -388,7 +365,7 @@ def _item(
     replies = _int(post.get("replyCount"), MAX_INTERACTIONS)
     if reposts is None or likes is None or replies is None:
         raise _Stop("bad_shape")
-    return (uri, InteractionRow(reposts, likes, replies)), order_time
+    return uri, InteractionRow(reposts, likes, replies)
 
 
 # --- snapshot, guard pass, history aggregates and the kit entry -----------------

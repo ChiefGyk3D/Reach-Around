@@ -36,7 +36,6 @@ _OWN_REASONS: frozenset[str] = frozenset(
         "page_cap",
         "window_truncated",
         "clock_skew",
-        "ordering_unverified",
         "counts_unavailable",
         "content_type",
         "bad_json",
