@@ -454,6 +454,14 @@ class HttpsTransport:
             )
             try:
                 conn.connect()
+            except TimeoutError:
+                # The socket timeout is the remaining deadline, so it can expire
+                # just before the watchdog thread runs: that is still the
+                # deadline, not a refused connection.
+                conn.close()
+                if index == len(addresses) - 1 or self._clock() >= deadline:
+                    raise EgressBlocked("timeout", host) from None
+                failure = EgressBlocked("timeout", host)
             except ssl.SSLError:
                 conn.close()
                 failure = EgressBlocked("tls_failed", host)
