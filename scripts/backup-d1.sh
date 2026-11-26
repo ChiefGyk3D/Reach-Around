@@ -33,9 +33,12 @@
 # be changed out of band), so it is used for one decision only: whether a table
 # that is MISSING is an older schema (its migration is not recorded: skipped with
 # a notice) or lost data (recorded: the run fails). A table that EXISTS is always
-# exported, whatever the record says. A table in the database that this script
+# exported, whatever the record says. If the record is inconsistent (a name this
+# script does not know, a duplicate, or empty) it is not trusted at all: every
+# expected table is then required. A table in the database that this script
 # does not know (not in the lists below) fails the run before any export, so a
-# new or hand-made table is never silently left out of a backup.
+# new or hand-made table is never silently left out of a backup. Names read from
+# the database are sanitized before they are printed.
 #
 # Requires bash 4.0 or newer (the script refuses with exit 2 on an older one).
 #
@@ -257,6 +260,26 @@ applied=$(printf '%s' "$applied_json" | names_of migration) || {
   exit 1
 }
 
+# Names read from the database are untrusted text: before one is printed, every
+# byte outside [A-Za-z0-9_.-] becomes '?' (C locale, so a multibyte or control
+# byte cannot reach a terminal or a log) and a long name is cut at 80 characters.
+safe() {
+  local LC_ALL=C s="$1"
+  s="${s//[!A-Za-z0-9_.-]/?}"
+  if [ "${#s}" -gt 80 ]; then
+    s="${s:0:80}..."
+  fi
+  printf '%s' "$s"
+}
+
+safe_list() {
+  local out="" n
+  for n in "$@"; do
+    out="${out:+$out }$(safe "$n")"
+  done
+  printf '%s' "$out"
+}
+
 # Plain string matching, not `printf | grep -q`: under pipefail grep -q exits at
 # its first match, the writer can then die of SIGPIPE, and the whole pipeline
 # reports failure, so a table that exists would be skipped without an error.
@@ -316,7 +339,8 @@ fi
 
 # A table is REQUIRED unless the record is trusted and its migration is known and
 # NOT recorded (wrangler's own d1_migrations has no migration, and a table with no
-# entry is required).
+# entry is required). trust_record also drops to 0 when the record holds a name
+# this script does not know or a duplicate (set further down).
 is_required() {
   local m
   [ "$trust_record" -eq 1 ] || return 0
@@ -335,7 +359,7 @@ while IFS= read -r t; do
   is_known_table "$t" || unexpected+=("$t")
 done <<<"$existing"
 if [ "${#unexpected[@]}" -gt 0 ]; then
-  echo "error: table(s) in this database that this script does not know: ${unexpected[*]}" >&2
+  echo "error: table(s) in this database that this script does not know: $(safe_list "${unexpected[@]}")" >&2
   echo "       Add each to tables (or never_exported, or ignored_tables for a system table) in scripts/backup-d1.sh; nothing was backed up." >&2
   exit 1
 fi
@@ -343,12 +367,26 @@ fi
 # The migration record is history, not proof of the schema. Say loudly where it
 # disagrees with the repository or with the tables (names only; no decision here).
 unknown_recorded=()
+duplicate_recorded=()
+seen_recorded=()
 while IFS= read -r t; do
   [ -n "$t" ] || continue
   is_in "$t" "${migrations[@]}" || unknown_recorded+=("$t")
+  if is_in "$t" "${seen_recorded[@]+"${seen_recorded[@]}"}"; then
+    duplicate_recorded+=("$t")
+  else
+    seen_recorded+=("$t")
+  fi
 done <<<"$applied"
+# A record that holds a name this script does not know (or a duplicate) cannot be
+# trusted to say which tables may be absent: fail closed, require every table.
 if [ "${#unknown_recorded[@]}" -gt 0 ]; then
-  echo "notice: recorded migration(s) this script does not know (renamed, renumbered or from another version?): ${unknown_recorded[*]}" >&2
+  trust_record=0
+  echo "notice: recorded migration(s) this script does not know (renamed, renumbered or from another version?): $(safe_list "${unknown_recorded[@]}"); treating every expected table as required" >&2
+fi
+if [ "${#duplicate_recorded[@]}" -gt 0 ]; then
+  trust_record=0
+  echo "notice: migration(s) recorded more than once: $(safe_list "${duplicate_recorded[@]}"); treating every expected table as required" >&2
 fi
 unrecorded_present=()
 if [ "$trust_record" -eq 1 ]; then

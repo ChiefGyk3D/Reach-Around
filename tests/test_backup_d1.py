@@ -99,7 +99,6 @@ def make(tmp_path: Path) -> dict[str, str]:
             " name TEXT UNIQUE, applied_at TIMESTAMP NOT NULL"
             " DEFAULT CURRENT_TIMESTAMP)"
         )
-        db.execute("INSERT INTO d1_migrations (name) VALUES ('0001_init.sql')")
         # Wrangler records every applied migration by file name.
         for f in sorted((ROOT / "worker" / "migrations").glob("*.sql")):
             db.execute("INSERT INTO d1_migrations (name) VALUES (?)", (f.name,))
@@ -317,7 +316,7 @@ def test_migration_history_is_part_of_the_backup(tmp_path: Path) -> None:
     d = dest(tmp_path)
     assert run(env, "reach-db", str(d), "--apply").returncode == 0
     (out,) = list(d.iterdir())
-    assert "0001_init.sql" in (out / "d1_migrations.sql").read_text()
+    assert "0001_click_events.sql" in (out / "d1_migrations.sql").read_text()
 
 
 def test_row_ids_above_two_to_the_24th_do_not_fail_the_check(tmp_path: Path) -> None:
@@ -698,6 +697,114 @@ def test_a_recorded_migration_the_script_does_not_know_is_a_notice(
     assert r.returncode == 0, r.stderr
     assert "notice: recorded migration(s) this script does not know" in r.stderr
     assert "0013_alerts_old.sql" in r.stderr
+
+
+def _rename_recorded_0013(env: dict[str, str]) -> None:
+    """The record holds a renamed 0013 and its two tables are gone."""
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        db.execute("DELETE FROM d1_migrations WHERE name = '0013_alerts.sql'")
+        db.execute("INSERT INTO d1_migrations (name) VALUES ('0013_alerts_old.sql')")
+        db.execute("DROP TABLE alert_quota")
+        db.execute("DROP TABLE alert_dedup")
+        db.commit()
+
+
+def test_an_unknown_recorded_migration_does_not_excuse_a_missing_table(
+    tmp_path: Path,
+) -> None:
+    """The record cannot be trusted when it holds a name the script does not
+    know: the alert tables look like an older schema but may be lost data."""
+    env = make(tmp_path)
+    _rename_recorded_0013(env)
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    assert r.returncode == 1
+    assert "0013_alerts_old.sql" in r.stderr
+    assert "required table(s) missing" in r.stderr
+    assert "alert_quota" in r.stderr
+    assert "alert_dedup" in r.stderr
+    assert "done:" not in r.stdout
+    assert list(d.iterdir()) == []
+
+
+def test_a_clean_record_with_an_unrecorded_migration_still_skips(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    _make_older_than_0013(env)
+    r = run(env, "reach-db", str(dest(tmp_path)), "--apply")
+    assert r.returncode == 0, r.stderr
+    assert "does not know" not in r.stderr
+    assert "skipped (not in this database): alert_quota" in r.stdout
+
+
+def test_a_duplicate_recorded_migration_makes_every_table_required(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        db.execute("DROP TABLE d1_migrations")
+        db.execute(
+            "CREATE TABLE d1_migrations (id INTEGER, name TEXT,"
+            " applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+        )
+        for f in sorted((ROOT / "worker" / "migrations").glob("*.sql")):
+            if f.name != "0013_alerts.sql":
+                db.execute("INSERT INTO d1_migrations (name) VALUES (?)", (f.name,))
+        db.execute("INSERT INTO d1_migrations (name) VALUES ('0001_click_events.sql')")
+        db.execute("DROP TABLE alert_quota")
+        db.execute("DROP TABLE alert_dedup")
+        db.commit()
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    assert r.returncode == 1
+    assert "recorded more than once" in r.stderr
+    assert "required table(s) missing" in r.stderr
+    assert list(d.iterdir()) == []
+
+
+def _assert_clean(text: str) -> None:
+    for ch in text:
+        assert ch == "\n" or (0x20 <= ord(ch) < 0x7F), repr(ch)
+
+
+HOSTILE = "ev\x1b[2Jil\x07\x7f\x9b\tz"
+
+
+def test_database_names_are_sanitized_before_they_are_printed(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        db.execute(f'CREATE TABLE "t{HOSTILE}" (a)')
+        db.commit()
+    r = run(env, "reach-db", str(dest(tmp_path)), "--apply")
+    assert r.returncode == 1
+    assert "tev??2Jil?????z" in r.stderr
+    _assert_clean(r.stderr + r.stdout)
+
+
+def test_a_hostile_recorded_migration_name_is_sanitized(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        db.execute("INSERT INTO d1_migrations (name) VALUES (?)", (f"m{HOSTILE}",))
+        db.execute("DROP TABLE alert_quota")
+        db.commit()
+    r = run(env, "reach-db", str(dest(tmp_path)), "--apply")
+    assert r.returncode == 1
+    assert "mev??2Jil?????z" in r.stderr
+    _assert_clean(r.stderr + r.stdout)
+
+
+def test_a_very_long_database_name_is_truncated(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        db.execute(f'CREATE TABLE "{"a" * 200}" (a)')
+        db.commit()
+    r = run(env, "reach-db", str(dest(tmp_path)), "--apply")
+    assert r.returncode == 1
+    assert "a" * 80 + "..." in r.stderr
+    assert "a" * 81 not in r.stderr
 
 
 def test_an_empty_migration_record_makes_every_table_required(

@@ -161,9 +161,15 @@ secret.
    names are printed, nothing is kept), because the copy would be incomplete.
    If its migration is not recorded the script treats it as an older schema
    and lists it as `skipped (not in this database)` with the migration name.
-   When no migration is recorded at all, every expected table is required. A
-   recorded name the script does not know, or a table that exists although its
-   migration is not recorded, is reported as a `notice` (names only). A table
+   When no migration is recorded at all, every expected table is required. The
+   same holds when the record is inconsistent (a recorded name the script does
+   not know, for example after a rename or from another version, or a name
+   recorded twice): the record is then not trusted, a `notice` names the
+   entries, and every expected table that is missing fails the run. A table
+   that exists although its migration is not recorded is exported and reported
+   as a `notice` (names only). Names read from the database are printed with
+   every character outside letters, digits, `_`, `.` and `-` replaced by `?`
+   and cut at 80 characters, so they cannot alter a terminal or a log. A table
    in the database that the script does not know (from a newer migration, or
    made by hand) fails the run before any export and is named: add it to the
    script's lists. SQLite's own `sqlite_*` tables and Cloudflare's reserved
