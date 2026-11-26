@@ -357,7 +357,7 @@ untrusted data from a host the owner does not control.
 | SSRF through a followed URL | Never follow `Link`, `next`, `url`, `uri` or `moved` values from a body or header. The next page URL is built from the configured host and a numeric cursor. |
 | Redirects | Same host over https only, at most 3 (existing). A redirect to another host, to http or to an IP literal is `redirect`. |
 | DNS rebinding and private answers | `HttpsTransport` resolves once, requires every answer to be public, connects to the checked address and keeps the name for Host and TLS. The check runs on every connection, including each page and each redirect hop. |
-| Resource exhaustion | 1 MiB per page, 12 pages, 10 s per attempt, 90 s per platform, identity encoding only (no decompression bomb), integers range-checked, JSON nesting handled by the existing `RecursionError` catch, at most 200 rows. |
+| Resource exhaustion | 1 MiB per page, 12 pages, 10 s per attempt, 90 s per platform, identity encoding only (no decompression bomb), integers range-checked (the array path refuses integers over 18 digits, `NaN`, `Infinity` and overflowing floats; the shared object path `fetch_json` is unchanged), JSON nesting handled by the existing `RecursionError` catch, at most 200 rows. |
 | Hostile content in the response | Never rendered, executed or written. Only four integers and a timestamp per post leave the parser; strings other than the timestamp are never read into the snapshot. Instance text that looks like instructions is data. |
 | Forged counts or times | Counts are reported by the server and labeled so. The window uses the server's timestamp (`created_at`, `indexedAt`), future times beyond the skew tolerance are dropped, and ids must be digit strings. |
 | Secret in logs | Error text is a fixed reason word (existing `FetchError` contract); no URL query, header value, body or token is logged. The token is held only for the Pixelfed or locked-instance case, read from the environment, passed in a header and never in a URL. |
@@ -433,6 +433,18 @@ rounds).
 | 3. Mastodon provider | Lookup (or `account_id`), statuses with `max_id`, client-side reply and boost filters, `needs_token`, instance host validation, per-software fixtures (Mastodon first; Akkoma, GoToSocial and Pleroma only when the owner runs or follows one). Precondition: the owner's instance terms read. | 2 | L, 12 h |
 | 4. Kit wiring, workflow and docs | Kit loader fills `kit.fediverse` from the snapshot with the freshness rule; the instance template's refresh script and the `allowed-endpoints` derivation; `docs/kit.md`, `docs/config.md`, `docs/deploy.md`, the schema, the changelog; the research notes updated with this page's verified facts. | 2 | M, 5 h |
 | 5. Pixelfed (optional) | Token path and fixtures, only if the owner wants it and the probe confirms the read works. | 2 or later | M, 5 h |
+
+**Slice 1 as built (#921).** The shared plumbing only; no provider and no live host. Where
+it lives: `fetch_json_array` and its `FetchedArray` result in `src/reach_around/net/fetch.py`
+(an array answer, a hard 1 MiB cap, a read-only view of `Link`, `Retry-After`, `Date` and the
+rate-limit headers; the `Link` header is exposed but never followed); the 30 day window in
+`src/reach_around/counts/fediverse_window.py` (reads `created_at` or `indexedAt` only, refuses
+the author-supplied `createdAt`, naive times are invalid); the three-integer row and the
+`NotProvided` marker in `src/reach_around/counts/fediverse_rows.py`; the hand-run probe
+`scripts/fediverse-probe.py`, which prints status codes, header names and counts and never a
+body, and runs in no workflow. The guard pass over the snapshot and the page and time budget
+belong with the first provider (slice 2), which is the first caller. Nothing is added to
+any egress allow-list in this slice.
 
 Slices 1 to 4 are about 27 h; with slice 5, about 32 h. Slices 2 and 3 can run in parallel after
 slice 1. Nothing requires a Cloudflare or schema migration change: the history store accepts the
