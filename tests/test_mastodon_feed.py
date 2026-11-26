@@ -319,10 +319,119 @@ def test_a_page_that_is_not_an_array_or_too_long_is_incomplete() -> None:
     assert run(Pages([big])).reason == "bad_shape"
 
 
-def test_old_posts_with_malformed_counts_are_not_read_as_counts() -> None:
-    old = status(5, day(90), favourites_count="x")  # before the window: skipped
+def test_old_posts_with_malformed_counts_are_incomplete_not_skipped() -> None:
+    old = status(5, day(90), favourites_count="x")  # before the window, still checked
     read = run(Pages([[old], []]))
-    assert read.complete and rows_of(read) == []
+    assert isinstance(read.rows, NotProvided) and read.reason == "bad_shape"
+
+
+_BAD_COUNTS = ["3", True, -1, 1.5, None, {"n": 1}, [], 10**9 + 1]
+_BAD_BY_FIELD: dict[str, list[Any]] = {
+    "id": [5, None, "", "abc", "01", "1" * 21, ["1"], True],
+    "created_at": [5, None, "", "yesterday", "2026-11-25T10:00:00", ["x"]],
+    "visibility": [5, None, "", "mystery", ["public"], {"a": 1}],
+    "reblog": ["yes", 1, True, ["x"], ""],
+    "in_reply_to_id": [7, True, "", ["7"], {"id": "7"}, "07"],
+    "in_reply_to_account_id": [5, True, "", ["x"], {"a": 1}],
+    "account": [None, 5, "x", {"id": 1000}, {}, {"id": ""}],
+    "reblogs_count": _BAD_COUNTS,
+    "favourites_count": _BAD_COUNTS,
+    "replies_count": _BAD_COUNTS,
+}
+_SHAPES = {  # every way a well formed status can be left out of the count
+    "own": lambda: status(5, day(1)),
+    "old": lambda: status(5, day(90)),
+    "future": lambda: status(5, NOW + timedelta(days=3)),
+    "foreign": lambda: status(5, day(1), author=OTHER),
+    "hidden": lambda: status(5, day(1), visibility="private"),
+    "boost": lambda: status(5, day(1), reblog={"id": "9"}),
+}
+_CASES = [
+    (shape, field, bad)
+    for shape in sorted(_SHAPES)
+    for field, values in _BAD_BY_FIELD.items()
+    for bad in values
+]
+
+
+@pytest.mark.parametrize(("shape", "field", "bad"), _CASES)
+def test_every_field_of_every_kind_of_status_is_checked_one_way(
+    shape: str, field: str, bad: Any
+) -> None:
+    item = _SHAPES[shape]()
+    # The reply pair is set so only the field under test is malformed.
+    if field == "in_reply_to_id":
+        item["in_reply_to_account_id"] = ME
+    if field == "in_reply_to_account_id":
+        item["in_reply_to_id"] = "4"
+    item[field] = bad
+    read = run(Pages([[item], []]))
+    assert isinstance(read.rows, NotProvided) and read.reason == "bad_shape"
+
+
+@pytest.mark.parametrize("shape", sorted(_SHAPES))
+@pytest.mark.parametrize(
+    "field",
+    ["id", "created_at", "visibility", "account"]
+    + ["reblogs_count", "favourites_count", "replies_count"],
+)
+def test_a_missing_required_field_of_every_kind_of_status_is_incomplete(
+    shape: str, field: str
+) -> None:
+    item = _SHAPES[shape]()
+    del item[field]
+    read = run(Pages([[item], []]))
+    assert isinstance(read.rows, NotProvided) and read.reason == "bad_shape"
+
+
+def test_a_missing_or_null_reply_or_boost_marker_is_not_a_reply_or_boost() -> None:
+    item = status(5, day(1), favs=3)
+    del item["reblog"]
+    del item["in_reply_to_id"]
+    del item["in_reply_to_account_id"]
+    read = run(Pages([[item, status(4, day(1), favs=2)], []]))
+    assert read.complete and sorted(rows_of(read)) == [(0, 2, 0), (0, 3, 0)]
+
+
+def test_a_reply_id_and_its_target_author_go_together() -> None:
+    only_target = status(5, day(1), in_reply_to_account_id=ME)
+    assert run(Pages([[only_target], []])).reason == "bad_shape"
+    only_id = status(5, day(1), in_reply_to_id="4")
+    assert run(Pages([[only_id], []])).reason == "bad_shape"
+
+
+# --- a status listed twice: one row, the elementwise maximum -------------------
+
+
+@pytest.mark.parametrize("flip", [False, True])
+def test_conflicting_duplicates_keep_the_elementwise_maximum_in_either_order(
+    flip: bool,
+) -> None:
+    low = status(5, day(1), boosts=1, favs=0, replies=9)
+    high = status(5, day(1), boosts=4, favs=100, replies=2)
+    page = [high, low] if flip else [low, high]
+    read = run(Pages([page, []]))
+    assert read.complete and rows_of(read) == [(4, 100, 9)]
+
+
+def test_conflicting_duplicates_across_pages_keep_the_maximum() -> None:
+    def walk(first_favs: int, second_favs: int) -> list[tuple[int, int, int]]:
+        first = [status(10, day(1), favs=first_favs), status(5, day(1), favs=2)]
+        second = [status(10, day(1), favs=second_favs), status(3, day(1), favs=1)]
+        read = run(Pages([first, second, []]))
+        assert read.complete
+        return sorted(rows_of(read))
+
+    assert walk(0, 100) == walk(100, 0) == [(0, 1, 0), (0, 2, 0), (0, 100, 0)]
+
+
+def test_duplicates_that_disagree_on_whether_they_count_are_incomplete() -> None:
+    counted = status(5, day(1))
+    hidden = status(5, day(1), visibility="private")
+    for page in ([counted, hidden], [hidden, counted]):
+        assert run(Pages([page, []])).reason == "bad_shape"
+    a_future = status(6, NOW + timedelta(days=3))
+    assert run(Pages([[a_future, a_future], []])).dropped_future == 1
 
 
 # --- budgets, retries and the deadline -----------------------------------------
@@ -566,8 +675,27 @@ def test_a_lookup_without_a_good_id_is_bad_shape(look: Any) -> None:
     assert run(Pages([[]], look=look)).reason in ("bad_shape", "bad_json")
 
 
-def test_profile_counts_are_optional_and_never_made_up() -> None:
-    read = run(Pages([[]], look=lookup(followers_count="9", statuses_count=-1)))
+@pytest.mark.parametrize("field", ["followers_count", "statuses_count"])
+@pytest.mark.parametrize(
+    "bad", ["9", -1, True, 1.5, None, [], {"n": 1}, 10**12 + 1, "MISSING"]
+)
+def test_a_malformed_or_missing_lookup_count_is_never_a_complete_read(
+    field: str, bad: Any
+) -> None:
+    look = lookup()
+    if bad == "MISSING":
+        del look[field]
+    else:
+        look[field] = bad
+    read = run(Pages([[]], look=look))
+    assert isinstance(read.rows, NotProvided) and read.reason == "bad_shape"
+    assert (read.followers, read.posts) == (None, None)
+    snap = masto.build_snapshot(read, as_of=date(2026, 11, 26))
+    assert snap is not None and snap["complete"] is False
+
+
+def test_a_configured_account_id_needs_no_lookup_counts() -> None:
+    read = run(Pages([[]]), acct=None, account_id=ME)
     assert read.complete and (read.followers, read.posts) == (None, None)
     snap = masto.build_snapshot(read, as_of=date(2026, 11, 26))
     assert snap is not None and "followers" not in snap and "posts" not in snap
@@ -608,12 +736,59 @@ def test_a_low_rate_limit_stops_the_walk_incomplete() -> None:
     assert read.reason == "rate_limited" and p.served == 1  # no second page asked
 
 
-def test_enough_remaining_or_no_header_or_a_garbled_one_is_fine() -> None:
-    for value in ("5", "299", "", "lots", "-3"):
+def test_enough_remaining_or_no_header_is_fine() -> None:
+    for value in ("5", "299", "0000000010", None):
         headers = {"x-ratelimit-remaining": value} if value else {}
         p = Pages([[status(5, day(1))], []], page_headers={0: headers, 1: headers})
         read = run(p)
         assert read.complete, value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "9" * 500,  # the longest value the fetch layer lets through
+        "9" * 11,
+        "-3",
+        "-0",
+        "+5",
+        "5.0",
+        "1e3",
+        "",
+        " 7",
+        "٥",  # an Arabic-Indic digit: str.isdigit is true, ASCII is not
+        "lots",
+    ],
+)
+def test_a_malformed_rate_limit_header_ends_the_read_and_never_raises(
+    value: str,
+) -> None:
+    p = Pages(
+        [[status(5, day(1))], []],
+        page_headers={0: {"x-ratelimit-remaining": value}},
+    )
+    read = run(p)
+    assert isinstance(read.rows, NotProvided) and read.reason == "bad_shape"
+    assert p.served == 1  # nothing after the bad header was asked
+
+
+def test_the_header_parser_itself_never_raises_on_a_huge_digit_string() -> None:
+    # The fetch layer drops values over 512 characters, so this guards the parser
+    # on its own: it refuses by length before any integer conversion.
+    huge = {"x-ratelimit-remaining": "9" * 100_000}
+    with pytest.raises(masto._Stop) as caught:
+        masto._remaining(huge)
+    assert caught.value.reason == "bad_shape"
+    assert masto._remaining({}) is None
+    assert masto._remaining({"x-ratelimit-remaining": "0"}) == 0
+
+
+def test_an_over_long_rate_limit_header_dropped_by_the_fetch_layer_is_absent() -> None:
+    p = Pages(
+        [[status(5, day(1))], []],
+        page_headers={0: {"x-ratelimit-remaining": "9" * 100_000}},
+    )
+    assert run(p).complete  # no exception; the call budget and deadline still bound it
 
 
 def test_a_low_rate_limit_on_the_last_empty_page_does_not_spoil_a_finished_read() -> (

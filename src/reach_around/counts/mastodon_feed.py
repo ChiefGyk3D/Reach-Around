@@ -17,6 +17,15 @@ The next page URL is built from the configured host and a numeric ``max_id``
 cursor. A ``Link`` header, a ``next`` value or any URL in a body is never
 followed. The window uses ``created_at``, the server's clock. Boosts, replies to
 other accounts, posts of any other author and non-public posts are not counted.
+Every status is checked field by field through one path before it is counted or
+skipped (id, ``reblog``, author, ``in_reply_to_id``, ``in_reply_to_account_id``,
+visibility, ``created_at`` and the three counts): a malformed one, in any
+position, ends the read as ``bad_shape``. A status listed twice in one run keeps
+one row with the elementwise maximum of its counts (the counts of one status
+only grow, so the order of the copies never matters); copies that disagree on
+whether the status is counted at all end the read as ``bad_shape``. A malformed
+or missing lookup count, or a present but malformed ``X-RateLimit-Remaining``,
+is also ``bad_shape``.
 A read that cannot be completed in full is a ``NotProvided`` with a fixed reason
 word: it keeps the prior rows and is never a zero. A real zero needs a read that
 finished cleanly.
@@ -89,6 +98,8 @@ MAX_COUNT = 10**12  # the profile's own follower and post counts
 LOW_RATE_LIMIT = 5  # stop when the server says fewer calls than this remain
 
 _ID = re.compile(r"[0-9]{1,20}")
+_STATUS_ID = re.compile(r"0|[1-9][0-9]{0,19}")  # canonical: one spelling per id
+_RATE = re.compile(r"[0-9]{1,10}", re.ASCII)
 _ACCT = re.compile(r"[A-Za-z0-9_](?:[A-Za-z0-9_.-]{0,28}[A-Za-z0-9_])?")
 _VISIBLE = frozenset({"public", "unlisted"})
 _HIDDEN = frozenset({"private", "direct"})
@@ -334,10 +345,19 @@ def collect(
                 raise _Stop("account_suspended")
             followers = _int(found.get("followers_count"), MAX_COUNT)
             posts = _int(found.get("statuses_count"), MAX_COUNT)
+            if followers is None or posts is None:
+                # A lookup whose counts are missing or malformed is never read
+                # as a complete snapshot with the counts quietly left out.
+                followers = posts = None
+                raise _Stop("bad_shape")
             known_id = account
 
-        rows: list[InteractionRow] = []
-        seen: set[str] = set()
+        # One entry per canonical status id. A status listed twice keeps the
+        # elementwise maximum of its counts (the counts of one status only
+        # grow, so the larger value is the later and truer one, and the order
+        # of the two copies never changes the result). Two copies that differ
+        # in whether the status is counted at all make the read incomplete.
+        by_id: dict[int, InteractionRow | str | None] = {}
         cursor: int | None = None
         for page in range(1, MAX_PAGES + 1):
             query = (
@@ -366,22 +386,32 @@ def collect(
                 key, outcome = _item(item, known_id, now)
                 if smallest is None or key < smallest:
                     smallest = key
-                if outcome == "future":
-                    dropped += 1
-                elif isinstance(outcome, InteractionRow):
-                    if str(key) not in seen:
-                        seen.add(str(key))
-                        rows.append(outcome)
+                if key in by_id:
+                    earlier = by_id[key]
+                    if isinstance(earlier, InteractionRow) and isinstance(
+                        outcome, InteractionRow
+                    ):
+                        by_id[key] = InteractionRow(
+                            max(earlier.boosts, outcome.boosts),
+                            max(earlier.favorites, outcome.favorites),
+                            max(earlier.replies, outcome.replies),
+                        )
+                    elif earlier != outcome:
+                        raise _Stop("bad_shape")
+                else:
+                    by_id[key] = outcome
             if smallest is None:
                 raise _Stop("bad_shape")
             if cursor is not None and smallest >= cursor:
                 raise _Stop("partial_pages")  # no progress: the cursor must fall
             cursor = smallest
-            remaining_calls = fetched.headers.get("x-ratelimit-remaining", "")
-            if remaining_calls.isdigit() and int(remaining_calls) < LOW_RATE_LIMIT:
+            remaining_calls = _remaining(fetched.headers)
+            if remaining_calls is not None and remaining_calls < LOW_RATE_LIMIT:
                 raise _Stop("rate_limited")
         else:
             raise _Stop("page_cap")
+        rows = [o for o in by_id.values() if isinstance(o, InteractionRow)]
+        dropped = sum(1 for o in by_id.values() if o == "future")
         by_value = tuple(sorted(rows, key=lambda r: (r.boosts, r.favorites, r.replies)))
         return MastodonRead(followers, posts, by_value, calls, dropped)
     except _Stop as stop:
@@ -400,52 +430,74 @@ def _item(
     boost, author, reply or visibility, a bad time, a bad count) raises
     ``_Stop('bad_shape')``: a malformed status is never absence.
     """
+    # Step 1, one code path for every status: each field the walk reads is
+    # checked here, before any decision to count or skip. Nothing is skipped
+    # first, so a malformed old, foreign, hidden or boosted status is as
+    # incomplete as a malformed own post.
     if not isinstance(item, dict):
         raise _Stop("bad_shape")
     raw_id = item.get("id")
-    if type(raw_id) is not str or not _ID.fullmatch(raw_id):
+    if type(raw_id) is not str or not _STATUS_ID.fullmatch(raw_id):
         raise _Stop("bad_shape")
     key = int(raw_id)
-    boosted = item.get("reblog")
-    if boosted is not None:
-        if not isinstance(boosted, dict):
-            raise _Stop("bad_shape")
-        return key, None  # a boost is not the account's own post
+    boosted = item.get("reblog")  # null or missing: not a boost; an object: a boost
+    if boosted is not None and not isinstance(boosted, dict):
+        raise _Stop("bad_shape")
     author = item.get("account")
     author_id = author.get("id") if isinstance(author, dict) else None
     if type(author_id) is not str or not _ID.fullmatch(author_id):
         raise _Stop("bad_shape")  # who wrote it is unknown: it could be ours
-    if author_id != account_id:
-        return key, None
+    reply_to = item.get("in_reply_to_id")  # null or missing: not a reply
+    if reply_to is not None and (
+        type(reply_to) is not str or not _STATUS_ID.fullmatch(reply_to)
+    ):
+        raise _Stop("bad_shape")
     parent = item.get("in_reply_to_account_id")
     if parent is not None and (type(parent) is not str or not _ID.fullmatch(parent)):
         raise _Stop("bad_shape")
-    if item.get("in_reply_to_id") is not None and parent is None:
-        raise _Stop("bad_shape")  # a reply whose target author is unknown
-    if parent is not None and parent != account_id:
-        return key, None  # a reply to another account is not counted
+    if (reply_to is None) != (parent is None):
+        raise _Stop("bad_shape")  # a reply and its target author go together
     visibility = item.get("visibility")
-    if visibility in _HIDDEN:
-        return key, None  # never counted, whatever the server returned
-    if visibility not in _VISIBLE:
+    if type(visibility) is not str or (
+        visibility not in _HIDDEN and visibility not in _VISIBLE
+    ):
         raise _Stop("bad_shape")
-    when = post_time(item, "created_at")
-    placed = classify(when, now)
+    placed = classify(post_time(item, "created_at"), now)
     if placed == "invalid":
         raise _Stop("bad_shape")
-    if placed == "before":
-        return (
-            key,
-            None,
-        )  # out of the window (a pin comes out of order, still not counted)
-    if placed == "future":
-        return key, "future"
     boosts = _int(item.get("reblogs_count"), MAX_INTERACTIONS)
     favorites = _int(item.get("favourites_count"), MAX_INTERACTIONS)
     replies = _int(item.get("replies_count"), MAX_INTERACTIONS)
     if boosts is None or favorites is None or replies is None:
         raise _Stop("bad_shape")
+    # Step 2: with a well formed status, decide whether it is the account's post.
+    if boosted is not None or author_id != account_id:
+        return key, None  # a boost, or the post of another author
+    if parent is not None and parent != account_id:
+        return key, None  # a reply to another account is not counted
+    if visibility in _HIDDEN:
+        return key, None  # never counted, whatever the server returned
+    if placed == "before":
+        return key, None  # out of the window (a pin comes out of order)
+    if placed == "future":
+        return key, "future"
     return key, InteractionRow(boosts, favorites, replies)
+
+
+def _remaining(headers: Mapping[str, str]) -> int | None:
+    """The ``X-RateLimit-Remaining`` count, None when the header is absent.
+
+    A header that is present must be 1 to 10 ASCII digits; anything else
+    (empty, negative, a float, non-ASCII, longer than ten characters) raises
+    ``_Stop('bad_shape')``, failing closed. The length is checked before the
+    conversion, so a huge digit string never reaches ``int``.
+    """
+    value = headers.get("x-ratelimit-remaining")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not _RATE.fullmatch(value):
+        raise _Stop("bad_shape")
+    return int(value)
 
 
 # --- snapshot, guard pass, history aggregates and the kit entry -----------------
