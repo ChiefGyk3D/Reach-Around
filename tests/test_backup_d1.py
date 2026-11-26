@@ -30,6 +30,11 @@ if os.environ.get("STUB_HANG"):
 db = sqlite3.connect(os.environ["STUB_DB"])
 if args[:2] == ["d1", "execute"]:
     sql = args[args.index("--command") + 1]
+    if "d1_migrations" in sql and os.environ.get("STUB_FAIL_MIGRATIONS"):
+        sys.exit(1)
+    if "d1_migrations" in sql and os.environ.get("STUB_BAD_MIGRATIONS"):
+        print("not json")
+        sys.exit(0)
     cur = db.execute(sql)
     cols = [c[0] for c in cur.description]
     rows = [dict(zip(cols, r)) for r in cur.fetchall()]
@@ -62,6 +67,15 @@ def make(tmp_path: Path) -> dict[str, str]:
             " 'home', 'd', '', 'US', 'h', 9, 0)"
         )
         db.execute(
+            "INSERT INTO view_hour_daily (site, day, hour, bot_class, views, clicks)"
+            " VALUES ('links', '2026-11-01', 9, 'h', 4, 1)"
+        )
+        db.execute(
+            "INSERT INTO view_city_daily (site, day, country, region, city,"
+            " bot_class, views, uniques)"
+            " VALUES ('links', '2026-11-01', 'US', 'NY', 'Springfield', 'h', 3, 0)"
+        )
+        db.execute(
             "INSERT INTO click_events (ts, link_id, site)"
             " VALUES (1792998000000, 'a', 'links')"
         )
@@ -81,6 +95,9 @@ def make(tmp_path: Path) -> dict[str, str]:
             " DEFAULT CURRENT_TIMESTAMP)"
         )
         db.execute("INSERT INTO d1_migrations (name) VALUES ('0001_init.sql')")
+        # Wrangler records every applied migration by file name.
+        for f in sorted((ROOT / "worker" / "migrations").glob("*.sql")):
+            db.execute("INSERT INTO d1_migrations (name) VALUES (?)", (f.name,))
         db.commit()
     stub = tmp_path / "wrangler-stub"
     stub.write_text(STUB.format(python=sys.executable))
@@ -259,7 +276,14 @@ def test_the_export_restores_into_an_empty_database(tmp_path: Path) -> None:
     for f in sorted(out.glob("*.sql")):
         fresh.executescript(f.read_text())
     source = sqlite3.connect(env["STUB_DB"])
-    for table in ("view_daily", "click_events", "counters", "view_meta"):
+    for table in (
+        "view_daily",
+        "click_events",
+        "counters",
+        "view_meta",
+        "view_hour_daily",
+        "view_city_daily",
+    ):
         query = f"SELECT count(*) FROM {table}"  # noqa: S608 - fixed names
         assert fresh.execute(query).fetchone() == source.execute(query).fetchone()
     names = {r[0] for r in fresh.execute("SELECT name FROM sqlite_master")}
@@ -309,17 +333,102 @@ def test_row_ids_above_two_to_the_24th_do_not_fail_the_check(tmp_path: Path) -> 
     assert len(list(d.iterdir())) == 1
 
 
+def _make_older_than_0013(env: dict[str, str]) -> None:
+    """A database that never applied migration 0013: no alert tables, and the
+    migration is not recorded."""
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        db.execute("DROP TABLE alert_quota")
+        db.execute("DROP TABLE alert_dedup")
+        db.execute("DELETE FROM d1_migrations WHERE name = '0013_alerts.sql'")
+        db.commit()
+
+
 def test_an_older_schema_missing_a_table_still_backs_up(tmp_path: Path) -> None:
     env = make(tmp_path)
-    db = sqlite3.connect(env["STUB_DB"])
-    db.execute("DROP TABLE alert_quota")
-    db.commit()
+    _make_older_than_0013(env)
     d = dest(tmp_path)
     r = run(env, "reach-db", str(d), "--apply")
     assert r.returncode == 0, r.stderr
-    assert "skipped (not in this database): alert_quota" in r.stdout
+    assert (
+        "skipped (not in this database): alert_quota (migration 0013_alerts.sql"
+        " is not applied)" in r.stdout
+    )
     (out,) = list(d.iterdir())
     assert not (out / "alert_quota.sql").exists()
+    assert (out / "view_daily.sql").exists()
+
+
+def test_a_table_whose_migration_is_applied_must_exist(tmp_path: Path) -> None:
+    """Migration 0013 IS recorded as applied, so a missing alert table is lost
+    data, not an old schema: the run fails and keeps nothing."""
+    env = make(tmp_path)
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        db.execute("DROP TABLE alert_quota")
+        db.commit()
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    assert r.returncode == 1
+    assert "required table(s) missing" in r.stderr
+    assert "alert_quota" in r.stderr
+    assert "done:" not in r.stdout
+    assert list(d.iterdir()) == []
+
+
+@pytest.mark.parametrize("breakage", ["no-table", "no-query-answer", "bad-answer"])
+def test_unreadable_applied_migrations_fail_closed(
+    tmp_path: Path, breakage: str
+) -> None:
+    """Without the migration record the script cannot tell which tables must
+    exist, so it stops instead of guessing."""
+    env = make(tmp_path)
+    if breakage == "no-table":
+        with closing(sqlite3.connect(env["STUB_DB"])) as db:
+            db.execute("DROP TABLE d1_migrations")
+            db.commit()
+    elif breakage == "no-query-answer":
+        env["STUB_FAIL_MIGRATIONS"] = "1"
+    else:
+        env["STUB_BAD_MIGRATIONS"] = "1"
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    assert r.returncode == 1
+    assert "applied migrations" in r.stderr
+    assert "done:" not in r.stdout
+    assert list(d.iterdir()) == []
+
+
+def test_both_views_are_part_of_the_backup(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    assert r.returncode == 0, r.stderr
+    (out,) = list(d.iterdir())
+    assert "view_hour_daily" in (out / "view_hour_daily.sql").read_text()
+    assert "Springfield" in (out / "view_city_daily.sql").read_text()
+    assert "never exported: leads, kit_events, visitor_seen, view_events" in (
+        run(env, "reach-db", str(dest_second(tmp_path))).stdout
+    )
+
+
+def dest_second(tmp_path: Path) -> Path:
+    d = tmp_path / "backups2"
+    d.mkdir(mode=0o700)
+    d.chmod(0o700)
+    return d
+
+
+def test_smoke_script_needs_no_bash_four_expansion() -> None:
+    text = (ROOT / "scripts" / "smoke.sh").read_text()
+    assert not re.search(r"\$\{[a-z_]+,,\}", text)
+
+
+def test_the_script_refuses_a_bash_older_than_four() -> None:
+    text = SCRIPT.read_text()
+    guard = text.index("BASH_VERSINFO[0]")
+    assert "-lt 4" in text[guard : guard + 40]
+    assert "bash 4.0" in text
+    assert guard < text.index("tables=(")
+    assert "bash 4.0" in (ROOT / "docs" / "backup-restore.md").read_text()
 
 
 @pytest.mark.skipif(not Path("/usr/bin/setfacl").exists(), reason="no setfacl")
@@ -380,16 +489,18 @@ def test_a_missing_required_table_fails_the_run(tmp_path: Path) -> None:
     assert list(d.iterdir()) == []
 
 
-def test_only_optional_tables_missing_still_succeeds(tmp_path: Path) -> None:
+def test_tables_of_an_unapplied_migration_are_skipped_with_a_notice(
+    tmp_path: Path,
+) -> None:
+    """0013 is not recorded and its tables are absent: success with a notice.
+    The same absence with 0013 recorded is the failing case above."""
     env = make(tmp_path)
-    with closing(sqlite3.connect(env["STUB_DB"])) as db:
-        db.execute("DROP TABLE alert_quota")
-        db.execute("DROP TABLE alert_dedup")
-        db.commit()
+    _make_older_than_0013(env)
     r = run(env, "reach-db", str(dest(tmp_path)), "--apply")
     assert r.returncode == 0, r.stderr
     assert "skipped (not in this database): alert_quota" in r.stdout
     assert "skipped (not in this database): alert_dedup" in r.stdout
+    assert "0013_alerts.sql is not applied" in r.stdout
 
 
 def test_a_table_name_with_a_line_break_is_refused(tmp_path: Path) -> None:
@@ -407,25 +518,42 @@ def test_a_table_name_with_a_line_break_is_refused(tmp_path: Path) -> None:
     assert list(d.iterdir()) == []
 
 
-def test_the_inventory_matches_the_migrations(tmp_path: Path) -> None:
-    """A new migration that adds a table fails here until the script's inventory
-    (`tables`, `optional_tables`) or the list of tables left out is updated."""
+def _migration_tables(tmp_path: Path) -> dict[str, str]:
+    """table -> the migration file that first created it, derived by running the
+    migrations one at a time."""
+    introduced: dict[str, str] = {}
     with closing(sqlite3.connect(tmp_path / "m.sqlite")) as db:
         for f in sorted((ROOT / "worker" / "migrations").glob("*.sql")):
             db.executescript(schema_sql(f.read_text()))
-        in_schema = {
-            r[0]
-            for r in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-            if not r[0].startswith("sqlite_")
-        }
-    in_schema.add("d1_migrations")  # created by wrangler, not by a migration
-    tables = set(_script_array("tables"))
-    optional = set(_script_array("optional_tables"))
+            for (name,) in db.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ):
+                if not name.startswith("sqlite_"):
+                    introduced.setdefault(name, f.name)
+    return introduced
+
+
+def test_the_inventory_matches_the_migrations(tmp_path: Path) -> None:
+    """The script's table -> introducing migration map must equal the one derived
+    from the migrations, table for table. A new table, a moved table or a changed
+    map fails here; so does a table that is in neither the map nor the
+    never-exported list."""
+    derived = _migration_tables(tmp_path)
+    # Created by wrangler itself, not by a migration.
+    derived["d1_migrations"] = "wrangler"
     never = {"leads", "kit_events", "visitor_seen", "view_events"}
-    # Aggregate tables from migrations 0015 and 0019 that the script does not
-    # export today (an open question for the owner, see issue 932).
-    not_exported_yet = {"view_hour_daily", "view_city_daily"}
-    assert optional <= tables
+    tables = set(_script_array("tables"))
+    mapping: dict[str, str] = {}
+    for entry in _script_array("introduced_by"):
+        table, _, migration = entry.partition(":")
+        assert table not in mapping, f"{table} appears twice in introduced_by"
+        mapping[table] = migration
+    assert "optional_tables" not in SCRIPT.read_text()
+    assert set(mapping) == tables, "introduced_by and tables list different tables"
     assert not (tables & never)
-    assert not (tables & not_exported_yet)
-    assert in_schema == tables | never | not_exported_yet
+    assert {t: m for t, m in derived.items() if t not in never} == mapping
+    assert set(derived) == tables | never
+    # The two aggregate views are exported on purpose (#932, owner decision).
+    assert {"view_hour_daily", "view_city_daily"} <= tables
+    for m in mapping.values():
+        assert m == "wrangler" or (ROOT / "worker" / "migrations" / m).is_file()

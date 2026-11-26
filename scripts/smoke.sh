@@ -94,9 +94,10 @@ else
 fi
 # Match a captured value, not `... | grep -q`: under pipefail a grep that exits
 # at its first match can make the writer die of SIGPIPE and flip the result.
-content_type="$(header_of page content-type)"
-nosniff="$(header_of page x-content-type-options)"
-if [[ "${content_type,,}" == *text/html* ]]; then
+# Lower-cased with tr, not a bash 4 case expansion: macOS ships bash 3.2.
+content_type="$(header_of page content-type | tr '[:upper:]' '[:lower:]')"
+nosniff="$(header_of page x-content-type-options | tr '[:upper:]' '[:lower:]')"
+if [[ "$content_type" == *text/html* ]]; then
     pass "page content-type is text/html"
 else
     fail "page content-type is not text/html"
@@ -106,7 +107,7 @@ if [ -n "$(header_of page content-security-policy)" ]; then
 else
     fail "page has no content-security-policy header"
 fi
-if [[ "${nosniff,,}" == *nosniff* ]]; then
+if [[ "$nosniff" == *nosniff* ]]; then
     pass "page has x-content-type-options nosniff"
 else
     fail "page has no x-content-type-options nosniff header"

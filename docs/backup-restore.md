@@ -30,7 +30,10 @@ config ([deploy.md](deploy.md) has the rollbacks).
 ## What a database backup contains, and what it leaves out
 
 `scripts/backup-d1.sh` exports one file per table, with its schema and rows:
-the click and view aggregate tables, the seal and rollup logs, `click_events`
+the click and view aggregate tables (including the hour-of-day table
+`view_hour_daily` and the city table `view_city_daily`, which holds daily view
+counts by city and is empty unless a site sets `GEO_LEVEL=city`), the seal and
+rollup logs, `click_events`
 (a source label; see the country note below), the counters, the alert quota
 tables, `analytics_coverage` (24 letters per day saying whether the Worker was
 collecting; no counts and no visitor data) and `d1_migrations` (the list of migrations already applied, which a
@@ -148,12 +151,17 @@ secret.
    the whole database at one moment (verified, Time Travel page).
 
    Expected: `done: N tables written to <BACKUPS>/d1-<UTC timestamp>`. The
-   script keeps an inventory of expected tables. The two alert tables (added
-   by migration 0013) are optional: an older database that lacks them is
-   listed as `skipped (not in this database)`. Any other expected table that
-   is missing fails the run (exit 1, the table names are printed, nothing is
-   kept), because the copy would be incomplete. A listed table name that holds
-   a line break is refused for the same reason. Each wrangler call is stopped after 120 seconds
+   script keeps an inventory that names, for each expected table, the
+   migration that creates it, and it reads which migrations the database has
+   applied (`SELECT name FROM d1_migrations`, a read-only call). A table whose
+   migration is applied must exist: if it is missing the run fails (exit 1, the
+   table names are printed, nothing is kept), because the copy would be
+   incomplete. A table whose migration is not applied cannot exist yet and is
+   listed as `skipped (not in this database)` with the migration name. If the
+   applied migrations cannot be read, the run fails instead of guessing. A
+   listed table name that holds a line break is refused for the same reason.
+   The script needs bash 4.0 or newer and refuses (exit 2) on an older one
+   (macOS ships 3.2; install a newer bash). Each wrangler call is stopped after 120 seconds
    (`BACKUP_TIMEOUT=300` raises it, to at most 900). A running export blocks
    other requests to the database while it runs (verified, Cloudflare import
    and export page, last updated 2026-04-21, read 2026-11-09), so do not run it

@@ -27,11 +27,26 @@
 # 1 to 900). Uses `wrangler d1 export --remote` (set WRANGLER to another command,
 # for example a test stub). The dry run makes no network call and writes nothing.
 #
-# Exit: 0 done or dry run, 1 a step failed, 2 usage, 3 refused (unsafe folder).
+# Besides the table listing, the run makes one more read-only call, `SELECT name
+# FROM d1_migrations`, to learn which migrations the database has applied: a table
+# whose migration is applied must exist, or the run fails.
+#
+# Requires bash 4.0 or newer (the script refuses with exit 2 on an older one).
+#
+# Exit: 0 done or dry run, 1 a step failed, 2 usage (or bash too old), 3 refused
+# (unsafe folder).
 
 set -euo pipefail
 
-# Tables worth keeping. Everything else in the database is left out on purpose.
+# Needs bash 4.0 or newer. macOS ships 3.2: install a newer bash first (for
+# example `brew install bash`).
+if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+  echo "error: bash 4.0 or newer is required (this is ${BASH_VERSION:-unknown})" >&2
+  exit 2
+fi
+
+# Tables worth keeping. Only the four tables named in the header are left out on
+# purpose; every other table of the schema is in this list (a test enforces it).
 tables=(
   alert_dedup alert_quota analytics_coverage
   click_budget click_budget_lh click_capacity click_country_daily click_country_monthly
@@ -39,15 +54,35 @@ tables=(
   click_landing_daily click_landing_monthly click_landing_state click_month_log click_seal
   click_src_daily click_src_monthly
   counters d1_migrations kit_meta
-  view_daily view_dim_daily view_geo_daily view_meta view_rollup_log
+  view_city_daily view_daily view_dim_daily view_geo_daily view_hour_daily view_meta
+  view_rollup_log
 )
 
-# Inventory: every table above is REQUIRED (a run that finds it missing fails, so
-# an incomplete backup is never reported as a success) except these, which an
-# older database may lack and which are skipped with a notice. The alert tables
-# come from migration 0013 (tests/test_backup_d1.py keeps this list and the
-# migrations in step). Tables the script never exports are listed in the dry run.
-optional_tables=(alert_dedup alert_quota)
+# Inventory: the migration that introduced each table above (table:migration
+# file name; wrangler's own d1_migrations has no migration). The run reads the
+# migrations the database has APPLIED and decides per table: introduced by an
+# applied migration means REQUIRED (missing fails the run, so an incomplete
+# backup is never reported as a success); introduced by a migration that is not
+# applied means the table cannot exist yet and is skipped with a notice.
+# tests/test_backup_d1.py derives this map from the migrations and fails when it
+# drifts. A table with no entry here is treated as required.
+introduced_by=(
+  alert_dedup:0013_alerts.sql alert_quota:0013_alerts.sql
+  analytics_coverage:0014_health.sql
+  click_budget:0011_click_funnel.sql click_budget_lh:0017_landing_hop.sql
+  click_capacity:0011_click_funnel.sql click_country_daily:0011_click_funnel.sql
+  click_country_monthly:0011_click_funnel.sql click_events:0001_click_events.sql
+  click_funnel_state:0011_click_funnel.sql click_hop_daily:0017_landing_hop.sql
+  click_hop_monthly:0017_landing_hop.sql click_landing_daily:0017_landing_hop.sql
+  click_landing_monthly:0017_landing_hop.sql click_landing_state:0017_landing_hop.sql
+  click_month_log:0011_click_funnel.sql click_seal:0011_click_funnel.sql
+  click_src_daily:0011_click_funnel.sql click_src_monthly:0011_click_funnel.sql
+  counters:0009_kit.sql d1_migrations:wrangler kit_meta:0009_kit.sql
+  view_city_daily:0019_view_city_daily.sql view_daily:0006_page_view_rollups.sql
+  view_dim_daily:0006_page_view_rollups.sql view_geo_daily:0006_page_view_rollups.sql
+  view_hour_daily:0015_hour_patterns.sql view_meta:0005_page_views.sql
+  view_rollup_log:0006_page_view_rollups.sql
+)
 
 usage() {
   echo "usage: $0 DATABASE DEST_DIR [--apply]" >&2
@@ -118,7 +153,7 @@ out="$dest/d1-$stamp"
 if [ "$apply" -eq 0 ]; then
   echo "dry run: nothing is written and no network call is made."
   echo "would create: $out (mode 700)"
-  echo "would export ${#tables[@]} tables (the run fails if a required one is missing; optional: ${optional_tables[*]}), one file each, mode 600:"
+  echo "would export ${#tables[@]} tables (the run fails if a table whose migration is applied is missing), one file each, mode 600:"
   printf '  %s\n' "${tables[@]}"
   echo "never exported: leads, kit_events, visitor_seen, view_events"
   echo "note: the tables are exported one call at a time, so this is not a single point-in-time snapshot."
@@ -144,26 +179,45 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Which of our tables exist in this database (older schemas may lack the optional ones).
+# One name per line from a wrangler --json answer on stdin. The names are compared
+# as whole lines below, so a name that holds a line break could make a missing
+# table or migration look present: refuse it outright.
+names_of() {
+  python3 -I -c '
+import json, sys
+what = sys.argv[1]
+data = json.load(sys.stdin)
+rows = data[0]["results"] if isinstance(data, list) else data["results"]
+for r in rows:
+    name = r["name"]
+    if not isinstance(name, str) or any(c in name for c in "\r\n\0"):
+        sys.stderr.write("error: invalid " + what + " name in the listing\n")
+        sys.exit(1)
+    print(name)
+' "$1"
+}
+
+# Which of our tables exist in this database.
 listing=$(timeout "$limit" "${wrangler[@]}" d1 execute "$db" --remote --json \
   --command "SELECT name FROM sqlite_master WHERE type = 'table'" 2>/dev/null) || {
   echo "error: could not list the tables (wrong name, not signed in, or timed out)" >&2
   exit 1
 }
-existing=$(printf '%s' "$listing" | python3 -I -c '
-import json, sys
-data = json.load(sys.stdin)
-rows = data[0]["results"] if isinstance(data, list) else data["results"]
-for r in rows:
-    name = r["name"]
-    # The names are compared as whole lines below, so a name that holds a line
-    # break could make a missing table look present: refuse it outright.
-    if not isinstance(name, str) or any(c in name for c in "\r\n\0"):
-        sys.stderr.write("error: invalid table name in the listing\n")
-        sys.exit(1)
-    print(name)
-') || {
-  echo "error: unexpected answer from the database" >&2
+existing=$(printf '%s' "$listing" | names_of table) || {
+  echo "error: unexpected answer from the database (table listing)" >&2
+  exit 1
+}
+
+# Which migrations the database has applied (wrangler records each applied file
+# name in d1_migrations). Unreadable means we cannot tell which tables must
+# exist, so the run fails instead of guessing.
+applied_json=$(timeout "$limit" "${wrangler[@]}" d1 execute "$db" --remote --json \
+  --command "SELECT name FROM d1_migrations" 2>/dev/null) || {
+  echo "error: could not read the applied migrations (d1_migrations); not guessing which tables must exist" >&2
+  exit 1
+}
+applied=$(printf '%s' "$applied_json" | names_of migration) || {
+  echo "error: unexpected answer from the database (applied migrations)" >&2
   exit 1
 }
 
@@ -178,18 +232,40 @@ is_listed() {
   esac
 }
 
-is_optional() {
-  local o
-  for o in "${optional_tables[@]}"; do
-    [ "$o" = "$1" ] && return 0
+is_applied() {
+  case "$nl$applied$nl" in
+  *"$nl$1$nl"*) return 0 ;;
+  *) return 1 ;;
+  esac
+}
+
+# The migration that introduced a table; empty when the inventory has no entry.
+migration_of() {
+  local e
+  for e in "${introduced_by[@]}"; do
+    if [ "${e%%:*}" = "$1" ]; then
+      printf '%s' "${e#*:}"
+      return 0
+    fi
   done
-  return 1
+  return 0
+}
+
+# A table is REQUIRED unless its migration is known and NOT applied (wrangler's
+# own d1_migrations has no migration, and a table with no entry is required).
+is_required() {
+  local m
+  m="$(migration_of "$1")"
+  case "$m" in
+  "" | wrangler) return 0 ;;
+  esac
+  is_applied "$m"
 }
 
 # A missing REQUIRED table is an incomplete backup: fail before writing anything.
 missing=()
 for t in "${tables[@]}"; do
-  if ! is_listed "$t" && ! is_optional "$t"; then
+  if ! is_listed "$t" && is_required "$t"; then
     missing+=("$t")
   fi
 done
@@ -202,7 +278,7 @@ count=0
 exported=()
 for t in "${tables[@]}"; do
   if ! is_listed "$t"; then
-    echo "skipped (not in this database): $t"
+    echo "skipped (not in this database): $t (migration $(migration_of "$t") is not applied)"
     continue
   fi
   file="$out/$t.sql"
