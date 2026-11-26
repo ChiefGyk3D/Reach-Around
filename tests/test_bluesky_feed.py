@@ -174,21 +174,99 @@ def test_window_edges_by_indexed_at() -> None:
     assert read.dropped_future == 1
 
 
-def test_a_whole_page_of_old_posts_ends_the_walk_and_asks_for_no_more_pages() -> None:
-    # The rule: the walk ends at the cursor's end, the page budget, or one whole
-    # page with own posts older than the window and none inside it (#922).
+def test_two_old_pages_in_newest_first_order_end_the_walk_complete() -> None:
+    # The rule (#922, round 2): the walk ends at the cursor's end, the page
+    # budget, or two whole pages of own posts older than the window and none
+    # inside, with the order newest first all the way. The third old page is
+    # never requested.
     p = Pages(
         [
             feed_page([post(1, NOW - timedelta(days=1))], "c1"),
             feed_page([post(2, START - timedelta(days=1))], "c2"),
-            feed_page([post(3, NOW - timedelta(days=2))]),
+            feed_page([post(3, START - timedelta(days=2))], "c3"),
+            feed_page([post(4, START - timedelta(days=3))]),
         ]
     )
     read = run(p)
-    assert read.complete and read.calls == 3 and len(rows_of(read)) == 1
-    # the profile and two pages; the third page is never requested
-    assert len(p.transport.calls) == 3
-    assert not any("cursor=c2" in c.path for c in p.transport.calls)
+    assert read.complete and read.calls == 4 and len(rows_of(read)) == 1
+    assert not any("cursor=c3" in c.path for c in p.transport.calls)
+
+
+def test_an_old_page_then_a_newer_post_is_incomplete_not_a_count() -> None:
+    # Misordered: a post inside the window after a whole old page (round 2).
+    p = Pages(
+        [
+            feed_page([post(1, START - timedelta(days=5))], "c1"),
+            feed_page([post(2, NOW - timedelta(days=1), likes=9)], "c2"),
+            feed_page([post(3, NOW - timedelta(days=2), likes=4)]),
+        ]
+    )
+    read = run(p)
+    assert isinstance(read.rows, NotProvided) and read.reason == "ordering_unverified"
+    assert bsky.history_aggregates(read) is None
+    snap = bsky.build_snapshot(read, as_of=date(2026, 11, 26))
+    assert snap is not None and snap["complete"] is False
+    assert snap["reason"] == "ordering_unverified" and "interactions" not in snap
+
+
+def test_a_newer_post_across_a_page_boundary_stops_an_early_end() -> None:
+    # Page 2's first post is newer than page 1's last: the order is violated
+    # across the boundary, so the early end is refused even though both pages
+    # are entirely old.
+    misordered = Pages(
+        [
+            feed_page([post(1, START - timedelta(days=9))], "c1"),
+            feed_page([post(2, START - timedelta(days=2))], "c2"),
+            feed_page([post(3, START - timedelta(days=12))]),
+        ]
+    )
+    assert run(misordered).reason == "ordering_unverified"
+    ordered_pages = Pages(
+        [
+            feed_page([post(1, START - timedelta(days=2))], "c1"),
+            feed_page([post(2, START - timedelta(days=9))], "c2"),
+            feed_page([post(3, START - timedelta(days=12))]),
+        ]
+    )
+    assert run(ordered_pages).complete
+    # a misorder inside one old page is refused the same way
+    inside = Pages(
+        [
+            feed_page(
+                [
+                    post(1, START - timedelta(days=9)),
+                    post(2, START - timedelta(days=2)),
+                ],
+                "c1",
+            ),
+            feed_page([post(3, START - timedelta(days=12))]),
+        ]
+    )
+    assert run(inside).reason == "ordering_unverified"
+
+
+def test_one_old_page_with_a_next_cursor_is_never_a_complete_count_alone() -> None:
+    # A single all-old page followed by a cursor and then an in-window post:
+    # the reviewer's reproduction. It must not be a complete empty window.
+    # The next page is read, so the in-window post is counted, not missed.
+    p = Pages(
+        [
+            feed_page([post(1, START - timedelta(days=5))], "c1"),
+            feed_page([post(2, NOW - timedelta(days=1), likes=9)]),
+        ]
+    )
+    read = run(p)
+    assert read.complete and rows_of(read) == [(0, 9, 0)]
+    # with more pages behind it the order cannot be trusted: incomplete
+    more = Pages(
+        [
+            feed_page([post(1, START - timedelta(days=5))], "c1"),
+            feed_page([post(2, NOW - timedelta(days=1), likes=9)], "c2"),
+            feed_page([]),
+        ]
+    )
+    again = run(more)
+    assert not again.complete and bsky.history_aggregates(again) is None
 
 
 def test_author_supplied_created_at_never_decides_the_window() -> None:
@@ -578,6 +656,7 @@ def test_the_guard_refuses_person_level_keys_and_values() -> None:
         "platform": "bluesky",
         "as_of": "2026-11-26",
         "complete": True,
+        "interactions": [],  # a complete snapshot always carries its rows
     }
     bsky.check_snapshot(base)
     with pytest.raises(ImportGuardError):
@@ -874,7 +953,12 @@ def _nest(leaf: Any, depth: int = 5) -> Any:
     return value
 
 
-_BASE: dict[str, Any] = {"platform": "bluesky", "as_of": "2026-11-26", "complete": True}
+_BASE: dict[str, Any] = {
+    "platform": "bluesky",
+    "as_of": "2026-11-26",
+    "complete": True,
+    "interactions": [],  # a complete snapshot always carries its rows
+}
 
 
 @pytest.mark.parametrize(
@@ -924,6 +1008,160 @@ def test_hostile_keys_and_containers_and_depth_are_refused() -> None:
 # --- fetch_json_view -------------------------------------------------------------
 
 URL = "https://public.api.bsky.app/xrpc/x"
+
+
+# --- Daybreak round 2 fixes (#922) --------------------------------------------------
+
+
+def test_a_terminal_page_that_returns_after_the_deadline_is_discarded() -> None:
+    # The last request starts with time left, and the clock jumps past the
+    # deadline while it runs; the page has no cursor, so only a clock check
+    # after the response can stop it from being accepted as complete.
+    clock = Clock()
+    read, slow, _ = _collect_slow(
+        [feed_page([post(1, NOW - timedelta(days=1), likes=5)])], clock, [1.0, 95.0]
+    )
+    assert len(slow.deadlines) == 2  # the profile, then the one feed page
+    assert isinstance(read.rows, NotProvided) and read.reason == "timeout"
+    assert not read.complete and bsky.history_aggregates(read) is None
+
+
+def test_a_profile_that_returns_after_the_deadline_is_discarded() -> None:
+    clock = Clock()
+    read, slow, _ = _collect_slow([feed_page([])], clock, [95.0])
+    assert read.reason == "timeout" and len(slow.deadlines) == 1
+    assert (read.followers, read.posts) == (None, None)  # a late profile is not kept
+
+
+def test_a_pause_that_runs_past_the_deadline_ends_the_run() -> None:
+    clock = Clock()
+    slow = Slow(Pages([feed_page([post(1, NOW)])]).transport, clock, [1.0])
+
+    def long_sleep(seconds: float) -> None:
+        clock.t += 200.0  # the pause itself overran the deadline
+
+    read = bsky.collect(
+        ACTOR,
+        now=NOW,
+        transport=slow,
+        sleep=long_sleep,
+        jitter=lambda: 0.0,
+        clock=clock,
+    )
+    assert read.reason == "timeout" and len(slow.deadlines) == 1
+
+
+def test_a_response_on_time_is_still_accepted() -> None:
+    clock = Clock()
+    read, _, _ = _collect_slow(
+        [feed_page([post(1, NOW - timedelta(days=1))])], clock, [1.0, 80.0]
+    )
+    assert read.complete and len(rows_of(read)) == 1
+
+
+_ROWS = [{"boosts": 1, "favorites": 2, "replies": 3}]
+GONE: Any = object()  # a field left out of a test snapshot
+
+
+def _snap(**fields: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "platform": "bluesky",
+        "as_of": "2026-11-26",
+        "complete": True,
+        "interactions": [],
+    }
+    base.update(fields)
+    return {k: v for k, v in base.items() if v is not GONE}
+
+
+LEGAL = [
+    _snap(),  # a finished empty window
+    _snap(interactions=_ROWS),
+    _snap(complete=False, reason="partial_pages", interactions=GONE),  # no prior
+    _snap(complete=False, reason="ordering_unverified", interactions=_ROWS),
+    _snap(complete=False, reason="egress_timeout", interactions=_ROWS),
+]
+ILLEGAL = {
+    "complete with a reason": _snap(reason="partial_pages"),
+    "complete with a reason and rows": _snap(reason="timeout", interactions=_ROWS),
+    "complete without interactions": _snap(interactions=GONE),
+    "complete without interactions, with a reason": _snap(
+        interactions=GONE, reason="partial_pages"
+    ),
+    "incomplete without a reason": _snap(complete=False, interactions=_ROWS),
+    "incomplete without a reason or rows": _snap(complete=False, interactions=GONE),
+    "incomplete with an empty list (fresh zeros)": _snap(
+        complete=False, reason="timeout", interactions=[]
+    ),
+    "incomplete with a word off the list": _snap(
+        complete=False, reason="whatever", interactions=_ROWS
+    ),
+    "complete with a non-bool flag": _snap(complete=1),
+    "complete with None interactions": _snap(interactions=None),
+    "more than 200 rows": _snap(interactions=_ROWS * 201),
+}
+
+
+@pytest.mark.parametrize("snapshot", LEGAL)
+def test_every_legal_state_combination_passes(snapshot: dict[str, Any]) -> None:
+    bsky.check_snapshot(snapshot)
+
+
+@pytest.mark.parametrize("name", list(ILLEGAL))
+def test_every_illegal_state_combination_is_refused_everywhere(name: str) -> None:
+    snapshot = ILLEGAL[name]
+    with pytest.raises(ImportGuardError):
+        bsky.check_snapshot(snapshot)
+    assert bsky.entry_from_snapshot(snapshot, actor=ACTOR) is None
+    assert bsky.snapshot_aggregates(snapshot) is None
+
+
+def test_the_reviewers_contradictory_snapshot_is_not_a_completed_zero() -> None:
+    snapshot = {
+        "platform": "bluesky",
+        "as_of": "2026-11-26",
+        "complete": True,
+        "reason": "partial_pages",
+    }
+    with pytest.raises(ImportGuardError):
+        bsky.check_snapshot(snapshot)
+    assert bsky.entry_from_snapshot(snapshot, actor=ACTOR) is None
+    assert bsky.snapshot_aggregates(snapshot) is None
+
+
+def test_snapshot_aggregates_sum_only_a_complete_consistent_snapshot() -> None:
+    assert bsky.snapshot_aggregates(_snap(interactions=_ROWS)) == {
+        "posts_30d": 1,
+        "boosts_30d": 1,
+        "favorites_30d": 2,
+        "replies_30d": 3,
+    }
+    empty = bsky.snapshot_aggregates(_snap())
+    assert empty is not None and empty["posts_30d"] == 0
+    stale = _snap(complete=False, reason="timeout", interactions=_ROWS)
+    assert bsky.snapshot_aggregates(stale) is None  # prior rows are not a fresh sum
+
+
+def test_built_snapshots_always_satisfy_the_table() -> None:
+    empty_prior: list[InteractionRow] = []
+    broken = run(Pages([reply({}, status=500)]))
+    kept = bsky.build_snapshot(
+        broken, as_of=date(2026, 11, 26), prior=[InteractionRow(1, 2, 3)]
+    )
+    bare = bsky.build_snapshot(broken, as_of=date(2026, 11, 26), prior=empty_prior)
+    fresh = bsky.build_snapshot(run(Pages([feed_page([])])), as_of=date(2026, 11, 26))
+    for snap in (kept, bare, fresh):
+        assert snap is not None
+        bsky.check_snapshot(snap)
+    assert bare is not None and "interactions" not in bare  # never an empty list
+    assert fresh is not None and fresh["interactions"] == []
+
+
+def test_history_aggregates_refuse_a_bad_row_list() -> None:
+    good = run(Pages([feed_page([post(1, NOW)])]))
+    assert bsky.history_aggregates(good) is not None
+    too_many = bsky.BlueskyRead(1, 1, (InteractionRow(1, 1, 1),) * 201, 3)
+    assert bsky.history_aggregates(too_many) is None  # window_truncated is no sum
 
 
 def test_fetch_json_view_returns_an_object_and_a_header_view_only() -> None:

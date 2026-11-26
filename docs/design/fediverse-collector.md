@@ -320,6 +320,7 @@ collector adds that a platform is `complete` or not, as a whole.
 | A page after the first fails or is too large | `partial_pages` | no interactions, no history write; followers may still be written from the profile call, which is complete on its own |
 | Page cap reached before the window start | `page_cap` | as `partial_pages` |
 | More than 200 posts in the window | `window_truncated` | no interactions and no medians (200 newest rows would describe a shorter window than the card states); question 6 asks whether to raise `MAX_POSTS` |
+| Bluesky walk ends early on a whole page of out-of-window posts while a next cursor exists, and the feed order seen is not newest-first | `ordering_unverified` | as `partial_pages`; the feed order is not trusted, so an early end counts as complete only when every own post seen is no newer than the one before it |
 | Server `Date` differs from our clock by more than 10 minutes | `clock_skew` | no write; a post time more than 10 minutes in the future is dropped and counted |
 | Window read in full and there are zero posts | none (complete) | `posts` 0, empty `interactions`; the card prints medians as "not provided", since a median of nothing does not exist |
 | Account hides counts or the server reports a count it cannot compute (a negative or missing field on compatible software) | `counts_unavailable` | no write for that field; "not provided", never 0 |

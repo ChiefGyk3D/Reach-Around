@@ -29,7 +29,11 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from urllib.parse import quote
 
-from reach_around.config.fediverse import MAX_INTERACTIONS, FediverseEntry
+from reach_around.config.fediverse import (
+    MAX_INTERACTIONS,
+    MAX_POSTS,
+    FediverseEntry,
+)
 from reach_around.config.import_guard import (
     ImportGuardError,
     check_names,
@@ -195,7 +199,14 @@ def collect(
             raise _BudgetEnded
         calls += 1
         # Never later than the run's deadline, whatever the fetch layer asked.
-        return send(replace(request, deadline=min(request.deadline, deadline)))
+        response = send(replace(request, deadline=min(request.deadline, deadline)))
+        if clock() >= deadline:
+            # A response that arrived at or after the deadline is discarded, so
+            # a late page is never merged into the result (the transport is not
+            # trusted to enforce the deadline itself).
+            ended.append("timeout")
+            raise _BudgetEnded
+        return response
 
     def bounded_sleep(seconds: float) -> None:
         """A pause or a retry wait that would cross the deadline ends the run."""
@@ -203,6 +214,9 @@ def collect(
             ended.append("timeout")
             raise _BudgetEnded
         sleep(seconds)
+        if clock() >= deadline:  # the pause itself ran long
+            ended.append("timeout")
+            raise _BudgetEnded
 
     def get(path: str, *, later_page: bool) -> Mapping[str, object]:
         if calls >= MAX_CALLS:
@@ -228,6 +242,8 @@ def collect(
             if ended:  # the budget stopped a request: its own word, not a fetch one
                 raise _Stop(ended[0]) from None
             raise _Stop(_reason_of(error, later_page=later_page)) from None
+        if clock() >= deadline:  # nothing is accepted after the absolute deadline
+            raise _Stop("timeout")
         if server_clock_skewed(fetched.headers.get("date"), now):
             raise _Stop("clock_skew")
         return fetched.data
@@ -247,6 +263,9 @@ def collect(
         seen: set[str] = set()
         seen_cursors: set[str] = set()  # bounded by the page cap
         cursor: str | None = None
+        newest: datetime | None = None  # indexedAt of the last own post seen
+        ordered = True  # every own post seen was no newer than the one before
+        confirming = False  # the next page must confirm an all-old page
         for page in range(1, MAX_PAGES + 1):
             query = (
                 "app.bsky.feed.getAuthorFeed?actor="
@@ -264,9 +283,16 @@ def collect(
             # re-index) must not end the walk. The walk ends when the cursor
             # ends, when the budget does (incomplete), or after one whole page
             # that held own posts older than the window and none inside it.
+            # That early end is complete only when the order seen is newest
+            # first all the way (see ``ordered`` below); otherwise it is
+            # ``ordering_unverified``.
             recent = old = 0
             for item in feed:
-                outcome = _item(item, did, now)
+                outcome, when = _item(item, did, now)
+                if when is not None:
+                    if newest is not None and when > newest:
+                        ordered = False  # a post newer than the one before it
+                    newest = when
                 if outcome == "old":
                     old += 1
                 elif outcome == "future":
@@ -278,11 +304,25 @@ def collect(
                     if key not in seen:
                         seen.add(key)
                         rows.append(row)
-            if old and not recent:
-                break  # a whole page of out-of-window posts: the window was read
             nxt = data.get("cursor")
             if nxt is None or nxt == "":
                 break  # the end of the feed: the window was read in full
+            if confirming:
+                # The page after a whole old page: any own post inside the
+                # window proves the order is not newest first.
+                if recent or not ordered:
+                    raise _Stop("ordering_unverified")
+                if old:
+                    break  # two old pages in order, none inside: read in full
+            elif old and not recent:
+                # A whole page of out-of-window posts with more pages behind it.
+                # The server's order is not trusted, so one such page is never
+                # enough: the walk may stop early only when every own post seen
+                # was no newer than the one before it (across pages too) and the
+                # next page confirms it. Otherwise the read is incomplete.
+                if not ordered:
+                    raise _Stop("ordering_unverified")
+                confirming = True
             if type(nxt) is not str or not _CURSOR.fullmatch(nxt):
                 raise _Stop("bad_shape")
             if nxt in seen_cursors:
@@ -291,19 +331,22 @@ def collect(
             cursor = nxt
         else:
             raise _Stop("page_cap")
-        ordered = tuple(sorted(rows, key=lambda r: (r.boosts, r.favorites, r.replies)))
-        return BlueskyRead(followers, posts, ordered, calls, dropped)
+        by_value = tuple(sorted(rows, key=lambda r: (r.boosts, r.favorites, r.replies)))
+        return BlueskyRead(followers, posts, by_value, calls, dropped)
     except _Stop as stop:
         return BlueskyRead(followers, posts, NotProvided(stop.reason), calls, dropped)
 
 
 def _item(
     item: object, did: str, now: datetime
-) -> tuple[str, InteractionRow] | str | None:
-    """One feed entry: a row, ``old`` (before the window), ``future``, or None.
+) -> tuple[tuple[str, InteractionRow] | str | None, datetime | None]:
+    """One feed entry: ``(outcome, when)``.
 
-    None means the entry is not the account's own plain post. A malformed entry
-    that would have been counted raises ``_Stop('bad_shape')``.
+    ``outcome`` is a row, ``old`` (before the window), ``future``, or None (the
+    entry is not the account's own plain post). ``when`` is the server time of
+    an own, unpinned, non-reply post (used only to check the feed order; a pin
+    comes first and out of order) and None for everything else. A malformed
+    entry that would have been counted raises ``_Stop('bad_shape')``.
     """
     if not isinstance(item, dict):
         raise _Stop("bad_shape")
@@ -315,23 +358,28 @@ def _item(
     if reason is not None:
         kind = reason.get("$type") if isinstance(reason, dict) else None
         if kind != _PIN:
-            return None  # a repost (or anything unknown) is not the account's post
+            return (
+                None,
+                None,
+            )  # a repost (or anything unknown) is not the account's post
         pinned = True
     author = post.get("author")
     if not isinstance(author, dict) or author.get("did") != did:
-        return None
+        return None, None
     record = post.get("record")
     if item.get("reply") is not None or (
         isinstance(record, dict) and record.get("reply") is not None
     ):
-        return None  # a reply to someone else is not counted
-    placed = classify(post_time(post, "indexedAt"), now)
+        return None, None  # a reply to someone else is not counted
+    when = post_time(post, "indexedAt")
+    placed = classify(when, now)
     if placed == "invalid":
         raise _Stop("bad_shape")
+    order_time = None if pinned else when
     if placed == "before":
-        return None if pinned else "old"  # pins come first and out of order
+        return (None if pinned else "old"), order_time  # pins come out of order
     if placed == "future":
-        return "future"
+        return "future", order_time
     uri = post.get("uri")
     if type(uri) is not str or not 0 < len(uri) <= 512:
         raise _Stop("bad_shape")
@@ -340,7 +388,7 @@ def _item(
     replies = _int(post.get("replyCount"), MAX_INTERACTIONS)
     if reposts is None or likes is None or replies is None:
         raise _Stop("bad_shape")
-    return uri, InteractionRow(reposts, likes, replies)
+    return (uri, InteractionRow(reposts, likes, replies)), order_time
 
 
 # --- snapshot, guard pass, history aggregates and the kit entry -----------------
@@ -416,7 +464,27 @@ def check_snapshot(snapshot: Mapping[str, object]) -> None:
     and refuses a person-level key or an identifying string. The schema pass
     then requires the exact shape: fixed platform, ISO date, a boolean, counts
     that are plain bounded integers, a reason from the closed list, and rows of
-    exactly the three counts. Raises ``ImportGuardError``.
+    exactly the three counts. A third pass checks that the fields agree with
+    each other: the only legal combinations are
+
+    ====================  ===============  =====================================
+    complete              reason           interactions
+    ====================  ===============  =====================================
+    true                  absent           present, a list of 0 to 200 valid rows
+                                           (an empty list means a read that
+                                           finished and found no own post in the
+                                           window, the one true zero)
+    false                 present (closed  absent (no prior rows kept)
+                          word)
+    false                 present (closed  present, 1 to 200 valid rows (the prior
+                          word)            rows, kept and stale; never an empty
+                                           list, which would read as fresh zeros)
+    ====================  ===============  =====================================
+
+    Every other combination is refused: a complete snapshot with a reason or
+    without ``interactions``, an incomplete one without a reason, with an empty
+    list, or with a reason that is not on the closed list. Raises
+    ``ImportGuardError``.
     """
     _walk(snapshot, 0)
     check_names(snapshot.keys(), _TOP_KEYS)
@@ -425,7 +493,8 @@ def check_snapshot(snapshot: Mapping[str, object]) -> None:
     as_of = snapshot.get("as_of")
     if type(as_of) is not str or not _AS_OF.fullmatch(as_of):
         raise ImportGuardError(NOT_ANONYMOUS)
-    if type(snapshot.get("complete")) is not bool:
+    complete = snapshot.get("complete")
+    if type(complete) is not bool:
         raise ImportGuardError(NOT_ANONYMOUS)
     for key in ("followers", "posts"):
         if key in snapshot and not _count_ok(snapshot[key], MAX_COUNT):
@@ -433,7 +502,7 @@ def check_snapshot(snapshot: Mapping[str, object]) -> None:
     if "reason" in snapshot and not is_reason(snapshot["reason"]):
         raise ImportGuardError(NOT_ANONYMOUS)
     rows = snapshot.get("interactions", [])
-    if not isinstance(rows, list):
+    if not isinstance(rows, list) or len(rows) > MAX_POSTS:
         raise ImportGuardError(NOT_ANONYMOUS)
     for row in rows:
         if not isinstance(row, dict):
@@ -443,6 +512,12 @@ def check_snapshot(snapshot: Mapping[str, object]) -> None:
             _count_ok(v, MAX_INTERACTIONS) for v in row.values()
         ):
             raise ImportGuardError(NOT_ANONYMOUS)
+    # The consistency pass: the table in the docstring, nothing else is legal.
+    if complete:
+        if "reason" in snapshot or "interactions" not in snapshot:
+            raise ImportGuardError(NOT_ANONYMOUS)
+    elif "reason" not in snapshot or ("interactions" in snapshot and not rows):
+        raise ImportGuardError(NOT_ANONYMOUS)
 
 
 def build_snapshot(
@@ -470,7 +545,9 @@ def build_snapshot(
         snapshot["followers"] = read.followers
     if read.posts is not None:
         snapshot["posts"] = read.posts
-    if kept is not None:
+    # A kept-prior empty list on an incomplete read is left out: an incomplete
+    # snapshot never carries an empty list that could read as fresh zeros.
+    if kept is not None and (reason is None or len(kept) > 0):
         snapshot["interactions"] = [row.as_dict() for row in kept]
     if reason is not None:
         snapshot["reason"] = reason
@@ -489,12 +566,40 @@ def history_aggregates(read: BlueskyRead) -> dict[str, int] | None:
     """
     if isinstance(read.rows, NotProvided):
         return None
+    # Re-checked, not trusted from construction: a bad or oversized row list is
+    # a refusal, never a sum.
+    kept, reason = keep_prior(list(read.rows), None)
+    if reason is not None or kept is None:
+        return None
+    return _sums(kept)
+
+
+def _sums(rows: Sequence[InteractionRow]) -> dict[str, int]:
     return {
-        "posts_30d": len(read.rows),
-        "boosts_30d": sum(r.boosts for r in read.rows),
-        "favorites_30d": sum(r.favorites for r in read.rows),
-        "replies_30d": sum(r.replies for r in read.rows),
+        "posts_30d": len(rows),
+        "boosts_30d": sum(r.boosts for r in rows),
+        "favorites_30d": sum(r.favorites for r in rows),
+        "replies_30d": sum(r.replies for r in rows),
     }
+
+
+def snapshot_aggregates(snapshot: Mapping[str, object]) -> dict[str, int] | None:
+    """The window sums of a stored snapshot, or None.
+
+    Refuses an incomplete snapshot and any contradictory one (the whole
+    consistency table of ``check_snapshot``): only a complete, consistent
+    snapshot is summed, so a stale or half-written one is never a zero.
+    """
+    try:
+        check_snapshot(snapshot)
+    except ImportGuardError:
+        return None
+    rows = snapshot.get("interactions")
+    if snapshot.get("complete") is not True or not isinstance(rows, list):
+        return None
+    return _sums(
+        [InteractionRow(r["boosts"], r["favorites"], r["replies"]) for r in rows]
+    )
 
 
 def entry_from_snapshot(
@@ -508,10 +613,12 @@ def entry_from_snapshot(
     at the presentation boundary. An incomplete snapshot returns None, so it
     never replaces a hand-kept entry. The hand-kept path is unchanged.
     """
-    if snapshot.get("complete") is not True:
+    try:
+        check_snapshot(snapshot)  # the whole consistency table, not one flag
+    except ImportGuardError:
         return None
-    rows = snapshot.get("interactions", [])
-    if not isinstance(rows, list):
+    rows = snapshot.get("interactions")
+    if snapshot.get("complete") is not True or not isinstance(rows, list):
         return None
     payload: dict[str, object] = {
         key: snapshot[key]
