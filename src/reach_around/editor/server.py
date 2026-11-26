@@ -24,6 +24,7 @@ import mimetypes
 import os
 import secrets
 import signal
+import socket
 import stat
 import sys
 import threading
@@ -652,11 +653,11 @@ class _PreviewHandler(_Handler):
             self._refuse(503)
             return
         try:
-            self._stream(target)
+            self._stream(site.root.resolve(), segments)
         finally:
             slots.release()
 
-    def _stream(self, target: Path) -> None:
+    def _stream(self, root: Path, segments: list[str]) -> None:
         """Send one build file from a descriptor opened once, in bounded chunks.
 
         The file is opened with ``O_NOFOLLOW`` and the descriptor itself is
@@ -664,16 +665,16 @@ class _PreviewHandler(_Handler):
         size cap), so the check and the read refer to the same object. A
         ``Range`` header is ignored: the whole file is sent with a 200.
         """
-        opened = _open_site_file(target)
+        opened = _open_site_file(root, segments)
         if opened is None:
             self._refuse(404)
             return
-        fd, size = opened
+        fd, size, name = opened
         try:
             if size > SITE_FILE_CAP:
                 self._refuse(413)
                 return
-            kind = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+            kind = mimetypes.guess_type(name)[0] or "application/octet-stream"
             if kind.startswith("text/") or kind == "application/json":
                 kind += "; charset=utf-8"
             self.close_connection = True
@@ -682,14 +683,19 @@ class _PreviewHandler(_Handler):
                 self.send_header("Content-Type", kind)
                 self.send_header("Content-Length", str(size))
                 self.send_header("Connection", "close")
-                for name, value in self.security_headers():
-                    self.send_header(name, value)
+                for header, value in self.security_headers():
+                    self.send_header(header, value)
                 self.end_headers()
                 if self.command != "HEAD":
                     left = size
                     while left > 0:
                         chunk = _read_fd(fd, min(_FILE_CHUNK, left))
                         if not chunk:
+                            # The file shrank after the headers: the promised
+                            # length cannot be met, so drop the connection.
+                            self.owner.short_transfers += 1
+                            self.close_connection = True
+                            self.connection.shutdown(socket.SHUT_RDWR)
                             break
                         self.wfile.write(chunk)
                         left -= len(chunk)
@@ -699,31 +705,57 @@ class _PreviewHandler(_Handler):
             os.close(fd)
 
 
-def _open_site_file(path: Path) -> tuple[int, int] | None:
-    """Open one regular build file once: ``(descriptor, size)``, or None.
+def _open_site_file(root: Path, segments: list[str]) -> tuple[int, int, str] | None:
+    """Open one regular build file under ``root``: ``(descriptor, size, name)``.
 
-    Symlinks are refused at the open, and the descriptor must be the very
-    object the path names now (same device and inode), so a swap between the
-    path check and this open cannot serve another file.
+    The walk is descriptor-relative: the root is opened once, then every
+    segment is opened with ``dir_fd`` and ``O_NOFOLLOW``, so a component
+    swapped for a symlink after the request was checked is refused (the built
+    site holds no symlinks, so any link on the way is refused) and the walk
+    can never leave the root. A directory as the last segment serves its
+    ``index.html``. Every descendant must stay on the root's device.
     """
-    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+    parts = list(segments)
+    for part in parts:
+        if part in ("", ".", "..") or "/" in part or "\0" in part:
+            return None
+    base = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+    held: list[int] = []
     try:
-        fd = os.open(path, flags)
+        current = os.open(root, base | os.O_DIRECTORY)
+        held.append(current)
+        device = os.fstat(current).st_dev
+        index = 0
+        name = ""
+        while True:
+            last = index >= len(parts)
+            name = "index.html" if last else parts[index]
+            index += 1
+            is_final = last or index >= len(parts)
+            flags = base | os.O_NONBLOCK
+            if not is_final:
+                flags |= os.O_DIRECTORY
+            nxt = os.open(name, flags, dir_fd=current)
+            held.append(nxt)
+            info = os.fstat(nxt)
+            if info.st_dev != device:
+                return None
+            if stat.S_ISDIR(info.st_mode):
+                if last:
+                    return None
+                current = nxt
+                if is_final:
+                    parts.append("index.html")
+                continue
+            if not is_final or not stat.S_ISREG(info.st_mode):
+                return None
+            held.pop()  # the file descriptor goes to the caller
+            return nxt, info.st_size, name
     except OSError:
         return None
-    try:
-        info = os.fstat(fd)
-        named = os.lstat(path)
-    except OSError:
-        os.close(fd)
-        return None
-    if not stat.S_ISREG(info.st_mode) or (info.st_dev, info.st_ino) != (
-        named.st_dev,
-        named.st_ino,
-    ):
-        os.close(fd)
-        return None
-    return fd, info.st_size
+    finally:
+        for fd in held:
+            os.close(fd)
 
 
 @dataclass
@@ -776,6 +808,7 @@ class EditorSession:
         self.site: Preview | None = None
         self._site_digest: str | None = None
         self.file_slots = threading.BoundedSemaphore(MAX_FILE_STREAMS)
+        self.short_transfers = 0  # files that shrank mid-send (a count, no path)
         self._site_lock = threading.Lock()
         self.idle_seconds = idle_seconds
         self.read_timeout = read_timeout

@@ -6,9 +6,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
 import socketserver
 import threading
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -277,37 +279,80 @@ def test_a_symlink_that_escapes_the_build_root_is_refused(
     assert b"SECRET-OUTSIDE" not in got.body
 
 
-def test_the_open_refuses_a_symlink_swapped_in_after_the_path_check(
-    tmp_path: Path,
-) -> None:
+def _root(rig: Rig) -> Path:
+    site = rig.session.site
+    assert site is not None
+    return site.root
+
+
+def test_the_open_refuses_a_symlink_as_the_last_component(tmp_path: Path) -> None:
     secret = tmp_path / "outside.txt"
     secret.write_text("SECRET-OUTSIDE", encoding="utf-8")
-    link = tmp_path / "page.txt"
-    link.symlink_to(secret)
-    assert server_module._open_site_file(link) is None
-
-
-def test_the_open_refuses_a_path_that_names_another_object(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    page = tmp_path / "page.txt"
-    page.write_text("page", encoding="utf-8")
-    other = tmp_path / "other.txt"
-    other.write_text("other", encoding="utf-8")
-    real_lstat = os.lstat
-    monkeypatch.setattr(
-        os,
-        "lstat",
-        lambda path, *a, **k: real_lstat(other) if path == page else real_lstat(path),
-    )
-    assert server_module._open_site_file(page) is None
+    root = tmp_path / "build"
+    root.mkdir()
+    (root / "page.txt").symlink_to(secret)
+    assert server_module._open_site_file(root, ["page.txt"]) is None
 
 
 def test_the_open_refuses_a_directory_and_a_fifo(tmp_path: Path) -> None:
-    assert server_module._open_site_file(tmp_path) is None
-    fifo = tmp_path / "pipe"
+    root = tmp_path / "build"
+    (root / "sub").mkdir(parents=True)
+    assert server_module._open_site_file(root, []) is None  # no index.html
+    assert server_module._open_site_file(root, ["sub"]) is None
+    fifo = root / "pipe"
     os.mkfifo(fifo)
-    assert server_module._open_site_file(fifo) is None
+    assert server_module._open_site_file(root, ["pipe"]) is None
+
+
+def test_the_open_refuses_hostile_segments(tmp_path: Path) -> None:
+    root = tmp_path / "build"
+    root.mkdir()
+    (tmp_path / "outside.txt").write_text("SECRET-OUTSIDE", encoding="utf-8")
+    (root / "page.txt").write_text("page", encoding="utf-8")
+    for segments in (["..", "outside.txt"], ["."], [""], ["a/b"], ["page.txt\0"]):
+        assert server_module._open_site_file(root, segments) is None, segments
+
+
+def test_a_directory_swapped_for_a_link_after_the_check_is_not_followed(
+    rig: Rig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("SECRET-OUTSIDE", encoding="utf-8")
+    _build_file(rig, "assets/secret.txt", b"inside")
+    root = _root(rig)
+    real_resolve = server_module._resolve
+
+    def swap_after_check(base: Path, segments: list[str]) -> Path | None:
+        found = real_resolve(base, segments)  # the request passes the check ...
+        (root / "assets").rename(root / "assets-moved")  # ... then it is swapped
+        (root / "assets").symlink_to(outside)
+        return found
+
+    monkeypatch.setattr(server_module, "_resolve", swap_after_check)
+    got = request(rig.session.preview_port, "GET", "/assets/secret.txt")
+    assert got.status == 404
+    assert b"SECRET-OUTSIDE" not in got.body
+
+
+def test_a_link_to_a_directory_inside_the_build_is_refused_too(rig: Rig) -> None:
+    # The built site holds no links, so any link on the way is refused.
+    _build_file(rig, "real/page.txt", b"inside")
+    root = _root(rig)
+    (root / "alias").symlink_to(root / "real")
+    assert request(rig.session.preview_port, "GET", "/real/page.txt").status == 200
+    got = request(rig.session.preview_port, "GET", "/alias/page.txt")
+    assert got.status == 404
+    assert b"inside" not in got.body
+
+
+def test_a_directory_serves_its_index_page_through_the_walk(rig: Rig) -> None:
+    _build_file(rig, "docs/index.html", b"<p>docs</p>")
+    for path in ("/docs", "/docs/"):
+        got = request(rig.session.preview_port, "GET", path)
+        assert got.status == 200, path
+        assert got.body == b"<p>docs</p>"
+        assert got.headers["content-type"].startswith("text/html")
 
 
 def test_an_open_descriptor_keeps_the_old_object_when_the_build_is_replaced(
@@ -317,9 +362,9 @@ def test_an_open_descriptor_keeps_the_old_object_when_the_build_is_replaced(
     root.mkdir()
     page = root / "page.txt"
     page.write_text("old build", encoding="utf-8")
-    opened = server_module._open_site_file(page)
+    opened = server_module._open_site_file(root, ["page.txt"])
     assert opened is not None
-    fd, size = opened
+    fd, size, _name = opened
     try:
         moved = tmp_path / "moved"
         root.rename(moved)
@@ -440,6 +485,136 @@ def test_file_streams_are_bounded_and_a_busy_preview_answers_503(rig: Rig) -> No
     got = request(rig.session.preview_port, "GET", "/one.txt")
     assert got.status == 503
     assert b"one" != got.body
+
+
+def _hold_stream(port: int, path: str) -> socket.socket:
+    """Start a download and never read it, so the server keeps its slot."""
+    sock = socket.socket()
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    sock.settimeout(5)
+    sock.connect(("127.0.0.1", port))
+    sock.sendall(f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n".encode())
+    return sock
+
+
+def _wait_for(check: Callable[[], bool], seconds: float = 8.0) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if check():
+            return True
+        time.sleep(0.05)
+    return check()
+
+
+def _big_sparse(rig: Rig, name: str) -> None:
+    with (_root(rig) / name).open("wb") as handle:
+        handle.truncate(48 * 1024 * 1024)  # sparse, far above the socket buffers
+
+
+def test_real_slow_streams_hold_the_slots_and_release_them_on_disconnect(
+    rig: Rig,
+) -> None:
+    _big_sparse(rig, "big.bin")
+    _build_file(rig, "one.txt", b"one")
+    port = rig.session.preview_port
+    count = server_module.MAX_FILE_STREAMS
+    clients = [_hold_stream(port, "/big.bin") for _ in range(count)]
+    try:
+        busy = _wait_for(lambda: request(port, "GET", "/one.txt").status == 503)
+        assert busy, "the ninth stream was not refused while eight were held"
+    finally:
+        for sock in clients:
+            sock.close()
+    assert _wait_for(lambda: request(port, "GET", "/one.txt").status == 200)
+
+
+def test_a_mid_stream_disconnect_releases_the_descriptor_and_the_slot(
+    rig: Rig,
+) -> None:
+    _big_sparse(rig, "big.bin")
+    slots = threading.BoundedSemaphore(1)
+    rig.session.file_slots = slots
+
+    def free() -> bool:
+        if slots.acquire(blocking=False):
+            slots.release()
+            return True
+        return False
+
+    def fd_count() -> int | None:
+        try:
+            return len(os.listdir("/proc/self/fd"))
+        except OSError:
+            return None
+
+    before = fd_count()
+    client = _hold_stream(rig.session.preview_port, "/big.bin")
+    assert _wait_for(lambda: not free()), "the stream never took its slot"
+    client.recv(1024)  # the transfer is under way
+    client.close()
+    assert _wait_for(free), "the slot was not released after the disconnect"
+    if before is not None:
+        assert _wait_for(lambda: fd_count() == before), "a descriptor leaked"
+
+
+def test_a_file_that_shrinks_after_the_headers_drops_the_connection(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(server_module, "_FILE_CHUNK", 4096)
+    path = _build_file(rig, "shrink.bin", b"x" * 20000)
+    real_read = os.read
+    calls: list[int] = []
+
+    def shrinking(fd: int, count: int) -> bytes:
+        calls.append(count)
+        if len(calls) == 2:
+            os.truncate(path, 100)  # shorter than what was already sent
+        return real_read(fd, count)
+
+    monkeypatch.setattr(server_module, "_read_fd", shrinking)
+    got = request(rig.session.preview_port, "GET", "/shrink.bin")
+    assert got.headers["content-length"] == "20000"
+    assert len(got.body) < 20000
+    assert getattr(rig.session, "short_transfers", 0) == 1
+
+
+def test_a_file_that_grows_after_the_headers_never_sends_more_than_promised(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(server_module, "_FILE_CHUNK", 4096)
+    path = _build_file(rig, "grow.bin", b"y" * 10000)
+    real_read = os.read
+    grown: list[bool] = []
+
+    def growing(fd: int, count: int) -> bytes:
+        if not grown:
+            grown.append(True)
+            with path.open("ab") as handle:
+                handle.write(b"Z" * 50000)
+        return real_read(fd, count)
+
+    monkeypatch.setattr(server_module, "_read_fd", growing)
+    got = request(rig.session.preview_port, "GET", "/grow.bin")
+    assert got.headers["content-length"] == "10000"
+    assert got.body == b"y" * 10000
+    assert getattr(rig.session, "short_transfers", 0) == 0
+
+
+def test_the_503_and_413_answers_carry_nothing_the_request_chose(rig: Rig) -> None:
+    marker = "zq9distinctmarker"
+    _build_file(rig, f"{marker}.txt", b"small")
+    with (_root(rig) / f"{marker}-huge.bin").open("wb") as handle:
+        handle.truncate(server_module.SITE_FILE_CAP + 1)
+    slots = threading.BoundedSemaphore(1)
+    rig.session.file_slots = slots
+    answers = [request(rig.session.preview_port, "GET", f"/{marker}-huge.bin")]
+    assert slots.acquire(blocking=False)
+    answers.append(request(rig.session.preview_port, "GET", f"/{marker}.txt"))
+    assert [a.status for a in answers] == [413, 503]
+    for got in answers:
+        assert marker.encode() not in got.body
+        assert marker not in "".join(got.headers.values())
+        assert b"small" not in got.body
 
 
 def test_a_foreign_host_is_refused_on_both_listeners(rig: Rig) -> None:
