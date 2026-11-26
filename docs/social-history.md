@@ -299,7 +299,7 @@ before the tag existed have none, so for an older file also run
    holds the old versions. If the deadline needs true deletion (Social Blade,
    or any case where git history would break it), the private-repository
    history rewrite is a separate operation with its own approval, backup and
-   restore plan.
+   restore plan: see [history-rewrite-runbook.md](history-rewrite-runbook.md).
 7. Write down the date and what was redacted (counts only) in the instance log.
 
 Running it again with the same arguments redacts 0 lines and changes nothing.

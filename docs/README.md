@@ -32,6 +32,7 @@ A state is a judgment on 2026-11-24, not a test result. The decisions that super
 | [failure-modes.md](failure-modes.md) | Kill switches, quota, restore, how gaps are shown | GOOD |
 | [backup-restore.md](backup-restore.md) | Backing up the analytics database and history, restore drill | GOOD |
 | [collection-gaps-runbook.md](collection-gaps-runbook.md) | Response and recovery when collection has gaps | GOOD |
+| [history-rewrite-runbook.md](history-rewrite-runbook.md) | Remove a record from the private instance repository's git history: steps, verification, rollback | GOOD |
 | [token-health.md](token-health.md) | Token health report | GOOD |
 | [token-sink.md](token-sink.md) | Store rotated collector tokens in the secret manager | GOOD |
 | [alerts.md](alerts.md) | Owner alerts from the Worker | GOOD |
