@@ -39,9 +39,14 @@
 #      a workflow in a separate trusted repository, so a pull request cannot
 #      replace it (UNVERIFIED until live gate G1; availability by plan and
 #      level is to be confirmed, see README.md, "History rewrites").
-#   2. CODEOWNERS covering `.github/` and `history/` (also `scripts/` and
-#      `engine.lock`) with "Require review from Code Owners".
-#   3. Restricting who can push `redact/*` branches.
+#   2. Protected `.github/`, `history/`, `scripts/`, `engine.lock` and
+#      `.github/history-approvers` paths with mandatory code-owner approval
+#      that the pull request author cannot satisfy or dismiss: CODEOWNERS
+#      entries for those paths, "Require review from Code Owners", the author
+#      is not a code owner of them, "Dismiss stale pull request approvals" is
+#      on, and administrators are included in the rules.
+# Restricting who can push `redact/*` branches is defense in depth only, not a
+# trust boundary: a pull request from any branch can replace this workflow.
 # Until one is in place, leave `.github/history-approvers` empty. A sole owner
 # is not protected from their own account; the guard prevents mistakes and
 # leaves a record.

@@ -1183,7 +1183,9 @@ def redact_records(
     (rows already redacted, or any field of a planned record differs from the
     file) is refused, as is a plan with a duplicate; an empty plan writes nothing.
 
-    A failure before the rename leaves the original file. If the rename
+    A failure before the rename leaves the original file and is raised as a plain
+    ``HistoryError`` (never ``RedactDurabilityError``); callers rely on that, and
+    treat any other stop as ambiguous. If the rename
     succeeded and the folder sync failed, ``RedactDurabilityError`` is raised:
     the new file is in place, only its durability is uncertain. The new file
     keeps the old owner and group where permitted (a fixed notice is appended to

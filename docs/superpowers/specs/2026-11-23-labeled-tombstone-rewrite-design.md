@@ -983,9 +983,14 @@ no longer offers a merge queue or the watcher alone; D5's predicate is corrected
   requires the owner to configure a trust boundary, in order of preference: (1) the
   ruleset rule "Require workflows to pass before merging" pointing at a workflow in a
   separate trusted repository (organization or enterprise level per GitHub's page read
-  2026-11-26; plan availability INFERRED; UNVERIFIED until G1), (2) CODEOWNERS over
-  `.github/` and `history/` with required code-owner review, (3) a limit on who can push
-  `redact/*` branches. `.github/history-approvers` ships empty and the README carries a
+  2026-11-26; plan availability INFERRED; UNVERIFIED until G1), (2) protected
+  `.github/`, `history/`, scripts, lock and approvers paths with mandatory code-owner
+  approval the author cannot satisfy or dismiss (CODEOWNERS entries, "Require review
+  from Code Owners", the author is not a code owner of them, dismiss stale reviews on,
+  administrators included). A limit on who can push `redact/*` branches is defense in
+  depth only, not a trust boundary (a pull request from any branch can replace the
+  workflow). The High stays open pending the owner decision.
+  `.github/history-approvers` ships empty and the README carries a
   checklist (boundary configured, G1 and G5 run) to finish before the first approver.
   Defense in depth: the first job steps compare the running workflow file with the base
   commit's copy and fail on a difference; a replaced workflow can omit that step.

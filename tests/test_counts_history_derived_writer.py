@@ -8,6 +8,7 @@ the last step names the exact recovery action."""
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -280,3 +281,84 @@ def test_an_existing_folder_needs_no_parent_sync_but_the_folder_is_synced(
         for e in log.before_redact()
     ]
     assert kinds == ["manifest", "redactions"]
+
+
+def test_the_fsync_calls_come_in_order_without_needing_proc(
+    history: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The order of the fsync calls, by descriptor kind (works without /proc)."""
+    events: list[str] = []
+    real_fsync = os.fsync
+    real_redact = getattr(counts_cmd, "redact_records")  # noqa: B009
+
+    def fsync(fd: int) -> None:
+        events.append("dir" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file")
+        real_fsync(fd)
+
+    def redact(*a: Any, **k: Any) -> Any:
+        events.append("redact")
+        return real_redact(*a, **k)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    monkeypatch.setattr(counts_cmd, "redact_records", redact)
+    assert main(argv(history)) == 0
+    # Parent of the new folder, the temporary manifest, then the folder itself.
+    assert events[: events.index("redact")] == ["dir", "file", "dir"]
+
+
+def replace_then_stop(monkeypatch: pytest.MonkeyPatch, stop: BaseException) -> None:
+    """The history file really is replaced, then the run is stopped."""
+    real_redact = getattr(counts_cmd, "redact_records")  # noqa: B009
+
+    def redact(*a: Any, **k: Any) -> Any:
+        real_redact(*a, **k)
+        raise stop
+
+    monkeypatch.setattr(counts_cmd, "redact_records", redact)
+
+
+@pytest.mark.parametrize("stop", [KeyboardInterrupt(), SystemExit(3)])
+def test_an_interrupt_after_the_replacement_keeps_the_manifest_and_names_the_step(
+    history: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    stop: BaseException,
+) -> None:
+    replace_then_stop(monkeypatch, stop)
+    before = history.read_bytes()
+    final = manifest_name(history)
+    with pytest.raises(type(stop)):
+        main(argv(history))
+    assert history.read_bytes() != before  # the rewrite happened
+    err = capsys.readouterr().err
+    folder = history.parent / "redactions"
+    left = [p.name for p in folder.iterdir()]
+    assert len(left) == 1 and left[0].startswith(".")  # the only copy is kept
+    assert f"ln {left[0]} {final} && rm {left[0]}" in err
+    assert "cmp" in err and "mv " not in err
+    assert str(SECRET) not in err
+    run_printed_step(err, folder)
+    assert [p.name for p in folder.iterdir()] == [final]
+
+
+def test_an_unexpected_error_after_the_replacement_exits_five_and_keeps_it(
+    history: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    replace_then_stop(monkeypatch, RuntimeError("late"))
+    assert main(argv(history)) == 5
+    folder = history.parent / "redactions"
+    assert [p.name for p in folder.iterdir()][0].startswith(".")
+    assert "history-verify" in capsys.readouterr().err
+
+
+def test_a_stop_before_the_replacement_still_removes_the_staged_manifest(
+    history: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(*a: Any, **k: Any) -> Any:
+        raise HistoryError("refused before anything was replaced")
+
+    monkeypatch.setattr(counts_cmd, "redact_records", refuse)
+    before = history.read_bytes()
+    assert main(argv(history)) == 1
+    assert history.read_bytes() == before
+    assert list((history.parent / "redactions").iterdir()) == []

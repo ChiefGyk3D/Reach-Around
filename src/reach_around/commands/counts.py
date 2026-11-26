@@ -1015,6 +1015,29 @@ def _stage_manifest(
     return _StagedManifest(folder_fd, run_id, tmp)
 
 
+def _recovery_step(staged: _StagedManifest) -> str:
+    """The no-overwrite step that gives a retained manifest its final name."""
+    return (
+        "in the folder redactions/ first compare any existing "
+        f"{staged.final_name} with {staged.tmp_name} using cmp (never "
+        "overwrite it), then run: "
+        f"ln {staged.tmp_name} {staged.final_name} && rm {staged.tmp_name}"
+    )
+
+
+def _retain_after_interruption(staged: _StagedManifest) -> None:
+    """An ambiguous stop: keep the only copy of the manifest and say what to do."""
+    _say(
+        "error: the redaction stopped and it is not known whether the history "
+        "file was rewritten; the manifest was kept under its temporary name. "
+        "Run history-verify. If the history file was not rewritten, remove "
+        f"{staged.tmp_name} from redactions/. If it was rewritten, "
+        + _recovery_step(staged),
+        sys.stderr,
+    )
+    staged.close()
+
+
 def _install_staged(staged: _StagedManifest) -> bool:
     """Install the manifest after the rewrite; on failure name the recovery step."""
     try:
@@ -1022,10 +1045,7 @@ def _install_staged(staged: _StagedManifest) -> bool:
     except OSError:
         _say(
             "error: the history file was rewritten but the manifest could not be "
-            "installed; in the folder redactions/ first compare any existing "
-            f"{staged.final_name} with {staged.tmp_name} using cmp (never "
-            "overwrite it), then run: "
-            f"ln {staged.tmp_name} {staged.final_name} && rm {staged.tmp_name}",
+            "installed; " + _recovery_step(staged),
             sys.stderr,
         )
         staged.close()
@@ -1107,9 +1127,18 @@ def run_history_redact(args: argparse.Namespace) -> int:
             if staged is not None:
                 _install_staged(staged)
             raise
-        except BaseException:
+        except BaseException as stop:
+            # Only a plain HistoryError positively reports that the history file
+            # was not replaced (redact_records raises RedactDurabilityError for
+            # every outcome after the replacement). Any other stop, an interrupt
+            # included, is ambiguous: keep the staged manifest.
             if staged is not None:
-                staged.discard()  # the history file was not replaced
+                if isinstance(stop, HistoryError):
+                    staged.discard()
+                else:
+                    _retain_after_interruption(staged)
+                    if isinstance(stop, Exception):
+                        return EXIT_REPLACED_UNSURE
             raise
         finally:
             for notice in notices:

@@ -379,6 +379,35 @@ def test_every_page_is_read_and_a_foreign_or_failed_page_is_refused(
         guard.api_get("/e", "t")
 
 
+def test_a_next_link_must_keep_the_endpoint_path_and_only_change_the_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = f"{guard.API}/repos/me/inst/pulls/5/commits?per_page=100"
+    same_path = f"{guard.API}/repos/me/inst/pulls/5/commits?per_page=100&page=2"
+    other = (
+        f"{guard.API}/repos/me/other/pulls/5/commits?page=2",  # another repository
+        f"{guard.API}/repos/me/inst/issues/5/events?page=2",  # another endpoint
+        f"{guard.API}/repos/me/inst/pulls/5/commits/../../x?page=2",
+        "http://api.github.com/repos/me/inst/pulls/5/commits?page=2",  # not https
+        "https://api.github.com:444/repos/me/inst/pulls/5/commits?page=2",
+        "https://user@api.github.com/repos/me/inst/pulls/5/commits?page=2",
+    )
+    pages: dict[str, FakeReply] = {same_path: FakeReply(b'[{"id":2}]')}
+    monkeypatch.setattr(
+        guard.urllib.request, "urlopen", lambda req, timeout: pages[req.full_url]
+    )
+    pages[first] = FakeReply(b'[{"id":1}]', f'<{same_path}>; rel="next"')
+    assert guard.api_get("/repos/me/inst/pulls/5/commits?per_page=100", "t") == [
+        {"id": 1},
+        {"id": 2},
+    ]
+    for bad in other:
+        pages[first] = FakeReply(b'[{"id":1}]', f'<{bad}>; rel="next"')
+        pages[bad] = FakeReply(b'[{"id":99}]')  # must never be fetched
+        with pytest.raises(guard.Refused):
+            guard.api_get("/repos/me/inst/pulls/5/commits?per_page=100", "t")
+
+
 def test_the_actions_listing_object_is_paged_and_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1116,6 +1145,14 @@ def test_the_readme_and_the_workflow_say_it_is_not_a_sufficient_gate() -> None:
         assert "require workflows to pass before merging" in text
         assert "codeowners" in text
         assert "redact/*" in text
+        # The push restriction is defense in depth, never a trust boundary, and
+        # the code-owner boundary names what the author cannot do.
+        assert "defense in depth only" in text
+        assert "not a trust boundary" in text
+        assert "cannot satisfy or dismiss" in text
+        assert "administrators are included" in text
+        assert "dismiss stale pull request approvals" in text
+        assert "3. restrict" not in text and "3. restricting" not in text
     assert "checklist before you list the first approver" in readme
     for item in ("trust boundary", "gate g1", "gate g5"):
         assert item in readme

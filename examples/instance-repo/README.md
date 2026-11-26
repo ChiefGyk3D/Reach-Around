@@ -401,17 +401,23 @@ boundary, in this order of preference:
    `pull_request`, `pull_request_target` and `merge_group`. Availability by
    plan is not stated on that page and is INFERRED to need an organization
    (and a plan with organization rulesets): confirm it for your account first.
-2. CODEOWNERS covering `.github/` and `history/` (also `scripts/` and
-   `engine.lock`) with the branch rule "Require review from Code Owners", so a
-   workflow or history change needs the owner's approval. A sole owner is not
-   protected from their own account.
-3. Restrict who can push `redact/*` branches.
+2. Protected `.github/`, `history/`, `scripts/`, `engine.lock` and
+   `.github/history-approvers` paths with mandatory code-owner approval that the
+   pull request author cannot satisfy or dismiss: CODEOWNERS entries for those
+   paths, the branch rule "Require review from Code Owners", the author is not a
+   code owner of them, "Dismiss stale pull request approvals" is on, and
+   administrators are included in the rules. A sole owner is not protected from
+   their own account.
+
+Restricting who can push `redact/*` branches is defense in depth only and is not
+a trust boundary: a pull request from any branch can replace the workflow.
 
 **Checklist before you list the first approver.** `.github/history-approvers`
 ships empty so that nothing is accepted. Complete all of these first:
 
-- [ ] A trust boundary from the list above is configured and you have seen it
-      block a pull request that edits `history-guard.yml`.
+- [ ] A trust boundary from the list above (not a `redact/*` push restriction
+      alone) is configured and you have seen it block a pull request that
+      edits `history-guard.yml`.
 - [ ] Live gate G1 was run: which revision of the workflow GitHub executes for a
       pull request that edits it.
 - [ ] Live gate G5 was run: `actions: read` is enough to list the runs of the

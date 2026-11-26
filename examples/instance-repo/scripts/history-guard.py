@@ -46,6 +46,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -273,6 +274,20 @@ def parse_raw_diff(raw: bytes) -> list[tuple[str, str, str, str]]:
 # --- the world -------------------------------------------------------------
 
 
+def same_endpoint(url: str, path: str) -> bool:
+    """A next-page link must stay on the same endpoint: https, exactly the API
+    host (no user, port or fragment) and exactly the first request's path; only
+    the query (the page) may differ."""
+    link = urllib.parse.urlsplit(url)
+    first = urllib.parse.urlsplit(f"{API}{path}")
+    return (
+        link.scheme == "https"
+        and link.netloc == first.netloc
+        and link.path == first.path
+        and not link.fragment
+    )
+
+
 def api_get(path: str, token: str) -> list[Any] | dict[str, Any]:
     """GET one API path, following every page. Any failure is a refusal."""
     url = f"{API}{path}"
@@ -317,7 +332,7 @@ def api_get(path: str, token: str) -> list[Any] | dict[str, Any]:
         if not match:
             return merged if merged is not None else pages
         url = match.group(1)
-        if not url.startswith(API + "/"):
+        if not same_endpoint(url, path):
             raise Refused("the GitHub API sent an unexpected page link")
     raise Refused("a GitHub API listing was too long to read")
 
