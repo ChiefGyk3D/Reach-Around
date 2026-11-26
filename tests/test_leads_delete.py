@@ -15,6 +15,7 @@ import pytest
 from reach_around.cli import main
 from reach_around.commands.leads import (
     LeadsError,
+    alert_clear_commands,
     mask_email,
     normalize_email,
 )
@@ -208,6 +209,77 @@ class TestYes:
         assert "partner" not in err and "example.test" not in err
         # Fixed message: no form of the address reaches stderr (it can be logged).
         assert "1 lead matches." in err and "***" not in err
+
+    def test_hands_over_the_alert_hash_clear_and_read_back(
+        self, capsys: pytest.CaptureFixture[str], export: Path
+    ) -> None:
+        """#856 round 3: the delete file never carries the alert table (it may be in
+        another database), so the tool prints the two hand commands on stderr and says
+        the store is clear only when the read-back shows 0. Round 5 (known gap #905):
+        it also says plainly that the tool does not clear the table."""
+        code, out, err = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+        assert code == 0
+        assert "alert_dedup" not in out
+        want = "wrangler d1 execute reach-around-leads --remote --command "
+        clear = want + '"DELETE FROM alert_dedup"'  # noqa: S608 - expected text
+        look = want + '"SELECT COUNT(*) AS alert_dedup_remaining FROM alert_dedup"'  # noqa: S608
+        assert clear in err and look in err
+        # The apply command stays the last line (other tests and operators read it).
+        last = err.rstrip().splitlines()[-1]
+        assert last.startswith("npx wrangler d1 execute reach-around-leads --remote")
+        assert "read-back shows 0" in err and "example.test" not in err
+        assert "does NOT clear the alert hashes" in err and "#905" in err
+        assert "MANDATORY MANUAL STEP" in err
+        _, out2, err2 = run(capsys, "--input", str(export), "--email", ADDR)
+        assert "alert_dedup" not in out2 + err2  # a dry run prints no command
+
+    def test_delete_makes_no_network_or_subprocess_call_and_has_no_alert_option(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """#856 (split to #905): `leads delete` stays offline. Any subprocess or
+        socket use fails the test, and the removed `--alerts-database` option is
+        refused as an unknown argument."""
+        import socket
+        import subprocess
+
+        def boom(*_a: object, **_k: object) -> None:
+            raise AssertionError("leads delete must not run a process or open a socket")
+
+        monkeypatch.setattr(subprocess, "run", boom)
+        monkeypatch.setattr(subprocess, "Popen", boom)
+        monkeypatch.setattr(socket, "socket", boom)
+        monkeypatch.setattr(socket, "create_connection", boom)
+        code, out, _ = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+        assert code == 0 and ID_A in out
+        monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
+        with pytest.raises(SystemExit) as info:
+            main(
+                ["leads", "delete", "--input", str(export), "--email", "-", "--yes"]
+                + ["--database", "reach-around-leads", "--alerts-database", "x"]
+            )
+        assert info.value.code == 2
+        capsys.readouterr()
+
+    def test_hand_commands_quote_the_database_name(self) -> None:
+        """Low (#856 round 4): the printed retry commands validate the name, so a
+        hostile one never reaches the shell text."""
+        for bad in (
+            "prod; touch /tmp/copied-command-ran #",
+            "a b",
+            "$(id)",
+            "`id`",
+            "x\ny",
+            "",
+        ):
+            with pytest.raises(LeadsError):
+                alert_clear_commands(bad)
+        clear, look = alert_clear_commands("my-db_1")
+        assert clear.startswith("wrangler d1 execute my-db_1 --remote")
+        want = "SELECT COUNT(*) AS alert_dedup_remaining FROM alert_dedup"  # noqa: S608
+        assert look.endswith(f'"{want}"')
 
     def test_normalizes_before_matching(
         self, capsys: pytest.CaptureFixture[str], export: Path

@@ -227,12 +227,183 @@ first item:
 5. Hand-made exports, dumps and spreadsheets (including the files you made for
    the steps above).
 6. Shell history, tickets and notes that hold the address.
-7. By hand, where neither this list nor the tool can look: Worker logs and any
+7. The `alert_dedup` hash (MANDATORY MANUAL STEP; see the store table below).
+   Erasure (`leads delete`) does NOT clear this table and the delete file does
+   not touch it, so after the tool the lead rows are erased but the alert hash
+   step is manual and mandatory (known gap, tracked in #905). `reach-around
+   leads delete --yes` prints the two commands (clear the table, read it back);
+   run them against the database that holds the alert tables and require the
+   read-back to show 0. A quiet site keeps up to 500 rows until the next alert
+   or a hand clear. Clearing it only resets repeat-alert suppression for up to
+   10 minutes.
+8. By hand, where neither this list nor the tool can look: Worker logs and any
    collector logs or exception output; alert delivery logs at the chat or mail
    provider; automated backups and exports of the database beyond Time Travel;
    CI artifacts and deploy logs; monitoring and error-tracking systems; any
    system wired to the Worker that stores request or alert payloads. Record the
    result of each check, even "nothing found".
+
+### Every store, checked against the schema
+
+Checked 2026-11-26 against every table, column, view and trigger the
+migrations create. The test `tests/test_erasure_coverage.py` runs the
+migrations in order in an in-memory SQLite database and reads the schema from
+it (not from the migration text), and fails when something appears that
+`scripts/erasure-stores.json` has not classified, when a column in a table not
+classed lead or lead_hash has a personal-looking name, a blob or untyped
+declaration or an expression default without its own recorded reason, or when
+the recorded column lists or the schema digest no longer match. Columns are read
+with `table_xinfo`, so generated (virtual or stored) and hidden columns are in
+the inventory; each one needs its own recorded reason, and a table that has one
+also pins its normalized CREATE text, which holds the generating expression. The
+schema digest covers every column, type, default, key and hidden flag, and the
+full text of every view, trigger and index (whitespace is collapsed between
+tokens only, never inside a string, a quoted name or a comment), so changing only
+a view or trigger body fails until it is looked at again. Class "lead" means a
+row holds an address or carries a lead id; the delete tool removes those.
+
+What this classification proves, and what it only infers. The test proves that
+every table and column the migrations create is classified, that a column whose
+name, declared type or default looks like it could hold personal data needs a
+recorded reason, and that a table linked to `leads` by a foreign key is classed
+lead. It does not trace what the Worker writes into a column: a TEXT column with
+an innocuous name in a table classed aggregate, with a reviewer's reason, would
+pass. So `leads` and `kit_events` are the only tables this review classified as
+holding an address or a lead id; that is a statement about the classification,
+not a data-flow proof (Worker D1 writes are not analyzed; only storage
+primitives and bindings are inventoried). The test also runs on SQLite, which
+stands in for D1. Inferred and not tested against D1 itself: that D1's SQL
+dialect and `table_xinfo` behave as SQLite's do on these migrations, that
+foreign keys are enforced and `ON DELETE CASCADE` fires, that the statements of
+one `db.batch` run as one unit, and what D1 does with the rest of a file after
+one statement fails. The purge and dedup checks run the real statements on
+SQLite; whether the Worker calls them is covered by the vitest suite in
+`worker/test`, not by the Python test.
+
+What the test does check about the Worker's other stores: every file under
+`worker/src` that names a storage primitive or a storage binding from any
+wrangler config is listed, and so is each statement that mentions one (a short
+hash of the statement text, comments and spacing removed). A new write through an
+already approved binding, or an edit to a reviewed one, fails until it is read
+and recorded. This is a lexical inventory of where storage is named. It is not a
+proof of where data flows: it pins statement text, it does not follow data, and
+a write that never names a primitive or a binding (an indirect call through an
+object passed in, a computed method name) is not seen. What an operator must
+still verify by hand: that the KV namespace holds only the gated page and live
+status state (list its keys), that no R2, Durable Object or queue binding exists
+in the deployed configuration, and that nothing outside this repository was wired
+to the Worker to store requests or alert payloads.
+
+Every export command is found by scanning every text file in the repository
+outside dependency and cache directories and Markdown (scripts anywhere, every
+`package.json`, Makefile and justfile, workflows, composite actions, a
+Containerfile, deploy files, JSON and YAML command arrays). A file larger than
+2 MB is scanned in overlapping chunks, not skipped; a file larger than 64 MB is
+not read and fails the test by name unless it is listed with a reason under
+`export_paths.unscanned_large_files`. In Markdown, each command line is judged
+on its own (a fenced line, an inline code span, a piece of prose), so a later
+`--table` on another command does not hide a whole-database export. A command
+built at run time from pieces that never appear together is not seen.
+
+What the test cannot do: it cannot tell that a person read a registry change.
+The registry carries a digest of itself, so the schema digest, the column lists
+and the reviewed call sites cannot be edited one at a time; that proves the
+records were recomputed together, not that someone else approved them. Review of
+changes to `scripts/erasure-stores.json` (and to this table) by a second human is
+a policy control, not something CI enforces. That includes every `known_gaps`
+entry: it must cite an issue listed under `reviewed_issues` with its title, and
+the registry digest changes with either list, so a waiver cannot be added
+quietly, but the test is not the reviewer and cannot tell whether a person agreed
+to it. A table classed `lead_hash` also needs a reason that names how its value is
+derived and how long it lives, and a recorded reason for every column, the hash
+column included. The repository's CODEOWNERS file
+does not cover the registry and does not require a code owner review (see OPEN
+QUESTION 5).
+
+| Store | Holds | Touched by the delete tool | How erasure is done or checked |
+|---|---|---|---|
+| `leads` (11 columns) | the address, country, times, session floor | yes | `DELETE`, read-back counts the row; also purged by age |
+| `kit_events` (4 columns) | hour-rounded unlock, view and verify events by lead id | yes | `DELETE`, read-back counts the rows; the foreign key also cascades |
+| `alert_dedup` (3 columns) | keyed hash of a recent alert, which can include the address; a row stops counting as a repeat after 10 minutes but is deleted only when the next alert event is admitted, so on a quiet site it can stay stored (at most 500 rows) until then or until cleared by hand | no (known gap, #905: erasure does not clear it; mandatory hand step) | clear the whole table by hand and read it back to 0, against the database that holds the alert tables (statements below); a keyed hash is not erased by being hard to match |
+| `visitor_seen`, `view_events`, `click_events` | coarse visitor rows with no address, no IP address, no lead id | no | not matchable to a person by design (Art. 11); removed by retention |
+| 26 other tables (counters, rollups, budgets, logs, cursors) | counts and bookkeeping | no | aggregate, no row per person; counts cannot be un-counted |
+| KV, edge cache | the gated page, live status state, the public status body | no | no lead data found in the listed call sites; a text scan, not a data-flow proof (verify the namespace's keys by hand); the Worker never writes the gated page key |
+| R2, Durable Objects, queues | not used | not applicable | the test fails if one is added without review |
+| Unlock cookie | a signed token, no server copy | not applicable | stops opening the kit once the `leads` row is gone |
+| `scripts/backup-d1.sh` exports | `leads`, `kit_events`, `visitor_seen`, `view_events` are never exported | not applicable | the only lead-related data this script exports is the `alert_dedup` hashes; the test runs the script against a recording stub and judges every wrangler call it makes, and inventories every export command in any text file of the repository |
+| Hand-made whole-database exports | a `wrangler d1 export` with no `--table` (shown in `docs/deploy.md`, `docs/failure-modes.md` and the wiki as a backstop before a migration) holds every table, `leads` and `kit_events` included | no | by hand, checklist item 5; the test lists the docs that show one, so a new one is noticed |
+| D1 Time Travel | the whole database, 7 days Free, 30 days Paid | no | ages out; see the checklist |
+| Alert copies, inquiry text, hand-made exports, logs | outside the Worker | no | by hand, items 2, 3, 5, 6 and 8 of the checklist |
+
+Known gap (#905): erasure (`leads delete`) does NOT clear the alert hash table.
+Clearing it and reading it back to 0 is a mandatory manual step of the checklist.
+Until the automatic clear is designed (it needs a decision for deployments that
+keep the alert tables in a different database from the leads), a quiet site keeps
+up to 500 rows until the next alert is admitted or a hand clear. For an erasure
+request, clear the whole alert hash table and read it back. Run both against the
+database that holds the alert tables (the leads database when they share it;
+`reach-around leads delete --yes` prints them with the database name; the lead
+delete file does not include them, because a statement on a table that is not in
+that database could fail the whole file). Clearing every row only resets
+repeat-alert suppression for up to 10 minutes. The store is clear when the
+read-back shows 0, and the erasure is not complete before that:
+
+```
+npx wrangler d1 execute <DATABASE> --remote --command "DELETE FROM alert_dedup"
+npx wrangler d1 execute <DATABASE> --remote --command "SELECT COUNT(*) AS alert_dedup_remaining FROM alert_dedup"
+```
+
+For routine housekeeping only, this deletes just the rows already past their 10
+minute life, the point after which they no longer count as repeats; it leaves a
+recent row, so it is not the erasure step. It takes the current time in
+milliseconds as the number:
+
+```
+npx wrangler d1 execute <DATABASE> --remote --command "DELETE FROM alert_dedup WHERE expires_at <= <NOW_MS>"
+```
+
+OPEN QUESTION 1, backups beyond Time Travel. The checklist can only tell you to
+look: the tool does not know where your automated backups go. Options: (a)
+accept that a copy outside the database ages out with that system's own
+retention and state the date in your reply (current text); (b) set a maximum
+age for any backup you keep and delete older ones on a schedule; (c) stop
+keeping backups of anything that can hold an address (the export script already
+leaves the lead tables out). Needs the owner's choice.
+
+OPEN QUESTION 2, the point-in-time read-back. Two runs reading 0 and 0 are still
+a moment in time: the Worker can write an event after the read. Options: (a)
+keep the repeat-until-two-clean-runs rule (current); (b) pause the event writes
+with the kit switch during the erasure window, then re-enable (loses unlock
+events for a few minutes); (c) rely on the foreign key cascade as well (already
+in the schema; D1 turning foreign keys on is inferred and unverified here).
+Needs the owner's choice.
+
+OPEN QUESTION 3, short-lived alert hashes. Today an expired row is removed only
+when the next alert event is admitted (checked in the code: nothing prunes it on
+a timer), so on a quiet site it stays until then. Options: (a) the whole-table
+clear and read-back as a mandatory hand step printed by the delete tool (current,
+a known gap tracked in #905: the tool cannot know which database holds the alert
+tables, and a statement on a missing table could fail the whole erasure file; an
+automatic clear needs a design for split databases); (b) prune expired
+`alert_dedup` rows in the scheduled handler too, so a quiet site never holds one
+past its life (a Worker change; it would still not remove a row made minutes
+ago); (c) add `DELETE FROM alert_dedup` to the delete SQL, which is the one-command
+erasure but fails the whole file if the alert tables are in another database than
+the leads one. Needs the owner's choice.
+
+OPEN QUESTION 5, who reviews the registry. A test cannot enforce that a second
+person approves a change to `scripts/erasure-stores.json`. Options: (a) add the
+registry, its test and this page to CODEOWNERS and turn on required code owner
+review in branch protection (the CODEOWNERS file is a guard file, so this is
+the owner's change); (b) keep review as a stated policy only (current). Needs
+the owner's choice.
+
+OPEN QUESTION 4, aggregate counts. Hour-rounded counters (gate attempts, kit
+views by day) include the erased person's events and cannot be un-counted. The
+position written here is that they are not personal data about one person.
+Options: (a) keep that position (current); (b) say so in the visitor notice
+sentence; (c) drop counters that fall under a small threshold. Needs the owner's
+choice.
 
 TODO-copy: the visitor-facing sentence for the right of access, the right to
 erasure, the one-month answer and the Art. 11 position on page view rows.
@@ -272,9 +443,14 @@ Ctrl-C. Run it as one block from your project directory. The steps inside are:
    transaction in a file and the Worker can write an event after the read.
    `leads_remaining` 1 means the id did not belong to that address in the live
    database (a stale or wrong export): nothing was deleted, stop and re-export.
-   `events_remaining` above 0 means events remain; run the block again. Whether
-   the tables read here are every place the Worker stores lead data is
-   unverified against the full schema.
+   `events_remaining` above 0 means events remain; run the block again. The two
+   tables read here are the only tables this review classified as holding an
+   address or a lead id (see "Every store, checked against the schema" above for
+   what that classification does and does not prove).
+5. The block erases the lead rows only. The alert hash step is manual and
+   mandatory (checklist item 7, known gap #905): run the two commands the tool
+   printed and require the read-back to show 0 before you call the erasure
+   complete.
 
 ```
 (
@@ -307,7 +483,10 @@ yourself, and you should check that it is gone before you report the request
 done.
 
 The command reads only the file you give it. It makes no network call, needs no
-token and writes no file except the `--sql-out` file. It refuses an address that
+token and writes no file except the `--sql-out` file. It does not clear the
+`alert_dedup` hash table: that is a mandatory manual step (checklist item 7,
+known gap #905): the block above erases the lead rows, not the alert hashes. It
+refuses an address that
 is not valid (ASCII, one `@`, a dotted domain; whitespace around it and upper
 case are normalized), and refuses an export that has a result block without
 `success: true`, a column other than the `leads` columns, a duplicate key, a

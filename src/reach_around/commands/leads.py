@@ -5,8 +5,11 @@ The owner's way to honor a deletion request for one media kit lead (a person who
 typed an email address into the gate). It reads a local D1 export of the
 ``leads`` table, finds the one row for the address, and prints the SQL that
 deletes that lead and its kit events. It does not talk to Cloudflare, needs no
-token, writes no file and exposes no route: the owner applies the printed SQL
-with ``wrangler d1 execute`` (docs/privacy.md, "Deleting one lead").
+token, exposes no route and writes no file unless ``--sql-out`` is given: the
+owner applies the printed SQL with ``wrangler d1 execute`` (docs/privacy.md,
+"Deleting one lead"). It does NOT clear the ``alert_dedup`` hash table: with
+``--yes`` it prints two constant hand commands for it, and clearing that table
+and reading it back as 0 is a mandatory manual checklist step (known gap, #905).
 
 Safety rules, all tested:
 
@@ -396,6 +399,38 @@ _STATEMENTS = (
 )
 _SQL_EMAIL = re.compile(r"[a-z0-9_+.@-]{6,254}")
 
+# The alert dedup table keeps a keyed hash of recent alerts, which can include
+# the address. This tool does NOT clear it (known gap, tracked in #905): the
+# delete file does not touch it, because a statement on a missing table could
+# fail the whole erasure file and this tool cannot tell which database holds the
+# alert tables. The two constant statements below are printed as separate hand
+# commands, and running them and reading 0 back is a mandatory manual checklist
+# step. Clearing every row only resets repeat-alert suppression for up to 10
+# minutes.
+ALERT_CLEAR_SQL = "DELETE FROM alert_dedup"
+ALERT_READBACK_SQL = "SELECT COUNT(*) AS alert_dedup_remaining FROM alert_dedup"
+_DATABASE_NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def _checked_database(database: str) -> str:
+    """The database name, only if it is a plain identifier (it reaches argv and
+    printed shell text)."""
+    if not _DATABASE_NAME.fullmatch(database):
+        raise LeadsError("internal: refusing a database name that is not an identifier")
+    return database
+
+
+def alert_clear_commands(database: str) -> list[str]:
+    """The two hand commands for the alert hash table, with a constant statement
+    each (no value from the export or the address ever reaches them). They carry
+    no `npx` prefix; the caller says to run them after it. The database name is
+    validated and shell-quoted."""
+    name = shlex.quote(_checked_database(database))
+    return [
+        f'wrangler d1 execute {name} --remote --command "{sql}"'
+        for sql in (ALERT_CLEAR_SQL, ALERT_READBACK_SQL)
+    ]
+
 
 def _sql(lead_id: str, email: str) -> list[str]:
     # Both already passed validation; check again at the point of use so a
@@ -536,10 +571,35 @@ other copy exists. Tick each item in your reply and say what you checked.
    deletion without deleting the lead again afterward. Say in your reply that
    the copy ages out on its own, and the date.
 5. Hand-made exports. Every `leads-export.json`, `delete-lead.sql`, backup dump
-   or spreadsheet you made holds addresses. Delete them and empty the trash.
+   or spreadsheet you made holds addresses. That includes a whole-database
+   `wrangler d1 export` taken before a migration (only scripts/backup-d1.sh
+   leaves the lead tables out). Delete them and empty the trash.
 6. Shell history and notes. Check that the address is not in your shell
    history, a ticket or a note (the tools take it from stdin or a file only).
-7. By hand, places this tool and this list cannot see. Look in each and
+7. Short-lived alert hash (MANDATORY MANUAL STEP: lead rows erased; the alert
+   hash step is manual and mandatory). The `alert_dedup` table holds a keyed
+   hash of each recent alert, which can include the address. A row stops
+   counting as a repeat after 10 minutes, but it is deleted only when the next
+   alert event is admitted (no timer), so on a quiet site up to 500 rows stay
+   stored until the next alert or a hand clear. `leads delete` does NOT clear
+   this table and does not touch it (known gap; the automatic clear is tracked
+   in #905). `reach-around leads delete --yes` prints the exact clearing
+   command and a read-back above its apply command, to be run after it; run
+   both against the database that holds the alert tables (the leads database
+   when they share it; docs/privacy.md has the statement) and require the
+   read-back to show 0. Clearing the table only resets repeat-alert
+   suppression for up to 10 minutes. Until you have read 0, the store is not
+   clear and the erasure is not complete.
+8. Worker storage, as far as a text scan can show. The scripts/erasure-stores.json
+   registry and its test list every file that names a KV, cache, R2, Durable
+   Object or queue primitive or binding, and pin each statement that does. That
+   is a lexical inventory of where storage is named, not a proof of where data
+   flows: a write that never names a primitive or binding is not seen. Verify
+   by hand that the KV namespace holds only the gated page and live status
+   state and that nothing else was wired to store requests. An unlock cookie is
+   a signed token with no server copy; it stops opening the kit once the
+   `leads` row is gone.
+9. By hand, places this tool and this list cannot see. Look in each and
    record the result, even when it is "nothing found": Worker logs and any
    collector logs or exception output; alert delivery logs at the chat or mail
    provider; automated backups and exports of the database beyond Time Travel;
@@ -643,6 +703,23 @@ def run_delete(args: argparse.Namespace) -> int:
         else "The SQL is on stdout; prefer --sql-out, which creates a private "
         "file and refuses a path that exists or ends in a symlink. "
     )
+    # Printed before the apply command, which stays the last thing on stderr (the
+    # tests and operators take the command from there). The two lines carry no
+    # `npx` prefix for the same reason: the apply command is the one that does.
+    clear, readback = alert_clear_commands(database)
+    print(
+        "MANDATORY MANUAL STEP (checklist item 7): this tool does NOT clear the "
+        "alert hashes, so the alert hash step is manual and mandatory and the "
+        "removal is not complete until it reads 0 (known gap, #905). Run it "
+        "after the apply command below: the `alert_dedup` table can hold a keyed "
+        "hash of this address until the next alert is admitted, and the file "
+        "does not touch it. "
+        "Clearing it only resets repeat-alert suppression for up to 10 minutes. "
+        f"This tool cannot tell whether the alert tables are in {database}; "
+        "run both lines, each after `npx`, against the database that holds them. "
+        f"The store is clear only when the read-back shows 0:\n{clear}\n{readback}",
+        file=sys.stderr,
+    )
     print(
         f"1 lead matches. {where}It holds the address, so delete it afterward. "
         "It deletes only a row in the live database that still pairs that id "
@@ -718,7 +795,9 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         description="Read a local export of the leads table (made with wrangler "
         "d1 execute --json, see docs/privacy.md), find the lead for one email "
         "address and print the SQL that deletes it. Dry run by default; --yes "
-        "prints the SQL. No network call, no file written; the SQL pairs "
+        "prints the SQL and two hand commands for the alert hash table, which "
+        "this tool does not clear (a mandatory manual step). No network call, "
+        "no file written unless --sql-out; the SQL pairs "
         "the lead id with its address, so it deletes only a row that still "
         "matches both. --database and --email - are required. Exit 0 done, "
         "1 no match, 2 usage problem or a refused export.",
