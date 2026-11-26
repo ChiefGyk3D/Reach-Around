@@ -151,15 +151,30 @@ def test_header_names_are_matched_case_insensitively_and_duplicates_dropped() ->
 )
 def test_non_json_numbers_and_huge_integers_are_bad_json(body: bytes) -> None:
     assert kind(FakeTransport({URL: reply(body=body)})) == "bad_json"
-    with pytest.raises(FetchError) as caught:
-        fetch_json(
-            URL,
-            transport=FakeTransport({URL: reply(body=b'{"a": ' + body + b"}")}),
-            sleep=_no_sleep,
-            jitter=lambda: 0.0,
-            now=lambda: NOW,
-        )
-    assert caught.value.kind == "bad_json"
+
+
+@pytest.mark.parametrize(
+    ("literal", "expected"),
+    [
+        ("1234567890123456789", 1234567890123456789),
+        ("-1234567890123456789", -1234567890123456789),
+        ("9223372036854775807", 9223372036854775807),
+        ("9" * 40, int("9" * 40)),
+        ("1.5e300", 1.5e300),
+        ("1." + "0" * 100, 1.0),
+    ],
+)
+def test_fetch_json_numbers_behave_as_before(literal: str, expected: object) -> None:
+    # The strict number limits belong to the array path only: the shared object
+    # path keeps accepting what plain json.loads accepts.
+    got = fetch_json(
+        URL,
+        transport=FakeTransport({URL: reply(body=b'{"a": ' + literal.encode() + b"}")}),
+        sleep=_no_sleep,
+        jitter=lambda: 0.0,
+        now=lambda: NOW,
+    )
+    assert got["a"] == expected
 
 
 def test_ordinary_numbers_still_parse() -> None:

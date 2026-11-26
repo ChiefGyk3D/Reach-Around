@@ -379,7 +379,9 @@ def fetch_json_array(
     if fetched is None:
         raise FetchError("transport_error")
     response = fetched
-    parsed = _parse(response.headers, response.body, limit, frozenset())
+    parsed = _parse(
+        response.headers, response.body, limit, frozenset(), strict_numbers=True
+    )
     if not isinstance(parsed, list) or len(parsed) > ARRAY_MAX_ITEMS:
         raise FetchError("bad_json")
     # Names are matched case-insensitively. A name present twice (two spellings)
@@ -405,7 +407,15 @@ def _parse(
     body: bytes,
     max_bytes: int,
     extra_json_types: frozenset[str],
+    *,
+    strict_numbers: bool = False,
 ) -> object:
+    """Decode a JSON body.
+
+    ``strict_numbers`` (the array path only) refuses NaN, Infinity, overflowing
+    or over-long floats and integers above ``MAX_INT_DIGITS`` digits. Off, the
+    numbers behave exactly as plain ``json.loads`` (the object path).
+    """
     if len(body) > max_bytes:
         raise FetchError("too_large")
     encoding = headers.get("content-encoding", "identity").strip().lower()
@@ -417,12 +427,16 @@ def _parse(
     parsed: object = None
     ok = False
     try:
-        parsed = json.loads(
-            body.decode("utf-8"),
-            parse_constant=_refuse_constant,
-            parse_int=_bounded_int,
-            parse_float=_finite_float,
-        )
+        text = body.decode("utf-8")
+        if strict_numbers:
+            parsed = json.loads(
+                text,
+                parse_constant=_refuse_constant,
+                parse_int=_bounded_int,
+                parse_float=_finite_float,
+            )
+        else:
+            parsed = json.loads(text)
         ok = True
     except (UnicodeDecodeError, ValueError, RecursionError):
         ok = False
