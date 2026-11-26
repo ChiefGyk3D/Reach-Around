@@ -85,6 +85,7 @@ from reach_around.site.kit import (
     gate_path_extras,
     public_paths,
     render_kit,
+    share_url,
     stage_gated,
 )
 from reach_around.site.overrides import (
@@ -234,6 +235,9 @@ def _frame_plan(config: SiteConfig) -> dict[str, str]:
 
 # The display-zone script (#372): linked from the public kit page only.
 _ZONE_SCRIPT = Path("static") / "zone.js"
+# The copy-link script (#432): linked from the public kit page only, and only
+# when that page prints a link.
+_COPY_LINK_SCRIPT = Path("static") / "copy-link.js"
 
 
 # Published only for a site with an email block; the script only if one uses it.
@@ -1327,6 +1331,8 @@ def build_site(
     if kit is None:
         static.pop(_KIT_STYLE, None)
         static.pop(_ZONE_SCRIPT, None)
+    if share_url(config) is None:
+        static.pop(_COPY_LINK_SCRIPT, None)
     plan = _frame_plan(config)
     if not plan:
         static.pop(_FRAME_STYLE, None)

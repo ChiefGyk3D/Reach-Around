@@ -1830,6 +1830,11 @@
           "default": null,
           "title": "Contact"
         },
+        "copy_link": {
+          "default": true,
+          "title": "Copy Link",
+          "type": "boolean"
+        },
         "demographics": {
           "items": {
             "$ref": "#/$defs/Demographic"
@@ -1946,6 +1951,19 @@
           ],
           "default": null,
           "title": "Public Pdf"
+        },
+        "public_url": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Public Url"
         },
         "rates": {
           "items": {

@@ -54,7 +54,7 @@ PUBLIC_FILE = "kit/index.html"
 # Boxes of the public page that mean nothing on paper (the gate form, the zone
 # menu that needs a script). They are dropped whole in public mode, and only
 # there; any other form, input or script still stops the build.
-_PUBLIC_DROP = frozenset({"kit-gate-box", "kit-zone", "kit-actions"})
+_PUBLIC_DROP = frozenset({"kit-gate-box", "kit-zone", "kit-actions", "kit-share"})
 # Lines that belong to the web pages only. They are dropped whole from both the
 # public and the gated PDF (the consulting line, #686).
 _WEB_ONLY = frozenset({"kit-consulting"})

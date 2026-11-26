@@ -69,6 +69,9 @@
 {% if has_email_script %}
 <script src="{{ root }}{{ asset("static/email.js") }}" defer></script>
 {% endif %}
+{% if share_url is defined and share_url %}
+<script src="{{ root }}{{ asset("static/copy-link.js") }}" defer></script>
+{% endif %}
 {% if zone_choices is defined and zone_choices %}
 <script src="{{ root }}{{ asset("static/zone.js") }}" defer></script>
 {% endif %}
