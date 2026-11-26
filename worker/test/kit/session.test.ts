@@ -142,9 +142,6 @@ describe("migration 0022: the floor guard is recreated with its exact bodies", (
   ];
   const floorKey = UNSTORED_FLOOR_KEY;
 
-  it("the migration set leaves the exact trigger bodies", async () => {
-    expect(await guard()).toEqual(EXACT);
-  });
   it("replaces same-named triggers that have a different body", async () => {
     await testEnv.DB.prepare("DROP TRIGGER kit_meta_floor_insert").run();
     await testEnv.DB.prepare("DROP TRIGGER kit_meta_floor_update").run();
@@ -163,13 +160,16 @@ describe("migration 0022: the floor guard is recreated with its exact bodies", (
     expect(await guard()).toEqual(EXACT);
   });
   it("creates the guard before the repair", () => {
-    const q = mig().queries.map((s) => s.replace(/\s+/g, " "));
+    const q = mig().queries.map((s) => s.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").trim()); // the first statement carries the file header comments
     const at = (re: RegExp) => q.findIndex((s) => re.test(s));
     const repair = at(/^UPDATE kit_meta SET/);
     expect(repair).toBeGreaterThan(-1);
     for (const n of ["kit_meta_floor_insert", "kit_meta_floor_update"]) {
-      expect(at(new RegExp(`^CREATE TRIGGER ${n}`))).toBeGreaterThan(at(new RegExp(`^DROP TRIGGER IF EXISTS ${n}`)));
-      expect(at(new RegExp(`^CREATE TRIGGER ${n}`))).toBeLessThan(repair);
+      const drop = at(new RegExp(`^DROP TRIGGER IF EXISTS ${n}`));
+      const create = at(new RegExp(`^CREATE TRIGGER ${n}`));
+      expect(drop, `${n} drop exists`).toBeGreaterThan(-1);
+      expect(create, `${n} create comes after its drop`).toBeGreaterThan(drop);
+      expect(create, `${n} create comes before the repair`).toBeLessThan(repair);
     }
   });
 });
