@@ -4,3 +4,6 @@
   Destination reconciliation and interrupted-copy resume checks further hardened
   the cutover procedure and recovery. The cutover procedure and recovery were
   further hardened for interrupted and resumed operations.
+  The cutover procedure now keeps its run lock for database calls still in
+  flight and recovers in one step (`--recover-from-export`). Delete accounting
+  and the documented trust limits were hardened and clarified.

@@ -535,28 +535,56 @@ part is your statement (`--locked-window-confirmed`), backed by the kill switche
 re-read of the leads database and the freeze check inside each DELETE statement are kept as defense in
 depth; they narrow the window and are not an atomic proof.
 
-Recovery. First use `--restore-from-export`. It reads and validates every recorded export first,
-keeps the current version of each row once, and puts all leads back before any kit event, whichever
-export held them. It inserts only missing exported rows, refuses if an
-existing primary key has different data, and verifies every row by digest without printing its
-contents. It is safe to run again. The freeze triggers intentionally reject these inserts, so keep
-the locked window in place, lift only the database freeze immediately before the restore, and restore
-the freeze immediately afterward:
+Recovery. Use `--recover-from-export`, one command. It reads and validates every recorded export
+first (a bad export touches nothing), then lifts the freeze, restores, and creates the freeze again in
+a finally step whatever the restore did, and reads the freeze back by its exact text. It keeps the
+current version of each row once, puts all leads back before any kit event, inserts only missing
+exported rows, refuses if an existing primary key has different data, and verifies every row by digest
+without printing its contents. It is safe to run again. Keep the locked window in place and do not
+re-enable any Worker or other writer until it has finished and the check below passes.
 
 ```bash
-npx wrangler d1 execute <ANALYTICS DATABASE> --remote --command \
-  "DROP TRIGGER IF EXISTS leads_frozen; DROP TRIGGER IF EXISTS kit_events_frozen;"
-python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --restore-from-export
-python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --freeze
+python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --recover-from-export
 ```
 
-Do not re-enable any Worker or other writer between those commands. Keep all
+D1's documentation (Worker API, read 2026-11-25) describes only the Worker `batch()` call as one SQL
+transaction; it does not say that `wrangler d1 execute --file` runs a multi-statement file as one, so the
+tool does not rely on that and never merges lift, restore and freeze into one file. A kill (SIGKILL) or
+power loss between the lift and the final freeze cannot be caught. After any recovery that did not end
+with a normal exit code, run this check; it must print two rows, and if it does not, run `--freeze`
+before anything else:
+
+```bash
+npx wrangler d1 execute <ANALYTICS DATABASE> --remote --command "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name IN ('leads_frozen', 'kit_events_frozen')"
+```
+
+`--restore-from-export` alone (restore without lifting or re-creating the freeze) still exists for a
+database whose freeze you have already lifted by hand; use `--freeze` afterwards.
+
+Keep all
 `lead-recovery-*.json` files private until the retention decision and recovery
 window have ended. Then destroy them with exactly:
 
 ```bash
 find ~/lead-move-work -maxdepth 1 -type f -name 'lead-recovery-*.json' -exec shred -u -- {} +
 ```
+
+Trust boundary of the work directory. The tool trusts the same operating-system user and the work
+directory it names. The manifest and the recovery exports are checked against accidental corruption and
+mix-ups (owner, mode, atomic writes, digests, the lock), not authenticated: someone who can write as that
+user while no run is active can edit them consistently, and the tool will accept the result. If that is
+not acceptable for you, keep the work directory on storage only the operator can write, run the move as
+a dedicated user, and keep a copy of the manifest and exports outside the directory (for example a
+checksum written to the change record) to compare before `--purge` and `--verify`.
+
+Delete accounting. Each DELETE statement asks the database to return the rows it removed
+(`DELETE ... RETURNING`), and only returned rows are recorded as deleted by this tool; a row that is
+merely absent afterwards is unknown. D1's documentation read on 2026-11-25 does not mention `RETURNING`
+(it describes D1 as SQLite-compatible), so this is inferred, not documented, and it is unverified how the
+tool's `--file` runs report each statement's rows. The tool fails closed: if the database refuses the
+clause, the delete fails and the run needs `--verify`; if no rows come back, nothing is recorded and the
+final verification reports the rows as unaccounted. Try one statement with `RETURNING` on a scratch D1
+database before a real cutover.
 
 Time Travel is the last-resort full-loss option. The command the tool prints is `npx wrangler d1
 time-travel restore <ANALYTICS DATABASE> --bookmark=<BOOKMARK>`. Restoring a bookmark rolls back

@@ -66,6 +66,7 @@ paths = {{"analytics-db": "STUB_SRC", "leads-db": "STUB_DEST"}}
 path = os.environ[paths[name]]
 db = sqlite3.connect(path)
 db.execute("PRAGMA foreign_keys = ON")
+blocks = None
 if os.environ.get("STUB_FAIL_FILE") and any(a.startswith("--file=") for a in args):
     sys.exit(1)
 if os.environ.get("CRASH_AT") and any(a.startswith("--file=") for a in args):
@@ -109,8 +110,28 @@ if any(a.startswith("--file=") for a in args):
                 + "'"
             )
         db.commit()
-    db.executescript(sql)
-    db.commit()
+    if "RETURNING" in sql:  # one block per statement, like the real file run
+        blocks, pending = [], ""
+        for line in sql.splitlines(keepends=True):
+            pending += line
+            if not sqlite3.complete_statement(pending):
+                continue
+            if os.environ.get("STUB_OTHER_CLIENT") and name == "analytics-db":
+                # Another client removes the rows; this statement matches nothing.
+                db.execute("DELETE FROM " + pending.split()[2] + " WHERE 1")
+                got, cols = [], []
+            else:
+                cur = db.execute(pending)
+                cols = [c[0] for c in cur.description or []]
+                got = cur.fetchall()
+            blocks.append(
+                {{"results": [dict(zip(cols, r)) for r in got], "success": True}}
+            )
+            pending = ""
+        db.commit()
+    else:
+        db.executescript(sql)
+        db.commit()
     lost = os.environ.get("STUB_DELETE_THEN_FAIL")
     if lost and name == "analytics-db" and "DELETE FROM" in sql:
         sys.exit(1)  # applied, but the caller never hears it
@@ -123,7 +144,7 @@ else:
         cols = [c[0] for c in cur.description]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
     db.commit()
-print(json.dumps([{{"results": rows, "success": True}}]))
+print(json.dumps(blocks or [{{"results": rows, "success": True}}]))
 """
 
 
@@ -2185,10 +2206,16 @@ def test_the_lock_is_released_after_sigkill_and_the_leftover_file_is_reused(
     Path(env["HOLD_GO"]).write_text("go")
     proc.communicate(timeout=60)
     assert proc.returncode == -9
-    assert (work / LOCK_FILE).exists()  # a killed run leaves the file, not the lock
-    time.sleep(1)  # the orphaned statement finishes on its own
+    assert (work / LOCK_FILE).exists()  # a killed run leaves the file
     env["HOLD_MATCH"] = "no-such-text"
-    again = run(env, work, "--copy")  # the wrangler child never inherited the lock
+    # Round 12: the orphaned call holds the lock until it ends, so poll for it to
+    # finish instead of sleeping; the lock then frees and the file is reused.
+    again = run(env, work, "--copy")
+    for _ in range(100):
+        if again.returncode != 7:
+            break
+        time.sleep(0.1)
+        again = run(env, work, "--copy")
     assert again.returncode == 0, again.stderr
     assert not (work / LOCK_FILE).exists()
 
@@ -2465,3 +2492,150 @@ def test_resume_accepts_only_canonical_sqlite_event_ids() -> None:
     assert mod.at_or_before("kit_events", "0", 0) is True
     assert mod.at_or_before("kit_events", "10", 9) is False
     assert mod.at_or_before("kit_events", "9", 10) is True
+
+
+# ---- round 12: orphaned calls keep the lock, DELETE ... RETURNING, one recovery ----
+
+
+def test_a_killed_run_keeps_the_lock_while_its_database_call_is_still_running(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    env["MOVE_BATCH"] = "1"
+    work = workdir(tmp_path)
+    assert run(env, work, "--freeze").returncode == 0
+    held_env(tmp_path, env, "DELETE FROM", 1)
+    proc = start(env, work, "--purge")
+    wait_held(env)
+    proc.send_signal(9)  # the wrangler child lives on in its own session
+    proc.wait(timeout=30)
+    assert proc.returncode == -9
+    before = src_rows(env)
+    for flag in ("--copy", "--purge", "--verify"):  # the orphan still holds the lock
+        r = run(env, work, flag)
+        assert r.returncode == 7, (flag, r.returncode, r.stderr)
+        assert r.stdout == ""
+    assert src_rows(env) == before  # nothing ran next to the orphan
+    Path(env["HOLD_GO"]).write_text("go")
+    env["HOLD_MATCH"] = "no-such-text"
+    r = run(env, work, "--verify")
+    for _ in range(100):  # the orphan ends; only then is the lock free
+        if r.returncode != 7:
+            break
+        time.sleep(0.1)
+        r = run(env, work, "--verify")
+    assert r.returncode != 7
+    for pipe in (proc.stdout, proc.stderr):
+        if pipe is not None:
+            pipe.close()
+
+
+def test_a_timed_out_call_keeps_the_lock_file_for_a_surviving_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = load_script()
+    work = workdir(tmp_path)
+    lock = mod.RunLock(work)
+    lock.acquire()
+    fd = lock.fd
+    mod.HELD["lock"] = lock
+    seen: dict[str, Any] = {}
+
+    def timeout(*_a: Any, **k: Any) -> None:
+        seen.update(k)
+        raise subprocess.TimeoutExpired("x", 1)
+
+    monkeypatch.setattr(mod.subprocess, "run", timeout)
+    try:
+        with pytest.raises(mod.Failed):
+            mod.Wrangler().call(["d1", "list"])
+    finally:
+        mod.HELD["lock"] = None
+        lock.release()
+    assert seen["pass_fds"] == (fd,)
+    assert (work / LOCK_FILE).exists()  # a child may still hold this very file
+
+
+def test_a_row_removed_by_another_client_is_not_recorded_as_deleted(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    env["STUB_OTHER_CLIENT"] = "1"  # the DELETE removes nothing; the rows vanish anyway
+    work = workdir(tmp_path)
+    r = purge(env, work)
+    assert r.returncode != 0  # nothing proves the tool deleted them: verify fails
+    assert src_rows(env) == 0
+    assert saved_manifest(work)["deleted"] == {}
+
+
+def test_only_rows_the_delete_returned_are_recorded() -> None:
+    mod = load_script()
+    uid = str(uuid.uuid4())
+    m = mod.Manifest(Path("."), "src", "dst", uid, uid)
+    saved: list[int] = []
+    m.save = lambda: saved.append(1)
+    sent = [{"id": 1, "ts": 5, "lead_id": "a" * 32, "kind": "view"}]
+    sent.append({"id": 2, "ts": 6, "lead_id": "a" * 32, "kind": "view"})
+    progress = mod.Progress()
+    changed = dict(sent[0]) | {"ts": 99}  # another version of row 1 came back
+    mod.acknowledge_deleted("kit_events", sent, [changed], m, progress)
+    assert m.deleted == {} and saved == []
+    mod.acknowledge_deleted("kit_events", sent, [sent[1], sent[1]], m, progress)
+    assert [e[1] for e in m.deleted[progress.attempt]] == ["2"]
+
+
+def test_every_delete_statement_asks_for_the_deleted_rows_back() -> None:
+    mod = load_script()
+    guard = mod.guard_sql({"leads", "kit_events"})
+    for table, row in (("leads", {"id": "a" * 32}), ("kit_events", {"id": 1})):
+        sql = mod.delete_sql(table, [row], guard)
+        assert sql.rstrip().endswith("RETURNING " + ", ".join(mod.COLUMNS[table]) + ";")
+
+
+def frozen_names(env: dict[str, str]) -> set[str]:
+    with closing(sqlite3.connect(env["STUB_SRC"])) as db:
+        return {
+            r[0]
+            for r in db.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger' "
+                "AND name IN ('leads_frozen', 'kit_events_frozen')"
+            )
+        }
+
+
+def test_one_recovery_command_restores_and_freezes_again(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    before = rows(env["STUB_SRC"], "leads")
+    assert purge(env, work).returncode == 0
+    assert src_rows(env) == 0
+    r = run(env, work, "--recover-from-export")
+    assert r.returncode == 0, r.stderr
+    assert rows(env["STUB_SRC"], "leads") == before
+    assert frozen_names(env) == {"leads_frozen", "kit_events_frozen"}
+    again = run(env, work, "--recover-from-export")  # safe to repeat
+    assert again.returncode == 0, again.stderr
+    assert frozen_names(env) == {"leads_frozen", "kit_events_frozen"}
+
+
+def test_a_failed_recovery_still_freezes_again(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    assert purge(env, work).returncode == 0
+    env["STUB_FAIL_FILE"] = "1"  # every statement file fails: the restore fails
+    r = run(env, work, "--recover-from-export")
+    assert r.returncode == 1
+    assert frozen_names(env) == {"leads_frozen", "kit_events_frozen"}
+
+
+def test_a_bad_export_stops_the_recovery_before_the_freeze_is_lifted(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    assert purge(env, work).returncode == 0
+    (export,) = [p for p in work.iterdir() if p.name.startswith("lead-recovery-")]
+    export.write_text("not json")
+    r = run(env, work, "--recover-from-export")
+    assert r.returncode == 3
+    assert frozen_names(env) == {"leads_frozen", "kit_events_frozen"}

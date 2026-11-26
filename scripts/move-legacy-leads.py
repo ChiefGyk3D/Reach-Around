@@ -232,7 +232,9 @@ class RunLock:
     flock on a private file in WORKDIR (opened through the directory descriptor,
     never through a symlink). The kernel drops it when the process ends, whatever the
     cause (exit, signal, SIGKILL), so it cannot go stale; a file left behind by a
-    killed run is harmless and is reused. The file is removed on a normal end, while
+    killed run is harmless and is reused. Every database call gets a duplicate of the
+    descriptor (see Wrangler.call), so the lock outlives this process for as long as a
+    call it started is still running. The file is removed on a normal end, while
     the lock is still held, and every acquire checks afterwards that the path still
     names the file it locked."""
 
@@ -241,6 +243,7 @@ class RunLock:
         self.dfd = -1
         self.fd = -1
         self.stat: os.stat_result | None = None
+        self.keep_file = False  # a database call may still be running: keep the file
 
     def _open(self) -> int:
         flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -320,9 +323,13 @@ class RunLock:
     def release(self) -> None:
         if self.fd >= 0:
             try:  # removed while still locked, so no one can lock the removed file
-                if self.stat is not None and same_file(
-                    self.stat,
-                    os.stat(LOCK_NAME, dir_fd=self.dfd, follow_symlinks=False),
+                if (
+                    not self.keep_file
+                    and self.stat is not None
+                    and same_file(
+                        self.stat,
+                        os.stat(LOCK_NAME, dir_fd=self.dfd, follow_symlinks=False),
+                    )
                 ):
                     os.unlink(LOCK_NAME, dir_fd=self.dfd)
             except OSError:
@@ -381,13 +388,21 @@ class Wrangler:
     def __init__(self) -> None:
         self.cmd = shlex.split(os.environ.get("WRANGLER", "npx wrangler"))
         self.limit = timeout_seconds()
+        self.file_rows: list[dict[str, Any]] = []
 
     def call(self, args: list[str]) -> str:
         """Run one bounded wrangler command and return its stdout (never printed).
 
         It runs in its own session, so a Ctrl-C aimed at this tool does not also kill
         a statement in flight: the call finishes (bounded by MOVE_TIMEOUT), its outcome
-        is known, and the tool stops at the next safe point."""
+        is known, and the tool stops at the next safe point.
+
+        The call also holds a duplicate of the run-lock descriptor (passed explicitly to
+        this child only; close-on-exec stays on everywhere else). The kernel lock is
+        released only when every duplicate is closed, so if this tool is killed while
+        the call runs, a second run is still refused until the call has ended."""
+        held = HELD["lock"]
+        keep = (held.fd,) if held is not None and held.fd >= 0 else ()
         try:
             done = subprocess.run(  # noqa: S603 - argv list, no shell
                 [*self.cmd, *args],
@@ -396,8 +411,11 @@ class Wrangler:
                 timeout=self.limit,
                 check=False,
                 start_new_session=True,
+                pass_fds=keep,
             )
         except subprocess.TimeoutExpired as exc:
+            if held is not None:
+                held.keep_file = True  # a grandchild may live on holding the old file
             raise Failed("a database call timed out") from exc
         if done.returncode != 0:
             raise Failed("a database call failed")
@@ -414,10 +432,16 @@ class Wrangler:
         except ValueError as exc:
             raise Failed("unexpected answer from the database") from exc
         rows: list[dict[str, Any]] = []
+        every: list[dict[str, Any]] = []
         for block in data if isinstance(data, list) else [data]:
             if not isinstance(block, dict) or block.get("success") is False:
                 raise Failed("the database refused a statement")
             rows = block.get("results", rows)
+            got = block.get("results")
+            if isinstance(got, list):
+                every.extend(r for r in got if isinstance(r, dict))
+        if file is not None:
+            self.file_rows = every  # what every statement of a file returned
         return rows
 
 
@@ -524,12 +548,16 @@ def guard_sql(tables: set[str]) -> str:
 
 
 def delete_sql(table: str, rows: list[dict[str, Any]], guard: str) -> str:
-    """Delete exactly the verified rows; a lead goes only with no event left."""
-    tail = f" AND {guard};"
+    """Delete exactly the verified rows; a lead goes only with no event left.
+
+    Each statement returns the rows it deleted (RETURNING), which is the only evidence
+    the tool accepts that its own statement removed a row."""
+    back = " RETURNING " + ", ".join(COLUMNS[table]) + ";"
+    tail = f" AND {guard}{back}"
     if table == "leads":
         tail = (
             " AND NOT EXISTS (SELECT 1 FROM kit_events e WHERE e.lead_id = leads.id)"
-            f" AND {guard};"
+            f" AND {guard}{back}"
         )
     return (
         "\n".join(
@@ -1513,12 +1541,12 @@ def read_recovery_export(path: Path, m: Manifest) -> list[dict[str, Any]]:
             raise Refused("the recovery export is unreadable.") from exc
 
 
-def restore_from_exports(
-    w: Wrangler, args: argparse.Namespace, work: Path, m: Manifest
-) -> int:
+def current_exported_rows(
+    work: Path, m: Manifest
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Every recorded export, read and validated; the current row of each key."""
     if not m.exists or not m.recovery_exports:
         raise Refused("no recovery export is recorded in the manifest.")
-    restored = 0
     # Every export is read and validated first. A row re-moved with new data after an
     # export was made is exported again with its new digest; only the current digest
     # of each (table, id) is kept, once. Then all current leads go back before any
@@ -1531,6 +1559,14 @@ def restore_from_exports(
             key = str(item["row"].get("id"))
             if m.digests[item["table"]].get(key) == item["digest"]:
                 current[(item["table"], key)] = item["row"]
+    return current
+
+
+def restore_from_exports(
+    w: Wrangler, args: argparse.Namespace, work: Path, m: Manifest
+) -> int:
+    restored = 0
+    current = current_exported_rows(work, m)
     for table, _ in TABLES:
         check_stop()  # between tables; the inserts are idempotent, rerun resumes
         table_rows = [row for (t, _key), row in current.items() if t == table]
@@ -1558,6 +1594,45 @@ def restore_from_exports(
                 raise Failed("recovery export read-back verification failed")
     print(f"recovery export verified; {restored} missing rows restored")
     return 0
+
+
+def recover_from_exports(
+    w: Wrangler, args: argparse.Namespace, work: Path, m: Manifest
+) -> int:
+    """Lift the freeze, restore the exported rows, freeze again, in one command.
+
+    Every export is validated before the freeze is touched. The freeze is then dropped,
+    and re-created in a finally block whatever the restore did (success, failure,
+    interruption), then read back by its exact text. A kill (SIGKILL) or power loss
+    between the drop and the re-freeze cannot be caught: run --freeze at once (the
+    check is in docs/deploy.md). D1's documentation does not say that a multi-statement
+    `d1 execute --file` is one transaction (only the Worker batch API is documented as
+    one), so the steps are not merged into one file."""
+    current_exported_rows(work, m)  # validated now; a bad export touches nothing
+    for table, _ in TABLES:
+        w.execute(args.source, command=f"DROP TRIGGER IF EXISTS {FROZEN[table][0]}")
+    failure: BaseException | None = None
+    code = 0
+    try:
+        code = restore_from_exports(w, args, work, m)
+    except BaseException as exc:  # noqa: BLE001 - re-raised below, after the re-freeze
+        failure = exc
+    try:
+        freeze(w, args.source)
+    except BaseException as exc:  # noqa: BLE001
+        if failure is None:
+            raise Failed(
+                "the restore ended but the freeze could not be created again: run "
+                "--freeze now, before anything else"
+            ) from exc
+        print(
+            "the freeze could not be created again: run --freeze now, before "
+            "anything else",
+            file=sys.stderr,
+        )
+    if failure is not None:
+        raise failure
+    return code
 
 
 def confirm_dest(
@@ -1618,37 +1693,41 @@ def purge_chunks(
             if known:
                 require_frozen(w, args.source)
                 confirm_dest(w, args.dest, table, known, m)
+                w.file_rows = []
                 try:
                     run_file(w, args.source, work, delete_sql(table, known, guard))
                 except Failed:
                     progress.unknown += 1  # it may have reached the database
                     raise
                 progress.sent += 1
-                acknowledge_deleted(w, args.source, table, known, m, progress)
+                acknowledge_deleted(table, known, w.file_rows, m, progress)
                 require_frozen(w, args.source)
 
 
 def acknowledge_deleted(
-    w: Wrangler,
-    source: str,
     table: str,
     sent: list[dict[str, Any]],
+    returned: list[dict[str, Any]],
     m: Manifest,
     progress: Progress,
 ) -> None:
-    """Record, durably, the rows this tool's DELETE removed: its call succeeded and a
-    fresh SOURCE read shows each row gone. A row still there (a lead that kept an
-    event, a row that no longer matched) is not recorded. A call whose outcome is
-    unknown never reaches here, so its rows stay unaccounted until reconciled with
-    --restore-from-export and a rerun (docs/deploy.md)."""
-    back = {
-        str(r.get("id")) for r in by_ids(w, source, table, [r.get("id") for r in sent])
-    }
-    gone = [
-        [table, str(r.get("id")), digest(table, r)]
-        for r in sent
-        if str(r.get("id")) not in back
-    ]
+    """Record, durably, exactly the rows this tool's DELETE statements returned.
+
+    A row counts as deleted by this tool only when the database handed it back from
+    the statement itself (DELETE ... RETURNING) with every column equal to the row that
+    was sent. A row that is merely absent afterwards is unknown, never deleted: another
+    client may have removed it. A statement that returns nothing (a lead that kept an
+    event, a row that no longer matched) records nothing. Rows that stay unaccounted
+    are reconciled with --restore-from-export and a rerun (docs/deploy.md)."""
+    sent_digest = {str(r.get("id")): digest(table, r) for r in sent}
+    gone: list[list[str]] = []
+    seen: set[str] = set()
+    for r in returned:
+        key = str(r.get("id"))
+        row_digest = digest(table, r)
+        if sent_digest.get(key) == row_digest and key not in seen:
+            seen.add(key)
+            gone.append([table, key, row_digest])
     if gone:
         m.deleted.setdefault(progress.attempt, []).extend(gone)
         m.save()
@@ -1775,6 +1854,10 @@ def locked_run(w: Wrangler, work: Path, args: argparse.Namespace) -> int:
     if args.verify:
         return verify(w, args, work, record=True)
 
+    if args.recover_from_export:
+        manifest = new_manifest(work, args)
+        manifest.load()
+        return recover_from_exports(w, args, work, manifest)
     if args.restore_from_export:
         manifest = new_manifest(work, args)
         manifest.load()
@@ -1844,6 +1927,11 @@ def main(argv: list[str]) -> int:
         "--restore-from-export",
         action="store_true",
         help="restore exported source rows and verify them",
+    )
+    modes.add_argument(
+        "--recover-from-export",
+        action="store_true",
+        help="lift the freeze, restore exported rows, freeze again (one command)",
     )
     parser.add_argument(
         "--restart-copy",
