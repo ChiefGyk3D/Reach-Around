@@ -532,6 +532,7 @@ CLASSIFIED: dict[str, dict[str, str]] = {
         "image": "inert",
         "image_alt": "inert",
         "affiliate": "inert",
+        "internal": "inert",
         "featured": "inert",
         "show_from": "window",
         "show_until": "window",

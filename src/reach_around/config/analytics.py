@@ -16,6 +16,8 @@ from pydantic import (
     model_validator,
 )
 
+from reach_around.config.hoplabel import check_hop_label
+
 DEFAULT_ROUTE = "/e/v/"
 MAX_ROUTE_LENGTH = 64
 # Plain segments only, each starting with a letter, number, _, ~ or -: no scheme,
@@ -65,6 +67,10 @@ class Analytics(BaseModel):
     # Other sites counted by the same collector (the Worker's SITES), named on
     # the privacy page. Host names only.
     other_sites: tuple[str, ...] = ()
+    # This site's name in the funnel's hop table (#593): the build adds
+    # ``h=<hop_label>`` to a link marked ``internal: true``. One closed label,
+    # the same rule the click script and the Worker apply when they read it.
+    hop_label: StrictStr | None = None
     # The invisible bot check (#610), off unless asked for. On, the build adds
     # one hidden same-origin page that loads Cloudflare Turnstile, and a small
     # script that opens it in a hidden frame for visitors who send neither
@@ -111,6 +117,11 @@ class Analytics(BaseModel):
                 raise ValueError("other_sites entries must be unique")
             seen.add(host)
         return value
+
+    @field_validator("hop_label")
+    @classmethod
+    def _closed_label(cls, value: str | None) -> str | None:
+        return None if value is None else check_hop_label(value)
 
     @field_validator("route")
     @classmethod

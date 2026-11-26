@@ -158,6 +158,18 @@
           "title": "Geo Level",
           "type": "string"
         },
+        "hop_label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hop Label"
+        },
         "other_sites": {
           "default": [],
           "items": {
@@ -2129,6 +2141,11 @@
           "maxLength": 120,
           "title": "Image Alt",
           "type": "string"
+        },
+        "internal": {
+          "default": false,
+          "title": "Internal",
+          "type": "boolean"
         },
         "show_from": {
           "anyOf": [
@@ -4430,6 +4447,7 @@
       "default": {
         "beacon_token": false,
         "geo_level": "region",
+        "hop_label": null,
         "other_sites": [],
         "page_views": false,
         "raw_keep_days": 7,
