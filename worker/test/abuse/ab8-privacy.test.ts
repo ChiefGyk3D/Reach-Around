@@ -109,7 +109,15 @@ describe("AB-8: what is stored", () => {
   });
 
   it("a client cannot choose what is stored: extra fields refuse the request, and the country comes only from the edge header", async () => {
-    for (const extra of [{ source: "email" }, { verified: "1" }, { country: "FR" }, { lid: "x" }, { id: "x" }, { created_ts: "0" }]) {
+    const extras: Record<string, string>[] = [
+      { source: "email" },
+      { verified: "1" },
+      { country: "FR" },
+      { lid: "x" },
+      { id: "x" },
+      { created_ts: "0" },
+    ];
+    for (const extra of extras) {
       const res = await send(gateReq({ fields: { email: EMAIL, "cf-turnstile-response": "ok-x", ...extra } }));
       expect(res.headers.get("location")).toBe("/kit/retry/");
     }
