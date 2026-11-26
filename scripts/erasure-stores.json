@@ -1,6 +1,7 @@
 {
   "_comment": "Registry for tests/test_erasure_coverage.py (#856). The test runs the Worker migrations in an in-memory SQLite and reads the schema from it. Every table is listed with the exact column list it was judged on, a class and a reason; every view and trigger is listed under other_objects; reviewed_schema_digest pins the whole schema (types, defaults, keys, objects), so a changed column set or type fails the test until the entry is looked at again. The test cannot prove a person looked: a second human reviewer on any change to this file is a policy control (docs/privacy.md), not something CI enforces. classes: lead = rows that hold an address or carry a lead id, removed by `reach-around leads delete` (its SQL must delete the table and its read-back must count it); lead_hash = a keyed hash of an event that can include an address, short-lived, cleared by hand (docs/privacy.md); unlinkable = visitor rows with no address, no IP address and no lead id, so a request cannot be matched to them (Art. 11), bounded by retention; aggregate = counts, labels and bookkeeping with no row per person; internal = SQLite's own table. reviewed_columns: a column in a table that is not class lead or lead_hash whose name matches the test's personal-data vocabulary, or whose declared type is blob or none, or whose default is an expression, each with the reason it holds no personal data (at least 12 characters). backup: whether scripts/backup-d1.sh exports the table (never or exported); only checked for classes lead, lead_hash and unlinkable.",
-  "reviewed_schema_digest": "73e54501d063901192f978d7f812c6085b45495f45b872dbf4f31f2e338c9419",
+  "reviewed_schema_digest": "9862f8fa7be1ed0ca391d307878624b89e296a0471fe2b9600a3376ba9910794",
+  "reviewed_registry_digest": "4f3c1fa7dcb42c37050734fe194dc0a718c20046a50177568226608a2e6e05fb",
   "other_objects": {
     "view": {},
     "trigger": {
@@ -113,13 +114,28 @@
         "dynamic-env": "reads a closed list of setting names from a plain string map in the deploy check, not a storage binding"
       }
     },
+    "reviewed_call_sites": {
+      "_comment": "For every file and primitive above: a short hash of each statement (comments and spacing removed, the whole call including its arguments) that mentions the primitive, h*N when the same statement appears N times, or comment when it is only named in comments. A new call through an approved primitive or binding, or an edit to a reviewed one, changes the list and fails the test until a person has read what it writes and recorded the new hash. It pins statement text, not data flow.",
+      "worker/src/index.ts": {"binding:KIT": ["9ad806f9d2f4"]},
+      "worker/src/kit/budgetcheck.ts": {"dynamic-env": ["7f15c6acee35", "f74f11059533"]},
+      "worker/src/kit/env.ts": {"KVNamespace": ["155dee469554"], "binding:KIT": ["155dee469554", "227cab0b1bac*3", "2cbe3eb9ce9a"]},
+      "worker/src/kit/gate.ts": {"binding:KIT": ["31d11039f4d9", "65cc71ed3c81"]},
+      "worker/src/live.ts": {"put": ["4ae653a45098", "5d378dba91d2", "cd6b2c3c9ab1"], "caches": ["f8e6527f8999"], "binding:LIVE_KV": ["1ac6c89f580b", "bb97211dcfe7", "d3b25fe0bce7", "e66aba139526"]}
+    },
     "wrangler_tables": ["d1_databases", "kv_namespaces", "ratelimits", "routes", "triggers", "vars"]
   },
   "export_paths": {
-    "_comment": "Every place that can read the database out. commands: files in scripts, CI, deploy, the build files and src/reach_around that contain a wrangler d1 export, execute or time-travel call or a dump tool (found by scanning; a new one fails the test). whole_database_docs: docs that show a wrangler d1 export with no --table, which dumps every table including the lead tables. backup_extra_tables: tables backup-d1.sh exports that no migration creates. The backup script itself is also run against a recording stub in the test and every wrangler call it makes is judged against the store classes.",
+    "_comment": "Every place that can read the database out. commands: every text file in the repository outside dependency and cache directories and Markdown (shell scripts anywhere, every package.json, Makefile and justfile, workflows and composite actions, Containerfile, deploy files, JSON and YAML command arrays, tests, the CLI) that contains a wrangler d1 export, execute or time-travel call or a dump tool, also when the words are split across quoted array items, list items or a line continuation (found by scanning; a new one fails the test; JSON is parsed and keys starting with an underscore are ignored). whole_database_docs: Markdown that shows a wrangler d1 export with no --table, which dumps every table including the lead tables. backup_extra_tables: tables backup-d1.sh exports that no migration creates. The backup script itself is also run against a recording stub in the test and every wrangler call it makes is judged against the store classes.",
     "commands": {
       "scripts/backup-d1.sh": "The only exporter. One named table per export call, from a fixed list; its one other call is the table listing. The test runs it against a recording stub and rejects any call that names a lead or never-exported table, a whole-database export or a different query.",
       "scripts/check-dump.py": "Reads a dump and refuses addresses; the match is a docstring mention of the export command, it never makes a dump.",
+      "scripts/erasure-stores.json": "This registry: its prose names the export commands it inventories; it runs nothing.",
+      "tests/test_backup_d1.py": "Test fixtures: a stub wrangler records the backup script's calls; no real database is read.",
+      "tests/test_check_dump.py": "Test fixtures for the dump checker; synthetic text only, no export is made.",
+      "tests/test_erasure_coverage.py": "This test: command strings in hostile fixtures and a recording stub; nothing runs against a real database.",
+      "tests/test_leads_delete.py": "Test fixtures for the delete tool's `d1 execute` text, run against a stub; no real database is read.",
+      "tests/test_leads_show.py": "Test fixtures for the lead lookup's `d1 execute` text, run against a stub; no real database is read.",
+      "worker/migrations/0007_rollup_max_id.sql": "A comment in a migration that mentions the export command; the SQL runs no export.",
       "scripts/clear-click-country.sh": "Counts and clears the retired country column of click_events and counts two aggregate tables; reads no lead table and writes no file.",
       "src/reach_around/commands/leads.py": "The erasure tool itself: its `d1 execute` text is the owner-run delete and read-back SQL for the lead tables, and it reads the lead list the owner exports by hand (checklist item 5).",
       "src/reach_around/funnel/export.py": "Reads a d1 execute JSON file the owner supplies for aggregate reports; a docstring mention, it runs nothing."

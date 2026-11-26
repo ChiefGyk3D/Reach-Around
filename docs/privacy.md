@@ -244,17 +244,34 @@ it (not from the migration text), and fails when something appears that
 `scripts/erasure-stores.json` has not classified, when a column in a table not
 classed lead or lead_hash has a personal-looking name, a blob or untyped
 declaration or an expression default without its own recorded reason, or when
-the recorded column lists or the schema digest no longer match. Class "lead"
-means a row holds an address or carries a lead id; the delete tool removes
-those.
+the recorded column lists or the schema digest no longer match. The schema
+digest covers every column, type, default and key, and the full text of every
+view, trigger and index, so changing only a view or trigger body fails until it
+is looked at again. Class "lead" means a row holds an address or carries a lead
+id; the delete tool removes those.
+
+What the test does check about the Worker's other stores: every file under
+`worker/src` that names a storage primitive or a storage binding from any
+wrangler config is listed, and so is each statement that mentions one (a short
+hash of the statement text, comments and spacing removed). A new write through an
+already approved binding, or an edit to a reviewed one, fails until it is read
+and recorded. This is lexical: it pins statement text, it does not follow data
+flow, and a write that never names a primitive or a binding is not seen.
+
+Every export command is found by scanning every text file in the repository
+outside dependency and cache directories and Markdown (scripts anywhere, every
+`package.json`, Makefile and justfile, workflows, composite actions, a
+Containerfile, deploy files, JSON and YAML command arrays). A command built at
+run time from pieces that never appear together is not seen.
 
 What the test cannot do: it cannot tell that a person read a registry change.
-Review of changes to `scripts/erasure-stores.json` (and to this table) by a
-second human is a policy control, not something CI enforces. The repository's
-CODEOWNERS file does not cover the registry and does not require a code owner
-review (see OPEN QUESTION 5). The scan of the Worker's other stores is lexical:
-it lists every file under `worker/src` that names a storage primitive or a
-storage binding from any wrangler config, and it does not follow data flow.
+The registry carries a digest of itself, so the schema digest, the column lists
+and the reviewed call sites cannot be edited one at a time; that proves the
+records were recomputed together, not that someone else approved them. Review of
+changes to `scripts/erasure-stores.json` (and to this table) by a second human is
+a policy control, not something CI enforces. The repository's CODEOWNERS file
+does not cover the registry and does not require a code owner review (see OPEN
+QUESTION 5).
 
 | Store | Holds | Touched by the delete tool | How erasure is done or checked |
 |---|---|---|---|
@@ -266,7 +283,7 @@ storage binding from any wrangler config, and it does not follow data flow.
 | KV, edge cache | the gated page, live status state, the public status body | no | no lead data; the Worker never writes the gated page key |
 | R2, Durable Objects, queues | not used | not applicable | the test fails if one is added without review |
 | Unlock cookie | a signed token, no server copy | not applicable | stops opening the kit once the `leads` row is gone |
-| `scripts/backup-d1.sh` exports | `leads`, `kit_events`, `visitor_seen`, `view_events` are never exported | not applicable | the only lead-related data this script exports is the `alert_dedup` hashes; the test runs the script against a recording stub and judges every wrangler call it makes, and inventories every export command in scripts, CI and the CLI |
+| `scripts/backup-d1.sh` exports | `leads`, `kit_events`, `visitor_seen`, `view_events` are never exported | not applicable | the only lead-related data this script exports is the `alert_dedup` hashes; the test runs the script against a recording stub and judges every wrangler call it makes, and inventories every export command in any text file of the repository |
 | Hand-made whole-database exports | a `wrangler d1 export` with no `--table` (shown in `docs/deploy.md`, `docs/failure-modes.md` and the wiki as a backstop before a migration) holds every table, `leads` and `kit_events` included | no | by hand, checklist item 5; the test lists the docs that show one, so a new one is noticed |
 | D1 Time Travel | the whole database, 7 days Free, 30 days Paid | no | ages out; see the checklist |
 | Alert copies, inquiry text, hand-made exports, logs | outside the Worker | no | by hand, items 2, 3, 5, 6 and 8 of the checklist |
