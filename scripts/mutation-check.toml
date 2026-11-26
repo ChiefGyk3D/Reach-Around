@@ -908,12 +908,12 @@ find = 'readBoundedText(request, INQUIRY_LIMITS.maxBodyBytes,'
 replace = 'readBoundedText(request, 10_000_000,'
 
 [[mutation]]
-id = "inquiry-failed-send-keeps-budget"
+id = "inquiry-failed-send-refunds-budget"
 file = "src/kit/inquiry.ts"
 group = "inquiry"
-what = "an inquiry that no channel delivered keeps its daily budget unit"
-find = '.bind(BUDGET_KEY, utcDay(now)).run();'
-replace = '.bind(BUDGET_KEY, "9999-01-01").run();'
+what = "an inquiry that no channel delivered gives its daily budget unit back, so the budget stops bounding attempts"
+find = 'log.log("send", "failed", "provider");'
+replace = 'await env.DB.prepare("UPDATE counters SET count = count - 1 WHERE key = ?1 AND day = ?2 AND count > 0").bind(BUDGET_KEY, utcDay(now)).run(); log.log("send", "failed", "provider");'
 
 [[mutation]]
 id = "inquiry-daily-budget-removed"

@@ -258,13 +258,8 @@ async function submit(request: Request, env: InquiryEnv, deps: InquiryDeps): Pro
   if (deps.fetchFn !== undefined) dispatch.fetchFn = deps.fetchFn;
   const receipt = await send(env, { kind: "inquiry_received", atMs: now, ...parsed.fields }, dispatch);
   if (!receipt.some((r) => r.ok)) {
-    // Nothing was delivered, so the unit reserved above goes back (bounded at zero). If the refund
-    // itself fails the unit stays spent: the stricter state, never a larger budget.
-    try {
-      await env.DB.prepare("UPDATE counters SET count = count - 1 WHERE key = ?1 AND day = ?2 AND count > 0").bind(BUDGET_KEY, utcDay(now)).run();
-    } catch {
-      // Left spent.
-    }
+    // The unit reserved above is an attempt bound and is never given back, even when nothing was
+    // delivered: a refund would stop the global budget from bounding attempted work.
     log.log("send", "failed", "provider");
     return redirect(INQUIRY_ERROR_ROUTE);
   }

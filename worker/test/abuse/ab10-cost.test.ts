@@ -373,6 +373,14 @@ describe("AB-10: the alert path cannot be turned into a flood", () => {
       expect(res.status).toBe(303);
       expect(res.headers.get("set-cookie")).not.toBeNull();
       expect(alertStarted).toBe(true);
+      // The alert must be registered as background work before the answer returns, and still be pending.
+      expect(background).toHaveLength(1);
+      let settled = false;
+      void background[0]!.then(() => {
+        settled = true;
+      });
+      await Promise.resolve();
+      expect(settled).toBe(false);
     } finally {
       release([]);
       await Promise.all(background);
