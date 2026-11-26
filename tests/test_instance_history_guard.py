@@ -1142,28 +1142,85 @@ def test_the_readme_and_the_workflow_say_it_is_not_a_sufficient_gate() -> None:
     header = squash(WORKFLOW.read_text(encoding="utf-8"))
     for text in (readme, header):
         assert STATEMENT in text
+        # CODEOWNERS plus code-owner review is the primary boundary.
+        assert "primary boundary is codeowners plus code-owner review" in text
+        assert "require review from code owners" in text
+        assert "administrators included" in text
+        # The ruleset workflow is not available on Team plans: an upgrade path.
         assert "require workflows to pass before merging" in text
-        # The external required workflow is the only accepted boundary.
-        assert "separate trusted repository" in text
-        assert "only accepted trust boundary" in text
-        assert "unverified" in text
-        # CODEOWNERS and the push restriction are labeled defense in depth.
-        assert "defense in depth (not a boundary)" in text
-        assert "codeowners" in text
-        assert "redact/*" in text
-        # No wording presents CODEOWNERS as an alternative boundary.
-        assert "in this order of preference" not in text
-        assert "a trust boundary from the list above" not in text
-        assert "2. protected" not in text
-        assert "3. restrict" not in text and "3. restricting" not in text
+        assert "not available on a team plan" in text
+        assert "enterprise" in text
+        # The label is an intent record, not a gate GitHub enforces.
+        assert "intent record" in text
+        assert "24 hour cooling-off signal" in text
+        # The solo owner cannot approve their own pull request.
+        assert "does not let an author approve their own pull request" in text
+        assert "who reviews when you are the only person" in text
+        # The old model is gone.
+        assert "only accepted trust boundary" not in text
     assert "checklist before you list the first approver" in readme
-    # The checklist demands an observed block before any approver is added.
+    # The checklist: CODEOWNERS present, branch rule, and an observed block.
+    assert ".github/codeowners` is present" in readme
     assert "you observed it block" in readme
     assert "do not add any approver login until you have seen the block" in readme
-    for item in ("gate g1", "gate g5", "not yet run"):
-        assert item in readme
+    assert "independent code-owner approval" in readme
+    assert "optional, recommended: live gate g1" in readme
+    assert "not required for this boundary" in readme
+    assert (
+        "gate g5"
+        not in readme.split("checklist before you list")[1].split("what is verified")[0]
+    )
     assert "actions: read` is wide" in (TEMPLATE / "README.md").read_text("utf-8")
     assert "no narrower" in readme
+
+
+def test_the_readme_lists_the_solo_owner_options_with_their_limits() -> None:
+    readme = squash((TEMPLATE / "README.md").read_text(encoding="utf-8"))
+    section = readme.split("who reviews when you are the only person")[1]
+    section = section.split("defense in depth (not a boundary)")[0]
+    for part in (
+        "second github account that you control",
+        "github app or bot as the reviewer",
+        "a team that contains only you does not help",
+        "administrator bypass",
+        "does not protect against",
+        "your own discipline",
+        "unverified",
+    ):
+        assert part in section, part
+    assert "recommendation: option 1" in section
+
+
+def test_the_codeowners_example_covers_every_protected_path() -> None:
+    lines = (TEMPLATE / ".github" / "CODEOWNERS").read_text("utf-8").splitlines()
+    rules = [ln.split() for ln in lines if ln.strip() and not ln.startswith("#")]
+    assert rules and all(len(r) == 2 and r[1] == "@OWNER-LOGIN" for r in rules)
+    patterns = [r[0] for r in rules]
+
+    def covered(path: str) -> bool:
+        return any(
+            path == p.lstrip("/")
+            or (p.endswith("/") and path.startswith(p.lstrip("/")))
+            for p in patterns
+        )
+
+    # What the guard reads or accepts as a rewrite, and what the README lists.
+    protected = [
+        guard.HISTORY,
+        guard.APPROVERS,
+        ".github/workflows/history-guard.yml",
+        ".github/CODEOWNERS",
+        "history/redactions/run-1.manifest",
+        "scripts/history-guard.py",
+        "scripts/verify-history-rewrite.sh",
+        "engine.lock",
+        "engine.release.json",
+    ]
+    for path in protected:
+        assert covered(path), path
+    assert guard.MANIFEST.match("history/redactions/run-1.manifest")
+    readme = (TEMPLATE / "README.md").read_text("utf-8")
+    assert ".github/CODEOWNERS" in readme
 
 
 def compare_step() -> dict[str, Any]:

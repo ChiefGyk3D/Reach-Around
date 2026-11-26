@@ -979,21 +979,36 @@ no longer offers a merge queue or the watcher alone; D5's predicate is corrected
   a `pull_request` trigger GitHub runs the workflow file of the merge ref, so a pull
   request can replace `history-guard.yml` and keep the required check name; pinning the
   scripts to the base commit helps only after the workflow ran its checkout. Not solved
-  in code. The template says so (README "History rewrites", the workflow header) and
-  requires one trust boundary, decided by the owner (2026-11-26): the ruleset rule
-  "Require workflows to pass before merging" pointing at a workflow in a separate
-  trusted repository, so a pull request cannot replace it (organization or enterprise
-  level per GitHub's page read 2026-11-26; plan availability INFERRED and UNVERIFIED;
-  gates G1 and G5 not yet run). It is the sole accepted boundary. CODEOWNERS entries
-  for `.github/`, `history/`, scripts, lock and approvers paths with "Require review
-  from Code Owners" (author not a code owner, dismiss stale reviews on, administrators
-  included) and a limit on who can push `redact/*` branches are defense in depth only,
-  not a boundary (a pull request from any branch can replace the workflow, and a
-  privileged author can satisfy or dismiss a review). `.github/history-approvers`
-  ships empty and the README checklist demands an OBSERVED block by the external
-  workflow (a test pull request that replaces the guard workflow fails the required
-  check), plus G1 and G5, before any approver login is added. The High is closed in
-  the template text only when that live observation is made.
+  in code. The template says so (README "History rewrites", the workflow header).
+  Owner decision (2026-11-26, "CODEOWNERS plus code-owner review as the primary
+  boundary"): the controlling boundary is CODEOWNERS plus mandatory code-owner review of
+  `.github/`, `history/`, scripts, `engine.lock` and the approvers file, with the author
+  unable to satisfy it, stale approvals dismissed, approval of the most recent reviewable
+  push required, and administrators included (no bypass). A replaced workflow is a
+  change under `.github/` and needs that review. The ruleset rule "Require workflows to
+  pass before merging" is NOT AVAILABLE on the owner's Team plan (organization or
+  enterprise level, Enterprise plans only per GitHub's page and changelog read
+  2026-11-26; user reports that it does not fire on `labeled`/`unlabeled` are
+  UNVERIFIED) and is documented only as an optional upgrade path for Enterprise
+  accounts. The workflow check, the engine comparison and the label and age gate stay
+  as designed and now protect against mistakes and unreviewed paths, not a hostile
+  workflow replacement. The label is an intent record and a 24 hour cooling-off signal,
+  not a gate GitHub enforces for an external workflow: its authorization is
+  irrevocable for `(head, base tip, manifest blob)` after the cooling period (branch B
+  of G2), with no claim of current-label presence at merge.
+  Solo owner: GitHub does not let an author approve their own pull request (VERIFIED,
+  page read 2026-11-26), so with one human a code-owner review must come from a second
+  account the owner controls with write access (strongest; it reduces to the owner's
+  discipline at approval time), not from a team of one, administrator bypass (no
+  boundary) or a bot/App reviewer (UNVERIFIED that its review counts). The README
+  documents the options and their consequences. `.github/history-approvers` ships
+  empty and the README checklist demands: CODEOWNERS present and covering the paths;
+  branch protection or a ruleset with the code-owner requirement and no admin bypass;
+  and an OBSERVED block (a test pull request editing `history-guard.yml` cannot merge
+  without an independent code-owner approval) before any approver login is added. G1
+  on a scratch repository is optional and recommended, not required. A limit on who
+  can push `redact/*` branches stays defense in depth only. The High is closed in the
+  template text only when that live observation is made.
   Defense in depth: the first job steps compare the running workflow file with the base
   commit's copy and fail on a difference; a replaced workflow can omit that step.
 * **`actions: read` is capability-wide (Low).** It also reads the logs and artifacts of

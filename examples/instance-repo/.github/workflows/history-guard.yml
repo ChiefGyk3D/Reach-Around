@@ -33,18 +33,28 @@
 # its checkout. The first steps below compare the running copy of this file with
 # the base commit's copy and fail on any difference; that catches accidental
 # drift and costs little, but it does NOT stop a replaced workflow that omits
-# the step. The ONLY accepted trust boundary is a ruleset rule "Require
-# workflows to pass before merging" that points at a workflow in a separate
-# trusted repository, so a pull request cannot replace it. Live gates G1 and G5
-# are not yet run, and availability of ruleset workflows on your plan is
-# unverified (GitHub's page on available rules for rulesets, read 2026-11-26,
-# says they are configured at organization or enterprise level); see README.md,
-# "History rewrites". Until that external workflow is OBSERVED to block a test
-# pull request that replaces this file, leave `.github/history-approvers`
-# empty. CODEOWNERS with code-owner review and a restriction on who can push
-# `redact/*` branches are defense in depth, not a boundary (README.md,
-# "Defense in depth (not a boundary)"). A sole owner is not protected from
-# their own account; the guard prevents mistakes and leaves a record.
+# the step.
+#
+# The primary boundary is CODEOWNERS plus code-owner review: the paths .github/,
+# history/, scripts/, engine.lock and the approvers file are covered by a
+# CODEOWNERS file (example: .github/CODEOWNERS), with the branch rule "Require
+# review from Code Owners", an owner who is not the pull request author, stale
+# approvals dismissed, approval of the most recent reviewable push, and
+# administrators included (no bypass). A replaced workflow is a change under
+# .github/ and needs that review. This check, the engine comparison and the
+# label and age gate protect against mistakes and unreviewed paths, not against
+# a hostile workflow replacement. The ruleset rule "Require workflows to pass
+# before merging" (a workflow in a separate trusted repository) is NOT AVAILABLE
+# on a Team plan (organization or enterprise level; GitHub's page on available
+# rules for rulesets and its 2023-08-02 changelog, read 2026-11-26): an optional
+# upgrade path for Enterprise accounts only. The label is an intent record and
+# a 24 hour cooling-off signal, not a gate that GitHub enforces for this
+# workflow. GitHub does not let an author approve their own pull request, so a
+# sole owner needs a second GitHub login they control as code owner; see README.md,
+# "Who reviews when you are the only person". Until the activation checklist
+# there is complete and a test pull request that edits this file is OBSERVED to
+# be unmergeable without an independent code-owner approval, leave
+# `.github/history-approvers` empty.
 name: History guard
 
 on:

@@ -166,6 +166,7 @@ def test_the_template_files_exist() -> None:
         "scripts/check-freshness.py",
         ".github/workflows/history-guard.yml",
         ".github/history-approvers",
+        ".github/CODEOWNERS",  # example owners of the rewrite-deciding paths (#619)
         "scripts/history-guard.py",
         "scripts/verify-history-rewrite.sh",
     ):

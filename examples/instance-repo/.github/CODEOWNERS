@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Code owners of the paths that decide whether a history rewrite can be merged.
+# Copy this file to .github/CODEOWNERS and replace OWNER-LOGIN with the login of
+# the review account (README.md, "History rewrites", "Who reviews when you are
+# the only person"). A code owner must have write access to the repository.
+#
+# This file does nothing by itself. It is the primary boundary only together
+# with the branch rule "Require review from Code Owners", an owner who is not
+# the pull request author, "Dismiss stale pull request approvals" on,
+# "Require approval of the most recent reviewable push" on, and administrators
+# included in the rules (no bypass). Follow the activation checklist in the
+# README before you add an approver login.
+#
+# GitHub reads this file from the base branch of the pull request, so a pull
+# request cannot change who owns a path for itself.
+#
+# Note: /history/ is also changed by the daily refresh pull requests. With the
+# code-owner rule on, those need the same review, so choose how you want to
+# handle them before you turn the rule on.
+
+/.github/                       @OWNER-LOGIN
+/.github/history-approvers      @OWNER-LOGIN
+/.github/CODEOWNERS             @OWNER-LOGIN
+/.github/workflows/             @OWNER-LOGIN
+/history/                       @OWNER-LOGIN
+/scripts/                       @OWNER-LOGIN
+/engine.lock                    @OWNER-LOGIN
+/engine.release.json            @OWNER-LOGIN
