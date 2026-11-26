@@ -397,7 +397,9 @@ def test_the_temporary_file_is_never_a_fixed_name_a_symlink_can_hijack(
     r = purge(env, work)
     assert r.returncode == 0, r.stderr
     assert victim.read_text() == "keep me"
-    names = sorted(p.name for p in work.iterdir())
+    names = sorted(
+        p.name for p in work.iterdir() if p.name != LOCK_FILE
+    )  # r13: permanent lock file
     recovery = [name for name in names if name.startswith("lead-recovery-")]
     assert len(recovery) == 1
     assert recovery[0].endswith(".json")
@@ -419,7 +421,9 @@ def test_the_statement_file_is_private_and_removed_when_a_step_fails(
     env["STUB_FAIL_FILE"] = "1"
     work = workdir(tmp_path)
     assert purge(env, work).returncode == 1
-    assert [p.name for p in work.iterdir()] == ["move-manifest.json"]  # no sql file
+    assert [p.name for p in work.iterdir() if p.name != LOCK_FILE] == [
+        "move-manifest.json"
+    ]  # no sql file (r13: the lock file is permanent)
 
 
 def test_a_failed_copy_deletes_nothing(tmp_path: Path) -> None:
@@ -428,7 +432,9 @@ def test_a_failed_copy_deletes_nothing(tmp_path: Path) -> None:
     r = purge(env, workdir(tmp_path))
     assert r.returncode == 1
     assert count(env["STUB_SRC"], "leads") == 3
-    assert [p.name for p in (tmp_path / "work").iterdir()] == ["move-manifest.json"]
+    assert [p.name for p in (tmp_path / "work").iterdir() if p.name != LOCK_FILE] == [
+        "move-manifest.json"
+    ]  # r13: the lock file is permanent
 
 
 def test_identity_is_read_from_the_databases_not_from_their_names(
@@ -823,7 +829,9 @@ def test_purge_refuses_unless_the_source_is_frozen_before_any_write(
     assert "--freeze first" in r.stderr
     assert src_rows(env) == 6
     assert count(env["STUB_DEST"], "leads") == 0  # not even the copy ran
-    assert list(work.iterdir()) == []  # no manifest either
+    assert [
+        p for p in work.iterdir() if p.name != LOCK_FILE
+    ] == []  # no manifest (r13: permanent lock file)
 
 
 def test_purge_refuses_when_only_one_table_is_frozen_or_the_freeze_is_fake(
@@ -1200,7 +1208,9 @@ def test_purge_refuses_without_the_locked_window_flag_before_any_write(
     assert "--locked-window-confirmed" in r.stderr
     assert src_rows(env) == 6
     assert count(env["STUB_DEST"], "leads") == 0  # not even the copy ran
-    assert list(work.iterdir()) == []
+    assert [
+        p for p in work.iterdir() if p.name != LOCK_FILE
+    ] == []  # r13: permanent lock file
 
 
 def test_the_window_flag_is_for_purge_only(tmp_path: Path) -> None:
@@ -1429,7 +1439,9 @@ def test_an_id_that_is_not_the_platforms_answer_is_refused(
     assert r.returncode == 3
     assert "not the database you named" in r.stderr
     assert count(env["STUB_DEST"], "leads") == 0
-    assert list(work.iterdir()) == []
+    assert [
+        p for p in work.iterdir() if p.name != LOCK_FILE
+    ] == []  # r13: permanent lock file
 
 
 def test_two_names_with_one_platform_id_are_refused(tmp_path: Path) -> None:
@@ -2164,7 +2176,7 @@ def test_a_second_run_cannot_load_the_manifest_while_the_first_holds_the_lock(
     Path(env["HOLD_GO"]).write_text("go")
     _out, err = proc.communicate(timeout=60)
     assert proc.returncode == 0, err
-    assert not lock.exists()  # removed on a normal end, still locked while it went
+    assert lock.exists()  # round 13: the lock file is permanent, never removed
     env["HOLD_MATCH"] = "no-such-text"
     assert run(env, work, "--copy").returncode == 0  # free again
 
@@ -2185,7 +2197,7 @@ def test_the_lock_is_released_after_a_signal_that_ends_the_run(
     Path(env["HOLD_GO"]).write_text("go")
     _out, err = proc.communicate(timeout=60)
     assert proc.returncode == 6, err
-    assert not (work / LOCK_FILE).exists()
+    assert (work / LOCK_FILE).exists()  # r13: permanent; the lock itself is free
     env["HOLD_MATCH"] = "no-such-text"
     again = run(env, work, "--copy")
     assert again.returncode == 0, again.stderr
@@ -2217,7 +2229,7 @@ def test_the_lock_is_released_after_sigkill_and_the_leftover_file_is_reused(
         time.sleep(0.1)
         again = run(env, work, "--copy")
     assert again.returncode == 0, again.stderr
-    assert not (work / LOCK_FILE).exists()
+    assert (work / LOCK_FILE).exists()  # r13: permanent file, reused
 
 
 @pytest.mark.parametrize("case", ["mode", "symlink", "hardlink", "directory"])
@@ -2639,3 +2651,96 @@ def test_a_bad_export_stops_the_recovery_before_the_freeze_is_lifted(
     r = run(env, work, "--recover-from-export")
     assert r.returncode == 3
     assert frozen_names(env) == {"leads_frozen", "kit_events_frozen"}
+
+
+# ---- round 13: a permanent lock file, recovery always freezes again ---------------
+
+DETACH = """#!{python}
+import os, sys, time
+args = sys.argv[1:]
+flag = os.environ["DETACH_FLAG"]
+if not os.path.exists(flag):
+    open(flag, "w").write("1")
+    if os.fork() == 0:  # a detached grandchild that keeps the inherited descriptors
+        for n in (0, 1, 2):
+            os.close(n)
+        for _ in range(300):
+            if os.path.exists(os.environ["DETACH_GO"]):
+                break
+            time.sleep(0.1)
+        os._exit(0)
+os.execv(os.environ["STUB_REAL"], [os.environ["STUB_REAL"], *args])
+"""
+
+FAIL_NTH_DROP = """#!{python}
+import os, sys
+args = sys.argv[1:]
+if "--command" in args and "DROP TRIGGER" in args[args.index("--command") + 1]:
+    counter = os.environ["DROP_COUNTER"]
+    n = int(open(counter).read()) if os.path.exists(counter) else 0
+    open(counter, "w").write(str(n + 1))
+    if n + 1 == 2:
+        sys.exit(1)
+os.execv(os.environ["STUB_REAL"], [os.environ["STUB_REAL"], *args])
+"""
+
+
+def test_a_surviving_detached_grandchild_keeps_the_lock_after_a_normal_end(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    wrapper = tmp_path / "detach-wrapper"
+    wrapper.write_text(DETACH.format(python=sys.executable))
+    wrapper.chmod(0o700)
+    env["STUB_REAL"] = env["WRANGLER"]
+    env["WRANGLER"] = str(wrapper)
+    env["DETACH_FLAG"] = str(tmp_path / "detach-flag")
+    env["DETACH_GO"] = str(tmp_path / "detach-go")
+    first = run(env, work, "--freeze")
+    assert first.returncode == 0, first.stderr  # the direct wrapper exited 0
+    assert (work / LOCK_FILE).exists()
+    second = run(env, work, "--freeze")  # the grandchild still holds the same file
+    assert second.returncode == 7, second.stderr
+    assert "another run holds the lock" in second.stderr
+    Path(env["DETACH_GO"]).write_text("go")
+    r = run(env, work, "--freeze")
+    for _ in range(100):  # the grandchild ends; only then is the lock free
+        if r.returncode != 7:
+            break
+        time.sleep(0.1)
+        r = run(env, work, "--freeze")
+    assert r.returncode == 0, r.stderr
+
+
+def test_a_failure_after_the_first_trigger_drop_still_freezes_again(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    assert purge(env, work).returncode == 0
+    with closing(sqlite3.connect(env["STUB_SRC"])) as db:
+        before = sorted(
+            db.execute(
+                "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' "
+                "AND name IN ('leads_frozen', 'kit_events_frozen')"
+            ).fetchall()
+        )
+    assert len(before) == 2
+    wrapper = tmp_path / "drop-wrapper"
+    wrapper.write_text(FAIL_NTH_DROP.format(python=sys.executable))
+    wrapper.chmod(0o700)
+    env["STUB_REAL"] = env["WRANGLER"]
+    env["WRANGLER"] = str(wrapper)
+    env["DROP_COUNTER"] = str(tmp_path / "drop-count")
+    r = run(env, work, "--recover-from-export")
+    assert r.returncode != 0  # the second DROP failed
+    assert "Traceback" not in r.stderr
+    with closing(sqlite3.connect(env["STUB_SRC"])) as db:
+        after = sorted(
+            db.execute(
+                "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' "
+                "AND name IN ('leads_frozen', 'kit_events_frozen')"
+            ).fetchall()
+        )
+    assert after == before  # both exact definitions are back

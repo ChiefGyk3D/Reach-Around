@@ -7,3 +7,5 @@
   The cutover procedure now keeps its run lock for database calls still in
   flight and recovers in one step (`--recover-from-export`). Delete accounting
   and the documented trust limits were hardened and clarified.
+  The cutover procedure now keeps its run lock file permanently and always
+  re-freezes during recovery.

@@ -481,7 +481,7 @@ python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-i
 # 3. Delete the analytics copies, inside the locked window of step 2 of the cutover.
 python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --purge --locked-window-confirmed
 # Recovery of only the deleted lead rows, if needed:
-python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --restore-from-export
+python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --recover-from-export
 ```
 
 What `--purge` does, in this order. It refuses (exit 3), before any copy or delete, without
@@ -501,8 +501,8 @@ whether each moved lead should remain in the destination because it existed at c
 be removed under the applicable retention or deletion record. To remove an approved lead, use the
 owner deletion procedure in [privacy.md](privacy.md), recording the decision and identifier outside
 tool output, then rerun `--verify`. Do not delete a row merely to make verification pass. The manifest
-records a deleted set: a row goes into it only after the tool's own delete call succeeded and a fresh
-read of the analytics database showed the row gone (keyed by attempt, table, id and row digest, no
+records a deleted set: a row goes into it only when the tool's own delete call succeeded and the
+database returned that row in the statement's `RETURNING` result (keyed by attempt, table, id and row digest, no
 address). Verification accepts a moved row that is absent from analytics only if it is in that set
 and a recovery export holds it, so a row removed by anything else is reported by count. A delete call whose outcome was never
 known stays unaccounted. To reconcile it, restore the exported rows with the steps under Recovery

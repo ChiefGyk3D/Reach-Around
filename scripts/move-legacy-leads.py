@@ -234,16 +234,15 @@ class RunLock:
     cause (exit, signal, SIGKILL), so it cannot go stale; a file left behind by a
     killed run is harmless and is reused. Every database call gets a duplicate of the
     descriptor (see Wrangler.call), so the lock outlives this process for as long as a
-    call it started is still running. The file is removed on a normal end, while
-    the lock is still held, and every acquire checks afterwards that the path still
-    names the file it locked."""
+    call it started is still running. The file is never removed: one permanent file
+    means every run locks the same file, whoever still holds a duplicate. Every
+    acquire checks afterwards that the path still names the file it locked."""
 
     def __init__(self, work: Path) -> None:
         self.work = work
         self.dfd = -1
         self.fd = -1
         self.stat: os.stat_result | None = None
-        self.keep_file = False  # a database call may still be running: keep the file
 
     def _open(self) -> int:
         flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -258,7 +257,7 @@ class RunLock:
         try:
             return os.open(LOCK_NAME, flags, dir_fd=self.dfd)
         except FileNotFoundError:
-            return -1  # removed by a finishing run between the two calls: try again
+            return -1  # removed by someone else between the two calls: try again
         except OSError as exc:
             if exc.errno == errno.ELOOP:
                 raise Refused("the run lock file is a symbolic link.") from exc
@@ -294,7 +293,7 @@ class RunLock:
                             "this run did nothing."
                         ) from exc
                     raise
-                try:  # the holder before us may have removed it as it finished
+                try:  # someone may have replaced or removed it since we opened it
                     now = os.stat(LOCK_NAME, dir_fd=self.dfd, follow_symlinks=False)
                 except FileNotFoundError:
                     os.close(fd)
@@ -322,18 +321,6 @@ class RunLock:
 
     def release(self) -> None:
         if self.fd >= 0:
-            try:  # removed while still locked, so no one can lock the removed file
-                if (
-                    not self.keep_file
-                    and self.stat is not None
-                    and same_file(
-                        self.stat,
-                        os.stat(LOCK_NAME, dir_fd=self.dfd, follow_symlinks=False),
-                    )
-                ):
-                    os.unlink(LOCK_NAME, dir_fd=self.dfd)
-            except OSError:
-                pass
             os.close(self.fd)
             self.fd = -1
         if self.dfd >= 0:
@@ -414,8 +401,6 @@ class Wrangler:
                 pass_fds=keep,
             )
         except subprocess.TimeoutExpired as exc:
-            if held is not None:
-                held.keep_file = True  # a grandchild may live on holding the old file
             raise Failed("a database call timed out") from exc
         if done.returncode != 0:
             raise Failed("a database call failed")
@@ -1609,27 +1594,28 @@ def recover_from_exports(
     `d1 execute --file` is one transaction (only the Worker batch API is documented as
     one), so the steps are not merged into one file."""
     current_exported_rows(work, m)  # validated now; a bad export touches nothing
-    for table, _ in TABLES:
-        w.execute(args.source, command=f"DROP TRIGGER IF EXISTS {FROZEN[table][0]}")
     failure: BaseException | None = None
     code = 0
     try:
+        for table, _ in TABLES:
+            w.execute(args.source, command=f"DROP TRIGGER IF EXISTS {FROZEN[table][0]}")
         code = restore_from_exports(w, args, work, m)
     except BaseException as exc:  # noqa: BLE001 - re-raised below, after the re-freeze
         failure = exc
-    try:
-        freeze(w, args.source)
-    except BaseException as exc:  # noqa: BLE001
-        if failure is None:
-            raise Failed(
-                "the restore ended but the freeze could not be created again: run "
-                "--freeze now, before anything else"
-            ) from exc
-        print(
-            "the freeze could not be created again: run --freeze now, before "
-            "anything else",
-            file=sys.stderr,
-        )
+    finally:
+        try:
+            freeze(w, args.source)
+        except BaseException as exc:  # noqa: BLE001
+            if failure is None:
+                raise Failed(
+                    "the restore ended but the freeze could not be created again: "
+                    "run --freeze now, before anything else"
+                ) from exc
+            print(
+                "the freeze could not be created again: run --freeze now, before "
+                "anything else",
+                file=sys.stderr,
+            )
     if failure is not None:
         raise failure
     return code

@@ -68,7 +68,7 @@ Time Travel on that database is its recovery path, with its own bookmark
 The one-time lead move ([deploy.md](deploy.md), "The one-time move of existing
 leads") uses Time Travel as its recovery point: before any delete it records a
 fresh bookmark and writes a private full-row recovery export. Recover deleted
-lead rows with the move's `--restore-from-export` mode first. Time Travel is the
+lead rows with the move's `--recover-from-export` mode first. Time Travel is the
 last-resort full-database option: restoring a bookmark rolls back everything
 written to that database after the bookmark, including views and clicks, not
 only the purged lead rows. The move leaves two triggers in the analytics database
