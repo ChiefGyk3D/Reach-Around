@@ -279,7 +279,7 @@ class Preview:
         self,
         config: Path,
         host: str,
-        port: int,
+        port: int | None,
         overrides: Path | None = None,
     ) -> None:
         if not _is_loopback(host):
@@ -307,6 +307,9 @@ class Preview:
             config, overrides
         )  # before the build: no change is missed
         self._rebuild()
+        self._server: _Server | None = None
+        if port is None:  # build only: the caller serves ``root`` itself (the editor)
+            return
         server_class = _Server6 if ":" in host else _Server
         try:
             self._server = server_class((host, port), _Handler)
@@ -317,7 +320,18 @@ class Preview:
 
     @property
     def port(self) -> int:
+        if self._server is None:
+            raise PreviewError("this preview has no listener")
         return int(self._server.server_address[1])
+
+    @property
+    def workdir(self) -> Path:
+        """The private temporary directory that holds every build."""
+        return self._tmp
+
+    def rebuild(self) -> None:
+        """Build again now; a failure sets ``error`` and keeps the last good build."""
+        self._rebuild()
 
     def _rebuild(self) -> None:
         """Build into a fresh directory, then swap; on failure show the error."""
@@ -354,10 +368,13 @@ class Preview:
                 self._rebuild()
 
     def serve_forever(self) -> None:
+        server = self._server
+        if server is None:
+            raise PreviewError("this preview has no listener")
         self._serving.set()
         self._watcher = threading.Thread(target=self._watch, daemon=True)
         self._watcher.start()
-        self._server.serve_forever(poll_interval=0.1)
+        server.serve_forever(poll_interval=0.1)
 
     def close(self) -> None:
         """Stop serving, release the port and delete the temporary directory."""
@@ -365,11 +382,12 @@ class Preview:
             return
         self._closed = True
         self._stop.set()
-        if self._serving.is_set():  # shutdown() would block forever otherwise
-            self._server.shutdown()
+        if self._server is not None and self._serving.is_set():
+            self._server.shutdown()  # would block forever if never serving
         if self._watcher is not None:
             self._watcher.join(timeout=5)
-        self._server.server_close()
+        if self._server is not None:
+            self._server.server_close()
         shutil.rmtree(self._tmp, ignore_errors=True)
 
 

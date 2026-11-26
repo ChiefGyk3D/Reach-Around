@@ -17,10 +17,12 @@ else, change the config by hand
 or with the commands in
 [Customizing](customizing.md#editing-without-breaking-the-file).
 
-The preview frame is a placeholder. The preview listener answers with a fixed
-page that says "The preview appears here." It does not build or show your site.
-To see your site while you edit, run `reach-around serve` in another terminal
-([Local preview](preview.md)).
+The preview frame shows a real build of your site. The preview listener serves
+the last good build. Until a build exists it answers with a short placeholder
+page that says "The preview appears here." The site is rebuilt when the config
+changes. The frame does not reload by itself after a save yet (#200). To see
+your site while you edit with live reload, you can also run `reach-around serve`
+in another terminal ([Local preview](preview.md)).
 
 ## Quick start
 
@@ -196,13 +198,28 @@ The guard also knows an upload path (`/__edit/api/upload`, 8 MiB,
 `application/octet-stream`). No route answers it yet, so a request that passes
 the checks ends in 404.
 
-On the preview port, `GET` and `HEAD` of `/` return the placeholder page. Other
-methods are refused (405) and other paths give 404.
+On the preview port, only `GET` and `HEAD` are served (other methods give 405).
+They serve files from the last good build, and the placeholder page only when
+no build exists yet. A `Range` header is ignored and the whole file is sent.
+A file larger than 64 MiB is refused. At most 8 files stream at once; a ninth
+request gets 503. Images from other origins are blocked by the page's content
+security policy unless you start the editor with `--allow-remote-images`.
+`build.ok` and the build error reflect a real build, which runs again when the
+config digest changes. A change that only touches an asset file does not
+trigger a rebuild yet.
+
+Preview deployment invariant: the build folder is a temporary folder owned by
+the current user with mode 0700, and the editor refuses to start serving if it
+is not. Build files are opened by a descriptor walk that refuses links and
+files on another device. A bind mount on the same filesystem cannot be detected
+cheaply and is not attempted: only the same user (or root) could place one in
+that private folder, and such a party already controls the editor process and
+its session key.
 
 `GET /__edit/api/state` returns `hash` (SHA-256 of the file), `mtime`, `config`
 (the whole loaded config as plain JSON, no comments; `{}` when the file does not
 load), `build` (`{"ok": bool, "error": text or null}`; this only says whether
-the config loads, it does not run a site build), `can_undo`, `can_redo`,
+whether the last site build of this config worked), `can_undo`, `can_redo`,
 `outside_edit` (true when the file is not what the editor wrote last, so undo
 would erase an outside change), `version`, `preview_url` (the preview listener,
 on the same host name the page was opened with) and `limits` (`json_bytes`,
@@ -364,8 +381,8 @@ Limits that hold today:
 Known gaps (not built yet):
 
 - Drag and drop.
-- A real preview: the preview listener serves a placeholder, and `build.ok` does
-  not run a build.
+- Reloading the preview frame after a save (#200), and a rebuild when only an
+  asset file changes.
 - Image upload (the guard has the path and the size cap; no route), and any
   image slot: `editing.ASSET_KEYS` is empty and no `validate_slot` is passed, so
   the save-time asset hook is unused.

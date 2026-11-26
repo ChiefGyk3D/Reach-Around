@@ -110,6 +110,12 @@ def _parser() -> argparse.ArgumentParser:
         default=30.0,
         help="stop after this many minutes without activity (default 30, at most 1440)",
     )
+    editor.add_argument(
+        "--allow-remote-images",
+        action="store_true",
+        help="let the preview load https images (default: only the page's own "
+        "files and data: images, so the preview makes no network request)",
+    )
     edit_cli.register(commands_parsers)
     for module in pkgutil.iter_modules(commands.__path__):
         importlib.import_module(f"{commands.__name__}.{module.name}").register(
@@ -354,7 +360,11 @@ def _main(argv: list[str] | None, held_token: TokenHolder) -> int:
     if args.command == "serve":
         return _serve(args.config, args.host, args.port, args.overrides)
     if args.command == "edit":
-        return run_editor(args.config, idle_minutes=args.idle_minutes)
+        return run_editor(
+            args.config,
+            idle_minutes=args.idle_minutes,
+            allow_remote_images=args.allow_remote_images,
+        )
     if args.command in edit_cli.COMMANDS:
         return edit_cli.run(args)
     func = getattr(args, "func", None)

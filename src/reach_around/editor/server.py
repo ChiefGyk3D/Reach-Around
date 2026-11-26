@@ -13,6 +13,13 @@ Routes are limited to the shell, the static files, ``GET /__edit/api/state``,
 ``POST /__edit/api/history/restore`` and 404 for everything else. A refused or
 malformed request never writes and never produces a 5xx: the guard runs inside
 ``parse_request``, before any route.
+
+Deployment invariant for the preview: the build folder is a temporary folder
+owned by the current user with mode 0700, checked at start (the editor refuses
+to serve otherwise). Files are opened by a descriptor walk that refuses links
+and other devices; a same-device bind mount cannot be detected cheaply and is
+not attempted, so it is excluded by that invariant: only the same user (or
+root) could place one, and that party already controls this process.
 """
 
 from __future__ import annotations
@@ -20,6 +27,7 @@ from __future__ import annotations
 import io
 import json
 import math
+import mimetypes
 import os
 import secrets
 import signal
@@ -51,6 +59,7 @@ from reach_around.editor.service import (
     EditorService,
     RouteError,
 )
+from reach_around.preview import Preview, PreviewError, _resolve, _safe_segments
 
 BIND_ADDRESS = "127.0.0.1"
 DEFAULT_IDLE_SECONDS = 30 * 60.0
@@ -59,9 +68,14 @@ HEADER_DEADLINE_SECONDS = 10.0
 BODY_DEADLINE_SECONDS = 30.0
 MAX_IDLE_SECONDS = 24 * 3600.0
 _RECV_CHUNK = 8192
+_SHUT_RDWR = 2  # the value of socket.SHUT_RDWR (no socket import in this module)
 MAX_ACTIVE_CONNECTIONS = 16
 MAX_OPEN_CONNECTIONS = 32
 CONFIG_READ_CAP = 8 * 1024 * 1024
+SITE_FILE_CAP = 64 * 1024 * 1024  # the largest build file the preview will send
+_FILE_CHUNK = 64 * 1024  # a build file is read and sent this much at a time
+MAX_FILE_STREAMS = 8  # build files sent at once; more get a 503
+_read_fd = os.read  # one name for the chunked read (tests watch it)
 _MODULE_FILES = (
     "app.js",
     "strings.js",
@@ -93,6 +107,7 @@ _MESSAGES = {
     417: "Expectations are not supported.",
     421: "Misdirected request.",
     431: "The request headers are too large.",
+    503: "The preview is busy. Try again.",
 }
 _PREVIEW_PAGE = (
     b'<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
@@ -147,10 +162,16 @@ def editor_csp(frame_origin: str) -> str:
     )
 
 
-def preview_csp(editor_origin: str) -> str:
-    """The preview policy: opaque origin (D-05, D-15) and only the editor may frame."""
+def preview_csp(editor_origin: str, *, allow_remote_images: bool = False) -> str:
+    """The preview policy: opaque origin (D-05, D-15) and only the editor may frame.
+
+    Images load from the page itself and ``data:`` only (D-06), so the preview
+    makes no network request; ``allow_remote_images`` adds ``https:`` for images.
+    """
+    images = "'self' data: https:" if allow_remote_images else "'self' data:"
     return (
-        "sandbox allow-scripts; default-src 'self'; base-uri 'none'; "
+        "sandbox allow-scripts; default-src 'self'; "
+        f"img-src {images}; base-uri 'none'; "
         f"form-action 'none'; frame-ancestors {editor_origin}"
     )
 
@@ -596,7 +617,13 @@ class _PreviewHandler(_Handler):
             host = session.preview_guard.allowed_host(headers.get("Host"))
         name = host.rsplit(":", 1)[0] if host else BIND_ADDRESS
         return [
-            ("Content-Security-Policy", preview_csp(f"http://{name}:{session.port}")),
+            (
+                "Content-Security-Policy",
+                preview_csp(
+                    f"http://{name}:{session.port}",
+                    allow_remote_images=session.allow_remote_images,
+                ),
+            ),
             ("X-Content-Type-Options", "nosniff"),
             ("Referrer-Policy", "no-referrer"),
             ("Cache-Control", "no-store"),
@@ -614,10 +641,157 @@ class _PreviewHandler(_Handler):
     do_HEAD = do_GET
 
     def _get(self) -> None:
-        if self.route_path() == "/":
-            self._send(200, _PREVIEW_PAGE, "text/html; charset=utf-8")
-        else:
+        segments = _safe_segments(self.path)
+        if segments is None:
             self._refuse(404)
+            return
+        site = self.owner.site
+        # The last good build, even while the newest one fails (the editor
+        # shows that error); only the build output is reachable, nothing else.
+        target = _resolve(site.root, segments) if site is not None else None
+        if site is None or target is None:
+            if segments:
+                self._refuse(404)
+            else:
+                self._send(200, _PREVIEW_PAGE, "text/html; charset=utf-8")
+            return
+        slots = self.owner.file_slots
+        if not slots.acquire(blocking=False):
+            self._refuse(503)
+            return
+        try:
+            self._stream(site.root.resolve(), segments)
+        finally:
+            slots.release()
+
+    def _stream(self, root: Path, segments: list[str]) -> None:
+        """Send one build file from a descriptor opened once, in bounded chunks.
+
+        The file is opened with ``O_NOFOLLOW`` and the descriptor itself is
+        checked (a regular file, the same object the path names, under the
+        size cap), so the check and the read refer to the same object. A
+        ``Range`` header is ignored: the whole file is sent with a 200.
+        """
+        opened = _open_site_file(root, segments)
+        if opened is None:
+            self._refuse(404)
+            return
+        fd, size, name = opened
+        try:
+            if size > SITE_FILE_CAP:
+                self._refuse(413)
+                return
+            kind = mimetypes.guess_type(name)[0] or "application/octet-stream"
+            if kind.startswith("text/") or kind == "application/json":
+                kind += "; charset=utf-8"
+            self.close_connection = True
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", kind)
+                self.send_header("Content-Length", str(size))
+                self.send_header("Connection", "close")
+                for header, value in self.security_headers():
+                    self.send_header(header, value)
+                self.end_headers()
+                if self.command != "HEAD":
+                    left = size
+                    while left > 0:
+                        chunk = _read_fd(fd, min(_FILE_CHUNK, left))
+                        if not chunk:
+                            # The file shrank after the headers: the promised
+                            # length cannot be met, so drop the connection.
+                            self.owner.count_short_transfer()
+                            self.close_connection = True
+                            self.connection.shutdown(_SHUT_RDWR)
+                            break
+                        self.wfile.write(chunk)
+                        left -= len(chunk)
+            except OSError:
+                pass
+        finally:
+            os.close(fd)
+
+
+def check_private_build_dir(path: Path) -> None:
+    """Refuse to serve unless the build folder is private to this user.
+
+    The descriptor walk below stops links and devices, but a bind mount on the
+    same filesystem keeps its device number and cannot be told apart from a
+    plain folder without mount detection, which is not attempted. The walk
+    therefore relies on one deployment invariant, checked here at start: the
+    build folder is a temporary folder owned by the current user with no group
+    or other access (mode 0700, as ``tempfile.mkdtemp`` creates it). Only that
+    user (or root) can then place a mount inside it, and a party with that
+    power already controls the editor process and its session key.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        raise EditorError("the preview build folder cannot be checked") from None
+    try:
+        info = os.fstat(fd)
+    finally:
+        os.close(fd)
+    if info.st_uid != os.geteuid() or info.st_mode & 0o077:
+        raise EditorError(
+            "the preview build folder is not private to this user, so it is not served"
+        )
+
+
+def _open_site_file(root: Path, segments: list[str]) -> tuple[int, int, str] | None:
+    """Open one regular build file under ``root``: ``(descriptor, size, name)``.
+
+    The walk is descriptor-relative: the root is opened once, then every
+    segment is opened with ``dir_fd`` and ``O_NOFOLLOW``, so a component
+    swapped for a symlink after the request was checked is refused (the built
+    site holds no symlinks, so any link on the way is refused) and the walk
+    can never leave the root. A directory as the last segment serves its
+    ``index.html``. Every descendant must stay on the root's device. Mount
+    points on the same device are not detected: the build folder is private to
+    the current user (see ``check_private_build_dir``), so none can be placed
+    there by anyone but a party that already controls this process.
+    """
+    parts = list(segments)
+    for part in parts:
+        if part in ("", ".", "..") or "/" in part or "\0" in part:
+            return None
+    base = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+    held: list[int] = []
+    try:
+        current = os.open(root, base | os.O_DIRECTORY)
+        held.append(current)
+        device = os.fstat(current).st_dev
+        index = 0
+        name = ""
+        while True:
+            last = index >= len(parts)
+            name = "index.html" if last else parts[index]
+            index += 1
+            is_final = last or index >= len(parts)
+            flags = base | os.O_NONBLOCK
+            if not is_final:
+                flags |= os.O_DIRECTORY
+            nxt = os.open(name, flags, dir_fd=current)
+            held.append(nxt)
+            info = os.fstat(nxt)
+            if info.st_dev != device:
+                return None
+            if stat.S_ISDIR(info.st_mode):
+                if last:
+                    return None
+                current = nxt
+                if is_final:
+                    parts.append("index.html")
+                continue
+            if not is_final or not stat.S_ISREG(info.st_mode):
+                return None
+            held.pop()  # the file descriptor goes to the caller
+            return nxt, info.st_size, name
+    except OSError:
+        return None
+    finally:
+        for fd in held:
+            os.close(fd)
 
 
 @dataclass
@@ -642,6 +816,7 @@ class EditorSession:
         body_deadline: float = BODY_DEADLINE_SECONDS,
         mutation_limit: int = MUTATIONS_PER_MINUTE,
         mutation_window: float = RATE_WINDOW_SECONDS,
+        allow_remote_images: bool = False,
     ) -> None:
         if not (math.isfinite(idle_seconds) and 0 < idle_seconds <= MAX_IDLE_SECONDS):
             raise EditorError(
@@ -663,7 +838,15 @@ class EditorSession:
             clock=clock,
             mutation_limit=mutation_limit,
             mutation_window=mutation_window,
+            builder=self._site_error,
         )
+        self.allow_remote_images = allow_remote_images
+        self.site: Preview | None = None
+        self._site_digest: str | None = None
+        self.file_slots = threading.BoundedSemaphore(MAX_FILE_STREAMS)
+        self.short_transfers = 0  # files that shrank mid-send (a count, no path)
+        self._short_lock = threading.Lock()
+        self._site_lock = threading.Lock()
         self.idle_seconds = idle_seconds
         self.read_timeout = read_timeout
         self.header_deadline = header_deadline
@@ -718,6 +901,34 @@ class EditorSession:
     def asset(self, name: str) -> bytes:
         return self._assets[name]
 
+    @property
+    def site_workdir(self) -> Path | None:
+        site = self.site
+        return site.workdir if site is not None else None
+
+    def count_short_transfer(self) -> None:
+        """Count one file that shrank mid-send (the update is serialized)."""
+        with self._short_lock:
+            self.short_transfers += 1
+
+    def _site_error(self, digest: str) -> str | None:
+        """Build the site for this config version once; its error text, or None.
+
+        A failed build keeps the last good output, which the preview keeps
+        serving. The temporary folder's name never reaches the answer.
+        """
+        with self._site_lock:
+            site = self.site
+            if site is None:
+                return None
+            if digest != self._site_digest:
+                site.rebuild()
+                self._site_digest = digest
+            error = site.error
+            if error is None:
+                return None
+            return error.replace(str(site.workdir), "<build>")
+
     # -- lifecycle -----------------------------------------------------------
 
     def start(self) -> None:
@@ -728,10 +939,19 @@ class EditorSession:
         root = resources.files("reach_around").joinpath("editor_assets")
         self._assets = {n: root.joinpath(n).read_bytes() for n in _ASSET_FILES}
         try:
+            with self._site_lock:
+                # No digest is recorded: the first state load rebuilds the
+                # current config, so a change between reads cannot stay served.
+                self._site_digest = None
+                self.site = Preview(self.config, self.address, None)
+                check_private_build_dir(self.site.workdir)
             editor = self._listen(_EditorHandler, "editor")
             self._editor = editor
             preview = self._listen(_PreviewHandler, "preview")
             self._preview = preview
+        except PreviewError as exc:
+            self.shutdown("error")
+            raise EditorError(str(exc)) from None
         except BaseException:
             self.shutdown("error")
             raise
@@ -802,13 +1022,25 @@ class EditorSession:
         watchdog = self._watchdog
         if watchdog is not None and watchdog is not current:
             watchdog.join(5)
+        with self._site_lock:
+            if self.site is not None:
+                self.site.close()
         self.stopped.set()
 
 
-def run_editor(config: Path, *, idle_minutes: float = DEFAULT_IDLE_SECONDS / 60) -> int:
+def run_editor(
+    config: Path,
+    *,
+    idle_minutes: float = DEFAULT_IDLE_SECONDS / 60,
+    allow_remote_images: bool = False,
+) -> int:
     """Run an editing session in the foreground; the URL goes to stdout only."""
     try:
-        session = EditorSession(config, idle_seconds=idle_minutes * 60)
+        session = EditorSession(
+            config,
+            idle_seconds=idle_minutes * 60,
+            allow_remote_images=allow_remote_images,
+        )
         session.start()
     except (EditorError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
