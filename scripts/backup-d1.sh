@@ -154,10 +154,21 @@ for r in rows:
   exit 1
 }
 
+# Plain string matching, not `printf | grep -q`: under pipefail grep -q exits at
+# its first match, the writer can then die of SIGPIPE, and the whole pipeline
+# reports failure, so a table that exists would be skipped without an error.
+nl=$'\n'
+is_listed() {
+  case "$nl$existing$nl" in
+  *"$nl$1$nl"*) return 0 ;;
+  *) return 1 ;;
+  esac
+}
+
 count=0
 exported=()
 for t in "${tables[@]}"; do
-  if ! printf '%s\n' "$existing" | grep -qx -- "$t"; then
+  if ! is_listed "$t"; then
     echo "skipped (not in this database): $t"
     continue
   fi
