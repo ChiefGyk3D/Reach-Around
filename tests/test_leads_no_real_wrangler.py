@@ -19,6 +19,7 @@ import sys
 from os import system as _saved_system
 from pathlib import Path
 from subprocess import Popen as _saved_popen
+from typing import Any
 
 import pytest
 
@@ -179,3 +180,79 @@ def test_the_online_path_cannot_start_a_process_without_the_fake(
     with pytest.raises(AssertionError, match="real process runner"):
         main(argv)
     assert not (tmp_path / "started").exists()
+
+
+# --- the narrow local-wrangler opt-out (#907) ---------------------------------
+
+_BASE = "/var/pytest-base"
+_HOME = f"{_BASE}/t1/home"
+_PIN = str(Path(__file__).resolve().parent.parent / "worker/node_modules/.bin/wrangler")
+_ALLOWED_MODULE = str(Path(__file__).resolve().parent / "test_d1_migration_rollback.py")
+_GOOD_CMD = [_PIN, "d1", "migrations", "apply", "DB", "--local", "--persist-to", "/s"]
+_GOOD_ENV = {"PATH": "/usr/bin", "HOME": _HOME}
+_UNSET: Any = object()
+
+
+def _ok(
+    command: Any = _UNSET,
+    env: Any = _UNSET,
+    module_file: Any = _UNSET,
+    marked: bool = True,
+) -> bool:
+    from conftest import _local_wrangler_allowed
+
+    return _local_wrangler_allowed(
+        _GOOD_CMD if command is _UNSET else command,
+        _GOOD_ENV if env is _UNSET else env,
+        _ALLOWED_MODULE if module_file is _UNSET else module_file,
+        marked,
+        _BASE,
+    )
+
+
+def test_the_local_wrangler_opt_out_has_one_accepting_shape() -> None:
+    assert _ok()
+
+
+def test_the_opt_out_does_not_apply_to_another_module_or_without_the_marker() -> None:
+    here = Path(__file__).resolve()
+    assert not _ok(module_file=str(here))
+    assert not _ok(module_file=str(here.parent / "test_leads_delete.py"))
+    assert not _ok(module_file=None)
+    assert not _ok(marked=False)
+
+
+def test_the_opt_out_needs_local_and_refuses_remote() -> None:
+    assert not _ok(command=[c for c in _GOOD_CMD if c != "--local"])
+    assert not _ok(command=[*_GOOD_CMD, "--remote"])
+
+
+def test_the_opt_out_refuses_a_cloudflare_or_token_variable() -> None:
+    for bad in ("CLOUDFLARE_API_TOKEN", "CF_ACCOUNT_ID", "MY_SECRET", "SOME_API_KEY"):
+        assert not _ok(env={**_GOOD_ENV, bad: "x"}), bad
+    assert not _ok(env=None)  # no explicit environment: the real one is inherited
+
+
+def test_the_opt_out_needs_a_temp_home() -> None:
+    assert not _ok(env={"PATH": "/usr/bin"})
+    assert not _ok(env={"PATH": "/usr/bin", "HOME": str(Path.home())})
+    assert not _ok(env={"PATH": "/usr/bin", "HOME": f"{_BASE}-evil/h"})
+
+
+def test_the_opt_out_only_starts_the_pinned_wrangler_as_a_list() -> None:
+    assert not _ok(command=["/usr/local/bin/wrangler", *_GOOD_CMD[1:]])
+    assert not _ok(command=["node", _PIN, *_GOOD_CMD[1:]])
+    assert not _ok(command=" ".join(_GOOD_CMD))
+    assert not _ok(command=[_PIN, "x", "/other/wrangler", "--local"])
+    assert not _ok(command=["/bin/sh", "-c", f"{_PIN} --local"])
+
+
+@pytest.mark.allow_local_wrangler
+def test_a_marker_in_another_module_does_not_reach_the_real_guard(
+    tmp_path: Path,
+) -> None:
+    """Through the real Popen guard: this module is not the allowed one, so the
+    marker is ignored and a clean `--local` start of the pinned path is refused."""
+    env = {"PATH": "/usr/bin", "HOME": str(tmp_path)}
+    with pytest.raises(AssertionError, match="real process"):
+        subprocess.Popen(_GOOD_CMD, env=env)  # noqa: S603 - the guard must stop it
