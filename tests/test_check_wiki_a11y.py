@@ -49,12 +49,15 @@ def png(color_type: int, extra: bytes = b"") -> bytes:
     )
 
 
-def run(tmp_path: Path, name: str, text: str, rules=None) -> list[tuple[str, int, str]]:
+def run(
+    tmp_path: Path, name: str, text: str, rules: dict[str, object] | None = None
+) -> list[tuple[str, int, str]]:
     wiki = tmp_path / "docs" / "wiki"
     wiki.mkdir(parents=True, exist_ok=True)
     page = wiki / name
     page.write_text(text, encoding="utf-8")
-    return mod.check(tmp_path, [page], rules)
+    found: list[tuple[str, int, str]] = mod.check(tmp_path, [page], rules)
+    return found
 
 
 GOOD = "# Title\n\n## Part\n\n### Sub\n\nText [the guide](Guide) and `code`.\n"
