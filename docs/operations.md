@@ -248,10 +248,120 @@ Order of preference, least damage first:
    Leave all of them unset in the committed `wrangler.toml`.
 2. **Roll back the Worker or the site** to the previous deployment (see
    "Rolling back" in [deploy.md](deploy.md)).
-3. **Fix forward** with a new migration. Migrations never go backward.
+3. **Fix forward** with a new migration. Migrations never go backward. A
+   migration file that fails part way is rolled back as a unit by `wrangler d1
+   migrations apply` (see "Migration rollback check" below), so it leaves the
+   schema as it was.
 4. **Restore the database** from a Time Travel bookmark or an export, only as
    the last resort, because it overwrites the whole database in place
    ([backup-restore.md](backup-restore.md), "Restore, last resort").
+
+## Migration rollback check
+
+Migration 0022 drops the two `kit_meta` floor guard triggers
+(`kit_meta_floor_insert` and `kit_meta_floor_update`) and creates them again in
+one file. That is safe only if a failing migration file is rolled back whole.
+
+**Documented by Cloudflare (VERIFIED, read 2026-11-26,
+developers.cloudflare.com/workers/wrangler/commands/d1/):** a failed migration
+is rolled back by `wrangler d1 migrations apply`.
+
+**Observed by the author (a record, not a recurring test):** on 2026-11-26, with
+the pinned Wrangler 4.162.0 and Node 22.23.5, run by hand against a disposable
+local database, a failing migration file that drops both triggers and then fails
+left both triggers in place and was not recorded in `d1_migrations`. The control
+(the drop as its own migration, then a failing one) lost both triggers, which
+shows the procedure can detect the opposite result.
+
+This is a manual procedure. It is not part of CI or pytest: the test guard
+forbids any test from starting Wrangler, by design, and that guard is unchanged.
+No script in the repository runs it. Repeat it after a Wrangler bump, by a
+person, on a disposable database only.
+
+### Procedure
+
+1. Use Node 22.12 or newer (for example `nvm use 22`) and install the pinned
+   dependencies without running install scripts:
+
+   ```
+   cd worker && npm ci --ignore-scripts
+   ```
+
+2. Make a temp directory with the migrations up to 0021, a local-only config and
+   an empty entry file:
+
+   ```
+   work=$(mktemp -d) && mkdir "$work/migrations" "$work/home"
+   cp migrations/00[01]*.sql migrations/002[01]*.sql "$work/migrations/"
+   printf 'export default {};\n' > "$work/index.js"
+   ```
+
+   Put this in `"$work/wrangler.toml"` (one local D1 binding, a dummy id):
+
+   ```
+   name = "rollback-probe"
+   main = "index.js"
+   compatibility_date = "2026-10-01"
+
+   [[d1_databases]]
+   binding = "DB"
+   database_name = "rollback-probe-db"
+   database_id = "00000000-0000-0000-0000-000000000000"
+   migrations_dir = "migrations"
+   ```
+
+3. Run every Wrangler call with a clean environment and no credentials (no
+   Cloudflare token, no proxy variable, no `NODE_OPTIONS`), local only, with the
+   pinned binary and the temp state directory:
+
+   ```
+   env -i PATH="$(dirname "$(command -v node)"):/usr/bin:/bin" HOME="$work/home" \
+     WRANGLER_SEND_METRICS=false \
+     node_modules/.bin/wrangler --version
+   env -i PATH="$(dirname "$(command -v node)"):/usr/bin:/bin" HOME="$work/home" \
+     WRANGLER_SEND_METRICS=false \
+     node_modules/.bin/wrangler d1 migrations apply DB --local \
+     --persist-to "$work/state" --config "$work/wrangler.toml"
+   ```
+
+   The version must equal the one pinned in `worker/package-lock.json`. The
+   first apply creates the baseline; check it with the queries in step 5 (both
+   triggers present).
+
+4. Failing file: add `"$work/migrations/0022_fail.sql"` containing
+
+   ```
+   DROP TRIGGER IF EXISTS kit_meta_floor_insert;
+   DROP TRIGGER IF EXISTS kit_meta_floor_update;
+   THIS IS NOT VALID SQL;
+   ```
+
+   and run the same apply command. It must exit non-zero.
+
+5. Query the local database (the `.sqlite` file under `$work/state/v3/d1`, not
+   `metadata.sqlite`):
+
+   ```
+   sqlite3 -readonly <that file> "SELECT name FROM sqlite_master WHERE type = 'trigger';"
+   sqlite3 -readonly <that file> "SELECT name FROM d1_migrations;"
+   ```
+
+   Expected: both trigger names are listed, and `0022_fail.sql` is not in
+   `d1_migrations`.
+
+6. Control: in a fresh copy of steps 2 and 3, add `0022_drop.sql` holding only
+   the two `DROP TRIGGER` lines and `0023_fail.sql` holding only the invalid
+   line, then apply. Expected: non-zero exit, `0022_drop.sql` recorded, and no
+   triggers left.
+
+7. Remove the temp directory (`rm -r "$work"`).
+
+What the procedure does NOT guarantee: network isolation. `--local` does not
+request a remote D1 and metrics are off, but nothing here blocks a connection
+by a modified binary; run it inside a sandbox or behind a firewall if that
+matters. Wrangler documents no flag for disabling network use or update checks
+on this command, so none is used. The two trigger names above are kept in sync
+with migration 0022 by `tests/test_docs_migration_rollback_note.py`.
 
 ## When something fails
 
