@@ -55,12 +55,13 @@ group, and the ``passwd`` and ``group`` lines of /etc/nsswitch.conf name only
 ``files`` or ``systemd`` (so the enumeration is complete; any directory service,
 an unreadable file or a lookup error refuses). That is the user-private group of
 a normal account with umask 002, so an ordinary checkout and ``npm ci`` are
-accepted as they are; otherwise run ``chmod -R g-w worker/node_modules``. Outside the repository a sticky shared
-directory owned by root (such as ``/tmp``) is accepted too. A required
-dependency (``dependencies``, non-optional peers) that is not installed under
-``worker/node_modules`` is refused, as is a ``node_modules`` in the repository root or any directory above it (or a legacy
-module folder in HOME); a symlink (to a file or a directory) must resolve inside
-``worker/node_modules``, the directories between its target and the repository
+accepted as they are; otherwise run ``chmod -R g-w worker/node_modules``.
+Outside the repository a sticky shared directory owned by root (such as
+``/tmp``) is accepted too. A required dependency (``dependencies``,
+non-optional peers) that is not installed under ``worker/node_modules`` is
+refused, as is a ``node_modules`` in the repository root or any directory above
+it (or a legacy module folder in HOME); a symlink (to a file or a directory)
+must resolve inside ``worker/node_modules``, the directories between its target and the repository
 root are checked, and a directory target is walked.
 
 Installation mode. Only the layout made by ``cd worker && npm ci
@@ -1963,9 +1964,9 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "dependencies (walked, bounded) must belong to root or you with no other "
         "write bit and no write bit for a group anyone else belongs to (only your "
         "own private primary group on a machine with local account files is "
-        "fine; otherwise run 'chmod -R g-w worker/node_modules'). Only the layout of 'cd worker && npm ci "
-        "--ignore-scripts' is supported (hoisted or workspace installs are "
-        "refused). It receives your Cloudflare token: this is a trust "
+        "fine; otherwise run 'chmod -R g-w worker/node_modules'). Only the "
+        "layout of 'cd worker && npm ci --ignore-scripts' is supported (hoisted "
+        "or workspace installs are refused). It receives your Cloudflare token: this is a trust "
         "boundary, not an integrity check",
     )
     delete.add_argument(
