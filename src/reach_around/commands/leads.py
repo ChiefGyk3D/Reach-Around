@@ -47,12 +47,15 @@ package (named from ``worker/node_modules/.bin``); the package's own
 ``worker/package-lock.json``; the file and every directory above it, and every
 file and directory of the wrangler package and of the packages it depends on
 (resolved by node's rules under ``worker/node_modules``, bounded in size), must
-belong to root or the current user, and nothing inside the repository may be
-writable by group or others. Outside the repository a sticky shared directory
-owned by root (such as ``/tmp``) or a group of your own that nobody else belongs
-to is accepted. A required dependency (``dependencies``, non-optional peers) that
-is not installed under ``worker/node_modules`` is refused, as is a
-``node_modules`` in the repository root or any directory above it (or a legacy
+belong to root or the current user, and none may be writable by others (world
+write is refused everywhere) or by a group that anyone else belongs to. A group
+write bit is accepted when the group is private to you (one of your own groups
+that lists no other member and is no other account's primary group, the
+user-private group of a normal account with umask 002), so an ordinary checkout
+and ``npm ci`` are accepted as they are. Outside the repository a sticky shared
+directory owned by root (such as ``/tmp``) is accepted too. A required
+dependency (``dependencies``, non-optional peers) that is not installed under
+``worker/node_modules`` is refused, as is a ``node_modules`` in the repository root or any directory above it (or a legacy
 module folder in HOME); a symlink (to a file or a directory) must resolve inside
 ``worker/node_modules``, the directories between its target and the repository
 root are checked, and a directory target is walked.
@@ -686,14 +689,21 @@ def _pinned_version() -> str:
 
 
 def _group_is_private(gid: int) -> bool:
-    """True when the group is the process's own group and nobody else belongs to
-    it (the user-private group many systems give each account), so a group
-    write bit lets no other account write."""
+    """True when the group is one of the process's own groups (its primary group
+    or one it belongs to) and no other account belongs to it: the group lists no
+    member but you, and no other account has it as its primary group (the user
+    private group many systems give each account), so a group write bit lets no
+    other account write."""
     try:
-        if gid != os.getegid():
+        if gid != os.getegid() and gid not in os.getgroups():
             return False
-        me = pwd.getpwuid(os.geteuid()).pw_name
-        return set(grp.getgrgid(gid).gr_mem) <= {me}
+        uid = os.geteuid()
+        me = pwd.getpwuid(uid).pw_name
+        if not set(grp.getgrgid(gid).gr_mem) <= {me}:
+            return False
+        return all(
+            account.pw_uid == uid for account in pwd.getpwall() if account.pw_gid == gid
+        )
     except (KeyError, OSError):
         return False
 
@@ -706,18 +716,18 @@ def _inside(path: str, root: str) -> bool:
 def _unwritable_by_others(
     info: os.stat_result, *, directory: bool, path: str = "", sealed: bool = False
 ) -> bool:
-    """Not writable by group (unless that group is private) or others.
+    """Not writable by group (unless that group is private to you) or others.
 
-    ``sealed`` (the path is inside the repository): no group or other write bit
-    at all, whoever the group is, and no sticky exemption, because the tree the
-    wrangler is loaded from is ours alone. Outside the repository, a directory
-    with the sticky bit (such as /tmp, mode 1777) is accepted only when root owns
-    it: nobody can rename or remove an entry they do not own there, so the
-    entries below it stay ours."""
+    A group write bit is accepted anywhere when the group is private (see
+    ``_group_is_private``: a normal checkout and install on an account with its
+    own group and umask 002 are group-writable by that group alone); an other
+    write bit never is inside the repository. ``sealed`` (the path is inside the
+    repository) also removes the sticky exemption: outside the repository, a
+    directory with the sticky bit (such as /tmp, mode 1777) is accepted only when
+    root owns it, because nobody can rename or remove an entry they do not own
+    there, so the entries below it stay ours."""
     mode = info.st_mode
-    if sealed:
-        return not mode & (stat.S_IWGRP | stat.S_IWOTH)
-    if directory and mode & stat.S_ISVTX and info.st_uid == 0:
+    if not sealed and directory and mode & stat.S_ISVTX and info.st_uid == 0:
         return True
     if mode & stat.S_IWGRP and not _group_is_private(info.st_gid):
         return False
@@ -737,7 +747,8 @@ def _check_entry(
     path: str, me: int, repo_real: str, node_root: str | None = None
 ) -> os.stat_result:
     """One file or directory of the walked tree: owner root or the current user,
-    and no group or other write bit inside the repository. A symlink's own mode
+    and no other write bit and no write bit for a group that is not private to
+    you (``_unwritable_by_others``). A symlink's own mode
     means nothing, so the target is checked: it must stay in the repository and,
     when ``node_root`` is given, inside it (the real ``worker/node_modules``), and
     every directory between the target and the repository root is checked too (a
@@ -751,7 +762,9 @@ def _check_entry(
             raise WranglerError(_REFUSED_TREE)
         _check_above(target, me, repo_real)
         link = os.stat(target)
-    if link.st_uid not in (0, me) or link.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+    if link.st_uid not in (0, me) or not _unwritable_by_others(
+        link, directory=stat.S_ISDIR(link.st_mode), path=path, sealed=True
+    ):
         raise WranglerError(_REFUSED_TREE)
     return link
 
@@ -826,8 +839,11 @@ def _dependency_names(pkg: str) -> list[tuple[str, bool]]:
     peer_meta = meta.get("peerDependenciesMeta")
     if peer_meta is not None and not isinstance(peer_meta, dict):
         raise WranglerError(_REFUSED_TREE)
-    found: list[tuple[str, bool]] = []
-    for field in ("dependencies", "optionalDependencies", "peerDependencies"):
+    # A name listed in more than one field is merged, not counted twice: npm lets
+    # ``optionalDependencies`` override a same-named ``dependencies`` entry, and a
+    # dependency (either kind) outranks a peer entry.
+    merged: dict[str, bool] = {}
+    for field in ("peerDependencies", "dependencies", "optionalDependencies"):
         group = meta.get(field)
         if group is None:
             continue
@@ -840,8 +856,8 @@ def _dependency_names(pkg: str) -> list[tuple[str, bool]]:
             if field == "peerDependencies":
                 note = (peer_meta or {}).get(name)
                 required = not (isinstance(note, dict) and note.get("optional") is True)
-            found.append((name, required))
-    return found
+            merged[name] = required
+    return list(merged.items())
 
 
 def _check_no_ancestor_node_modules(repo_real: str) -> None:
@@ -948,8 +964,9 @@ def _resolve_wrangler(arg: Path | None) -> str:
     npm's install record must name wrangler at the version and tarball digest of
     ``worker/package-lock.json``. The file and every directory from the root down
     must belong to root or the current user (the file too: a root-owned file is
-    accepted) and not be writable by others; inside the repository not by group
-    either. The wrangler package and its dependency closure are walked the same
+    accepted) and not be writable by others, nor by a group another account
+    belongs to (a group write bit is accepted for a group private to you). The
+    wrangler package and its dependency closure are walked the same
     way (``_check_package_tree``); only the walked tree is checked.
 
     Not proven (this is a trust boundary, not an integrity check): that the files
@@ -1018,8 +1035,9 @@ def _resolve_wrangler(arg: Path | None) -> str:
             ):
                 raise WranglerError(
                     "every directory above wrangler must belong to root or you and "
-                    "not be writable by others (inside the repository: not by "
-                    "group either; fix with: chmod -R go-w worker/node_modules)"
+                    "not be writable by others or by a group another account "
+                    "belongs to (a group of your own that nobody else belongs to is "
+                    "fine; fix with: chmod -R go-w worker/node_modules)"
                 )
     except OSError:
         raise WranglerError("a directory above wrangler could not be checked") from None
@@ -1898,8 +1916,9 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "worker/node_modules/wrangler of this repository (default: "
         "worker/node_modules/.bin/wrangler); never searched on PATH; its package "
         "must match worker/package-lock.json, and the package and its "
-        "dependencies (walked, bounded) must belong to root or you with no group "
-        "or other write bit. Only the layout of 'cd worker && npm ci "
+        "dependencies (walked, bounded) must belong to root or you with no other "
+        "write bit and no write bit for a group anyone else belongs to (a group "
+        "private to you is fine). Only the layout of 'cd worker && npm ci "
         "--ignore-scripts' is supported (hoisted or workspace installs are "
         "refused). It receives your Cloudflare token: this is a trust "
         "boundary, not an integrity check",

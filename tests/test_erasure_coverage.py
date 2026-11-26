@@ -2172,6 +2172,41 @@ def test_the_guard_runs_the_real_finish_flow_not_a_restated_one() -> None:
     assert any("alert_dedup" in v and "rows remain" in v for v in out), out
 
 
+def test_the_split_database_flow_runs_the_split_clear_and_a_no_op_is_caught() -> None:
+    """Round 5 follow-up (#905, Low): the split-database flow (alerts in their own
+    database) runs ``ALERT_CLEAR_SPLIT_SQL``, so a runtime whose split statement
+    stops clearing leaves the flow unfinished (nonzero), not exit 0."""
+    from leads_fakes import ALERTS_NAME, ALERTS_UUID
+
+    def run_split() -> tuple[int, FakeWrangler]:
+        fake = FakeWrangler()
+        fake.dbs[ALERTS_NAME].execute("INSERT INTO alert_dedup VALUES ('s', 'h', 1)")
+        with (
+            mock.patch.object(leads_mod, "_exec", fake),
+            mock.patch.object(leads_mod, "pause", lambda _s: None),
+        ):
+            code, _ = leads_mod.finish_erasure(
+                "/x/wrangler",
+                LEADS_NAME,
+                ALERTS_NAME,
+                (LEADS_UUID, ALERTS_UUID),
+                TARGET_LEAD,
+                TARGET_MAIL,
+            )
+        return code, fake
+
+    code, fake = run_split()
+    assert code == 0
+    assert (ALERTS_NAME, leads_mod.ALERT_CLEAR_SPLIT_SQL) in fake.calls
+    with mock.patch.object(
+        leads_mod, "ALERT_CLEAR_SPLIT_SQL", "DELETE FROM alert_dedup WHERE 0"
+    ):
+        code, fake = run_split()
+    assert code != 0
+    rows = fake.dbs[ALERTS_NAME].execute("SELECT COUNT(*) FROM alert_dedup")
+    assert rows.fetchone()[0] == 1
+
+
 def test_the_executable_statement_splitter_drops_comments_and_keeps_literals() -> None:
     sql = (
         "-- DELETE FROM a;\n"

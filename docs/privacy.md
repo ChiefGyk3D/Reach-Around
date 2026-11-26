@@ -403,14 +403,20 @@ package's `package.json` and npm's install record
 (`worker/node_modules/.package-lock.json`) name wrangler at the version and
 tarball digest in `worker/package-lock.json`; the file and every directory above
 it belong to root or you (the file too, so a root-owned `0755` file is
-accepted) and are not writable by others; inside this repository not by group
-either (fix with `chmod -R go-w worker/node_modules`). Outside it, a sticky
-shared directory such as `/tmp` is accepted only when root owns it, and so is
-a group of your own that nobody else belongs to. The wrangler package, and the
+accepted) and are not writable by others (world write is refused everywhere,
+the repository and every directory above it included) and not by a group that
+anyone else belongs to. A group write bit is accepted when the group is private
+to you: one of your own groups that lists no other member and is no other
+account's primary group, which is what a normal account with its own group and
+umask 002 gives every file of a plain checkout and of `npm ci`, so those need no
+`chmod`. A file or directory in a shared group is refused (fix with
+`chmod -R go-w worker/node_modules`). Outside the repository, a sticky shared
+directory such as `/tmp` is accepted only when root owns it. The wrangler package, and the
 packages it lists in `dependencies`, `optionalDependencies` or
 `peerDependencies` (resolved the way node resolves them under
 `worker/node_modules`, recursively), are walked: every file and directory must
-belong to root or you with no group or other write bit, a symlink (to a file or
+belong to root or you with no other write bit and no write bit for a group
+anyone else belongs to (the same rule), a symlink (to a file or
 to a directory) must resolve inside `worker/node_modules` (the directories
 between its target and the repository root are checked, and a directory target
 is walked like any other directory), and the

@@ -764,19 +764,113 @@ class TestYes:
         assert code == CHECKED and ID_A in out
         assert leads_cmd._group_is_private(gid + 1) is False  # not our own group
 
-    def test_inside_the_repository_no_group_write_bit_is_accepted_even_if_private(
+    def test_inside_the_repository_a_private_group_write_bit_is_accepted(
         self,
         capsys: pytest.CaptureFixture[str],
         export: Path,
         fake_wrangler: Any,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Review round 2 (automated, Medium): the tree wrangler is loaded from is
-        ours alone, so a group write bit there is refused whoever the group is."""
-        monkeypatch.setattr(leads_cmd, "_group_is_private", lambda _gid: True)
+        """Real-install finding (#905, replaces the round 2 rule): a normal
+        checkout on an account with its own group and umask 002 is group-writable
+        by that group alone, so a group write bit inside the repository is accepted
+        when the group is private; the same tree with a shared group is refused."""
         (fake_wrangler.root / "worker").chmod(0o770)
+        monkeypatch.setattr(leads_cmd, "_group_is_private", lambda _gid: True)
         code, out, err = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
-        assert code == 2 and out == "" and fake_wrangler.argvs == [], err
+        assert code == CHECKED and ID_A in out, err
+        started = len(fake_wrangler.argvs)
+        monkeypatch.setattr(leads_cmd, "_group_is_private", lambda _gid: False)
+        code, out, _ = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+        assert code == 2 and out == "" and len(fake_wrangler.argvs) == started
+
+    @staticmethod
+    def _private_group(monkeypatch: pytest.MonkeyPatch, gid: int) -> None:
+        """Make ``gid`` this process's own group with no other member."""
+        import grp
+        import pwd
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(os, "getegid", lambda: gid)
+        monkeypatch.setattr(pwd, "getpwuid", lambda _u: SimpleNamespace(pw_name="me"))
+        monkeypatch.setattr(grp, "getgrgid", lambda _g: SimpleNamespace(gr_mem=[]))
+        monkeypatch.setattr(pwd, "getpwall", lambda: [])
+
+    def test_a_normal_umask_002_tree_is_accepted(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        fake_wrangler: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Real-install finding (#905): every directory 0775 and every file 0664
+        (what umask 002 gives a plain checkout and ``npm ci``), owned by the user,
+        in a private group: accepted, the repository root and the wrangler's
+        ancestors included."""
+        root: Path = fake_wrangler.root
+        self._private_group(monkeypatch, root.stat().st_gid)
+        for path in [root, *root.rglob("*")]:
+            if not path.is_symlink():
+                path.chmod((path.stat().st_mode & 0o7777) | 0o020)
+        assert root.stat().st_mode & 0o020
+        code, out, err = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+        assert code == CHECKED and ID_A in out, err
+
+    def test_a_group_with_another_member_is_refused(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        fake_wrangler: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A group-writable file whose group lists another member is refused, and
+        so is one whose group is another account's primary group."""
+        import grp
+        import pwd
+        from types import SimpleNamespace
+
+        target: Path = fake_wrangler.path.resolve()
+        target.chmod(0o775)
+        gid = target.stat().st_gid
+        self._private_group(monkeypatch, gid)
+        monkeypatch.setattr(
+            grp, "getgrgid", lambda _g: SimpleNamespace(gr_mem=["someone-else"])
+        )
+        assert leads_cmd._group_is_private(gid) is False
+        code, out, _ = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+        assert code == 2 and out == "" and fake_wrangler.argvs == []
+        monkeypatch.setattr(grp, "getgrgid", lambda _g: SimpleNamespace(gr_mem=[]))
+        other = SimpleNamespace(pw_uid=os.geteuid() + 1, pw_gid=gid)
+        monkeypatch.setattr(pwd, "getpwall", lambda: [other])
+        assert leads_cmd._group_is_private(gid) is False
+        code, out, _ = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+        assert code == 2 and out == "" and fake_wrangler.argvs == []
+        monkeypatch.setattr(pwd, "getpwall", lambda: [])
+        assert leads_cmd._group_is_private(gid) is True
+        code, out, err = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+        assert code == CHECKED and ID_A in out, err
+
+    def test_a_world_write_bit_is_refused_even_with_a_private_group(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        fake_wrangler: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A private group never excuses a world write bit: on the file, in the
+        repository, or at its root."""
+        monkeypatch.setattr(leads_cmd, "_group_is_private", lambda _gid: True)
+        root: Path = fake_wrangler.root
+        for path in (fake_wrangler.path.resolve(), root / "worker", root):
+            old = path.stat().st_mode & 0o7777
+            path.chmod(old | 0o002)
+            try:
+                code, out, _ = run(
+                    capsys, "--input", str(export), "--email", ADDR, "--yes"
+                )
+            finally:
+                path.chmod(old)
+            assert code == 2 and out == "" and fake_wrangler.argvs == [], path
 
     @staticmethod
     def _as_owner(monkeypatch: pytest.MonkeyPatch, owners: dict[str, int]) -> None:
@@ -2430,7 +2524,11 @@ class TestSymlinkedFiles:
         fake_wrangler: Any,
         tmp_path: Path,
         mode: int,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        # Test setup change (#905): a group write bit is accepted for a private
+        # group, so this case models a SHARED group; the assertions are unchanged.
+        monkeypatch.setattr(leads_cmd, "_group_is_private", lambda _gid: False)
         self.link(fake_wrangler.root, self.target(fake_wrangler.root, mode))
         code, out, err = self.go(capsys, export)
         assert code == 2 and out == "" and fake_wrangler.argvs == [], err
@@ -2520,6 +2618,28 @@ class TestInstallationMode:
         code, _, err = self.go(capsys, export)
         assert code == CHECKED, err
         assert "supported" not in err and fake_wrangler.argvs
+
+    def test_a_name_in_both_dependency_fields_may_be_absent_when_optional(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        """Round 5 follow-up (#905, Medium): npm lets ``optionalDependencies``
+        override a same-named ``dependencies`` entry, so a platform package named
+        in both and not installed is not a missing required dependency."""
+        _synthesize_install(fake_wrangler.root)
+        meta_file = (
+            fake_wrangler.root / "worker" / "node_modules" / "wrangler" / "package.json"
+        )
+        meta = json.loads(meta_file.read_text())
+        meta.setdefault("dependencies", {})["platform-helper"] = "1.0.0"
+        meta.setdefault("optionalDependencies", {})["platform-helper"] = "1.0.0"
+        meta_file.write_text(json.dumps(meta))
+        code, _, err = self.go(capsys, export)
+        assert code == CHECKED, err
+        # Only a plain dependency of that name, absent, is still a refusal.
+        del meta["optionalDependencies"]["platform-helper"]
+        meta_file.write_text(json.dumps(meta))
+        code, out, err = self.go(capsys, export)
+        assert code == 2 and out == "" and "platform-helper" in err
 
     def test_a_required_package_missing_from_that_layout_is_refused(
         self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
