@@ -529,9 +529,12 @@ class TestYes:
         fake_wrangler: Any,
         tmp_path: Path,
         kind: str,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         target = fake_wrangler.path
         if kind == "relative":
+            # A real, trusted executable that a relative name would find from here.
+            monkeypatch.chdir(target.parent)
             arg = "wrangler"
         elif kind == "dir":
             arg = str(tmp_path)
