@@ -520,14 +520,26 @@ def test_real_slow_streams_hold_the_slots_and_release_them_on_disconnect(
     _build_file(rig, "one.txt", b"one")
     port = rig.session.preview_port
     count = server_module.MAX_FILE_STREAMS
+    slots = rig.session.file_slots
+
+    def held() -> int:
+        return count - slots._value
+
     clients = [_hold_stream(port, "/big.bin") for _ in range(count)]
     try:
-        busy = _wait_for(lambda: request(port, "GET", "/one.txt").status == 503)
-        assert busy, "the ninth stream was not refused while eight were held"
+        # Every held client must own a slot before the ninth request is sent.
+        assert _wait_for(lambda: held() == count, 5.0), (
+            f"only {held()} of {count} streams took a slot within 5 seconds"
+        )
+        got = request(port, "GET", "/one.txt")
+        assert got.status == 503, "the ninth stream was not refused while eight held"
     finally:
         for sock in clients:
             sock.close()
-    assert _wait_for(lambda: request(port, "GET", "/one.txt").status == 200)
+    assert _wait_for(lambda: held() == 0, 5.0), (
+        f"{held()} slots were still held 5 seconds after the clients left"
+    )
+    assert request(port, "GET", "/one.txt").status == 200
 
 
 def test_a_mid_stream_disconnect_releases_the_descriptor_and_the_slot(
