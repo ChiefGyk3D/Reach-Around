@@ -24,6 +24,7 @@ One note per platform, written under epic #1. These are drafts: first-pass resea
 | IP network datasets | #120 | [ip-network-datasets.md](ip-network-datasets.md) | none yet |
 | Platform metrics matrix (Tier 1 plus Kick: followers, views, watch time, demographics; owner action plan) | #380 | [platform-metrics-matrix.md](platform-metrics-matrix.md) | none yet |
 | Platform terms: retention, deletion, display | #382 | [platform-terms-retention.md](platform-terms-retention.md) | none yet |
+| Tier 2 terms audit (Bluesky, Mastodon, Discord, GitHub) | #585 | [tier2-terms-audit.md](tier2-terms-audit.md) | none yet |
 
 Review: FIX and UNRELIABLE notes have been corrected in this branch but still need a human read where marked UNVERIFIED (notably TikTok open-source clause, StreamElements docs, Twitch Get Videos/Get Streams, Social Blade terms).
 

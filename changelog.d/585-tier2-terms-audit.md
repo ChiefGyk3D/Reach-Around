@@ -1,0 +1,1 @@
+- Documentation (#585): added `docs/research/tier2-terms-audit.md`, a terms, retention and display audit of Bluesky, Mastodon, Discord and GitHub for the counts-only collectors, with a verdict table. Discord's developer pages could not be read automatically and are marked for a human read.
