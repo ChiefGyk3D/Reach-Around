@@ -379,6 +379,51 @@ def test_every_page_is_read_and_a_foreign_or_failed_page_is_refused(
         guard.api_get("/e", "t")
 
 
+def test_the_actions_listing_object_is_paged_and_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = f"{guard.API}/r/actions/runs?per_page=1"
+    pages = {
+        first: FakeReply(
+            b'{"total_count":2,"workflow_runs":[{"id":1}]}',
+            f'<{guard.API}/r/actions/runs?page=2>; rel="next"',
+        ),
+        f"{guard.API}/r/actions/runs?page=2": FakeReply(
+            b'{"total_count":2,"workflow_runs":[{"id":2}]}'
+        ),
+    }
+    monkeypatch.setattr(
+        guard.urllib.request, "urlopen", lambda req, timeout: pages[req.full_url]
+    )
+    got = guard.api_get("/r/actions/runs?per_page=1", "t")
+    assert isinstance(got, dict) and got["total_count"] == 2
+    assert [r["id"] for r in got["workflow_runs"]] == [1, 2]
+    # A plain object (the ref listing) is one answer, as before.
+    pages[first] = FakeReply(b'{"object":{"sha":"x"}}')
+    assert guard.api_get("/r/actions/runs?per_page=1", "t") == {"object": {"sha": "x"}}
+    # An endless chain of pages hits the cap and refuses.
+    forever = FakeReply(
+        b'{"total_count":9,"workflow_runs":[{"id":1}]}',
+        f'<{guard.API}/r/actions/runs>; rel="next"',
+    )
+    monkeypatch.setattr(guard.urllib.request, "urlopen", lambda req, timeout: forever)
+    with pytest.raises(guard.Refused):
+        guard.api_get("/r/actions/runs", "t")
+    # A shape that changes between pages refuses.
+    mixed = {
+        first: FakeReply(
+            b'{"total_count":2,"workflow_runs":[{"id":1}]}',
+            f'<{guard.API}/r/actions/runs?page=2>; rel="next"',
+        ),
+        f"{guard.API}/r/actions/runs?page=2": FakeReply(b'[{"id":2}]'),
+    }
+    monkeypatch.setattr(
+        guard.urllib.request, "urlopen", lambda req, timeout: mixed[req.full_url]
+    )
+    with pytest.raises(guard.Refused):
+        guard.api_get("/r/actions/runs?per_page=1", "t")
+
+
 # --- the wrapper's exit mapping -------------------------------------------
 
 
@@ -1031,3 +1076,89 @@ def test_the_guard_main_fails_closed_and_prints_fixed_words(
     assert guard.main() == 1
     assert "unexpected failure" in capsys.readouterr().out
     assert timedelta(hours=24) == guard.COOLING
+
+
+def test_a_head_that_was_changed_away_and_restored_counts_from_the_restore() -> None:
+    head = "a" * 40
+    runs = {
+        "total_count": 1,
+        "workflow_runs": [run_of(head, "2026-11-01T00:00:00Z")],
+    }
+    for kind in ("head_ref_force_pushed", "head_ref_deleted", "head_ref_restored"):
+        move = ev(kind, "x", "2026-11-05T00:00:00Z", 40)
+        move.pop("label")
+        when = guard.head_changed_at(
+            [move], runs, repo="me/inst", number="5", head=head
+        )
+        assert when == datetime(2026, 11, 5, tzinfo=UTC), kind
+    # A label applied between the first run and the restore does not authorize.
+    with pytest.raises(guard.Refused):
+        auth(
+            events=[ev("labeled", "Owner", "2026-11-03T00:00:00Z", 1)],
+            head_changed=datetime(2026, 11, 5, tzinfo=UTC),
+        )
+
+
+# --- the workflow states its limits and checks its own copy ----------------
+
+STATEMENT = "not a sufficient merge gate on its own"
+
+
+def squash(text: str) -> str:
+    return " ".join(text.replace("#", " ").lower().split())
+
+
+def test_the_readme_and_the_workflow_say_it_is_not_a_sufficient_gate() -> None:
+    readme = squash((TEMPLATE / "README.md").read_text(encoding="utf-8"))
+    header = squash(WORKFLOW.read_text(encoding="utf-8"))
+    for text in (readme, header):
+        assert STATEMENT in text
+        assert "require workflows to pass before merging" in text
+        assert "codeowners" in text
+        assert "redact/*" in text
+    assert "checklist before you list the first approver" in readme
+    for item in ("trust boundary", "gate g1", "gate g5"):
+        assert item in readme
+    assert "actions: read` is wide" in (TEMPLATE / "README.md").read_text("utf-8")
+    assert "no narrower" in readme
+
+
+def compare_step() -> dict[str, Any]:
+    steps = workflow()["jobs"]["history-guard"]["steps"]
+    return next(s for s in steps if "differs" in s["name"])
+
+
+def run_compare_step(
+    tmp_path: Path, trusted_text: str, running_text: str, ref: str
+) -> int:
+    rel = Path(".github/workflows/history-guard.yml")
+    for folder, text in (("trusted-src", trusted_text), ("running-src", running_text)):
+        target = tmp_path / folder / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    step = compare_step()
+    done = subprocess.run(  # noqa: S603 - fixed argv, step text from the repo
+        ["bash", "-c", step["run"]],  # noqa: S607
+        cwd=tmp_path,
+        env={"PATH": os.environ["PATH"], "WORKFLOW_REF": ref},
+        capture_output=True,
+        check=False,
+    )
+    return done.returncode
+
+
+def test_the_job_fails_when_the_running_workflow_differs_from_the_base_copy(
+    tmp_path: Path,
+) -> None:
+    ref = "me/inst/.github/workflows/history-guard.yml@refs/pull/5/merge"
+    assert run_compare_step(tmp_path, "same\n", "same\n", ref) == 0
+    assert run_compare_step(tmp_path, "same\n", "exit 0\n", ref) != 0
+    assert run_compare_step(tmp_path, "same\n", "same\n", "me/inst/other.yml@x") != 0
+    steps = workflow()["jobs"]["history-guard"]["steps"]
+    names = [s["name"] for s in steps]
+    # Before anything of the pull request is read, right after the base fetch.
+    assert names.index(compare_step()["name"]) < names.index(
+        "Fetch the pull request head"
+    )
+    assert ".github/workflows/history-guard.yml" in steps[0]["with"]["sparse-checkout"]
+    assert steps[1]["with"].get("ref") is None  # the merge ref: what is running

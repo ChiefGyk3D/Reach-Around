@@ -380,17 +380,61 @@ guard does not run under `merge_group`). Add your login to
 `.github/history-approvers` when you need a rewrite; the file ships empty, which
 means no rewrite is accepted.
 
+**The workflow is NOT a sufficient merge gate on its own.** With a
+`pull_request` trigger GitHub runs the workflow file of the pull request's merge
+ref, so a pull request can replace `history-guard.yml` and keep the required
+check name; the guard scripts are pinned to the base commit, but that only
+helps after the workflow has run its checkout. The first steps of the job
+compare the running copy of the workflow with the base commit's copy and fail on
+any difference: that catches accidental drift, and it does not stop a replaced
+workflow that leaves the step out. The instance owner must configure a trust
+boundary, in this order of preference:
+
+1. A ruleset rule "Require workflows to pass before merging" that points at a
+   workflow in a separate trusted repository, so a pull request cannot replace
+   it. UNVERIFIED until live gate G1. Read from
+   <https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets>
+   (read 2026-11-26): the rule is named "Require workflows to pass before
+   merging"; ruleset workflows "can be configured at the organization or
+   enterprise level"; the workflow file must be in a repository whose
+   visibility matches the target repositories; supported events are
+   `pull_request`, `pull_request_target` and `merge_group`. Availability by
+   plan is not stated on that page and is INFERRED to need an organization
+   (and a plan with organization rulesets): confirm it for your account first.
+2. CODEOWNERS covering `.github/` and `history/` (also `scripts/` and
+   `engine.lock`) with the branch rule "Require review from Code Owners", so a
+   workflow or history change needs the owner's approval. A sole owner is not
+   protected from their own account.
+3. Restrict who can push `redact/*` branches.
+
+**Checklist before you list the first approver.** `.github/history-approvers`
+ships empty so that nothing is accepted. Complete all of these first:
+
+- [ ] A trust boundary from the list above is configured and you have seen it
+      block a pull request that edits `history-guard.yml`.
+- [ ] Live gate G1 was run: which revision of the workflow GitHub executes for a
+      pull request that edits it.
+- [ ] Live gate G5 was run: `actions: read` is enough to list the runs of the
+      head commit, and every write call is refused.
+- [ ] The check `History guard` is required, with "branch must be up to date".
+
 **What is verified and what is not.** Verified from GitHub's documentation: a
 `pull_request` workflow must already exist on the default branch and runs
 against the pull request's merge ref. The guard reads its scripts and the
 approvers file from a checkout pinned to the base commit and the pull request's
-data from a checkout pinned to the head commit. UNVERIFIED until the live gate
-G1 is run: which revision of the workflow file GitHub executes for a pull
-request that edits it. Until then, assume anyone who can merge a change to the
-workflow, `scripts/`, `engine.lock` or the approvers file can weaken the guard:
-protect those paths with CODEOWNERS and a required review from a second person.
-The job token needs `actions: read` (to read the workflow runs of the head
-commit) besides `contents` and `pull-requests`; it cannot write.
+data from a checkout pinned to the head commit. UNVERIFIED until G1: which
+revision of the workflow file GitHub executes for a pull request that edits it.
+Until then, assume anyone who can merge a change to the workflow, `scripts/`,
+`engine.lock` or the approvers file can weaken the guard. A pull request that
+edits the workflow itself fails the running-copy comparison by design: change
+the workflow in its own reviewed pull request.
+
+**`actions: read` is wide.** The job token needs `actions: read` only to list
+the workflow runs of the head commit. That permission is capability-wide: it
+also reads the logs and artifacts of the repository, and GitHub has no narrower
+built-in permission for the run list alone. It is acceptable only together with
+the trust boundary above, because a replaced workflow would receive it. The
+token cannot write.
 
 **What this does not do.** A sole owner cannot be protected from their own
 account; the guard prevents mistakes, bounds a rewrite, and leaves a record in

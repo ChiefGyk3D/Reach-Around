@@ -8,6 +8,7 @@ the last step names the exact recovery action."""
 from __future__ import annotations
 
 import os
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -177,8 +178,105 @@ def test_a_failure_of_the_last_step_names_the_recovery_and_keeps_the_manifest(
     folder = history.parent / "redactions"
     left = [p.name for p in folder.iterdir()]
     assert len(left) == 1 and left[0].startswith(".")
-    assert f"mv {left[0]} {final}" in err
+    # Changed: the printed step must never be a plain mv (it can overwrite).
+    assert f"ln {left[0]} {final} && rm {left[0]}" in err
+    assert "mv " not in err
     assert str(SECRET) not in err
     # Following the printed step completes the pair.
-    (folder / left[0]).rename(folder / final)
+    run_printed_step(err, folder)
     assert [p.name for p in folder.iterdir()] == [final]
+
+
+def run_printed_step(err: str, folder: Path) -> subprocess.CompletedProcess[str]:
+    line = next(x for x in err.splitlines() if "then run: " in x)
+    command = line.split("then run: ", 1)[1]
+    return subprocess.run(  # noqa: S603 - fixed argv, command built by the code under test
+        ["sh", "-c", command],  # noqa: S607
+        cwd=folder,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_an_existing_final_manifest_at_install_time_is_never_overwritten(
+    history: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    final = manifest_name(history)
+    folder = history.parent / "redactions"
+    real = getattr(counts_cmd, "redact_records")  # noqa: B009 - not re-exported
+
+    def racing(*a: Any, **k: Any) -> Any:
+        out = real(*a, **k)
+        (folder / final).write_text("made by someone else", encoding="ascii")
+        return out
+
+    monkeypatch.setattr(counts_cmd, "redact_records", racing)
+    before = history.read_bytes()
+    assert main(argv(history)) == 5
+    assert history.read_bytes() != before  # rewritten, as designed
+    err = capsys.readouterr().err
+    assert (folder / final).read_text() == "made by someone else"
+    tmp = next(p.name for p in folder.iterdir() if p.name.startswith("."))
+    assert f"ln {tmp} {final} && rm {tmp}" in err and "cmp" in err
+    assert "mv " not in err
+    done = run_printed_step(err, folder)
+    assert done.returncode != 0  # ln refuses to replace the existing file
+    assert (folder / final).read_text() == "made by someone else"
+    assert (folder / tmp).exists()  # nothing was removed either
+
+
+class FsyncLog:
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.events: list[str] = []
+        real_fsync = os.fsync
+        real_redact = getattr(counts_cmd, "redact_records")  # noqa: B009
+
+        def fsync(fd: int) -> None:
+            self.events.append("fsync:" + os.readlink(f"/proc/self/fd/{fd}"))
+            real_fsync(fd)
+
+        def redact(*a: Any, **k: Any) -> Any:
+            self.events.append("redact")
+            return real_redact(*a, **k)
+
+        monkeypatch.setattr(os, "fsync", fsync)
+        monkeypatch.setattr(counts_cmd, "redact_records", redact)
+
+    def before_redact(self) -> list[str]:
+        return self.events[: self.events.index("redact")]
+
+
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="needs /proc")
+def test_the_manifest_and_a_new_folder_are_durable_before_the_history_is_replaced(
+    history: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = FsyncLog(monkeypatch)
+    assert main(argv(history)) == 0
+    parent = history.parent.resolve()
+    kinds = []
+    for e in log.before_redact():
+        path = Path(e.split(":", 1)[1])
+        kinds.append(
+            "history-dir"
+            if path == parent
+            else "redactions"
+            if path.name == "redactions"
+            else "manifest"
+        )
+    # The parent of the new folder, then the temporary manifest, then its folder.
+    assert kinds == ["history-dir", "manifest", "redactions"]
+
+
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="needs /proc")
+def test_an_existing_folder_needs_no_parent_sync_but_the_folder_is_synced(
+    history: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (history.parent / "redactions").mkdir()
+    log = FsyncLog(monkeypatch)
+    assert main(argv(history)) == 0
+    kinds = [
+        "redactions" if e.endswith("redactions") else "manifest"
+        for e in log.before_redact()
+    ]
+    assert kinds == ["manifest", "redactions"]

@@ -899,7 +899,8 @@ class _StagedManifest:
     Residual: the history file and the manifest are two files, so a crash or a
     failure of the last step (after the history file was replaced) leaves the
     rewritten history with the manifest still under its temporary name; the
-    message names the one rename that completes it.
+    message names a no-overwrite step that completes it. The temporary file
+    and a newly created folder are fsynced before the history file is replaced.
     """
 
     def __init__(self, folder_fd: int, run_id: str, tmp_name: str) -> None:
@@ -962,6 +963,9 @@ def _stage_manifest(
             os.mkdir("redactions", 0o755, dir_fd=parent_fd)
         except FileExistsError:
             pass
+        else:
+            # A new folder: make its entry durable before anything relies on it.
+            os.fsync(parent_fd)
         folder_fd = os.open(
             "redactions",
             os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
@@ -993,8 +997,14 @@ def _stage_manifest(
                 out.flush()
                 os.fchmod(out.fileno(), 0o644)
                 os.fsync(out.fileno())
+            # The file is closed; now make its directory entry durable too,
+            # before the history file is replaced.
+            os.fsync(folder_fd)
         except OSError:
-            os.unlink(tmp, dir_fd=folder_fd)
+            try:
+                os.unlink(tmp, dir_fd=folder_fd)
+            except OSError:
+                pass
             raise
     except HistoryError:
         os.close(folder_fd)
@@ -1012,8 +1022,10 @@ def _install_staged(staged: _StagedManifest) -> bool:
     except OSError:
         _say(
             "error: the history file was rewritten but the manifest could not be "
-            "installed; in the folder redactions/ run: "
-            f"mv {staged.tmp_name} {staged.final_name}",
+            "installed; in the folder redactions/ first compare any existing "
+            f"{staged.final_name} with {staged.tmp_name} using cmp (never "
+            "overwrite it), then run: "
+            f"ln {staged.tmp_name} {staged.final_name} && rm {staged.tmp_name}",
             sys.stderr,
         )
         staged.close()

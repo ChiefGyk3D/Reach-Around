@@ -26,13 +26,25 @@
 # commit; the pull request's files are read from a checkout pinned to the head
 # commit and are only ever data.
 #
-# UNVERIFIED until live gate G1 (design note section 12): which revision of this
-# workflow file GitHub executes for a pull request that edits it. Until G1 is
-# run, assume anyone who can merge a change to this file, to scripts/ or to
-# engine.lock can weaken the guard. Protect `.github/`, `scripts/`,
-# `engine.lock` and `history/` with CODEOWNERS and required review from a second
-# person (README.md, docs/EDITING.md). A sole owner is not protected from their
-# own account; the guard prevents mistakes and leaves a record.
+# THIS WORKFLOW IS NOT A SUFFICIENT MERGE GATE ON ITS OWN. With a
+# `pull_request` trigger GitHub runs the workflow file of the pull request's
+# merge ref, so a pull request can replace this file and keep the check name.
+# Pinning the scripts to the base commit only helps once this workflow has run
+# its checkout. The first steps below compare the running copy of this file with
+# the base commit's copy and fail on any difference; that catches accidental
+# drift and costs little, but it does NOT stop a replaced workflow that omits
+# the step. The repository owner must configure a trust boundary, in this order
+# of preference:
+#   1. A ruleset rule "Require workflows to pass before merging" that points at
+#      a workflow in a separate trusted repository, so a pull request cannot
+#      replace it (UNVERIFIED until live gate G1; availability by plan and
+#      level is to be confirmed, see README.md, "History rewrites").
+#   2. CODEOWNERS covering `.github/` and `history/` (also `scripts/` and
+#      `engine.lock`) with "Require review from Code Owners".
+#   3. Restricting who can push `redact/*` branches.
+# Until one is in place, leave `.github/history-approvers` empty. A sole owner
+# is not protected from their own account; the guard prevents mistakes and
+# leaves a record.
 name: History guard
 
 on:
@@ -72,8 +84,35 @@ jobs:
             scripts/history-guard.py
             engine.lock
             engine.release.json
+            .github/workflows/history-guard.yml
           sparse-checkout-cone-mode: false
           persist-credentials: false
+
+      # The copy of this file that is running (the merge ref's), to compare.
+      - name: Fetch the running copy of this workflow
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: running-src
+          sparse-checkout: |
+            .github/workflows/history-guard.yml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # Defense in depth only: a replaced workflow can leave this step out.
+      - name: Refuse when the running workflow differs from the base copy
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -eu
+          file=.github/workflows/history-guard.yml
+          case "$WORKFLOW_REF" in
+            */"$file"@*) ;;
+            *) echo "::error::unexpected workflow reference"; exit 1 ;;
+          esac
+          if ! cmp -s "trusted-src/$file" "running-src/$file"; then
+            echo "::error::the running workflow differs from the base commit's copy"
+            exit 1
+          fi
 
       - name: Install the trusted copies and choose the engine image
         id: trust

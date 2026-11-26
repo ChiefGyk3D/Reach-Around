@@ -61,6 +61,9 @@ BOT_LOGIN = "github-actions[bot]"
 COOLING = timedelta(hours=24)
 API = "https://api.github.com"
 MAX_PAGES = 50
+HEAD_MOVES = frozenset(
+    {"head_ref_force_pushed", "head_ref_deleted", "head_ref_restored"}
+)
 MANIFEST = re.compile(r"history/redactions/[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.manifest")
 LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
 SHA = re.compile(r"[0-9a-f]{40}")
@@ -161,8 +164,10 @@ def head_changed_at(
     if not seen:
         raise Refused("the time the head commit was pushed could not be determined")
     changed = min(seen)
+    # A SHA that was head, was changed away and was put back counts from the
+    # restore: a forced push, or a deleted and restored head branch, moves it.
     for event in events:
-        if event.get("event") == "head_ref_force_pushed":
+        if event.get("event") in HEAD_MOVES:
             changed = max(changed, parse_time(event.get("created_at")))
     return changed
 
@@ -272,6 +277,8 @@ def api_get(path: str, token: str) -> list[Any] | dict[str, Any]:
     """GET one API path, following every page. Any failure is a refusal."""
     url = f"{API}{path}"
     pages: list[Any] = []
+    merged: dict[str, Any] | None = None
+    seen_page = False
     for _ in range(MAX_PAGES):
         request = urllib.request.Request(  # noqa: S310 - fixed https host below
             url,
@@ -289,11 +296,26 @@ def api_get(path: str, token: str) -> list[Any] | dict[str, Any]:
         except (urllib.error.URLError, ValueError, OSError):
             raise Refused("a GitHub API read failed") from None
         if isinstance(body, dict):
-            return body
-        pages.extend(body)
+            runs = body.get("workflow_runs")
+            if not isinstance(runs, list):
+                if seen_page:
+                    raise Refused("a GitHub API answer had an unexpected shape")
+                return body  # a plain object: one answer, no pages
+            # The Actions listing is an object holding a list: merge its pages.
+            if pages or (merged is None and seen_page):
+                raise Refused("a GitHub API answer had an unexpected shape")
+            if merged is None:
+                merged = body
+            else:
+                merged["workflow_runs"].extend(runs)
+        else:
+            if merged is not None or not isinstance(body, list):
+                raise Refused("a GitHub API answer had an unexpected shape")
+            pages.extend(body)
+        seen_page = True
         match = re.search(r'<([^>]+)>;\s*rel="next"', link)
         if not match:
-            return pages
+            return merged if merged is not None else pages
         url = match.group(1)
         if not url.startswith(API + "/"):
             raise Refused("the GitHub API sent an unexpected page link")

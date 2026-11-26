@@ -973,6 +973,34 @@ no longer offers a merge queue or the watcher alone; D5's predicate is corrected
 | G2 has no binary pass condition | Medium | Applies. G2 is now an exact experiment (steps, observables `mergeStateStatus` and the merge endpoint status) with PASS (branch A: current label presence is enforced by branch protection) and FAIL (branch B: label authorization is irrevocable for `(head, base tip, manifest blob)` after the cooling period, with no claim of current-label presence at merge). Either result is a defined, buildable design; "not run" blocks the build. `cancel-in-progress` is no longer credited with revocation (5.5 item 6). T41. |
 | Rule 15 raceable, PR identity too broad | Medium | Applies. Rule 15 now defines the object (open, base `main`, same repository, head ref exactly `counts/refresh`, author `github-actions[bot]`), reads it by explicit REST pagination and not `gh pr list --head`, and is described as best-effort availability protection. The merge procedure closes the verified bot pull request immediately before the head-pinned merge; a pull request that opens after that cannot restore values (strict up-to-date plus the guard) and is cleared by the closer (D13) under the same predicate. A fork pull request with that branch name does not block a rewrite. T40. |
 
+## 19a. Implementation round 2 (Daybreak): open risks stated in the template
+
+* **The workflow is not a sufficient merge gate on its own (High, architectural).** With
+  a `pull_request` trigger GitHub runs the workflow file of the merge ref, so a pull
+  request can replace `history-guard.yml` and keep the required check name; pinning the
+  scripts to the base commit helps only after the workflow ran its checkout. Not solved
+  in code. The template says so (README "History rewrites", the workflow header) and
+  requires the owner to configure a trust boundary, in order of preference: (1) the
+  ruleset rule "Require workflows to pass before merging" pointing at a workflow in a
+  separate trusted repository (organization or enterprise level per GitHub's page read
+  2026-11-26; plan availability INFERRED; UNVERIFIED until G1), (2) CODEOWNERS over
+  `.github/` and `history/` with required code-owner review, (3) a limit on who can push
+  `redact/*` branches. `.github/history-approvers` ships empty and the README carries a
+  checklist (boundary configured, G1 and G5 run) to finish before the first approver.
+  Defense in depth: the first job steps compare the running workflow file with the base
+  commit's copy and fail on a difference; a replaced workflow can omit that step.
+* **`actions: read` is capability-wide (Low).** It also reads the logs and artifacts of
+  the repository; there is no narrower built-in permission for the run list alone. It
+  is acceptable only together with the trust boundary above; G5 proves it is sufficient
+  and that no write call works.
+* **Crash durability (Medium, fixed).** The writer fsyncs the parent of a newly created
+  `redactions` folder and the folder itself after the temporary manifest is written,
+  before the history file is replaced.
+* **Recovery command (Medium, fixed).** The printed step compares with `cmp` and links
+  without overwriting (`ln` then `rm`); never `mv`.
+* **Head restore.** A forced push, or a deleted and restored head branch, moves the
+  head-change time; the Actions run listing is paged and fails closed at the page cap.
+
 ## 19. Not covered
 
 * Rewriting git history of the instance repository (#621; a tombstone meets the duty
