@@ -2,6 +2,7 @@
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -69,8 +70,18 @@ _ENTRYPOINTS = ("wrangler.js", "wrangler.mjs", "wrangler.cjs")
 # allowed interpreter or launcher (`sh -c "wrangler ..."`, `env node x`,
 # `python -c "...wrangler..."`) is refused too. What this still cannot see: a
 # program that builds the name at run time, or a script file that starts one
-# (only direct Python-level process starts are guarded, not what a child does).
+# (only process starts through the patched module attributes, and the aliases in
+# the imported test_leads* modules, are guarded, not what a child does).
 _WORD = re.compile(r"[^A-Za-z0-9_./+-]+")
+_OS_STARTERS = (
+    "execv",
+    "execve",
+    "execvp",
+    "execvpe",
+    "posix_spawn",
+    "posix_spawnp",
+    "system",
+)
 
 
 def _words(command: object) -> list[str]:
@@ -121,7 +132,14 @@ def _no_real_wrangler(
     `subprocess.run` and `check_output` use), `os.system`, `os.exec*`,
     `os.posix_spawn*`, and the module's own `_exec`. In the `leads` tests and the
     erasure guard every process start fails. A test that checks how `_exec` calls
-    subprocess replaces `subprocess.Popen` itself, after this guard."""
+    subprocess replaces `subprocess.Popen` itself, after this guard.
+
+    What it catches: a process start made through those module attributes at call
+    time, and through names bound to the originals in the already imported
+    `test_leads*` test modules. What it does not catch: an alias captured at
+    import time in any other module (a library or a non-leads test), a process
+    started by a child, or a program that builds its own name at run time. It is
+    defense in depth, not a sandbox."""
     from reach_around.commands import leads
 
     strict = request.module.__name__.startswith(_STRICT_MODULES)
@@ -147,17 +165,24 @@ def _no_real_wrangler(
 
         return guarded
 
-    for name in (
-        "execv",
-        "execve",
-        "execvp",
-        "execvpe",
-        "posix_spawn",
-        "posix_spawnp",
-        "system",
-    ):
+    originals: dict[int, Any] = {id(GuardedPopen.__mro__[1]): GuardedPopen}
+    for name in _OS_STARTERS:
         if hasattr(os, name):
-            monkeypatch.setattr(os, name, guard_path(getattr(os, name)))
+            real = getattr(os, name)
+            guarded = guard_path(real)
+            originals[id(real)] = guarded
+            monkeypatch.setattr(os, name, guarded)
+    # Round 5 (#905, Low): a name bound at import time (`from subprocess import
+    # Popen as saved`) keeps the original object, so patching the defining module
+    # does not reach it. The names bound in the already imported `test_leads*`
+    # modules are replaced too, for this one test.
+    for module_name, module in list(sys.modules.items()):
+        if not module_name.startswith(_STRICT_MODULES) or module is None:
+            continue
+        for attr, value in list(vars(module).items()):
+            replacement = originals.get(id(value))
+            if replacement is not None and attr not in ("subprocess", "os"):
+                monkeypatch.setattr(module, attr, replacement)
 
 
 @pytest.fixture

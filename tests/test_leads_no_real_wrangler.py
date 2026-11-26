@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The test suite can never start a real wrangler (#905).
+"""A test cannot start a real wrangler through the guarded paths (#905).
 
 This file does NOT use the `fake_wrangler` fixture, so it sees exactly what a test
 that forgot to install the fake would see: the autouse guard in conftest.py. The
-guard sits at the lowest level (subprocess.Popen, os.system, os.exec*,
-os.posix_spawn*) so a code path added later cannot start a process either.
+guard patches the module attributes subprocess.Popen, os.system, os.exec* and
+os.posix_spawn* at call time, and the names bound to those originals in the
+imported `test_leads*` modules. It does not catch an alias captured at import time
+in any other module; it is defense in depth, not a sandbox.
 """
 
 from __future__ import annotations
@@ -14,7 +16,9 @@ import json
 import os
 import subprocess
 import sys
+from os import system as _saved_system
 from pathlib import Path
+from subprocess import Popen as _saved_popen
 
 import pytest
 
@@ -36,6 +40,20 @@ def test_a_new_code_path_cannot_start_a_process_through_subprocess() -> None:
             call(["/bin/true"])
     with pytest.raises(AssertionError, match="real process"):
         subprocess.Popen(["/x/wrangler", "d1"])
+
+
+def test_a_name_bound_to_the_original_at_import_time_is_guarded_in_leads_tests() -> (
+    None
+):
+    """Round 5 (#905, Low): `from subprocess import Popen as saved` keeps the
+    original class, so patching the module attribute alone never reached it. The
+    names bound in the imported `test_leads*` modules are patched too (this file
+    imports two at the top). The paths do not exist: if the guard failed the start
+    would raise something other than the guard's AssertionError."""
+    with pytest.raises(AssertionError, match="real process"):
+        _saved_popen(["/nonexistent/node_modules/wrangler/bin/wrangler.js"])
+    with pytest.raises(AssertionError, match="real process"):
+        _saved_system("/nonexistent/wrangler-not-installed")  # noqa: S605
 
 
 def test_the_os_level_process_starts_are_guarded() -> None:
@@ -74,8 +92,10 @@ def test_outside_the_leads_tests_only_a_real_wrangler_is_refused() -> None:
 def test_an_allowed_interpreter_or_launcher_cannot_start_a_real_wrangler() -> None:
     """Review round 2 (Low): the guard looked only at the program, so `sh -c`,
     `env wrangler` or `python -c` could still start one. Every word of every
-    argument is now looked at. Only direct Python-level process starts are guarded:
-    what a child does on its own is out of reach (stated in conftest.py)."""
+    argument is now looked at. Only starts through the patched module attributes
+    (and the aliases in the imported test_leads* modules) are guarded: what a child
+    does on its own, or an alias captured at import time elsewhere, is out of reach
+    (stated in conftest.py)."""
     from conftest import _is_forbidden
 
     refused: list[object] = [

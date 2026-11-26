@@ -53,8 +53,18 @@ owned by root (such as ``/tmp``) or a group of your own that nobody else belongs
 to is accepted. A required dependency (``dependencies``, non-optional peers) that
 is not installed under ``worker/node_modules`` is refused, as is a
 ``node_modules`` in the repository root or any directory above it (or a legacy
-module folder in HOME); a symlink to a directory must resolve inside
-``worker/node_modules`` and is walked. Only the walked tree is checked: a package
+module folder in HOME); a symlink (to a file or a directory) must resolve inside
+``worker/node_modules``, the directories between its target and the repository
+root are checked, and a directory target is walked.
+
+Installation mode. Only the layout made by ``cd worker && npm ci
+--ignore-scripts`` is supported: the lock file is ``worker/package-lock.json`` and
+every package of the wrangler closure sits under ``worker/node_modules``.
+Hoisted and workspace installs (a ``node_modules`` in the repository root, or a
+required package found only above ``worker``) are refused on purpose, with a
+message that names that command; hoisting is not supported.
+
+Only the walked tree is checked: a package
 that is not named by a ``dependencies`` field is not seen. What it does NOT
 prove: that the files on disk are the files of the published tarball (npm keeps
 no per-file hashes, and the tarball digest in the lock file cannot be re-checked
@@ -723,15 +733,23 @@ _REFUSED_TREE = (
 )
 
 
-def _check_entry(path: str, me: int, repo_real: str) -> os.stat_result:
+def _check_entry(
+    path: str, me: int, repo_real: str, node_root: str | None = None
+) -> os.stat_result:
     """One file or directory of the walked tree: owner root or the current user,
     and no group or other write bit inside the repository. A symlink's own mode
-    means nothing, so the target is checked and must stay in the repository."""
+    means nothing, so the target is checked: it must stay in the repository and,
+    when ``node_root`` is given, inside it (the real ``worker/node_modules``), and
+    every directory between the target and the repository root is checked too (a
+    writable parent would let another account swap the target file)."""
     link = os.lstat(path)
     if stat.S_ISLNK(link.st_mode):
         target = os.path.realpath(path, strict=True)
-        if not _inside(target, repo_real):
+        if not _inside(target, repo_real) or (
+            node_root is not None and not _inside(target, node_root)
+        ):
             raise WranglerError(_REFUSED_TREE)
+        _check_above(target, me, repo_real)
         link = os.stat(target)
     if link.st_uid not in (0, me) or link.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
         raise WranglerError(_REFUSED_TREE)
@@ -770,7 +788,7 @@ def _walk_package(
         if here in seen_dirs:
             continue
         seen_dirs.add(here)
-        _check_entry(here, me, repo_real)
+        _check_entry(here, me, repo_real, node_root)
         with os.scandir(here) as entries:
             for entry in entries:
                 budget[0] -= 1
@@ -786,12 +804,11 @@ def _walk_package(
                     target = os.path.realpath(entry.path, strict=True)
                     if not _inside(target, node_root):
                         raise WranglerError(_REFUSED_TREE)
-                    _check_entry(entry.path, me, repo_real)
-                    _check_above(target, me, repo_real)
+                    _check_entry(entry.path, me, repo_real, node_root)
                     if entry.name != "node_modules":
                         stack.append(target)
                 else:
-                    _check_entry(entry.path, me, repo_real)
+                    _check_entry(entry.path, me, repo_real, node_root)
 
 
 def _dependency_names(pkg: str) -> list[tuple[str, bool]]:
@@ -839,7 +856,11 @@ def _check_no_ancestor_node_modules(repo_real: str) -> None:
             raise WranglerError(
                 "a node_modules directory exists in the repository root or in a "
                 "directory above it; node would search it, and it is not checked. "
-                "Move it away or run from a checkout without one"
+                "Only the layout made by "
+                f"{INSTALL_WRANGLER} is supported (packages under "
+                "worker/node_modules, lock file worker/package-lock.json); "
+                "hoisted and workspace installs are refused. Move that directory "
+                "away or run from a checkout without one"
             )
         parent = os.path.dirname(up)
         if parent == up:
@@ -909,7 +930,9 @@ def _check_package_tree(pkg_real: str, worker_real: str, me: int) -> None:
                     raise WranglerError(
                         f"the dependency {name} is required by an installed "
                         "package but is not installed under worker/node_modules; "
-                        f"refusing it (reinstall with: {INSTALL_WRANGLER})"
+                        "only the layout made by "
+                        f"{INSTALL_WRANGLER} is supported (hoisted and workspace "
+                        "installs are refused); reinstall with that command"
                     )
         except OSError:
             raise WranglerError(_REFUSED_TREE) from None
@@ -1876,7 +1899,9 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "worker/node_modules/.bin/wrangler); never searched on PATH; its package "
         "must match worker/package-lock.json, and the package and its "
         "dependencies (walked, bounded) must belong to root or you with no group "
-        "or other write bit. It receives your Cloudflare token: this is a trust "
+        "or other write bit. Only the layout of 'cd worker && npm ci "
+        "--ignore-scripts' is supported (hoisted or workspace installs are "
+        "refused). It receives your Cloudflare token: this is a trust "
         "boundary, not an integrity check",
     )
     delete.add_argument(

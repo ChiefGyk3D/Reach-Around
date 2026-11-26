@@ -6,6 +6,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import sys
 import threading
 from pathlib import Path
@@ -2384,3 +2385,172 @@ class TestResolutionOutsideTheCheckedTree:
                 "CLOUDFLARE_ACCOUNT_ID",
                 "HOME",
             }
+
+
+class TestSymlinkedFiles:
+    """Round 5 (#905, Medium): a symlink to a FILE was checked as one stat of its
+    target, so a safe-mode target under a group or world writable parent was
+    accepted (another account could swap it). Every symlink target now has its
+    parent directories checked up to the repository root, and must stay inside
+    ``worker/node_modules`` like a directory target."""
+
+    @staticmethod
+    def target(root: Path, parent_mode: int = 0o700, *, under: str = "node") -> Path:
+        base = root / "worker" / "node_modules" if under == "node" else root
+        parent = base / "shared-lib"
+        parent.mkdir()
+        leaf = parent / "helper.js"
+        leaf.write_text("module.exports = 1;\n")
+        leaf.chmod(0o600)  # the file itself is safe
+        parent.chmod(parent_mode)
+        return leaf
+
+    @staticmethod
+    def link(root: Path, target: Path) -> None:
+        bin_dir = root / "worker" / "node_modules" / "wrangler" / "bin"
+        (bin_dir / "helper.js").symlink_to(target)
+
+    def go(
+        self, capsys: pytest.CaptureFixture[str], export: Path
+    ) -> tuple[int, str, str]:
+        return run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+
+    def test_a_clean_symlinked_file_is_accepted(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        self.link(fake_wrangler.root, self.target(fake_wrangler.root))
+        code, _, err = self.go(capsys, export)
+        assert code == CHECKED, err
+
+    @pytest.mark.parametrize("mode", [0o770, 0o707, 0o777])
+    def test_a_safe_target_under_a_writable_parent_is_refused_before_exec(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        fake_wrangler: Any,
+        tmp_path: Path,
+        mode: int,
+    ) -> None:
+        self.link(fake_wrangler.root, self.target(fake_wrangler.root, mode))
+        code, out, err = self.go(capsys, export)
+        assert code == 2 and out == "" and fake_wrangler.argvs == [], err
+        _no_local_path(err, fake_wrangler.root, tmp_path)
+
+    def test_a_file_target_outside_node_modules_is_refused(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        fake_wrangler: Any,
+        tmp_path: Path,
+    ) -> None:
+        """Inside the repository, safe modes all the way up, but not under
+        ``worker/node_modules``."""
+        self.link(fake_wrangler.root, self.target(fake_wrangler.root, under="repo"))
+        code, out, err = self.go(capsys, export)
+        assert code == 2 and out == "" and fake_wrangler.argvs == [], err
+        _no_local_path(err, fake_wrangler.root, tmp_path)
+
+
+_WR = "node_modules/wrangler"
+
+
+def _synthesize_install(root: Path) -> dict[str, Any]:
+    """Build ``worker/node_modules`` from the real ``worker/package-lock.json``
+    the way ``cd worker && npm ci --ignore-scripts`` lays it out, without the
+    network: every lock entry becomes a directory at its lock path holding a
+    ``package.json`` with the entry's name, version and dependency fields and one
+    code file (mode 0644, directories 0755, owned by the current user). The real
+    lock file and npm's install record are written beside it. Returns the lock."""
+    text = (
+        Path(__file__).resolve().parent.parent / "worker" / "package-lock.json"
+    ).read_text()
+    lock: dict[str, Any] = json.loads(text)
+    worker = root / "worker"
+    nm = worker / "node_modules"
+    for key, entry in lock["packages"].items():
+        if not key or entry.get("link"):
+            continue
+        name = key.rsplit("node_modules/", 1)[1]
+        pkg = worker / key
+        (pkg / "lib").mkdir(parents=True, exist_ok=True)
+        meta: dict[str, Any] = {"name": name, "version": entry["version"]}
+        for field in (
+            "dependencies",
+            "optionalDependencies",
+            "peerDependencies",
+            "peerDependenciesMeta",
+        ):
+            if field in entry:
+                meta[field] = entry[field]
+        (pkg / "package.json").write_text(json.dumps(meta))
+        (pkg / "lib" / "index.js").write_text("module.exports = 1;\n")
+        for file in (pkg / "package.json", pkg / "lib" / "index.js"):
+            file.chmod(0o644)
+    script = nm / "wrangler" / "bin" / "wrangler.js"
+    script.parent.mkdir(exist_ok=True)
+    script.write_text("#!/bin/sh\nexit 0\n")
+    script.chmod(0o755)
+    record = {"packages": {_WR: lock["packages"][_WR]}}
+    (nm / ".package-lock.json").write_text(json.dumps(record))
+    (worker / "package-lock.json").write_text(text)
+    for file in (nm / ".package-lock.json", worker / "package-lock.json"):
+        file.chmod(0o644)
+    for directory in [nm, *nm.rglob("*")]:
+        if directory.is_dir() and not directory.is_symlink():
+            directory.chmod(0o755)
+    return lock
+
+
+class TestInstallationMode:
+    """Round 5 (#905, Medium): the only supported layout is the one
+    ``cd worker && npm ci --ignore-scripts`` makes. The first test proves that
+    layout is accepted with no refusal, from the repository's real lock file; the
+    others show that a hoisted layout is refused with a message that says so."""
+
+    def go(
+        self, capsys: pytest.CaptureFixture[str], export: Path
+    ) -> tuple[int, str, str]:
+        return run(capsys, "--input", str(export), "--email", ADDR, "--yes")
+
+    def test_the_layout_npm_ci_makes_from_the_real_lock_file_is_accepted(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        lock = _synthesize_install(fake_wrangler.root)
+        assert len(lock["packages"]) > 50  # the real closure, not a stub
+        code, _, err = self.go(capsys, export)
+        assert code == CHECKED, err
+        assert "supported" not in err and fake_wrangler.argvs
+
+    def test_a_required_package_missing_from_that_layout_is_refused(
+        self, capsys: pytest.CaptureFixture[str], export: Path, fake_wrangler: Any
+    ) -> None:
+        """The acceptance test above is not vacuous: dropping one package of the
+        closure is a refusal."""
+        _synthesize_install(fake_wrangler.root)
+        shutil.rmtree(fake_wrangler.root / "worker" / "node_modules" / "blake3-wasm")
+        code, out, err = self.go(capsys, export)
+        assert code == 2 and out == "" and "blake3-wasm" in err
+
+    @pytest.mark.parametrize("layout", ["hoisted_to_root", "not_installed_below"])
+    def test_a_hoisted_layout_is_refused_and_the_message_names_the_one_mode(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        fake_wrangler: Any,
+        tmp_path: Path,
+        layout: str,
+    ) -> None:
+        root: Path = fake_wrangler.root
+        _synthesize_install(root)
+        moved = root / "worker" / "node_modules" / "blake3-wasm"
+        if layout == "hoisted_to_root":
+            (root / "node_modules").mkdir()
+            shutil.move(moved, root / "node_modules" / "blake3-wasm")
+        else:
+            shutil.rmtree(moved)
+        code, out, err = self.go(capsys, export)
+        assert code == 2 and out == "" and fake_wrangler.argvs == [], err
+        assert leads_cmd.INSTALL_WRANGLER == "cd worker && npm ci --ignore-scripts"
+        assert leads_cmd.INSTALL_WRANGLER in err
+        assert "hoisted" in err and "workspace" in err
+        _no_local_path(err, root, tmp_path)

@@ -410,17 +410,22 @@ a group of your own that nobody else belongs to. The wrangler package, and the
 packages it lists in `dependencies`, `optionalDependencies` or
 `peerDependencies` (resolved the way node resolves them under
 `worker/node_modules`, recursively), are walked: every file and directory must
-belong to root or you with no group or other write bit, a symlink to a file must
-stay in the repository, a symlink to a directory must resolve inside
-`worker/node_modules` (the directories between its target and the repository
-root are checked, and the target is walked like any other directory), and the
+belong to root or you with no group or other write bit, a symlink (to a file or
+to a directory) must resolve inside `worker/node_modules` (the directories
+between its target and the repository root are checked, and a directory target
+is walked like any other directory), and the
 walk stops with a refusal past 200000 entries. A dependency a package requires
 (`dependencies`, or a peer dependency not marked optional) that is not installed
 under `worker/node_modules` is a refusal; only `optionalDependencies` and
 optional peers may be absent. A `node_modules` directory in the repository root
 or in any directory above it, or a `.node_modules` or `.node_libraries` folder
 in your home directory, is a refusal too, because node would search it and it is
-not checked (the message names no path). The program's environment never holds
+not checked (the message names no path). Installation mode: only the layout made
+by `cd worker && npm ci --ignore-scripts` is supported (lock file
+`worker/package-lock.json`, every package of the wrangler closure under
+`worker/node_modules`). Hoisted and workspace installs are refused on purpose,
+and the refusal message names that command; hoisting is not supported. The
+program's environment never holds
 `NODE_PATH`, `NODE_OPTIONS` or `NPM_CONFIG_*`. Only that walked tree is checked:
 a package no `dependencies` field names, or one node loads from outside
 `worker/node_modules` (for example the system module folder next to node
