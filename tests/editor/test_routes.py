@@ -40,7 +40,7 @@ tabs:
             handle: examplecreator
             url: https://example.com/twitch
             count: 10
-            as_of: 2027-03-01
+            as_of: 2026-03-01
           - platform: kick
             handle: examplecreator
             url: https://example.com/kick
@@ -109,7 +109,7 @@ def test_state_contract(ed: Editor) -> None:
     data = body_of(got)
     assert data["hash"] == sha(CONFIG)
     assert data["config"]["creator"]["name"] == "Example Creator"
-    assert data["config"]["tabs"][0]["blocks"][2]["items"][0]["as_of"] == "2027-03-01"
+    assert data["config"]["tabs"][0]["blocks"][2]["items"][0]["as_of"] == "2026-03-01"
     assert data["preview_url"] == f"http://127.0.0.1:{ed.session.preview_port}/"
     assert data["build"] == {"ok": True, "error": None}
     assert data["limits"]["json_bytes"] == 64 * 1024

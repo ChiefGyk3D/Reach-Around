@@ -432,8 +432,10 @@ class EditorService:
         clock: Callable[[], float] = time.monotonic,
         mutation_limit: int = MUTATIONS_PER_MINUTE,
         mutation_window: float = RATE_WINDOW_SECONDS,
+        builder: Callable[[str], str | None] | None = None,
     ) -> None:
         self.config = config
+        self._build = builder
         self._read = read_bytes
         self._clock = clock
         self._limit = mutation_limit
@@ -489,7 +491,13 @@ class EditorService:
                 "The config changed while it was being read. Try again.",
                 headers=[("Retry-After", "1")],
             )
-        return hashlib.sha256(first).hexdigest(), config, error
+        digest = hashlib.sha256(first).hexdigest()
+        if error is None and self._build is not None:
+            # The config loads; the site build can still fail. ``builder`` builds
+            # once per config version and answers from its record after that.
+            built = self._build(digest)
+            error = self._clean(built) if built else None
+        return digest, config, error
 
     def _parse(self, data: bytes) -> tuple[dict[str, Any], str | None]:
         """Load exactly ``data`` (a private copy beside the config), not the path.

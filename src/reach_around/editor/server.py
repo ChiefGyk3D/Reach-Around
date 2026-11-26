@@ -17,9 +17,11 @@ malformed request never writes and never produces a 5xx: the guard runs inside
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import math
+import mimetypes
 import os
 import secrets
 import signal
@@ -51,6 +53,7 @@ from reach_around.editor.service import (
     EditorService,
     RouteError,
 )
+from reach_around.preview import Preview, PreviewError, _resolve, _safe_segments
 
 BIND_ADDRESS = "127.0.0.1"
 DEFAULT_IDLE_SECONDS = 30 * 60.0
@@ -147,10 +150,16 @@ def editor_csp(frame_origin: str) -> str:
     )
 
 
-def preview_csp(editor_origin: str) -> str:
-    """The preview policy: opaque origin (D-05, D-15) and only the editor may frame."""
+def preview_csp(editor_origin: str, *, allow_remote_images: bool = False) -> str:
+    """The preview policy: opaque origin (D-05, D-15) and only the editor may frame.
+
+    Images load from the page itself and ``data:`` only (D-06), so the preview
+    makes no network request; ``allow_remote_images`` adds ``https:`` for images.
+    """
+    images = "'self' data: https:" if allow_remote_images else "'self' data:"
     return (
-        "sandbox allow-scripts; default-src 'self'; base-uri 'none'; "
+        "sandbox allow-scripts; default-src 'self'; "
+        f"img-src {images}; base-uri 'none'; "
         f"form-action 'none'; frame-ancestors {editor_origin}"
     )
 
@@ -596,7 +605,13 @@ class _PreviewHandler(_Handler):
             host = session.preview_guard.allowed_host(headers.get("Host"))
         name = host.rsplit(":", 1)[0] if host else BIND_ADDRESS
         return [
-            ("Content-Security-Policy", preview_csp(f"http://{name}:{session.port}")),
+            (
+                "Content-Security-Policy",
+                preview_csp(
+                    f"http://{name}:{session.port}",
+                    allow_remote_images=session.allow_remote_images,
+                ),
+            ),
             ("X-Content-Type-Options", "nosniff"),
             ("Referrer-Policy", "no-referrer"),
             ("Cache-Control", "no-store"),
@@ -614,10 +629,29 @@ class _PreviewHandler(_Handler):
     do_HEAD = do_GET
 
     def _get(self) -> None:
-        if self.route_path() == "/":
-            self._send(200, _PREVIEW_PAGE, "text/html; charset=utf-8")
-        else:
+        segments = _safe_segments(self.path)
+        if segments is None:
             self._refuse(404)
+            return
+        site = self.owner.site
+        # The last good build, even while the newest one fails (the editor
+        # shows that error); only the build output is reachable, nothing else.
+        target = _resolve(site.root, segments) if site is not None else None
+        if target is None:
+            if segments:
+                self._refuse(404)
+            else:
+                self._send(200, _PREVIEW_PAGE, "text/html; charset=utf-8")
+            return
+        try:
+            data = target.read_bytes()
+        except OSError:
+            self._refuse(404)
+            return
+        kind = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        if kind.startswith("text/") or kind == "application/json":
+            kind += "; charset=utf-8"
+        self._send(200, data, kind)
 
 
 @dataclass
@@ -642,6 +676,7 @@ class EditorSession:
         body_deadline: float = BODY_DEADLINE_SECONDS,
         mutation_limit: int = MUTATIONS_PER_MINUTE,
         mutation_window: float = RATE_WINDOW_SECONDS,
+        allow_remote_images: bool = False,
     ) -> None:
         if not (math.isfinite(idle_seconds) and 0 < idle_seconds <= MAX_IDLE_SECONDS):
             raise EditorError(
@@ -663,7 +698,12 @@ class EditorSession:
             clock=clock,
             mutation_limit=mutation_limit,
             mutation_window=mutation_window,
+            builder=self._site_error,
         )
+        self.allow_remote_images = allow_remote_images
+        self.site: Preview | None = None
+        self._site_digest: str | None = None
+        self._site_lock = threading.Lock()
         self.idle_seconds = idle_seconds
         self.read_timeout = read_timeout
         self.header_deadline = header_deadline
@@ -718,6 +758,29 @@ class EditorSession:
     def asset(self, name: str) -> bytes:
         return self._assets[name]
 
+    @property
+    def site_workdir(self) -> Path | None:
+        site = self.site
+        return site.workdir if site is not None else None
+
+    def _site_error(self, digest: str) -> str | None:
+        """Build the site for this config version once; its error text, or None.
+
+        A failed build keeps the last good output, which the preview keeps
+        serving. The temporary folder's name never reaches the answer.
+        """
+        with self._site_lock:
+            site = self.site
+            if site is None:
+                return None
+            if digest != self._site_digest:
+                site.rebuild()
+                self._site_digest = digest
+            error = site.error
+            if error is None:
+                return None
+            return error.replace(str(site.workdir), "<build>")
+
     # -- lifecycle -----------------------------------------------------------
 
     def start(self) -> None:
@@ -728,10 +791,17 @@ class EditorSession:
         root = resources.files("reach_around").joinpath("editor_assets")
         self._assets = {n: root.joinpath(n).read_bytes() for n in _ASSET_FILES}
         try:
+            with self._site_lock:
+                start_bytes = read_config_bytes(self.config) or b""
+                self._site_digest = hashlib.sha256(start_bytes).hexdigest()
+                self.site = Preview(self.config, self.address, None)
             editor = self._listen(_EditorHandler, "editor")
             self._editor = editor
             preview = self._listen(_PreviewHandler, "preview")
             self._preview = preview
+        except PreviewError as exc:
+            self.shutdown("error")
+            raise EditorError(str(exc)) from None
         except BaseException:
             self.shutdown("error")
             raise
@@ -802,13 +872,25 @@ class EditorSession:
         watchdog = self._watchdog
         if watchdog is not None and watchdog is not current:
             watchdog.join(5)
+        with self._site_lock:
+            if self.site is not None:
+                self.site.close()
         self.stopped.set()
 
 
-def run_editor(config: Path, *, idle_minutes: float = DEFAULT_IDLE_SECONDS / 60) -> int:
+def run_editor(
+    config: Path,
+    *,
+    idle_minutes: float = DEFAULT_IDLE_SECONDS / 60,
+    allow_remote_images: bool = False,
+) -> int:
     """Run an editing session in the foreground; the URL goes to stdout only."""
     try:
-        session = EditorSession(config, idle_seconds=idle_minutes * 60)
+        session = EditorSession(
+            config,
+            idle_seconds=idle_minutes * 60,
+            allow_remote_images=allow_remote_images,
+        )
         session.start()
     except (EditorError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
