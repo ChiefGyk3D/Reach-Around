@@ -92,7 +92,11 @@ if [ "$(status_of page)" = "200" ]; then
 else
     fail "page / answered $(status_of page), expected 200"
 fi
-if header_of page content-type | grep -qi 'text/html'; then
+# Match a captured value, not `... | grep -q`: under pipefail a grep that exits
+# at its first match can make the writer die of SIGPIPE and flip the result.
+content_type="$(header_of page content-type)"
+nosniff="$(header_of page x-content-type-options)"
+if [[ "${content_type,,}" == *text/html* ]]; then
     pass "page content-type is text/html"
 else
     fail "page content-type is not text/html"
@@ -102,7 +106,7 @@ if [ -n "$(header_of page content-security-policy)" ]; then
 else
     fail "page has no content-security-policy header"
 fi
-if header_of page x-content-type-options | grep -qi 'nosniff'; then
+if [[ "${nosniff,,}" == *nosniff* ]]; then
     pass "page has x-content-type-options nosniff"
 else
     fail "page has no x-content-type-options nosniff header"

@@ -147,9 +147,13 @@ secret.
    from step 1 is the other point-in-time anchor, because Time Travel restores
    the whole database at one moment (verified, Time Travel page).
 
-   Expected: `done: N tables written to <BACKUPS>/d1-<UTC timestamp>`. Tables
-   an older database does not have are listed as `skipped (not in this
-   database)`. Each wrangler call is stopped after 120 seconds
+   Expected: `done: N tables written to <BACKUPS>/d1-<UTC timestamp>`. The
+   script keeps an inventory of expected tables. The two alert tables (added
+   by migration 0013) are optional: an older database that lacks them is
+   listed as `skipped (not in this database)`. Any other expected table that
+   is missing fails the run (exit 1, the table names are printed, nothing is
+   kept), because the copy would be incomplete. A listed table name that holds
+   a line break is refused for the same reason. Each wrangler call is stopped after 120 seconds
    (`BACKUP_TIMEOUT=300` raises it, to at most 900). A running export blocks
    other requests to the database while it runs (verified, Cloudflare import
    and export page, last updated 2026-04-21, read 2026-11-09), so do not run it

@@ -7,6 +7,7 @@ from the Worker's own migrations. Everything is synthetic."""
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import stat
 import subprocess
@@ -357,3 +358,74 @@ def test_the_coverage_table_is_part_of_the_backup(tmp_path: Path) -> None:
     assert r.returncode == 0, r.stderr
     (out,) = list(d.iterdir())
     assert "2026-11-01" in (out / "analytics_coverage.sql").read_text()
+
+
+def _script_array(name: str) -> list[str]:
+    m = re.search(rf"^{name}=\((.*?)\)", SCRIPT.read_text(), re.DOTALL | re.MULTILINE)
+    assert m, f"{name} array not found in backup-d1.sh"
+    return m.group(1).split()
+
+
+def test_a_missing_required_table_fails_the_run(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        db.execute("DROP TABLE view_daily")
+        db.commit()
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    assert r.returncode == 1
+    assert "required table(s) missing" in r.stderr
+    assert "view_daily" in r.stderr
+    assert "done:" not in r.stdout
+    assert list(d.iterdir()) == []
+
+
+def test_only_optional_tables_missing_still_succeeds(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        db.execute("DROP TABLE alert_quota")
+        db.execute("DROP TABLE alert_dedup")
+        db.commit()
+    r = run(env, "reach-db", str(dest(tmp_path)), "--apply")
+    assert r.returncode == 0, r.stderr
+    assert "skipped (not in this database): alert_quota" in r.stdout
+    assert "skipped (not in this database): alert_dedup" in r.stdout
+
+
+def test_a_table_name_with_a_line_break_is_refused(tmp_path: Path) -> None:
+    """A name that embeds another table's name between line breaks would make a
+    table that is not there look present. The listing is rejected."""
+    env = make(tmp_path)
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        db.execute("DROP TABLE view_daily")
+        db.execute('CREATE TABLE "zz\nview_daily\nzz" (a)')
+        db.commit()
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    assert r.returncode == 1
+    assert "invalid table name" in r.stderr
+    assert list(d.iterdir()) == []
+
+
+def test_the_inventory_matches_the_migrations(tmp_path: Path) -> None:
+    """A new migration that adds a table fails here until the script's inventory
+    (`tables`, `optional_tables`) or the list of tables left out is updated."""
+    with closing(sqlite3.connect(tmp_path / "m.sqlite")) as db:
+        for f in sorted((ROOT / "worker" / "migrations").glob("*.sql")):
+            db.executescript(schema_sql(f.read_text()))
+        in_schema = {
+            r[0]
+            for r in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            if not r[0].startswith("sqlite_")
+        }
+    in_schema.add("d1_migrations")  # created by wrangler, not by a migration
+    tables = set(_script_array("tables"))
+    optional = set(_script_array("optional_tables"))
+    never = {"leads", "kit_events", "visitor_seen", "view_events"}
+    # Aggregate tables from migrations 0015 and 0019 that the script does not
+    # export today (an open question for the owner, see issue 932).
+    not_exported_yet = {"view_hour_daily", "view_city_daily"}
+    assert optional <= tables
+    assert not (tables & never)
+    assert not (tables & not_exported_yet)
+    assert in_schema == tables | never | not_exported_yet

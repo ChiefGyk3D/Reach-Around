@@ -42,6 +42,13 @@ tables=(
   view_daily view_dim_daily view_geo_daily view_meta view_rollup_log
 )
 
+# Inventory: every table above is REQUIRED (a run that finds it missing fails, so
+# an incomplete backup is never reported as a success) except these, which an
+# older database may lack and which are skipped with a notice. The alert tables
+# come from migration 0013 (tests/test_backup_d1.py keeps this list and the
+# migrations in step). Tables the script never exports are listed in the dry run.
+optional_tables=(alert_dedup alert_quota)
+
 usage() {
   echo "usage: $0 DATABASE DEST_DIR [--apply]" >&2
   exit 2
@@ -111,7 +118,7 @@ out="$dest/d1-$stamp"
 if [ "$apply" -eq 0 ]; then
   echo "dry run: nothing is written and no network call is made."
   echo "would create: $out (mode 700)"
-  echo "would export ${#tables[@]} tables (those that exist), one file each, mode 600:"
+  echo "would export ${#tables[@]} tables (the run fails if a required one is missing; optional: ${optional_tables[*]}), one file each, mode 600:"
   printf '  %s\n' "${tables[@]}"
   echo "never exported: leads, kit_events, visitor_seen, view_events"
   echo "note: the tables are exported one call at a time, so this is not a single point-in-time snapshot."
@@ -137,7 +144,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Which of our tables exist in this database (older schemas may lack some).
+# Which of our tables exist in this database (older schemas may lack the optional ones).
 listing=$(timeout "$limit" "${wrangler[@]}" d1 execute "$db" --remote --json \
   --command "SELECT name FROM sqlite_master WHERE type = 'table'" 2>/dev/null) || {
   echo "error: could not list the tables (wrong name, not signed in, or timed out)" >&2
@@ -148,7 +155,13 @@ import json, sys
 data = json.load(sys.stdin)
 rows = data[0]["results"] if isinstance(data, list) else data["results"]
 for r in rows:
-    print(r["name"])
+    name = r["name"]
+    # The names are compared as whole lines below, so a name that holds a line
+    # break could make a missing table look present: refuse it outright.
+    if not isinstance(name, str) or any(c in name for c in "\r\n\0"):
+        sys.stderr.write("error: invalid table name in the listing\n")
+        sys.exit(1)
+    print(name)
 ') || {
   echo "error: unexpected answer from the database" >&2
   exit 1
@@ -164,6 +177,26 @@ is_listed() {
   *) return 1 ;;
   esac
 }
+
+is_optional() {
+  local o
+  for o in "${optional_tables[@]}"; do
+    [ "$o" = "$1" ] && return 0
+  done
+  return 1
+}
+
+# A missing REQUIRED table is an incomplete backup: fail before writing anything.
+missing=()
+for t in "${tables[@]}"; do
+  if ! is_listed "$t" && ! is_optional "$t"; then
+    missing+=("$t")
+  fi
+done
+if [ "${#missing[@]}" -gt 0 ]; then
+  echo "error: required table(s) missing from this database: ${missing[*]}" >&2
+  exit 1
+fi
 
 count=0
 exported=()
