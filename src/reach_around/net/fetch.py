@@ -16,14 +16,17 @@ import random
 import re
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from types import MappingProxyType
 from urllib.parse import urljoin, urlsplit
 
 from reach_around import __version__
 from reach_around.net.egress import (
     EgressBlocked,
     HttpsTransport,
+    RawResponse,
     Transport,
     TransportRequest,
     validate_hostname,
@@ -147,6 +150,51 @@ def fetch_json(
     Only GET is retried: a request with a body is never replayed. Per-attempt
     time is ``timeout`` seconds including connect, send and read.
     """
+    try:
+        response = _fetch_raw(
+            url,
+            transport=transport,
+            headers=headers,
+            method=method,
+            body=body,
+            sleep=sleep,
+            jitter=jitter,
+            clock=clock,
+            now=now,
+            max_bytes=max_bytes,
+            timeout=timeout,
+            follow_redirects=follow_redirects,
+            max_attempts=max_attempts,
+            error_code=error_code,
+        )
+        return _decode(response.headers, response.body, max_bytes, extra_json_types)
+    finally:
+        # This frame holds the caller's credential-bearing parts too.
+        headers = None
+        body = None
+
+
+def _fetch_raw(
+    url: str,
+    *,
+    transport: Transport | None,
+    headers: Mapping[str, str] | None,
+    method: str,
+    body: bytes | None,
+    sleep: Callable[[float], None],
+    jitter: Callable[[], float],
+    clock: Callable[[], float],
+    now: Callable[[], datetime],
+    max_bytes: int,
+    timeout: float,
+    follow_redirects: bool,
+    max_attempts: int,
+    error_code: bool,
+) -> RawResponse:
+    """The request loop shared by ``fetch_json`` and ``fetch_json_array``.
+
+    Returns the first 2xx answer; every other outcome is a ``FetchError``.
+    """
     send = transport if transport is not None else HttpsTransport()
     host, path = _target(url)
     base: dict[str, str] = {
@@ -214,7 +262,7 @@ def fetch_json(
                     else None
                 )
                 raise FetchError(f"http_{status}", code)
-            return _decode(response.headers, response.body, max_bytes, extra_json_types)
+            return response
     finally:
         # Whatever leaves this function (a result, an error, or an interrupt),
         # no frame it can reach keeps the credential-bearing request parts.
@@ -230,6 +278,97 @@ def _decode(
     max_bytes: int,
     extra_json_types: frozenset[str] = frozenset(),
 ) -> dict[str, object]:
+    parsed = _parse(headers, body, max_bytes, extra_json_types)
+    if not isinstance(parsed, dict):
+        raise FetchError("bad_json")
+    return parsed
+
+
+ARRAY_MAX_BYTES = 1_048_576  # 1 MiB: the hard ceiling for fetch_json_array
+ARRAY_MAX_ITEMS = 1_000
+# The only response headers the array fetch hands back, lower-case.
+VIEW_HEADERS: tuple[str, ...] = (
+    "link",
+    "retry-after",
+    "date",
+    "x-ratelimit-limit",
+    "x-ratelimit-remaining",
+    "x-ratelimit-reset",
+    "ratelimit-limit",
+    "ratelimit-remaining",
+    "ratelimit-reset",
+)
+_VIEW_VALUE_MAX = 512
+
+
+@dataclass(frozen=True)
+class FetchedArray:
+    """A parsed top-level JSON array and a read-only view of a few headers."""
+
+    items: list[object]
+    headers: Mapping[str, str]
+
+
+def fetch_json_array(
+    url: str,
+    *,
+    transport: Transport | None = None,
+    headers: Mapping[str, str] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    jitter: Callable[[], float] = _RNG.random,
+    clock: Callable[[], float] = time.monotonic,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    max_bytes: int = ARRAY_MAX_BYTES,
+    timeout: float = TIMEOUT,
+    max_attempts: int = MAX_ATTEMPTS,
+) -> FetchedArray:
+    """GET ``url`` and return its top-level JSON array plus a header view.
+
+    The same checks as ``fetch_json`` (https, port 443, a validated public host,
+    same-host redirects only, identity encoding, JSON content type, fixed error
+    words) with three differences: the answer must be an array, the size cap is
+    1 MiB and cannot be raised above it, and the result carries a read-only
+    view of the headers in ``VIEW_HEADERS``. The view never holds a header that
+    was not asked for, so a cookie or a token echoed by a server is dropped.
+    GET only: there is no method or body parameter.
+    """
+    limit = max(1, min(max_bytes, ARRAY_MAX_BYTES))
+    try:
+        response = _fetch_raw(
+            url,
+            transport=transport,
+            headers=headers,
+            method="GET",
+            body=None,
+            sleep=sleep,
+            jitter=jitter,
+            clock=clock,
+            now=now,
+            max_bytes=limit,
+            timeout=timeout,
+            follow_redirects=True,
+            max_attempts=max_attempts,
+            error_code=False,
+        )
+    finally:
+        headers = None
+    parsed = _parse(response.headers, response.body, limit, frozenset())
+    if not isinstance(parsed, list) or len(parsed) > ARRAY_MAX_ITEMS:
+        raise FetchError("bad_json")
+    view: dict[str, str] = {}
+    for name in VIEW_HEADERS:
+        value = response.headers.get(name)
+        if isinstance(value, str) and len(value) <= _VIEW_VALUE_MAX:
+            view[name] = value
+    return FetchedArray(items=parsed, headers=MappingProxyType(view))
+
+
+def _parse(
+    headers: Mapping[str, str],
+    body: bytes,
+    max_bytes: int,
+    extra_json_types: frozenset[str],
+) -> object:
     if len(body) > max_bytes:
         raise FetchError("too_large")
     encoding = headers.get("content-encoding", "identity").strip().lower()
@@ -242,6 +381,4 @@ def _decode(
         parsed = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError):
         raise FetchError("bad_json") from None
-    if not isinstance(parsed, dict):
-        raise FetchError("bad_json")
     return parsed

@@ -434,6 +434,18 @@ rounds).
 | 4. Kit wiring, workflow and docs | Kit loader fills `kit.fediverse` from the snapshot with the freshness rule; the instance template's refresh script and the `allowed-endpoints` derivation; `docs/kit.md`, `docs/config.md`, `docs/deploy.md`, the schema, the changelog; the research notes updated with this page's verified facts. | 2 | M, 5 h |
 | 5. Pixelfed (optional) | Token path and fixtures, only if the owner wants it and the probe confirms the read works. | 2 or later | M, 5 h |
 
+**Slice 1 as built (#921).** The shared plumbing only; no provider and no live host. Where
+it lives: `fetch_json_array` and its `FetchedArray` result in `src/reach_around/net/fetch.py`
+(an array answer, a hard 1 MiB cap, a read-only view of `Link`, `Retry-After`, `Date` and the
+rate-limit headers; the `Link` header is exposed but never followed); the 30 day window in
+`src/reach_around/counts/fediverse_window.py` (reads `created_at` or `indexedAt` only, refuses
+the author-supplied `createdAt`, naive times are invalid); the three-integer row and the
+`NotProvided` marker in `src/reach_around/counts/fediverse_rows.py`; the hand-run probe
+`scripts/fediverse-probe.py`, which prints status codes, header names and counts and never a
+body, and runs in no workflow. The guard pass over the snapshot and the page and time budget
+belong with the first provider (slice 2), which is the first caller. Nothing is added to
+any egress allow-list in this slice.
+
 Slices 1 to 4 are about 27 h; with slice 5, about 32 h. Slices 2 and 3 can run in parallel after
 slice 1. Nothing requires a Cloudflare or schema migration change: the history store accepts the
 new metric names today, and `FediverseEntry` already carries the fields.
