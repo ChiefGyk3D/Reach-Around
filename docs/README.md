@@ -19,6 +19,7 @@ A state is a judgment on 2026-11-24, not a test result. The decisions that super
 |---|---|---|
 | [../README.md](../README.md) | What the project is, status, run it in a container, links | GOOD (status text refreshed in #801) |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | The gate script and CI | GOOD, thin |
+| [runner-tests.md](runner-tests.md) | What a machine needs to run the full test suite, and the 2026-11-26 runner failures with causes | GOOD |
 | [../CHANGELOG.md](../CHANGELOG.md) | What changed per release; fragments live in `changelog.d/` | GOOD |
 
 ## Deploy and operate
