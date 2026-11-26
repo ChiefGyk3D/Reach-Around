@@ -679,6 +679,24 @@ retry page and the PDF carry no display-zone script and stay UTC (the kit and
 retry pages do load the Turnstile script, see below).
 There is no setting to turn it on: it is part of the public kit page.
 
+**Copy link.** The first screen of the public kit page shows the page's own
+address as plain, visible link text ("Page link:") so a brand can pass the page
+to a colleague. With JavaScript on, a "Copy link" button appears beside it and
+puts that text on the clipboard through the browser clipboard API; the result
+("Copied") is announced in an `aria-live` status region. Where the clipboard API
+is missing (an old browser, or a page that is not a secure context) the button
+selects the text so the visitor can copy it by hand. With JavaScript off the
+button stays hidden and the link text is the whole control. The address comes
+only from config: `kit.public_url`, or else `page.url` plus `/kit/`; it is never
+read from the request, and it carries no query string and no fragment (so no
+tracking parameter and no `#tz=` choice). If neither is set, nothing is printed.
+There are no share-to-network buttons, no share-intent link and no third-party
+script: the script is one small same-origin file, `static/copy-link.js`, loaded
+with `defer` under the existing CSP (`script-src 'self'`; no change), and it
+makes no request and stores nothing. The gated page and the retry page carry no
+such control (a forwarded link lands on the gate), and the public PDF drops it.
+Set `kit.copy_link: false` to leave it off.
+
 If the kit has gated content, the page explains the gate and shows the form.
 
 ### The gate form

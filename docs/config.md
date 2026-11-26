@@ -1448,6 +1448,8 @@ end. Text must be quoted if YAML would read it as a number.
 | `about` | text | required | at most 1000 characters |
 | `contact` | text | none | one plain-text line for brands, at most 200 characters; see the note below |
 | `consulting_url` | https URL | none | where the "Consulting instead?" line on both kit pages points, at most 2048 characters; public; without it no line is printed; see the note below |
+| `copy_link` | true or false | true | the "Copy link" control on the public kit page (page address as text plus a copy button); false leaves it off; see `docs/kit.md`, "Copy link" |
+| `public_url` | https URL | none | the address the copy-link control prints, at most 2048 characters, no query string and no fragment; without it the control uses `page.url` plus `/kit/` (set only for the stack layout) and prints nothing when neither is set; public |
 | `tags` | list of text | none | at most 8 content category tags, each 1 to 30 characters, none repeated (compared ignoring case and width, so `Tech` and `Ｔech` count as the same tag); public |
 | `metrics` | list of metric | none | at most 30; each `platform` and `label` pair once |
 | `engagement` | list of engagement row | none | at most 30; each platform and period once; gated; see below |
