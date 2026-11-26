@@ -982,7 +982,10 @@ no longer offers a merge queue or the watcher alone; D5's predicate is corrected
   in code. The template says so (README "History rewrites", the workflow header).
   Owner decision (2026-11-26, "CODEOWNERS plus code-owner review as the primary
   boundary"): the controlling boundary is CODEOWNERS plus mandatory code-owner review of
-  `.github/`, `history/`, scripts, `engine.lock` and the approvers file, with the author
+  `.github/`, scripts, `engine.lock`, `history/redactions/` (the manifests) and the
+  approvers file (not the history file itself or `numbers.json`: the guard decides
+  whether a rewrite is accepted, so the review covers the guard and its inputs, and the
+  daily refresh only appends and needs no human review), with the author
   unable to satisfy it, stale approvals dismissed, approval of the most recent reviewable
   push required, and administrators included (no bypass). A replaced workflow is a
   change under `.github/` and needs that review. The ruleset rule "Require workflows to

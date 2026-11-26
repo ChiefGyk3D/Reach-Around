@@ -1206,7 +1206,6 @@ def test_the_codeowners_example_covers_every_protected_path() -> None:
 
     # What the guard reads or accepts as a rewrite, and what the README lists.
     protected = [
-        guard.HISTORY,
         guard.APPROVERS,
         ".github/workflows/history-guard.yml",
         ".github/CODEOWNERS",
@@ -1219,8 +1218,13 @@ def test_the_codeowners_example_covers_every_protected_path() -> None:
     for path in protected:
         assert covered(path), path
     assert guard.MANIFEST.match("history/redactions/run-1.manifest")
-    readme = (TEMPLATE / "README.md").read_text("utf-8")
-    assert ".github/CODEOWNERS" in readme
+    # The history file and numbers.json are not owned: the daily refresh appends
+    # to them and needs no human review; the guard decides about a rewrite.
+    for path in (guard.HISTORY, guard.NUMBERS):
+        assert not covered(path), path
+    readme = squash((TEMPLATE / "README.md").read_text("utf-8"))
+    assert ".github/codeowners" in readme
+    assert "the daily refresh only appends, which is not a rewrite" in readme
 
 
 def compare_step() -> dict[str, Any]:

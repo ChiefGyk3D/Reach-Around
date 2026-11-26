@@ -395,10 +395,14 @@ workflow that leaves the step out.
 
 **The primary boundary is CODEOWNERS plus code-owner review.** The paths that
 decide whether a rewrite can merge are `.github/` (the workflow and the
-approvers file), `history/`, `scripts/`, `engine.lock` and
-`engine.release.json`. Protect them with all of the following, so a change to
-the guard or its inputs cannot merge without a review the pull request's author
-cannot give:
+approvers file), `scripts/`, `engine.lock`, `engine.release.json` and
+`history/redactions/` (the manifests). Protect them with all of the following,
+so a change to the guard or its inputs cannot merge without a review the pull
+request's author cannot give. The history file itself (`history/social.jsonl`)
+and `numbers.json` are deliberately not owned: the guard decides whether a
+rewrite is accepted, so the review must cover the guard, its approvers and the
+manifests, and the daily refresh only appends, which is not a rewrite and needs
+no human review:
 
 - A `CODEOWNERS` file that covers those paths. A ready file is
   `.github/CODEOWNERS` in this template (replace `OWNER-LOGIN`). GitHub reads it
@@ -484,8 +488,9 @@ never replace the code-owner review:
 ships empty so that nothing is accepted. Complete all of these first, in order:
 
 - [ ] `.github/CODEOWNERS` is present on `main` and covers `.github/`,
-      `history/`, `scripts/`, `engine.lock`, `engine.release.json` and
-      `.github/history-approvers`.
+      `scripts/`, `engine.lock`, `engine.release.json`,
+      `history/redactions/` and `.github/history-approvers` (not the history
+      file itself, so the daily refresh needs no review).
 - [ ] Branch protection or a ruleset on `main` requires review from Code Owners
       (with stale approvals dismissed, approval of the most recent reviewable
       push, and administrators included, no bypass), and the check

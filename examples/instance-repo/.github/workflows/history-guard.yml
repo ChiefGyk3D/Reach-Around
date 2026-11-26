@@ -36,8 +36,9 @@
 # the step.
 #
 # The primary boundary is CODEOWNERS plus code-owner review: the paths .github/,
-# history/, scripts/, engine.lock and the approvers file are covered by a
-# CODEOWNERS file (example: .github/CODEOWNERS), with the branch rule "Require
+# scripts/, engine.lock, history/redactions/ and the approvers file are covered
+# by a CODEOWNERS file (example: .github/CODEOWNERS; the history file itself is
+# not owned, so the daily refresh needs no review), with the branch rule "Require
 # review from Code Owners", an owner who is not the pull request author, stale
 # approvals dismissed, approval of the most recent reviewable push, and
 # administrators included (no bypass). A replaced workflow is a change under
