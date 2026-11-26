@@ -2474,6 +2474,23 @@ CLAIM_WORDS = re.compile(
 )
 # A file that makes an erasure claim must send the reader to the manual alert step.
 CLAIM_DISCLOSURE = re.compile(r"#905|manual alert step|mandatory manual step", re.I)
+# A public page template must not cite an internal issue number, so for these files
+# an accurate visitor-facing disclosure counts instead: the page must say that the
+# alert record is a keyed hash and that the owner clears it manually. Both phrases
+# are required (whitespace-normalized, case-insensitive), so neither alone passes.
+USER_PAGE_DISCLOSURE_FILES = frozenset({"src/reach_around/site/privacy.py"})
+USER_PAGE_DISCLOSURE_PHRASES = ("keyed hash", "owner clears it manually")
+
+
+def discloses_manual_step(rel: str, text: str) -> bool:
+    if CLAIM_DISCLOSURE.search(text):
+        return True
+    if rel in USER_PAGE_DISCLOSURE_FILES:
+        flat = " ".join(text.split()).lower()
+        return all(p in flat for p in USER_PAGE_DISCLOSURE_PHRASES)
+    return False
+
+
 CLAIM_SUFFIXES = {
     ".md", ".py", ".html", ".toml", ".yaml", ".yml", ".json", ".ts", ".txt", ".j2",
     ".sh", ".cfg",
@@ -2501,9 +2518,15 @@ CLAIM_USER_SURFACES = (
     "docs/wiki/FAQ.md",
 )
 PRIVACY_PAGE_CLAIM = (
-    "your contact details are deleted; short-lived anonymous operational records "
-    "expire on their own"
+    "when you request deletion, your name, email, and other details you provided "
+    "are removed from the lead list, though backups may retain copies until they "
+    "expire. a keyed hash of an identifier, which may include your email address, "
+    "suppresses repeat owner alerts for 10 minutes and is removed when the next "
+    "alert is processed or the owner clears it manually."
 )
+# Wording the page must never use again: the alert record is a keyed hash of an
+# identifier, so it is neither anonymous nor self-expiring on a quiet site.
+PRIVACY_PAGE_BANNED = ("anonymous operational records", "expire on their own")
 
 
 def erasure_claim_files(root: Path = ROOT) -> dict[str, str]:
@@ -2536,7 +2559,7 @@ def erasure_claim_violations(
     reviewed: dict[str, str] = registry.get("erasure_claim_review", {})
     found: list[str] = []
     for rel, text in sorted(files.items()):
-        if CLAIM_DISCLOSURE.search(text):
+        if discloses_manual_step(rel, text):
             continue
         if len(str(reviewed.get(rel, "")).strip()) < MIN_REASON:
             found.append(
@@ -2618,6 +2641,52 @@ def test_the_user_facing_texts_do_not_claim_complete_erasure() -> None:
     assert COMPLETE_CLAIM.search("All of your data is deleted at once.")
     assert COMPLETE_CLAIM.search("Your lead is fully erased.")
     assert not COMPLETE_CLAIM.search(PRIVACY_PAGE_CLAIM)
+
+
+def test_the_privacy_page_discloses_the_keyed_hash_never_anonymous() -> None:
+    """The alert record is a keyed hash of an identifier that can include an email
+    address. It is not anonymous and, on a quiet site, does not expire on its own
+    (rows go when the next alert is admitted or when the owner clears them). The
+    page text and every rendered golden must say so and must never go back to the
+    old wording."""
+    sources = [ROOT / "src/reach_around/site/privacy.py"]
+    sources += [
+        g
+        for g in (ROOT / "tests" / "site").glob("golden*/**/index.html")
+        if "can therefore be fulfilled" in g.read_text("utf-8")
+    ]
+    assert len(sources) == 5, sources
+    for path in sources:
+        flat = " ".join(path.read_text("utf-8").split()).lower()
+        assert PRIVACY_PAGE_CLAIM in flat, str(path)
+        for banned in PRIVACY_PAGE_BANNED:
+            assert banned not in flat, f"{path}: {banned}"
+
+
+def test_the_page_disclosure_check_for_user_pages_needs_both_phrases() -> None:
+    """A public privacy page must not cite an internal issue number (#905), so the
+    claim check accepts a visitor-facing disclosure for the files in
+    USER_PAGE_DISCLOSURE_FILES: the phrases 'keyed hash' and 'owner clears it
+    manually' together. One phrase alone, or the same text in another file, does
+    not pass."""
+    page = "src/reach_around/site/privacy.py"
+    registry = load_registry()
+    assert page not in registry["erasure_claim_review"]
+    both = "Deletion: a keyed hash is removed once the owner clears it manually."
+    files = erasure_claim_files()
+
+    def about(rel: str, text: str) -> list[str]:
+        swapped = {**files, rel: text}
+        return [v for v in erasure_claim_violations(swapped, registry) if rel in v]
+
+    assert about(page, both) == []
+    for partial in (
+        "Deletion requests: a keyed hash is kept.",
+        "Deletion requests: the owner clears it manually.",
+        "Deletion requests: contact details are deleted.",
+    ):
+        assert about(page, partial)
+    assert about("docs/wiki/Other.md", both)
 
 
 def test_the_delete_command_help_names_the_manual_alert_step() -> None:
