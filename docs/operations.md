@@ -261,7 +261,7 @@ Order of preference, least damage first:
 Migration 0022 drops the two `kit_meta` floor guard triggers and creates them
 again in one file, which is safe only if a failing migration file is rolled back
 whole. The Cloudflare D1 Wrangler commands reference (read 2026-11-26,
-developers.cloudflare.com/d1/wrangler-commands/) says `wrangler d1 migrations
+developers.cloudflare.com/workers/wrangler/commands/d1/) says `wrangler d1 migrations
 apply` does that. The property is proven by running a script by hand, not by CI
 or pytest:
 
