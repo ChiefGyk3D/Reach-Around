@@ -271,8 +271,20 @@ python3 scripts/check-d1-migration-rollback.py
 ```
 
 It needs Node 22.12 or newer, uses the pinned Wrangler with `--local` and a
-disposable database in a temp directory it removes (no account, token or
-network), and prints one PASS or FAIL line per check: a failing file that drops
+disposable database in a temp directory, and prints one PASS or FAIL line per
+check. What it guarantees: every child process (the Node probe, the Wrangler
+version probe and every Wrangler run) gets the same allowlisted environment (a
+`PATH` holding the Node directory, a temp `HOME` and `WRANGLER_SEND_METRICS=false`;
+no Cloudflare, token, proxy or `NODE_OPTIONS` variable), so a network call could
+not authenticate; the installed Wrangler must report exactly the version pinned
+in `worker/package-lock.json` or the script refuses; the temp directory is
+removed, and a removal failure is printed as `FAIL cleanup` with the directory
+name and makes the exit code non-zero (a killed run can still leave the
+directory). What it does NOT guarantee: network isolation. `--local` does not
+request a remote D1 and metrics are off, but a modified binary could still open a
+connection; only a sandbox or firewall around the run enforces that. Wrangler
+documents no flag for disabling network use or update checks on this command, so
+none is used. The checks: a failing file that drops
 both triggers leaves both triggers and is not recorded, and a control (the drop
 as its own migration, then a failing one) shows the triggers gone, which proves
 the check can detect the opposite. It exits 0 only when both hold, and refuses to

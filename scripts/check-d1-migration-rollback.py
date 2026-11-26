@@ -6,8 +6,8 @@ Migration 0022 drops the two kit_meta floor guard triggers and creates them agai
 in one file. That is safe only if ``wrangler d1 migrations apply`` rolls a failing
 file back as a unit. The Worker pool test helper runs statements one at a time, so
 nothing else exercises the property. This script does, on the pinned Wrangler
-(worker/node_modules, 4.162.x), against a disposable LOCAL D1 database in a temp
-directory it creates and removes.
+(worker/node_modules, the version in worker/package-lock.json), against a
+disposable LOCAL D1 database in a temp directory it creates and removes.
 
 It is NOT part of pytest or CI, on purpose: the test guard forbids any test from
 starting Wrangler. Run it by hand after ``cd worker && npm ci --ignore-scripts``,
@@ -15,20 +15,38 @@ with Node 22.12 or newer on PATH:
 
     python3 scripts/check-d1-migration-rollback.py
 
-Checks (one PASS or FAIL line each, nothing else is printed):
+Checks (one PASS or FAIL line each; a refusal or a cleanup failure adds one fixed
+line):
   failing-file-rolls-back   a file that drops both triggers and then fails leaves
                             both triggers in place and is not recorded as applied
   control-detects-split     the drop as its own migration followed by a failing one
                             shows the triggers gone (proves the check can detect it)
 
-Hermetic: ``--local`` with a temp persist directory, a minimal temp Wrangler
-config, a minimal environment (PATH and a temp HOME only, no account or token
-variables) and a timeout on every command. Exit 0 only when both checks hold.
-Refuses to run when a CI marker is set unless RA_ROLLBACK_CHECK_OWNER_RUN=1.
+What is guaranteed, and what is not:
+  * Every process this script starts (the Node probe, the Wrangler version probe,
+    every Wrangler run) goes through one wrapper that passes one allowlisted
+    environment: PATH (the directory of the Node binary found on the caller's PATH,
+    then /usr/bin and /bin), a temp HOME and WRANGLER_SEND_METRICS=false. No
+    Cloudflare, token, proxy or NODE_OPTIONS variable is passed, so a network call
+    could not authenticate. Commands are list-form argv, never a shell, with
+    ``--local``, a temp ``--persist-to`` and a timeout.
+  * Before anything runs, the installed Wrangler must report exactly the version
+    pinned in worker/package-lock.json; any other result is a refusal.
+  * Network access is NOT enforced. ``--local`` does not request a remote D1 and
+    metrics are off, but nothing here blocks a connection by a modified binary. Only
+    a sandbox or firewall around the run enforces that. No Wrangler flag that
+    disables network use or update checks is documented in ``wrangler --help`` for
+    this command, so none is used.
+  * The temp directory is removed at the end. If removal fails, the script prints a
+    FAIL cleanup line naming the directory and exits non-zero; the directory is
+    then left for you to remove. A killed run can also leave it.
+  * Exit 0 only when both checks pass and cleanup succeeded. Refuses to run when a
+    CI marker is set unless RA_ROLLBACK_CHECK_OWNER_RUN=1.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -42,7 +60,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 MIG_DIR = ROOT / "worker" / "migrations"
 WRANGLER = ROOT / "worker" / "node_modules" / ".bin" / "wrangler"
-WRANGLER_SERIES = "4.162."
+LOCK = ROOT / "worker" / "package-lock.json"
 TRIGGERS = ("kit_meta_floor_insert", "kit_meta_floor_update")
 TIMEOUT = 180
 NODE_MIN = (22, 12)
@@ -65,6 +83,7 @@ DROPS = "".join(f"DROP TRIGGER IF EXISTS {name};\n" for name in TRIGGERS)
 FAILING = "THIS IS NOT VALID SQL;\n"
 
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
+Exec = Callable[..., "subprocess.CompletedProcess[str]"]
 
 
 class Refused(Exception):
@@ -79,30 +98,72 @@ def ci_marker(env: Mapping[str, str]) -> str | None:
     return None
 
 
-def node_version(runner: Runner) -> tuple[int, int] | None:
-    node = shutil.which("node")
-    if node is None:
-        return None
+def build_env(home: Path, node_dir: str) -> dict[str, str]:
+    """The ONE environment every child process gets: nothing inherited."""
+    return {
+        "PATH": f"{node_dir}:/usr/bin:/bin",
+        "HOME": str(home),
+        "WRANGLER_SEND_METRICS": "false",
+    }
+
+
+def make_exec(runner: Runner, env: Mapping[str, str], default_cwd: Path) -> Exec:
+    """The ONE way a child process is started: list argv, no shell, fixed env."""
+    child_env = dict(env)
+
+    def run(
+        cmd: list[str], cwd: Path | None = None, timeout: int = TIMEOUT
+    ) -> subprocess.CompletedProcess[str]:
+        return runner(
+            list(cmd),
+            cwd=cwd if cwd is not None else default_cwd,
+            env=child_env,
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+
+    return run
+
+
+def pinned_wrangler_version(lock: Path) -> str:
     try:
-        out = runner(
-            [node, "--version"], capture_output=True, text=True, timeout=20, check=False
-        ).stdout
+        data = json.loads(lock.read_text())
+        version = data["packages"]["node_modules/wrangler"]["version"]
+    except (OSError, ValueError, KeyError, TypeError):
+        raise Refused("the pinned Wrangler version could not be read") from None
+    if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise Refused("the pinned Wrangler version could not be read")
+    return version
+
+
+def node_version(run: Exec, node: str) -> tuple[int, int] | None:
+    try:
+        out = run([node, "--version"], timeout=20).stdout
     except (OSError, subprocess.SubprocessError):
         return None
-    found = re.match(r"v(\d+)\.(\d+)", out.strip())
+    found = re.match(r"v(\d+)\.(\d+)", str(out).strip())
     return (int(found.group(1)), int(found.group(2))) if found else None
+
+
+def wrangler_matches_pin(run: Exec, pinned: str) -> bool:
+    try:
+        out = run([str(WRANGLER), "--version"], timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return str(out).strip().splitlines()[-1:] == [pinned]
 
 
 class Sandbox:
     """One disposable local D1 database with its own copy of migrations up to 0021."""
 
-    def __init__(self, base: Path, runner: Runner) -> None:
+    def __init__(self, base: Path, run: Exec) -> None:
         self.base = base
-        self.runner = runner
-        self.home = base / "home"
+        self.run = run
         self.state = base / "state"
         self.migrations = base / "migrations"
-        self.home.mkdir()
         self.migrations.mkdir()
         (base / "wrangler.toml").write_text(CONFIG)
         (base / "index.js").write_text("export default {};\n")
@@ -111,14 +172,6 @@ class Sandbox:
                 shutil.copy(path, self.migrations / path.name)
 
     def apply(self) -> subprocess.CompletedProcess[str]:
-        node = shutil.which("node")
-        if node is None:
-            raise Refused("node is not on PATH")
-        env = {
-            "PATH": f"{Path(node).parent}:/usr/bin:/bin",
-            "HOME": str(self.home),
-            "WRANGLER_SEND_METRICS": "false",
-        }
         cmd = [
             str(WRANGLER),
             "d1",
@@ -131,15 +184,7 @@ class Sandbox:
             "--config",
             str(self.base / "wrangler.toml"),
         ]
-        return self.runner(
-            cmd,
-            cwd=self.base,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=TIMEOUT,
-            check=False,
-        )
+        return self.run(cmd, cwd=self.base)
 
     def query(self, sql: str) -> set[str]:
         found = [
@@ -162,8 +207,8 @@ class Sandbox:
         return self.query("SELECT name FROM d1_migrations")
 
 
-def _fresh(scratch: Path, name: str, runner: Runner) -> Sandbox:
-    box = Sandbox(Path(tempfile.mkdtemp(prefix=f"{name}-", dir=scratch)), runner)
+def _fresh(scratch: Path, name: str, run: Exec) -> Sandbox:
+    box = Sandbox(Path(tempfile.mkdtemp(prefix=f"{name}-", dir=scratch)), run)
     first = box.apply()
     if first.returncode != 0:
         raise Refused("the baseline migrations did not apply")
@@ -172,8 +217,8 @@ def _fresh(scratch: Path, name: str, runner: Runner) -> Sandbox:
     return box
 
 
-def check_failing_file_rolls_back(scratch: Path, runner: Runner) -> bool:
-    box = _fresh(scratch, "atomic", runner)
+def check_failing_file_rolls_back(scratch: Path, run: Exec) -> bool:
+    box = _fresh(scratch, "atomic", run)
     (box.migrations / "0022_fail.sql").write_text(DROPS + FAILING)
     result = box.apply()
     return (
@@ -183,8 +228,8 @@ def check_failing_file_rolls_back(scratch: Path, runner: Runner) -> bool:
     )
 
 
-def check_control_detects_split(scratch: Path, runner: Runner) -> bool:
-    box = _fresh(scratch, "control", runner)
+def check_control_detects_split(scratch: Path, run: Exec) -> bool:
+    box = _fresh(scratch, "control", run)
     (box.migrations / "0022_drop.sql").write_text(DROPS)
     (box.migrations / "0023_fail.sql").write_text(FAILING)
     result = box.apply()
@@ -195,18 +240,44 @@ def check_control_detects_split(scratch: Path, runner: Runner) -> bool:
     )
 
 
-CHECKS: tuple[tuple[str, Callable[[Path, Runner], bool]], ...] = (
+CHECKS: tuple[tuple[str, Callable[[Path, Exec], bool]], ...] = (
     ("failing-file-rolls-back", check_failing_file_rolls_back),
     ("control-detects-split", check_control_detects_split),
 )
 
 
+def _verify_and_run(run: Exec, node: str, scratch: Path) -> int:
+    version = node_version(run, node)
+    if version is None or version < NODE_MIN:
+        print("REFUSED: Node 22.12 or newer is required on PATH")
+        return 2
+    try:
+        pinned = pinned_wrangler_version(LOCK)
+    except Refused as err:
+        print(f"REFUSED: {err}")
+        return 2
+    if not wrangler_matches_pin(run, pinned):
+        print("REFUSED: the installed Wrangler is not the version pinned in the lock")
+        return 2
+    results: list[bool] = []
+    for name, check in CHECKS:
+        try:
+            ok = check(scratch, run)
+        except (Refused, OSError, subprocess.SubprocessError, sqlite3.Error):
+            ok = False
+        print(f"{'PASS' if ok else 'FAIL'} {name}")
+        results.append(ok)
+    return 0 if all(results) else 1
+
+
 def main(
     env: Mapping[str, str] | None = None,
     runner: Runner | None = None,
+    which: Callable[[str], str | None] = shutil.which,
+    remover: Callable[[Path], None] = shutil.rmtree,
 ) -> int:
     env = os.environ if env is None else env
-    run: Runner = subprocess.run if runner is None else runner
+    runner = subprocess.run if runner is None else runner
     marker = ci_marker(env)
     if marker is not None and env.get(OWNER_RUN) != "1":
         print(f"REFUSED: {marker} is set; this check is for hand runs ({OWNER_RUN}=1)")
@@ -215,24 +286,26 @@ def main(
         print("REFUSED: worker/node_modules is missing")
         print("Run: cd worker && npm ci --ignore-scripts")
         return 2
-    node = node_version(run)
-    if node is None or node < NODE_MIN:
+    # Resolve Node once, from the caller's PATH, before any child process exists.
+    node = which("node")
+    if node is None or not Path(node).is_absolute():
         print("REFUSED: Node 22.12 or newer is required on PATH")
         return 2
     parent = SCRATCH_PARENT if SCRATCH_PARENT.is_dir() else None
     scratch = Path(tempfile.mkdtemp(prefix="rollback-check-", dir=parent))
-    results: list[bool] = []
+    code = 0
     try:
-        for name, check in CHECKS:
-            try:
-                ok = check(scratch, run)
-            except (Refused, OSError, subprocess.SubprocessError, sqlite3.Error):
-                ok = False
-            print(f"{'PASS' if ok else 'FAIL'} {name}")
-            results.append(ok)
+        home = scratch / "home"
+        home.mkdir()
+        run = make_exec(runner, build_env(home, str(Path(node).parent)), scratch)
+        code = _verify_and_run(run, node, scratch)
     finally:
-        shutil.rmtree(scratch, ignore_errors=True)
-    return 0 if all(results) else 1
+        try:
+            remover(scratch)
+        except OSError:
+            print(f"FAIL cleanup: could not remove temp directory {scratch.name}")
+            code = code or 1
+    return code
 
 
 if __name__ == "__main__":
