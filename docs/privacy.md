@@ -237,29 +237,44 @@ first item:
 
 ### Every store, checked against the schema
 
-Checked 2026-11-26 against every table and column the migrations create. The
-test `tests/test_erasure_coverage.py` reads them from `worker/migrations/` and
-fails when a table or column appears that `scripts/erasure-stores.json` has not
-reviewed, so this table cannot drift silently. Class "lead" means a row holds an
-address or carries a lead id; the delete tool removes those.
+Checked 2026-11-26 against every table, column, view and trigger the
+migrations create. The test `tests/test_erasure_coverage.py` runs the
+migrations in order in an in-memory SQLite database and reads the schema from
+it (not from the migration text), and fails when something appears that
+`scripts/erasure-stores.json` has not classified, when a column in a table not
+classed lead or lead_hash has a personal-looking name, a blob or untyped
+declaration or an expression default without its own recorded reason, or when
+the recorded column lists or the schema digest no longer match. Class "lead"
+means a row holds an address or carries a lead id; the delete tool removes
+those.
+
+What the test cannot do: it cannot tell that a person read a registry change.
+Review of changes to `scripts/erasure-stores.json` (and to this table) by a
+second human is a policy control, not something CI enforces. The repository's
+CODEOWNERS file does not cover the registry and does not require a code owner
+review (see OPEN QUESTION 5). The scan of the Worker's other stores is lexical:
+it lists every file under `worker/src` that names a storage primitive or a
+storage binding from any wrangler config, and it does not follow data flow.
 
 | Store | Holds | Touched by the delete tool | How erasure is done or checked |
 |---|---|---|---|
 | `leads` (11 columns) | the address, country, times, session floor | yes | `DELETE`, read-back counts the row; also purged by age |
 | `kit_events` (4 columns) | hour-rounded unlock, view and verify events by lead id | yes | `DELETE`, read-back counts the rows; the foreign key also cascades |
-| `alert_dedup` (3 columns) | keyed hash of a recent alert, which can include the address, 10 minutes | no | cannot be matched without the secret key; clear expired rows by hand (below) |
+| `alert_dedup` (3 columns) | keyed hash of a recent alert, which can include the address; a row stops counting as a repeat after 10 minutes but is deleted only when the next alert event is admitted, so on a quiet site it can stay stored (at most 500 rows) until then or until cleared by hand | no | cannot be matched without the secret key; clear expired rows by hand (below) |
 | `visitor_seen`, `view_events`, `click_events` | coarse visitor rows with no address, no IP address, no lead id | no | not matchable to a person by design (Art. 11); removed by retention |
 | 26 other tables (counters, rollups, budgets, logs, cursors) | counts and bookkeeping | no | aggregate, no row per person; counts cannot be un-counted |
 | KV, edge cache | the gated page, live status state, the public status body | no | no lead data; the Worker never writes the gated page key |
 | R2, Durable Objects, queues | not used | not applicable | the test fails if one is added without review |
 | Unlock cookie | a signed token, no server copy | not applicable | stops opening the kit once the `leads` row is gone |
-| `scripts/backup-d1.sh` exports | `leads`, `kit_events`, `visitor_seen`, `view_events` are never exported | not applicable | the only lead-related data an export can hold is the `alert_dedup` hashes; the test checks the script's table list against the registry |
+| `scripts/backup-d1.sh` exports | `leads`, `kit_events`, `visitor_seen`, `view_events` are never exported | not applicable | the only lead-related data this script exports is the `alert_dedup` hashes; the test runs the script against a recording stub and judges every wrangler call it makes, and inventories every export command in scripts, CI and the CLI |
+| Hand-made whole-database exports | a `wrangler d1 export` with no `--table` (shown in `docs/deploy.md`, `docs/failure-modes.md` and the wiki as a backstop before a migration) holds every table, `leads` and `kit_events` included | no | by hand, checklist item 5; the test lists the docs that show one, so a new one is noticed |
 | D1 Time Travel | the whole database, 7 days Free, 30 days Paid | no | ages out; see the checklist |
 | Alert copies, inquiry text, hand-made exports, logs | outside the Worker | no | by hand, items 2, 3, 5, 6 and 8 of the checklist |
 
 Clear expired alert hashes now, against the database that holds the alert
-tables (this deletes only rows already past their 10 minute life; it takes the
-current time in milliseconds as the number):
+tables (this deletes only rows already past their 10 minute life, the point
+after which they no longer count as repeats; it takes the current time in
+milliseconds as the number):
 
 ```
 npx wrangler d1 execute <DATABASE> --remote --command "DELETE FROM alert_dedup WHERE expires_at <= <NOW_MS>"
@@ -281,11 +296,20 @@ events for a few minutes); (c) rely on the foreign key cascade as well (already
 in the schema; D1 turning foreign keys on is inferred and unverified here).
 Needs the owner's choice.
 
-OPEN QUESTION 3, short-lived alert hashes. Options: (a) leave them to the 10
-minute life and the hand-clear statement above (current); (b) prune expired
+OPEN QUESTION 3, short-lived alert hashes. Today an expired row is removed only
+when the next alert event is admitted (checked in the code: nothing prunes it on
+a timer), so on a quiet site it stays until then. Options: (a) leave it to the
+next alert and the hand-clear statement above (current); (b) prune expired
 `alert_dedup` rows in the scheduled handler too, so a quiet site never holds one
 past its life (a Worker change); (c) add the statement to the delete SQL, which
 fails if alert tables ever move to another database than the leads one. Needs
+the owner's choice.
+
+OPEN QUESTION 5, who reviews the registry. A test cannot enforce that a second
+person approves a change to `scripts/erasure-stores.json`. Options: (a) add the
+registry, its test and this page to CODEOWNERS and turn on required code owner
+review in branch protection (the CODEOWNERS file is a guard file, so this is
+the owner's change); (b) keep review as a stated policy only (current). Needs
 the owner's choice.
 
 OPEN QUESTION 4, aggregate counts. Hour-rounded counters (gate attempts, kit

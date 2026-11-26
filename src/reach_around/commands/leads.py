@@ -536,14 +536,17 @@ other copy exists. Tick each item in your reply and say what you checked.
    deletion without deleting the lead again afterward. Say in your reply that
    the copy ages out on its own, and the date.
 5. Hand-made exports. Every `leads-export.json`, `delete-lead.sql`, backup dump
-   or spreadsheet you made holds addresses. Delete them and empty the trash.
+   or spreadsheet you made holds addresses. That includes a whole-database
+   `wrangler d1 export` taken before a migration (only scripts/backup-d1.sh
+   leaves the lead tables out). Delete them and empty the trash.
 6. Shell history and notes. Check that the address is not in your shell
    history, a ticket or a note (the tools take it from stdin or a file only).
 7. Short-lived alert hash. The `alert_dedup` table holds a keyed hash of each
-   recent alert, which can include the address, for at most 10 minutes. It
+   recent alert, which can include the address. A row stops counting as a
+   repeat after 10 minutes, but it is deleted only when the next alert event is
+   admitted (no timer), so on a quiet site it can stay stored until then. It
    cannot be matched to an address without the Worker's secret key, and the
-   delete SQL does not touch it. Expired rows are only removed when the next
-   alert is written, so on a quiet site clear them by hand with the statement
+   delete SQL does not touch it. Clear expired rows by hand with the statement
    in docs/privacy.md ("Every store, checked against the schema").
 8. Checked and clear: the Worker's KV namespace holds only the gated page and
    live status state, and the Worker uses no R2, Durable Object or queue

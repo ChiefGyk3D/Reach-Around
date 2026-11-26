@@ -241,8 +241,11 @@ real zero and stays one. See [report.md](report.md#gaps) and
   claim, minute slots) is given back. A refused event is dropped and counted.
 - The same event for the same address inside 10 minutes is sent once. D1 holds
   only a keyed hash (HMAC-SHA-256 under `ALERT_DEDUP_KEY`, cut to 128 bits after
-  the digest) for those 10 minutes, never the address and nothing a D1 snapshot
-  alone can reverse, at most 500 rows; the table is pruned on every write. A
+  the digest), never the address and nothing a D1 snapshot alone can reverse,
+  at most 500 rows. A row stops counting as a repeat after those 10 minutes,
+  but it is deleted only when the next alert event is admitted (there is no
+  timer), so on a quiet site an expired row can stay stored until the next alert
+  or until cleared by hand (docs/privacy.md). A
   failed admission releases the claim, so a retry is not mistaken for a repeat.
 - Input is bounded: the address is cut to 254 characters before it is
   normalized or hashed, and only a normalized address of at most 254 characters

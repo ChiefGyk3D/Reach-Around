@@ -1,5 +1,13 @@
 {
-  "_comment": "Reviewed registry for tests/test_erasure_coverage.py (#856). Every table the Worker migrations create is listed with its exact column list, a class and a reason. A new table or column fails the test until it is added here on purpose, with review. classes: lead = rows that hold an address or carry a lead id, removed by `reach-around leads delete` (its SQL must delete the table and its read-back must count it); lead_hash = a keyed hash of an event that can include an address, short-lived, cleared by hand (docs/privacy.md); unlinkable = visitor rows with no address, no IP address and no lead id, so a request cannot be matched to them (Art. 11), bounded by retention; aggregate = counts, labels and bookkeeping with no row per person; internal = SQLite's own table. reviewed_columns: a column whose name looks personal (the test's PERSON_NAME pattern) in a table that is not class lead, each with the reason it holds no personal data. backup: whether scripts/backup-d1.sh exports the table (never or exported); only checked for classes lead, lead_hash and unlinkable.",
+  "_comment": "Registry for tests/test_erasure_coverage.py (#856). The test runs the Worker migrations in an in-memory SQLite and reads the schema from it. Every table is listed with the exact column list it was judged on, a class and a reason; every view and trigger is listed under other_objects; reviewed_schema_digest pins the whole schema (types, defaults, keys, objects), so a changed column set or type fails the test until the entry is looked at again. The test cannot prove a person looked: a second human reviewer on any change to this file is a policy control (docs/privacy.md), not something CI enforces. classes: lead = rows that hold an address or carry a lead id, removed by `reach-around leads delete` (its SQL must delete the table and its read-back must count it); lead_hash = a keyed hash of an event that can include an address, short-lived, cleared by hand (docs/privacy.md); unlinkable = visitor rows with no address, no IP address and no lead id, so a request cannot be matched to them (Art. 11), bounded by retention; aggregate = counts, labels and bookkeeping with no row per person; internal = SQLite's own table. reviewed_columns: a column in a table that is not class lead or lead_hash whose name matches the test's personal-data vocabulary, or whose declared type is blob or none, or whose default is an expression, each with the reason it holds no personal data (at least 12 characters). backup: whether scripts/backup-d1.sh exports the table (never or exported); only checked for classes lead, lead_hash and unlinkable.",
+  "reviewed_schema_digest": "73e54501d063901192f978d7f812c6085b45495f45b872dbf4f31f2e338c9419",
+  "other_objects": {
+    "view": {},
+    "trigger": {
+      "kit_meta_floor_insert": "BEFORE INSERT guard that aborts a negative session floor; copies nothing and writes no row.",
+      "kit_meta_floor_update": "BEFORE UPDATE guard that aborts a negative session floor; copies nothing and writes no row."
+    }
+  },
   "stores": {
     "leads": {
       "class": "lead",
@@ -16,7 +24,7 @@
     "alert_dedup": {
       "class": "lead_hash",
       "backup": "exported",
-      "reason": "HMAC of site, event kind and the event identity (an address, or the inquiry fields) under a secret key; held at most 10 minutes (expires_at) and pruned on the next alert write. Cannot be matched to an address without the key. Cleared by hand with the statement in docs/privacy.md.",
+      "reason": "HMAC of site, event kind and the event identity (an address, or the inquiry fields) under a secret key; a row stops counting as a repeat after 10 minutes (expires_at) but is deleted only when the next alert event is admitted (or by hand), so on a quiet site it can stay stored indefinitely (at most 500 rows). Cannot be matched to an address without the key. Cleared by hand with the statement in docs/privacy.md.",
       "columns": ["site", "event_hash", "expires_at"]
     },
     "visitor_seen": {
@@ -73,27 +81,56 @@
     "click_src_daily": {"class": "aggregate", "reason": "Daily click counts by source label.", "columns": ["site", "day", "link_id", "src", "clicks", "destination_kind"], "reviewed_columns": {"src": "closed source label in an aggregate count"}},
     "click_src_monthly": {"class": "aggregate", "reason": "Monthly click counts by source label.", "columns": ["site", "month", "link_id", "src", "clicks", "destination_kind"], "reviewed_columns": {"src": "closed source label in an aggregate count"}},
     "counters": {"class": "aggregate", "reason": "Route budgets and daily or hourly counters keyed by a short slug. Counts of gate events cannot be un-counted and are not personal data about one person.", "columns": ["key", "day", "count"]},
-    "kit_meta": {"class": "aggregate", "reason": "Heartbeats and the unstored session floor: one integer per slug, no person.", "columns": ["key", "value"]},
+    "kit_meta": {"class": "aggregate", "reason": "Heartbeats and the unstored session floor: one integer per slug, no person.", "columns": ["key", "value"], "reviewed_columns": {"value": "STRICT INTEGER: a timestamp or counter per slug, cannot hold text"}},
     "view_city_daily": {"class": "aggregate", "reason": "Daily view counts by city, only at GEO_LEVEL=city.", "columns": ["site", "day", "country", "region", "city", "bot_class", "views", "uniques"], "reviewed_columns": {"country": "country code in an aggregate count", "region": "region name in an aggregate count", "city": "city name in an aggregate count, purged on its own window"}},
     "view_daily": {"class": "aggregate", "reason": "Daily view counts by page and source.", "columns": ["site", "day", "day_tz", "page", "src_kind", "src", "country", "bot_class", "views", "uniques"], "reviewed_columns": {"src_kind": "closed one-letter source kind", "src": "source label in an aggregate count", "country": "country code in an aggregate count"}},
-    "view_dim_daily": {"class": "aggregate", "reason": "Daily view counts by one coarse dimension.", "columns": ["site", "day", "day_tz", "dim", "value", "bot_class", "views", "uniques"]},
+    "view_dim_daily": {"class": "aggregate", "reason": "Daily view counts by one coarse dimension.", "columns": ["site", "day", "day_tz", "dim", "value", "bot_class", "views", "uniques"], "reviewed_columns": {"value": "closed label of the coarse dimension (browser family, device class, language tag) in an aggregate count"}},
     "view_geo_daily": {"class": "aggregate", "reason": "Daily view counts by geography.", "columns": ["site", "day", "day_tz", "country", "region", "city", "bot_class", "views", "uniques"], "reviewed_columns": {"country": "country code in an aggregate count", "region": "region name in an aggregate count", "city": "city name in an aggregate count"}},
     "view_hour_daily": {"class": "aggregate", "reason": "Hour-of-day view and click counts.", "columns": ["site", "day", "hour", "bot_class", "views", "clicks"]},
-    "view_meta": {"class": "aggregate", "reason": "Small key and value state: cursors, budgets, health flags. Never request data.", "columns": ["key", "value"]},
-    "view_rollup_log": {"class": "aggregate", "reason": "Rollup bookkeeping per site and day.", "columns": ["site", "day", "day_tz", "raw_views", "views", "uniques", "rows_core", "rows_dim", "rows_geo", "rolled_at", "max_id", "rerolls", "reroll_closed"]},
-    "sqlite_sequence": {"class": "internal", "reason": "SQLite's own autoincrement bookkeeping: table names and counters.", "columns": ["name", "seq"]}
+    "view_meta": {"class": "aggregate", "reason": "Small key and value state: cursors, budgets, health flags. Never request data.", "columns": ["key", "value"], "reviewed_columns": {"value": "cursor, lease token, budget or health flag set by the Worker itself, never request data"}},
+    "view_rollup_log": {"class": "aggregate", "reason": "Rollup bookkeeping per site and day.", "columns": ["site", "day", "day_tz", "raw_views", "views", "uniques", "rows_core", "rows_dim", "rows_geo", "rolled_at", "max_id", "rerolls", "reroll_closed"], "reviewed_columns": {"raw_views": "integer count of raw rows rolled up that day, not the rows"}},
+    "sqlite_sequence": {"class": "internal", "reason": "SQLite's own autoincrement bookkeeping: table names and counters.", "columns": ["name", "seq"], "reviewed_columns": {"name": "the name of one of our own tables, written by SQLite", "seq": "the last row id handed out for that table, an integer written by SQLite"}}
   },
   "runtime_stores": {
-    "_comment": "Non-D1 places the Worker can write, found by scanning worker/src and worker/wrangler.toml. A new one fails the test until it is listed here with the reason it holds no lead data.",
+    "_comment": "Non-D1 places the Worker can write. The test lists every file under worker/src (any extension) that names a storage primitive (KV put, caches, R2, Durable Objects, queues, Analytics Engine, Vectorize, Hyperdrive, service bindings, a computed property or dynamic env access) or a storage binding found in every wrangler*.toml, wrangler*.json and wrangler*.jsonc file (commented templates included). This is a lexical scan: it names where a store is mentioned, it does not follow data. A new mention fails the test until it is listed here with the reason it holds no lead data.",
     "primitives": {
       "worker/src/live.ts": {
-        "put(": "live poller token cache and state in LIVE_KV, plus the edge cache of the public status body: platform tokens and stream state, no visitor data",
-        "caches.default": "edge cache of the public live status body, no visitor data"
+        "put": "live poller token cache and state in LIVE_KV, plus the edge cache of the public status body: platform tokens and stream state, no visitor data",
+        "caches": "edge cache of the public live status body, no visitor data",
+        "binding:LIVE_KV": "the live status namespace: platform tokens and stream state only, no visitor data"
       },
       "worker/src/kit/env.ts": {
-        "KVNamespace": "type of the KIT binding; the Worker only reads the gated page from it (key kit/v1) and never writes it"
+        "KVNamespace": "type of the KIT binding; the Worker only reads the gated page from it (key kit/v1) and never writes it",
+        "binding:KIT": "type and presence check of the KIT binding, no write"
+      },
+      "worker/src/kit/gate.ts": {
+        "binding:KIT": "one read of the gated page (env.KIT.get), never a write"
+      },
+      "worker/src/index.ts": {
+        "binding:KIT": "type-level pass-through of the KIT binding in the Worker env, no read or write"
+      },
+      "worker/src/kit/budgetcheck.ts": {
+        "dynamic-env": "reads a closed list of setting names from a plain string map in the deploy check, not a storage binding"
       }
     },
     "wrangler_tables": ["d1_databases", "kv_namespaces", "ratelimits", "routes", "triggers", "vars"]
+  },
+  "export_paths": {
+    "_comment": "Every place that can read the database out. commands: files in scripts, CI, deploy, the build files and src/reach_around that contain a wrangler d1 export, execute or time-travel call or a dump tool (found by scanning; a new one fails the test). whole_database_docs: docs that show a wrangler d1 export with no --table, which dumps every table including the lead tables. backup_extra_tables: tables backup-d1.sh exports that no migration creates. The backup script itself is also run against a recording stub in the test and every wrangler call it makes is judged against the store classes.",
+    "commands": {
+      "scripts/backup-d1.sh": "The only exporter. One named table per export call, from a fixed list; its one other call is the table listing. The test runs it against a recording stub and rejects any call that names a lead or never-exported table, a whole-database export or a different query.",
+      "scripts/check-dump.py": "Reads a dump and refuses addresses; the match is a docstring mention of the export command, it never makes a dump.",
+      "scripts/clear-click-country.sh": "Counts and clears the retired country column of click_events and counts two aggregate tables; reads no lead table and writes no file.",
+      "src/reach_around/commands/leads.py": "The erasure tool itself: its `d1 execute` text is the owner-run delete and read-back SQL for the lead tables, and it reads the lead list the owner exports by hand (checklist item 5).",
+      "src/reach_around/funnel/export.py": "Reads a d1 execute JSON file the owner supplies for aggregate reports; a docstring mention, it runs nothing."
+    },
+    "whole_database_docs": {
+      "docs/deploy.md": "Tells the owner to export before a migration (a hand-made whole-database dump that includes lead tables); checklist item 5 covers deleting it.",
+      "docs/failure-modes.md": "Backstop export before schema changes: a hand-made whole-database dump that includes lead tables; checklist item 5 covers deleting it.",
+      "docs/wiki/deploy/06-updating.md": "Backstop export before an update: a hand-made whole-database dump that includes lead tables; checklist item 5 covers deleting it."
+    },
+    "backup_extra_tables": {
+      "d1_migrations": "Wrangler's own migration history: file names and apply times, no person."
+    }
   }
 }
