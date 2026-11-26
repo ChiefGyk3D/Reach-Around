@@ -399,7 +399,8 @@ taken from a table inside the database, because a restore or a clone copies that
 4. Verify. Exit 0 only when the analytics lead tables hold no row and are frozen (or are gone), AND
    the leads database holds exactly the rows the move recorded: the same count and the same digest of
    every column, none missing and none different. Every destination row must also still exist in the
-   source or be recorded in a recovery export made by this cutover. A lead deleted from the source
+   source or be one this tool's own delete removed (recorded in the manifest's deleted set) and a
+   recovery export made by this cutover holds. A lead deleted from the source
    after the copy is reported, never silently kept or silently deleted. The operator decides whether
    to keep it in the destination because the lead existed and was moved, or remove it with the
    documented command below. The tool never claims success while the destination and manifest
@@ -499,9 +500,30 @@ If verification reports rows as "removed at source or unknown," it prints only t
 whether each moved lead should remain in the destination because it existed at copy time, or should
 be removed under the applicable retention or deletion record. To remove an approved lead, use the
 owner deletion procedure in [privacy.md](privacy.md), recording the decision and identifier outside
-tool output, then rerun `--verify`. Do not delete a row merely to make verification pass. A recovery
-export accounts only for rows the tool itself made eligible for deletion during this cutover, so an
-unrelated source deletion cannot silently become a successful verification.
+tool output, then rerun `--verify`. Do not delete a row merely to make verification pass. The manifest
+records a deleted set: a row goes into it only after the tool's own delete call succeeded and a fresh
+read of the analytics database showed the row gone (keyed by attempt, table, id and row digest, no
+address). Verification accepts a moved row that is absent from analytics only if it is in that set
+and a recovery export holds it, so a row removed by anything else is reported by count. A delete call whose outcome was never
+known stays unaccounted. To reconcile it, restore the exported rows with the steps under Recovery
+below and run `--purge` again: the tool then deletes them itself and records them.
+
+Concurrent runs. Every mode takes an exclusive lock on `.move-run.lock` in the work directory
+before it reads the manifest and holds it until it exits. A second run, in any mode, refuses at once
+with exit 7 and a fixed message, and does nothing. The lock is dropped by the system whenever the
+process ends (a normal end, a signal, SIGKILL), so it never goes stale; a `.move-run.lock` file a
+killed run left behind is reused and is not a problem. A lock file that is a symbolic link, not
+yours, not mode 600 or not a plain file is refused with exit 3: remove it by hand once no run is
+active. Each write of the manifest re-checks the lock and that the file is the one this run last read.
+
+After a purge that did not end cleanly. If a purge was killed (SIGKILL, power loss) or ended with a
+lost call (exit 5), the manifest keeps `purge_open` set and `--purge` refuses (exit 3) until a
+verification attempt has been recorded. The steps, in order: (1) make sure no run is active; (2) run
+`--verify` (exit 0 or not, it records the attempt and prints the counts; it clears `purge_open` only
+when it passes); (3) compare the counts and decide: a failing verify with analytics rows left means
+run `--purge` again, which is now allowed; (4) a purge starting again clears the record, so the next
+unclean end is gated again. A purge that stopped with every delete outcome known (exit 4, or a
+signal after a delete) records that itself and can be rerun at once.
 
 What the locked window can and cannot prove. D1 has no transaction across two databases, so the
 re-read of the leads database and the delete in the analytics database can never be one atomic step,
@@ -513,7 +535,9 @@ part is your statement (`--locked-window-confirmed`), backed by the kill switche
 re-read of the leads database and the freeze check inside each DELETE statement are kept as defense in
 depth; they narrow the window and are not an atomic proof.
 
-Recovery. First use `--restore-from-export`. It inserts only missing exported rows, refuses if an
+Recovery. First use `--restore-from-export`. It reads and validates every recorded export first,
+keeps the current version of each row once, and puts all leads back before any kit event, whichever
+export held them. It inserts only missing exported rows, refuses if an
 existing primary key has different data, and verifies every row by digest without printing its
 contents. It is safe to run again. The freeze triggers intentionally reject these inserts, so keep
 the locked window in place, lift only the database freeze immediately before the restore, and restore
@@ -547,7 +571,8 @@ precondition did not hold, nothing deleted by this run); 4 partial purge, some c
 the rest were not, the copies and the manifest are intact, safe to run `--purge` again; 5 failure after
 a delete, a delete may have been applied (a call was lost, or the final verification failed): run
 `--verify` and compare the counts before anything else, recovery is the bookmark; 6 interrupted by a
-signal at a safe point before this run deleted anything, safe to run the same command again.
+signal at a safe point before this run deleted anything, safe to run the same command again; 7
+another run holds the lock on the work directory, this run did nothing.
 
 Interruption. Ctrl-C (SIGINT), SIGTERM and SIGHUP are caught. The handler only notes the signal, so no
 manifest, cursor or export write is ever cut in half; the run stops between two chunks (or right after the
@@ -558,10 +583,11 @@ unknown) when it had already deleted. It never prints a traceback. The manifest,
 recovery export are each written to a temporary file with mode 600, fsynced, renamed into place, and the
 directory is fsynced, so a crash leaves the previous file or the new one. SIGKILL and power loss cannot
 be caught: the manifest records `purge_open` before the first delete of an attempt and it stays set
-until a `--verify` passes, so run `--verify` first after any purge that did not end with "done". A
+until a `--verify` passes, and `--purge` refuses until a `--verify` attempt has been recorded (see
+"After a purge that did not end cleanly" above). A
 killed run can leave a `move-*` scratch directory or a `.*.tmp` file in the work directory; they may
 hold lead rows, so remove them by hand once no run is active (the next manifest or export write removes
-its own leftover temporary files). The tool takes no lock: run one instance at a time.
+its own leftover temporary files). Only one run is active at a time: a second one is refused (exit 7).
 
 The tool leaves exactly two objects in the analytics database, the freeze triggers `leads_frozen` and
 `kit_events_frozen`, and nothing in the leads database. `scripts/dump-schema.json` allows those two

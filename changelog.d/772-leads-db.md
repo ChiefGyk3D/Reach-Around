@@ -2,5 +2,5 @@
   The cutover procedure and recovery were hardened with a private, manifest-bound
   recovery export and a fresh, labeled bookmark for every destructive attempt.
   Destination reconciliation and interrupted-copy resume checks further hardened
-  the cutover procedure and recovery. The cutover procedure now stops safely on
-  interruption, with its own exit code, and writes its state atomically.
+  the cutover procedure and recovery. The cutover procedure and recovery were
+  further hardened for interrupted and resumed operations.

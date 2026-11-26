@@ -1997,6 +1997,16 @@ def test_a_killed_purge_leaves_a_durable_verify_first_marker(tmp_path: Path) -> 
     assert saved_manifest(work)["purge_open"] is True
     time.sleep(1)  # the orphaned statement finishes on its own
     env["HOLD_MATCH"] = "no-such-text"
+    # Round 11 (finding 4): the marker is a gate, so the direct rerun is refused until
+    # a --verify attempt is recorded; then the rerun finishes the move.
+    gated = run(env, work, "--purge")
+    assert gated.returncode == 3, gated.stderr
+    assert "run --verify first" in gated.stderr
+    assert saved_manifest(work)["purge_open"] is True
+    assert run(env, work, "--verify").returncode == 1  # rows remain; attempt recorded
+    # The killed delete is not in the deleted set, so its row is unaccounted until the
+    # recovery export puts it back (docs/deploy.md); then the rerun finishes the move.
+    restore_unfrozen(env, work)
     assert run(env, work, "--purge").returncode == 0
     assert saved_manifest(work)["purge_open"] is False
 
@@ -2081,3 +2091,377 @@ def test_a_recovery_export_never_exists_half_written(
         mod.write_recovery_export(None, args, work, m)
     assert list(work.iterdir()) == []  # not under the final name, no temporary file
     assert m.recovery_exports == []
+
+
+# ---- round 11: one run at a time, deleted set, restore order, purge gate ------------
+
+LOCK_FILE = ".move-run.lock"
+
+
+def ns(env: dict[str, str], work: Path) -> SimpleNamespace:
+    return SimpleNamespace(
+        source="analytics-db",
+        dest="leads-db",
+        source_id=env["STUB_SRC_ID"],
+        dest_id=env["STUB_DEST_ID"],
+        workdir=str(work),
+    )
+
+
+def wait_held(env: dict[str, str]) -> None:
+    for _ in range(300):
+        if Path(env["HOLD_MARK"]).exists():
+            return
+        time.sleep(0.1)
+    raise AssertionError("the held call was never reached")
+
+
+def refused_while_held(env: dict[str, str], work: Path) -> None:
+    """A second run in any mode is refused at once (exit 7) and changes nothing."""
+    before = (work / "move-manifest.json").read_bytes()
+    for flag in ("--copy", "--purge", "--verify"):
+        r = run(env, work, flag)
+        assert r.returncode == 7, (flag, r.returncode, r.stderr)
+        assert "another run holds the lock" in r.stderr
+        assert "Traceback" not in r.stderr
+        assert r.stdout == ""  # it did nothing, not even read a count
+    assert (work / "move-manifest.json").read_bytes() == before
+
+
+def test_a_second_run_cannot_load_the_manifest_while_the_first_holds_the_lock(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path, count=5)
+    env["MOVE_BATCH"] = "2"
+    work = workdir(tmp_path)
+    held_env(tmp_path, env, "INSERT", 2)
+    proc = start(env, work, "--copy")
+    wait_held(env)
+    lock = work / LOCK_FILE
+    assert lock.exists() and stat.S_IMODE(lock.stat().st_mode) == 0o600
+    refused_while_held(env, work)
+    Path(env["HOLD_GO"]).write_text("go")
+    _out, err = proc.communicate(timeout=60)
+    assert proc.returncode == 0, err
+    assert not lock.exists()  # removed on a normal end, still locked while it went
+    env["HOLD_MATCH"] = "no-such-text"
+    assert run(env, work, "--copy").returncode == 0  # free again
+
+
+@pytest.mark.parametrize("signum", [15, 2, 1])
+def test_the_lock_is_released_after_a_signal_that_ends_the_run(
+    tmp_path: Path, signum: int
+) -> None:
+    env = make(tmp_path, count=5)
+    env["MOVE_BATCH"] = "2"
+    work = workdir(tmp_path)
+    held_env(tmp_path, env, "INSERT", 2)
+    proc = start(env, work, "--copy")
+    wait_held(env)
+    refused_while_held(env, work)
+    proc.send_signal(signum)
+    time.sleep(0.3)
+    Path(env["HOLD_GO"]).write_text("go")
+    _out, err = proc.communicate(timeout=60)
+    assert proc.returncode == 6, err
+    assert not (work / LOCK_FILE).exists()
+    env["HOLD_MATCH"] = "no-such-text"
+    again = run(env, work, "--copy")
+    assert again.returncode == 0, again.stderr
+
+
+def test_the_lock_is_released_after_sigkill_and_the_leftover_file_is_reused(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path, count=5)
+    env["MOVE_BATCH"] = "2"
+    work = workdir(tmp_path)
+    held_env(tmp_path, env, "INSERT", 2)
+    proc = start(env, work, "--copy")
+    wait_held(env)
+    refused_while_held(env, work)
+    proc.send_signal(9)  # no handler can run
+    time.sleep(0.3)
+    Path(env["HOLD_GO"]).write_text("go")
+    proc.communicate(timeout=60)
+    assert proc.returncode == -9
+    assert (work / LOCK_FILE).exists()  # a killed run leaves the file, not the lock
+    time.sleep(1)  # the orphaned statement finishes on its own
+    env["HOLD_MATCH"] = "no-such-text"
+    again = run(env, work, "--copy")  # the wrangler child never inherited the lock
+    assert again.returncode == 0, again.stderr
+    assert not (work / LOCK_FILE).exists()
+
+
+@pytest.mark.parametrize("case", ["mode", "symlink", "hardlink", "directory"])
+def test_a_bad_lock_file_is_refused_before_the_manifest_is_touched(
+    tmp_path: Path, case: str
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me")
+    victim.chmod(0o644)
+    lock = work / LOCK_FILE
+    if case == "mode":
+        lock.write_text("")
+        lock.chmod(0o644)
+    elif case == "symlink":
+        lock.symlink_to(victim)
+    elif case == "hardlink":
+        lock.write_text("")
+        lock.chmod(0o600)
+        os.link(lock, tmp_path / "other-name")
+    else:
+        lock.mkdir()
+    r = run(env, work, "--copy")
+    assert r.returncode == 3, r.stderr
+    assert "run lock file" in r.stderr
+    assert "Traceback" not in r.stderr
+    assert not (work / "move-manifest.json").exists()
+    assert victim.read_text() == "keep me"
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o644
+
+
+def test_the_manifest_save_refuses_when_the_file_changed_under_the_lock(
+    tmp_path: Path,
+) -> None:
+    mod = load_script()
+    work = workdir(tmp_path)
+    uid = str(uuid.uuid4())
+    lock = mod.RunLock(work)
+    lock.acquire()
+    mod.HELD["lock"] = lock
+    try:
+        m = mod.Manifest(work, "src", "dst", uid, uid)
+        m.save()
+        other = mod.Manifest(work, "src", "dst", uid, uid)
+        other.load()
+        other.cursor = {"leads": "x"}
+        other.save()  # a writer that got in between: a lost update if allowed
+        m.cursor = {"leads": "y"}
+        with pytest.raises(mod.Refused):
+            m.save()
+        assert json.loads((work / "move-manifest.json").read_text())["cursor"] == {
+            "leads": "x"
+        }
+        # And a lock file that was removed or replaced is not ours any more.
+        os.unlink(work / LOCK_FILE)
+        with pytest.raises(mod.Refused):
+            lock.check()
+    finally:
+        mod.HELD["lock"] = None
+        lock.release()
+
+
+def test_a_source_row_removed_by_another_process_after_the_export_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    assert run(env, work, "--freeze").returncode == 0
+    assert run(env, work, "--copy").returncode == 0
+    mod = load_with_env(env, monkeypatch)
+    w, a = mod.Wrangler(), ns(env, work)
+    m = mod.new_manifest(work, a)
+    m.load()
+    m.bookmarks.append(BOOKMARK)
+    m.save()
+    mod.write_recovery_export(w, a, work, m)  # the export holds every row, event 2 too
+    with closing(sqlite3.connect(env["STUB_SRC"])) as db:
+        db.execute("DELETE FROM kit_events WHERE id = 2")  # another process
+        db.commit()
+    mod.purge_chunks(w, a, work, m, mod.Progress())
+    assert src_rows(env) == 0
+    capsys.readouterr()
+    with pytest.raises(mod.Failed, match="removed at source or unknown"):
+        mod.verify(w, a, work)
+    assert "removed at source or unknown: 1" in capsys.readouterr().out
+    gone = saved_manifest(work)["deleted"]
+    assert sum(len(v) for v in gone.values()) == 5  # the rows this tool deleted
+    assert "person1@example.test" not in json.dumps(gone)
+
+
+def test_rows_the_tool_deleted_itself_pass_the_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    assert purge(env, work).returncode == 0
+    data = saved_manifest(work)
+    assert sum(len(v) for v in data["deleted"].values()) == 6
+    assert all(len(e) == 3 for v in data["deleted"].values() for e in v)
+    checked = run(env, work, "--verify")
+    assert checked.returncode == 0, checked.stderr
+    assert "removed at source or unknown: 0" in checked.stdout
+
+
+def test_a_deleted_row_whose_export_is_gone_or_whose_outcome_was_lost_is_unaccounted(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    env["STUB_DELETE_THEN_FAIL"] = "1"  # applied, but the caller never hears it
+    work = workdir(tmp_path)
+    assert purge(env, work).returncode == 5
+    assert saved_manifest(work)["deleted"] == {}  # an unknown outcome is not recorded
+
+
+def test_restore_puts_every_lead_back_before_any_event_across_exports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    assert run(env, work, "--freeze").returncode == 0
+    assert run(env, work, "--copy").returncode == 0
+    mod = load_with_env(env, monkeypatch)
+    w, a = mod.Wrangler(), ns(env, work)
+    first = mod.new_manifest(work, a)
+    first.load()
+    first.bookmarks.append(BOOKMARK)
+    first.save()
+    mod.write_recovery_export(w, a, work, first)  # export 1: lead 1, its event, ...
+    with closing(sqlite3.connect(env["STUB_SRC"])) as db:
+        db.execute(
+            "UPDATE leads SET last_seen_ts = 99999 WHERE id = ?", (format(1, "032x"),)
+        )
+        db.commit()
+    assert run(env, work, "--copy").returncode == 0  # lead 1 is re-moved: new digest
+    second = mod.new_manifest(work, a)
+    second.load()
+    mod.write_recovery_export(w, a, work, second)  # export 2: new lead 1, same events
+    assert len(second.recovery_exports) == 2
+    with closing(sqlite3.connect(env["STUB_SRC"])) as db:
+        db.execute("DELETE FROM kit_events")
+        db.execute("DELETE FROM leads")
+        db.execute("DROP TRIGGER leads_frozen")
+        db.execute("DROP TRIGGER kit_events_frozen")
+        db.commit()
+    r = run(env, work, "--restore-from-export")
+    assert r.returncode == 0, r.stderr
+    assert "6 missing rows restored" in r.stdout
+    assert rows(env["STUB_SRC"], "leads") == rows(env["STUB_DEST"], "leads")
+    assert rows(env["STUB_SRC"], "kit_events") == rows(env["STUB_DEST"], "kit_events")
+    again = run(env, work, "--restore-from-export")
+    assert again.returncode == 0 and "0 missing rows restored" in again.stdout
+
+
+def restore_unfrozen(env: dict[str, str], work: Path) -> None:
+    """The documented recovery: lift the freeze, restore, freeze again."""
+    with closing(sqlite3.connect(env["STUB_SRC"])) as db:
+        db.execute("DROP TRIGGER IF EXISTS leads_frozen")
+        db.execute("DROP TRIGGER IF EXISTS kit_events_frozen")
+        db.commit()
+    assert run(env, work, "--restore-from-export").returncode == 0
+    assert run(env, work, "--freeze").returncode == 0
+
+
+def test_a_purge_that_was_killed_is_gated_until_a_verify_attempt_is_recorded(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    env["MOVE_BATCH"] = "1"
+    work = workdir(tmp_path)
+    assert run(env, work, "--freeze").returncode == 0
+    held_env(tmp_path, env, "DELETE FROM", 1)
+    code, _out, _err = signal_when_held(start(env, work, "--purge"), env, 9)
+    assert code == -9
+    time.sleep(1)  # the orphaned statement finishes on its own
+    env["HOLD_MATCH"] = "no-such-text"
+    left = src_rows(env)
+    data = saved_manifest(work)
+    assert data["purge_open"] is True and data["purge_checked"] is False
+    for _ in range(2):  # refused every time, before any copy or delete
+        gated = run(env, work, "--purge")
+        assert gated.returncode == 3, gated.stderr
+        assert "run --verify first" in gated.stderr
+        assert src_rows(env) == left
+    assert run(env, work, "--copy").returncode == 0  # not destructive: not gated
+    failed = run(env, work, "--verify")  # rows remain: it fails, and it is recorded
+    assert failed.returncode == 1
+    data = saved_manifest(work)
+    assert data["purge_open"] is True and data["purge_checked"] is True
+    # The killed delete is unaccounted: restore it from the export before purging again.
+    restore_unfrozen(env, work)
+    # A new purge start clears the record: killed again, it is gated again.
+    for name in ("HOLD_MARK", "HOLD_GO"):
+        Path(env[name]).unlink(missing_ok=True)
+    env["HOLD_MATCH"], env["HOLD_NTH"] = "DELETE FROM", "2"
+    code, _out, _err = signal_when_held(start(env, work, "--purge"), env, 9)
+    assert code == -9
+    time.sleep(1)
+    env["HOLD_MATCH"] = "no-such-text"
+    data = saved_manifest(work)
+    assert data["purge_open"] is True and data["purge_checked"] is False
+    assert run(env, work, "--purge").returncode == 3
+    assert run(env, work, "--verify").returncode == 1
+    restore_unfrozen(env, work)
+    assert run(env, work, "--purge").returncode == 0
+    assert saved_manifest(work)["purge_open"] is False
+    assert src_rows(env) == 0
+
+
+def test_a_purge_gate_survives_a_lost_delete_answer_until_verified(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    env["MOVE_BATCH"] = "1"
+    env["STUB_DELETE_THEN_FAIL"] = "1"
+    work = workdir(tmp_path)
+    assert purge(env, work).returncode == 5  # outcome unknown: the run cannot say
+    data = saved_manifest(work)
+    assert data["purge_open"] is True and data["purge_checked"] is False
+    del env["STUB_DELETE_THEN_FAIL"]
+    assert run(env, work, "--purge").returncode == 3
+    assert run(env, work, "--verify").returncode == 1
+    restore_unfrozen(env, work)  # unaccounted delete
+    assert run(env, work, "--purge").returncode == 0
+
+
+def test_resume_compares_event_ids_as_numbers_not_text(tmp_path: Path) -> None:
+    env = make(tmp_path, count=12)  # event ids 1 to 12 cross 9 and 10
+    env["MOVE_BATCH"] = "2"
+    work = workdir(tmp_path)
+    assert run(env, work, "--copy").returncode == 0  # every digest is recorded
+    env["STUB_COUNTER"] = str(tmp_path / "calls")
+    env["CRASH_AT"] = "8"  # six lead chunks, event chunk 1-2, then the crash
+    first = run(env, work, "--copy", "--restart-copy")
+    assert first.returncode == 1
+    manifest = saved_manifest(work)
+    assert manifest["cursor"]["kit_events"] == 2  # "10" sorts before "2" as text
+    assert "10" in manifest["digests"]["kit_events"]
+    del env["CRASH_AT"]
+    resumed = run(env, work, "--copy")
+    assert resumed.returncode == 0, resumed.stderr
+    assert "resuming an unfinished copy from the recorded cursor" in resumed.stdout
+    assert rows(env["STUB_SRC"], "kit_events") == rows(env["STUB_DEST"], "kit_events")
+
+
+def test_resume_refuses_a_manifest_with_a_non_integer_event_key(
+    tmp_path: Path,
+) -> None:
+    mod = load_script()
+    uid = str(uuid.uuid4())
+    m = mod.Manifest(tmp_path, "src", "dst", uid, uid)
+    m.digests["kit_events"] = {"1": "a" * 64, "x": "b" * 64}
+    with pytest.raises(mod.Refused):
+        mod.at_or_before("kit_events", "x", 5)
+    with pytest.raises(mod.Refused):
+        mod.at_or_before("kit_events", "1", "5")
+    assert mod.at_or_before("kit_events", "10", 9) is False
+    assert mod.at_or_before("kit_events", "2", 10) is True
+    assert mod.at_or_before("leads", "0" * 31 + "a", "0" * 31 + "b") is True
+
+
+def test_resume_accepts_only_canonical_sqlite_event_ids() -> None:
+    mod = load_script()
+    maximum = 2**63 - 1
+    assert mod.at_or_before("kit_events", str(maximum), maximum) is True
+    for key in ("-1", "01", str(maximum + 1)):
+        with pytest.raises(mod.Refused):
+            mod.at_or_before("kit_events", key, maximum)
+    for cursor in (-1, maximum + 1, True):
+        with pytest.raises(mod.Refused):
+            mod.at_or_before("kit_events", "1", cursor)
+    assert mod.at_or_before("kit_events", "0", 0) is True
+    assert mod.at_or_before("kit_events", "10", 9) is False
+    assert mod.at_or_before("kit_events", "9", 10) is True

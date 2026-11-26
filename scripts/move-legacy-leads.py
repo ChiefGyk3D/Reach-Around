@@ -119,23 +119,41 @@ already deleted. The manifest, the cursor and the recovery export are written to
 temporary file, fsynced, and renamed (the directory is fsynced too), so a crash or
 SIGKILL leaves the previous file or the new one. SIGKILL and power loss cannot be
 caught: the manifest records `purge_open` before the first DELETE, which stays set
-until a --verify passes, so run --verify first after any purge that did not end
-cleanly. A killed run can leave scratch directories `move-*` and `.*.tmp` files in
-WORKDIR; they may hold lead rows: remove them by hand (the next manifest or export
-write removes its own leftovers). The tool takes no lock: run one instance at a time.
+until a --verify passes. While it is set and no run has accounted for its deletes (a
+killed run, a lost call), --purge refuses (exit 3) until a --verify attempt, pass or
+fail, has been recorded (`purge_checked`); a new purge start clears that record. A
+killed run can leave scratch directories `move-*` and `.*.tmp` files in WORKDIR; they
+may hold lead rows: remove them by hand (the next manifest or export write removes
+its own leftovers).
+
+One run at a time. Every mode takes an exclusive, non-blocking flock on
+WORKDIR/.move-run.lock before it reads the manifest and holds it to the end, so a
+second run refuses at once (exit 7, a fixed message) and does nothing. The kernel
+drops the lock whenever the process ends, SIGKILL included, so it cannot go stale; a
+lock file left by a killed run is reused, and one that is a link, not yours, not mode
+600 or not a plain file refuses (exit 3). Each manifest save re-checks the lock and
+that the manifest file is the one this run last read or wrote.
+
+Deleted set. Verification accepts a moved row that is gone from SOURCE only if this
+tool's own DELETE removed it (recorded in the manifest after the call succeeded and
+a SOURCE read showed the row gone) and a recovery export holds it. A deletion by
+anyone else, or one whose outcome was never known, is reported and stays unaccounted
+until reconciled (--restore-from-export, then --purge again; docs/deploy.md).
 
 Exit: 0 done or dry run, 1 a step failed and this run deleted nothing, 2 usage,
 3 refused (nothing deleted by this run), 4 partial purge (some chunks were deleted;
 the copies and the manifest are intact; safe to run --purge again), 5 failure after a
 delete (a delete may have been applied; run --verify and check the counts before
 anything else; recovery is the recorded bookmark), 6 interrupted by a signal at a safe
-point before any delete of this run (safe to run the same command again).
+point before any delete of this run (safe to run the same command again), 7 another
+run holds the lock (this run did nothing).
 """
 
 from __future__ import annotations
 
 import argparse
 import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -199,6 +217,125 @@ class VerifyRequired(Failed):
 
 class Interrupted(Failed):
     """SIGINT, SIGTERM or SIGHUP arrived; the run stopped at a safe point (exit 6)."""
+
+
+class LockHeld(Failed):
+    """Another run holds the run lock of this work directory (exit 7)."""
+
+
+LOCK_NAME = ".move-run.lock"
+
+
+class RunLock:
+    """An exclusive lock for the whole run, taken before the manifest is loaded.
+
+    flock on a private file in WORKDIR (opened through the directory descriptor,
+    never through a symlink). The kernel drops it when the process ends, whatever the
+    cause (exit, signal, SIGKILL), so it cannot go stale; a file left behind by a
+    killed run is harmless and is reused. The file is removed on a normal end, while
+    the lock is still held, and every acquire checks afterwards that the path still
+    names the file it locked."""
+
+    def __init__(self, work: Path) -> None:
+        self.work = work
+        self.dfd = -1
+        self.fd = -1
+        self.stat: os.stat_result | None = None
+
+    def _open(self) -> int:
+        flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC
+        try:
+            fd = os.open(
+                LOCK_NAME, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=self.dfd
+            )
+            os.fchmod(fd, 0o600)  # whatever the umask
+            return fd
+        except FileExistsError:
+            pass
+        try:
+            return os.open(LOCK_NAME, flags, dir_fd=self.dfd)
+        except FileNotFoundError:
+            return -1  # removed by a finishing run between the two calls: try again
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise Refused("the run lock file is a symbolic link.") from exc
+            if exc.errno == errno.EISDIR:  # a directory under the lock's name
+                raise Refused(
+                    "the run lock file is not a private regular file."
+                ) from exc
+            raise
+
+    def acquire(self) -> None:
+        self.dfd = os.open(self.work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for _ in range(5):
+                fd = self._open()
+                if fd < 0:
+                    continue
+                st = os.fstat(fd)
+                if (
+                    not stat.S_ISREG(st.st_mode)
+                    or st.st_nlink != 1
+                    or st.st_uid != os.getuid()
+                    or stat.S_IMODE(st.st_mode) != 0o600
+                ):
+                    os.close(fd)
+                    raise Refused("the run lock file is not a private regular file.")
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError as exc:
+                    os.close(fd)
+                    if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
+                        raise LockHeld(
+                            "another run holds the lock on this work directory; "
+                            "this run did nothing."
+                        ) from exc
+                    raise
+                try:  # the holder before us may have removed it as it finished
+                    now = os.stat(LOCK_NAME, dir_fd=self.dfd, follow_symlinks=False)
+                except FileNotFoundError:
+                    os.close(fd)
+                    continue
+                if not same_file(st, now):
+                    os.close(fd)
+                    continue
+                self.fd, self.stat = fd, st
+                return
+            raise Refused("the run lock could not be taken; try again.")
+        except BaseException:
+            self.release()
+            raise
+
+    def check(self) -> None:
+        """Still ours: the lock file is the one we locked and nobody linked it."""
+        if self.fd < 0 or self.stat is None:
+            raise Refused("the run lock is not held.")
+        try:
+            now = os.stat(LOCK_NAME, dir_fd=self.dfd, follow_symlinks=False)
+        except OSError as exc:
+            raise Refused("the run lock was lost.") from exc
+        if not same_file(self.stat, now) or os.fstat(self.fd).st_nlink != 1:
+            raise Refused("the run lock was lost.")
+
+    def release(self) -> None:
+        if self.fd >= 0:
+            try:  # removed while still locked, so no one can lock the removed file
+                if self.stat is not None and same_file(
+                    self.stat,
+                    os.stat(LOCK_NAME, dir_fd=self.dfd, follow_symlinks=False),
+                ):
+                    os.unlink(LOCK_NAME, dir_fd=self.dfd)
+            except OSError:
+                pass
+            os.close(self.fd)
+            self.fd = -1
+        if self.dfd >= 0:
+            os.close(self.dfd)
+            self.dfd = -1
+
+
+# The lock this run holds (None outside run()); manifests check it on every save.
+HELD: dict[str, RunLock | None] = {"lock": None}
 
 
 # The handler only records the signal; nothing is written or raised from inside it, so
@@ -578,6 +715,10 @@ def sweep_stale(dfd: int, prefix: str) -> None:
                 pass
 
 
+def signature(st: os.stat_result) -> tuple[int, int, int, int]:
+    return (st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
 class Manifest:
     """The private record of what was copied: digests and cursors, never a row.
 
@@ -607,7 +748,17 @@ class Manifest:
         # a durable "a delete may have been applied; verify first" for a run that was
         # killed (SIGKILL, power loss) and so could not say it itself.
         self.purge_open = False
+        # True once a run that knows how its deletes ended has said so (a purge that
+        # stopped with every outcome known) or a --verify attempt, pass or fail, has
+        # looked at the source since the purge began. A purge cannot start again while
+        # purge_open is set and this is not.
+        self.purge_checked = False
+        # Rows this tool's own DELETE removed: attempt id -> [table, id, digest],
+        # recorded only after the call succeeded and a source read showed the row gone.
+        self.deleted: dict[str, list[list[str]]] = {}
         self.exists = False
+        self.lock = HELD["lock"]
+        self.seen: tuple[int, int, int, int] | None = None  # the file as we left it
 
     def load(self) -> None:
         try:
@@ -626,6 +777,7 @@ class Manifest:
                 raise Refused("the manifest is not owned by you.")
             if stat.S_IMODE(st.st_mode) != 0o600:
                 raise Refused("the manifest must be mode 600 (chmod 600).")
+            self.seen = signature(st)
             try:
                 data = json.load(fh)
             except ValueError as exc:
@@ -696,11 +848,43 @@ class Manifest:
         if not isinstance(open_flag, bool):
             raise Refused("the manifest is unreadable; resolve it by hand.")
         self.purge_open = open_flag
+        checked = data.get("purge_checked", False)
+        gone = data.get("deleted", {})
+        if (
+            not isinstance(checked, bool)
+            or not isinstance(gone, dict)
+            or not all(
+                isinstance(k, str)
+                and isinstance(v, list)
+                and all(
+                    isinstance(e, list)
+                    and len(e) == 3
+                    and all(isinstance(x, str) for x in e)
+                    for e in v
+                )
+                for k, v in gone.items()
+            )
+        ):
+            raise Refused("the manifest is unreadable; resolve it by hand.")
+        self.purge_checked = checked
+        self.deleted = {k: [list(e) for e in v] for k, v in gone.items()}
         self.exists = True
 
     def save(self) -> None:
         """Write the manifest whole or not at all (write_private): a signal or a crash
-        leaves the previous file or the new one, never half of either."""
+        leaves the previous file or the new one, never half of either.
+
+        Under the run lock it first re-checks that the lock is still ours and that the
+        file is the one this object last read or wrote, so a copy of the manifest that
+        another writer changed meanwhile is refused, never written over it."""
+        if self.lock is not None:
+            self.lock.check()
+            try:
+                now = signature(os.stat(self.path, follow_symlinks=False))
+            except FileNotFoundError:
+                now = None
+            if now != self.seen:
+                raise Refused("the manifest changed while this run held the lock.")
         body = json.dumps(
             {
                 "version": 3,
@@ -714,6 +898,8 @@ class Manifest:
                 "superseded": self.superseded,
                 "run_id": self.run_id,
                 "purge_open": self.purge_open,
+                "purge_checked": self.purge_checked,
+                "deleted": self.deleted,
                 "state": self.state,
                 "cursor": self.cursor,
                 "digests": self.digests,
@@ -725,6 +911,7 @@ class Manifest:
             write_private(dfd, MANIFEST, body)
         finally:
             os.close(dfd)
+        self.seen = signature(os.stat(self.path, follow_symlinks=False))
         self.exists = True
 
     def known(self, table: str, row: dict[str, Any]) -> str | None:
@@ -859,8 +1046,18 @@ def accounted_rows(
     manifest: Manifest,
     size: int,
 ) -> set[tuple[str, str, str]]:
-    """Manifest rows still in SOURCE or captured by a recovery export."""
+    """Manifest rows still in SOURCE, or deleted by this tool and held by an export.
+
+    A row absent from SOURCE counts only when this tool's own DELETE removed it (the
+    manifest's deleted set, written after the call succeeded and a source read showed
+    the row gone) AND a recorded recovery export holds it. An export alone is not
+    enough: it lists rows eligible for deletion, and a row another process removed
+    after the export is in it too."""
     accounted: set[tuple[str, str, str]] = set()
+    removed = {
+        (e[0], e[1], e[2]) for entries in manifest.deleted.values() for e in entries
+    }
+    exported: set[tuple[str, str, str]] = set()
     have = present_tables(w, source)
     for table, _ in TABLES:
         after: object | None = None
@@ -880,8 +1077,8 @@ def accounted_rows(
         for item in read_recovery_export(work / name, manifest):
             table = item["table"]
             row = item["row"]
-            accounted.add((table, str(row.get("id")), item["digest"]))
-    return accounted
+            exported.add((table, str(row.get("id")), item["digest"]))
+    return accounted | (removed & exported)
 
 
 def check_dest(
@@ -947,13 +1144,34 @@ def new_manifest(work: Path, args: argparse.Namespace) -> Manifest:
     return Manifest(work, args.source, args.dest, args.source_id, args.dest_id)
 
 
-def verify(w: Wrangler, args: argparse.Namespace, work: Path) -> int:
-    """The cutover check: exit 0 only when the move is complete and final."""
+def note_checked(work: Path, args: argparse.Namespace) -> None:
+    """A --verify attempt has read the source: record that, pass or fail, so a purge
+    that was cut off can be started again (the gate in run()). Does not clear
+    purge_open; only a passing verification does."""
+    m = new_manifest(work, args)
+    try:
+        m.load()
+    except Refused:
+        return  # the verification itself reports the bad manifest
+    if m.exists and m.purge_open and not m.purge_checked:
+        m.purge_checked = True
+        m.save()
+
+
+def verify(
+    w: Wrangler, args: argparse.Namespace, work: Path, *, record: bool = False
+) -> int:
+    """The cutover check: exit 0 only when the move is complete and final.
+
+    `record` (the --verify mode only) durably notes that an attempt was made, as soon
+    as it has read the source, whether it then passes or fails."""
     source, dest = args.source, args.dest
     size = batch_size()
     tables = present_tables(w, source)
     held = counts(w, source)
     unfrozen = sorted(tables - frozen_tables(w, source))
+    if record:
+        note_checked(work, args)
     print(f"analytics holds {held['leads']} leads and {held['kit_events']} kit events")
     print(f"lead tables not frozen against inserts: {len(unfrozen)}")
     if any(held.values()):
@@ -995,6 +1213,29 @@ def check_recorded_dest(
             )
 
 
+INTEGER = re.compile(r"(?:0|[1-9][0-9]{0,18})")
+MAX_EVENT_ID = 2**63 - 1
+
+
+def at_or_before(table: str, key: str, cursor: object) -> bool:
+    """Is manifest key `key` at or before `cursor` in the table's key order?
+
+    kit_events ids are integers of varying width: compared as integers (strictly
+    validated, never as text, where "10" sorts before "2"). Lead ids are fixed-width
+    strings and compare as text, as the database orders them."""
+    if table != "kit_events":
+        return key <= str(cursor)
+    if (
+        not isinstance(cursor, int)
+        or isinstance(cursor, bool)
+        or not 0 <= cursor <= MAX_EVENT_ID
+        or not INTEGER.fullmatch(key)
+        or int(key) > MAX_EVENT_ID
+    ):
+        raise Refused("the manifest is unreadable; resolve it by hand.")
+    return int(key) <= cursor
+
+
 def check_resume_prefix(
     w: Wrangler, dest: str, table: str, cursor: object, m: Manifest
 ) -> None:
@@ -1007,7 +1248,9 @@ def check_resume_prefix(
         ),
     )
     expected = {
-        key: value for key, value in m.digests[table].items() if key <= str(cursor)
+        key: value
+        for key, value in m.digests[table].items()
+        if at_or_before(table, key, cursor)
     }
     actual = {str(row.get("id")): digest(table, row) for row in rows}
     if actual != expected:
@@ -1276,30 +1519,30 @@ def restore_from_exports(
     if not m.exists or not m.recovery_exports:
         raise Refused("no recovery export is recorded in the manifest.")
     restored = 0
+    # Every export is read and validated first. A row re-moved with new data after an
+    # export was made is exported again with its new digest; only the current digest
+    # of each (table, id) is kept, once. Then all current leads go back before any
+    # current event, whichever export held them (events refer to leads).
+    current: dict[tuple[str, str], dict[str, Any]] = {}
     for name in m.recovery_exports:
         if Path(name).name != name or not name.startswith(EXPORT_PREFIX):
             raise Refused("the manifest contains an invalid recovery export name.")
-        # A row re-moved with new data after this export was made is exported again
-        # with its new digest; the older copy is stale and is not restored over it.
-        items = [
-            item
-            for item in read_recovery_export(work / name, m)
-            if m.digests[item["table"]].get(str(item["row"].get("id")))
-            == item["digest"]
-        ]
-        for table, _ in TABLES:
-            check_stop()  # between tables; the inserts are idempotent, rerun resumes
-            table_rows = [item["row"] for item in items if item["table"] == table]
-            if not table_rows:
-                continue
+        for item in read_recovery_export(work / name, m):
+            key = str(item["row"].get("id"))
+            if m.digests[item["table"]].get(key) == item["digest"]:
+                current[(item["table"], key)] = item["row"]
+    for table, _ in TABLES:
+        check_stop()  # between tables; the inserts are idempotent, rerun resumes
+        table_rows = [row for (t, _key), row in current.items() if t == table]
+        size = batch_size()
+        for start in range(0, len(table_rows), size):
+            chunk = table_rows[start : start + size]
             existing = {
                 str(row.get("id")): row
-                for row in by_ids(
-                    w, args.source, table, [row.get("id") for row in table_rows]
-                )
+                for row in by_ids(w, args.source, table, [r.get("id") for r in chunk])
             }
             missing: list[dict[str, Any]] = []
-            for row in table_rows:
+            for row in chunk:
                 got = existing.get(str(row.get("id")))
                 if got is None:
                     missing.append(row)
@@ -1310,8 +1553,8 @@ def restore_from_exports(
             if missing:
                 run_file(w, args.source, work, insert_sql(table, missing))
                 restored += len(missing)
-            back = by_ids(w, args.source, table, [row.get("id") for row in table_rows])
-            if missing_from(back, table_rows, COLUMNS[table]):
+            back = by_ids(w, args.source, table, [r.get("id") for r in chunk])
+            if missing_from(back, chunk, COLUMNS[table]):
                 raise Failed("recovery export read-back verification failed")
     print(f"recovery export verified; {restored} missing rows restored")
     return 0
@@ -1341,6 +1584,7 @@ class Progress:
     def __init__(self) -> None:
         self.sent = 0
         self.unknown = 0
+        self.attempt = secrets.token_hex(8)  # keys this attempt's deleted rows
 
 
 def purge_chunks(
@@ -1380,7 +1624,34 @@ def purge_chunks(
                     progress.unknown += 1  # it may have reached the database
                     raise
                 progress.sent += 1
+                acknowledge_deleted(w, args.source, table, known, m, progress)
                 require_frozen(w, args.source)
+
+
+def acknowledge_deleted(
+    w: Wrangler,
+    source: str,
+    table: str,
+    sent: list[dict[str, Any]],
+    m: Manifest,
+    progress: Progress,
+) -> None:
+    """Record, durably, the rows this tool's DELETE removed: its call succeeded and a
+    fresh SOURCE read shows each row gone. A row still there (a lead that kept an
+    event, a row that no longer matched) is not recorded. A call whose outcome is
+    unknown never reaches here, so its rows stay unaccounted until reconciled with
+    --restore-from-export and a rerun (docs/deploy.md)."""
+    back = {
+        str(r.get("id")) for r in by_ids(w, source, table, [r.get("id") for r in sent])
+    }
+    gone = [
+        [table, str(r.get("id")), digest(table, r)]
+        for r in sent
+        if str(r.get("id")) not in back
+    ]
+    if gone:
+        m.deleted.setdefault(progress.attempt, []).extend(gone)
+        m.save()
 
 
 def classify(
@@ -1414,6 +1685,18 @@ def classify(
     )
 
 
+def note_reconciled(m: Manifest) -> None:
+    """A purge that ends knowing the outcome of every delete it sent (nothing sent, all
+    acknowledged, or counted afterwards) may be run again without a --verify first.
+    Best effort: if the write fails, the gate simply stays closed."""
+    if m.purge_open and not m.purge_checked:
+        m.purge_checked = True
+        try:
+            m.save()
+        except (Refused, OSError):
+            pass
+
+
 def purge_phase(
     w: Wrangler, args: argparse.Namespace, work: Path, m: Manifest, before: int
 ) -> None:
@@ -1433,6 +1716,7 @@ def purge_phase(
             ) from exc
         check_stop()
         m.purge_open = True  # durable before the first DELETE; --verify clears it
+        m.purge_checked = False  # a new attempt: a --verify (or this run) must look
         m.save()
         purge_chunks(w, args, work, m, progress)
         left = counts(w, args.source)
@@ -1459,6 +1743,8 @@ def purge_phase(
             raise
     except (Failed, Refused, OSError, UnicodeError) as exc:
         wrapped = classify(w, args, exc, progress, before)
+        if not isinstance(wrapped, VerifyRequired):
+            note_reconciled(m)  # every delete outcome of this run is known
         if wrapped is exc:
             raise
         raise wrapped from exc
@@ -1467,6 +1753,17 @@ def purge_phase(
 def run(args: argparse.Namespace) -> int:
     w = Wrangler()
     work = check_workdir(args.workdir)
+    lock = RunLock(work)
+    lock.acquire()  # before anything reads or writes the manifest; held to the end
+    HELD["lock"] = lock
+    try:
+        return locked_run(w, work, args)
+    finally:
+        HELD["lock"] = None
+        lock.release()
+
+
+def locked_run(w: Wrangler, work: Path, args: argparse.Namespace) -> int:
     check_platform_ids(w, args)
     if roles(w, args.source) != ["analytics"]:
         raise Refused("SOURCE did not identify itself as the analytics database.")
@@ -1476,7 +1773,7 @@ def run(args: argparse.Namespace) -> int:
     if args.freeze:
         return freeze(w, args.source)
     if args.verify:
-        return verify(w, args, work)
+        return verify(w, args, work, record=True)
 
     if args.restore_from_export:
         manifest = new_manifest(work, args)
@@ -1504,6 +1801,13 @@ def run(args: argparse.Namespace) -> int:
 
     manifest = new_manifest(work, args)
     manifest.load()
+    if args.purge and manifest.purge_open and not manifest.purge_checked:
+        # An earlier purge may have sent a delete it could not account for (a kill, a
+        # lost call): look first. Any --verify attempt, pass or fail, opens the gate.
+        raise Refused(
+            "an earlier purge did not end with its deletes accounted for: run "
+            "--verify first (docs/deploy.md), then run --purge again."
+        )
     copy_chunks(w, args, work, manifest)
     if not args.purge:
         print("copied and verified. Nothing was deleted; --purge deletes the copies.")
@@ -1598,6 +1902,9 @@ def main(argv: list[str]) -> int:
     except Interrupted as exc:
         print(f"interrupted: {exc}; this run deleted nothing.", file=sys.stderr)
         return 6
+    except LockHeld as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 7
     except Failed as exc:
         print(f"failed: {exc}", file=sys.stderr)
         return 1
