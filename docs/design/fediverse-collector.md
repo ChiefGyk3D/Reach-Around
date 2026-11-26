@@ -459,6 +459,25 @@ is the object twin of `fetch_json_array`, since `getAuthorFeed` answers with an 
 snapshot file write, the history write and the kit loader belong to slice 4, which owns the
 refresh wiring; the hand-kept `kit.fediverse` path is unchanged.
 
+Rules fixed in review (#922): a DID is `did:plc:` plus a short tail or a `did:web:` id (a host,
+an optional percent-encoded port such as `%3A3000`, then `:` separated path segments; no slash,
+no space, no empty segment, 512 characters at most), checked the same way for the profile DID
+and every author DID, and compared exactly (no case folding). When the same post URI comes twice
+in one run (a pin and the walk, or a repeated page), one row is recorded with the larger value of
+each of the three counts, since the count of one post only grows. A `reply` key that is present
+on the entry or on its record must be an object (the entry is then skipped as a reply); a
+present null or any other value is `bad_shape`, and a missing key is an original post.
+
+**Supported-input constraint (accepted, #922).** The run reads at most 12 pages of 50, so 600
+feed entries (the account's own posts plus any entries the filter still lists). An account with
+more than about 600 such entries inside the 30-day window cannot reach the end of its cursor
+chain: every run ends `page_cap`, the read is incomplete, and the prior or hand-kept values stay
+in place. This is by design: 13 calls and 90 seconds are the budget of the run, and the feed's
+order is not trusted, so there is no early end. The hand-kept `kit.fediverse` path remains the
+way to fill the block for such an account. A later slice (slice 4, which owns the refresh
+wiring) can make the page cap a config value, with the absolute call and time bounds kept; a
+test pins the behavior today (700 in-window posts over 14 pages end `page_cap`).
+
 Slices 1 to 4 are about 27 h; with slice 5, about 32 h. Slices 2 and 3 can run in parallel after
 slice 1. Nothing requires a Cloudflare or schema migration change: the history store accepts the
 new metric names today, and `FediverseEntry` already carries the fields.

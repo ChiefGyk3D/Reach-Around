@@ -233,6 +233,32 @@ def test_the_page_budget_ending_first_is_incomplete_never_a_zero() -> None:
     ]
 
 
+def test_a_busy_account_over_the_page_cap_is_incomplete_by_design_and_keeps_prior() -> (
+    None
+):
+    # #922 round 4 (supported-input constraint, docs/design/fediverse-collector.md):
+    # 700 in-window posts need 14 pages of 50, the run reads 12, so it ends
+    # page_cap, incomplete, with no fresh aggregates and the prior rows kept.
+    pages = [
+        feed_page(
+            [post(page * 50 + n, NOW - timedelta(hours=1), likes=3) for n in range(50)],
+            f"c{page + 1}" if page < 13 else None,
+        )
+        for page in range(14)
+    ]
+    p = Pages(pages)
+    read = run(p)
+    assert len(p.transport.calls) == 13
+    assert isinstance(read.rows, NotProvided) and read.reason == "page_cap"
+    assert bsky.history_aggregates(read) is None
+    prior = [InteractionRow(1, 2, 3)]
+    snap = bsky.build_snapshot(read, as_of=date(2026, 11, 26), prior=prior)
+    assert snap is not None and snap["complete"] is False
+    assert snap["reason"] == "page_cap" and snap["interactions"] == [
+        {"boosts": 1, "favorites": 2, "replies": 3}
+    ]
+
+
 def test_the_deadline_ending_first_is_incomplete_never_a_zero() -> None:
     # Two old pages, then a cursor to an in-window page the time budget never
     # reaches (20 s per request on the fake clock).
@@ -302,6 +328,57 @@ def test_a_post_listed_twice_in_one_run_counts_once() -> None:
     again = post(1, NOW - timedelta(days=2), likes=4)
     read = run(Pages([feed_page([pin, again, post(2, NOW - timedelta(days=3))])]))
     assert len(rows_of(read)) == 2
+
+
+def test_a_duplicate_post_keeps_the_highest_count_of_each_field() -> None:
+    # #922 round 4: a pin read at one moment and the walk at another can differ;
+    # a post's counts only grow, so the larger value of each field is recorded,
+    # whichever representation comes first.
+    pin = post(1, NOW - timedelta(days=2), likes=1, reposts=9, replies=0)
+    pin["reason"] = {"$type": "app.bsky.feed.defs#reasonPin"}
+    later = post(1, NOW - timedelta(days=2), likes=100, reposts=2, replies=5)
+    other = post(2, NOW - timedelta(days=3), likes=7)
+    for order in ([pin, later], [later, pin]):
+        read = run(Pages([feed_page([*order, other])]))
+        assert sorted(rows_of(read)) == [(0, 7, 0), (9, 100, 5)]
+    # also across two pages
+    pages = [feed_page([pin], "c1"), feed_page([later])]
+    assert rows_of(run(Pages(pages))) == [(9, 100, 5)]
+
+
+@pytest.mark.parametrize(
+    "where",
+    ["item", "record"],
+)
+@pytest.mark.parametrize("marker", [None, "x", 0, False, [], ["a"], 7.5])
+def test_a_present_but_malformed_reply_marker_is_incomplete_not_an_original_post(
+    where: str, marker: Any
+) -> None:
+    # #922 round 4: a present null or non-object reply is malformed, never absence.
+    bad = post(1, NOW - timedelta(days=1), likes=5)
+    if where == "item":
+        bad["reply"] = marker
+    else:
+        bad["post"]["record"]["reply"] = marker
+    good = post(2, NOW - timedelta(days=2), likes=4)
+    read = run(Pages([feed_page([good, bad])]))
+    assert isinstance(read.rows, NotProvided) and read.reason == "bad_shape"
+    assert bsky.history_aggregates(read) is None
+
+
+@pytest.mark.parametrize("where", ["item", "record"])
+def test_an_object_reply_marker_is_a_skipped_reply_and_a_missing_one_is_original(
+    where: str,
+) -> None:
+    reply_item = post(1, NOW - timedelta(days=1), likes=50)
+    marker = {"root": {"uri": "at://x"}, "parent": {"uri": "at://y"}}
+    if where == "item":
+        reply_item["reply"] = marker
+    else:
+        reply_item["post"]["record"]["reply"] = marker
+    own = post(2, NOW - timedelta(days=2), likes=4)  # no reply key at all
+    read = run(Pages([feed_page([reply_item, own])]))
+    assert read.complete and rows_of(read) == [(0, 4, 0)]
 
 
 # --- own posts only -------------------------------------------------------------
@@ -585,9 +662,76 @@ def test_a_foreign_author_with_a_valid_did_is_still_skipped_cleanly() -> None:
     stranger = post(1, NOW - timedelta(days=1), did=OTHER, likes=600)
     read = run(Pages([feed_page([stranger])]))
     assert read.complete and read.rows == ()
-    # a well formed did:web author is also a clean skip
+    # a well formed did:web author is also a clean skip: not counted, no bad_shape
     web = post(2, NOW - timedelta(days=1), did="did:web:example.com", likes=7)
-    assert run(Pages([feed_page([web])])).complete
+    web_read = run(Pages([feed_page([web])]))
+    assert web_read.complete and web_read.rows == () and web_read.reason is None
+    # and next to an own post, only the own post reaches the aggregates
+    own = post(3, NOW - timedelta(days=1), likes=2)
+    mixed = run(Pages([feed_page([web, stranger, own])]))
+    assert mixed.reason is None and rows_of(mixed) == [(0, 2, 0)]
+    aggregates = bsky.history_aggregates(mixed)
+    assert aggregates is not None and aggregates["favorites_30d"] == 2
+
+
+@pytest.mark.parametrize(
+    "web",
+    [
+        "did:web:example.com%3A3000",
+        "did:web:example.com%3a8443",
+        "did:web:example.com:users:alice",
+        "did:web:example.com%3A3000:users:alice",
+        "did:web:sub.example.co.uk:a%20b",
+        "did:web:" + "a" * 200 + ".example.com",  # longer than the old tail limit
+    ],
+)
+def test_valid_did_web_forms_are_the_profile_did_and_an_author_did(web: str) -> None:
+    # #922 round 4: a port, a path or a long host is a valid did:web, not hostile.
+    assert bsky.check_actor(web) == web
+    own = post(1, NOW - timedelta(days=1), did=web, likes=6)
+    other = post(2, NOW - timedelta(days=1), did=OTHER, likes=9)
+    mine = run(Pages([feed_page([own, other])], prof=profile(did=web)))
+    assert mine.complete and rows_of(mine) == [(0, 6, 0)]
+    # as a foreign author it is a clean skip, not a bad shape
+    foreign = run(Pages([feed_page([own])]))
+    assert foreign.complete and foreign.rows == ()
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "did:web:",
+        "did:web:example.com/x",
+        "did:web:example.com:",
+        "did:web:example.com::a",
+        "did:web:example.com%",
+        "did:web:example.com%3A",
+        "did:web:example.com%3Aabc",
+        "did:web:example.com%3A1234567",
+        "did:web:exa mple.com",
+        "did:web:example.com\n",
+        "did:web:example.com:a b",
+        "did:web:example.com:a/b",
+        "did:web:example.com:%zz",
+        "did:web:-example.com",
+        "did:web:" + "a" * 600,
+        "did:web:example.com:" + "a" * 600,
+    ],
+)
+def test_hostile_did_web_forms_are_refused_everywhere(bad: str) -> None:
+    with pytest.raises(ValueError):
+        bsky.check_actor(bad)
+    # as the profile DID and as an author DID the entry is bad_shape
+    assert run(Pages([feed_page([])], prof=profile(did=bad))).reason == "bad_shape"
+    item = post(1, NOW - timedelta(days=1), did=bad)
+    assert run(Pages([feed_page([item])])).reason == "bad_shape"
+
+
+def test_a_did_that_differs_only_in_case_is_not_the_account() -> None:
+    # The comparison stays exact: a different spelling is another author.
+    upper = post(1, NOW - timedelta(days=1), did="did:web:Example.com", likes=3)
+    read = run(Pages([feed_page([upper])], prof=profile(did="did:web:example.com")))
+    assert read.complete and read.rows == ()
 
 
 # --- empty accounts and zeros ----------------------------------------------------

@@ -81,7 +81,25 @@ _REPOST = "app.bsky.feed.defs#reasonRepost"
 _LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
 # A handle is two or more dot-joined labels and the last one starts with a letter.
 _HANDLE = re.compile(rf"^(?:{_LABEL}\.)+[A-Za-z](?:[A-Za-z0-9-]{{0,61}}[A-Za-z0-9])?$")
-_DID = re.compile(r"^did:(?:plc|web):[A-Za-z0-9._:-]{1,120}$")
+# A did:plc id is a short plain tail. A did:web id is a host (letters, digits,
+# dots, hyphens), an optional percent-encoded port (``%3A`` and 1 to 5 digits),
+# then any number of ``:`` separated path segments of unreserved characters or
+# percent escapes. No slash, no space, no empty segment; exact comparison only
+# (no case folding), and a total length bound apart from the grammar.
+_DID_WEB_SEGMENT = r"(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{2})+"
+_DID_WEB_HOST = r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?(?:%3[Aa][0-9]{1,5})?"
+_DID = re.compile(
+    r"did:plc:[A-Za-z0-9._:-]{1,120}"
+    rf"|did:web:{_DID_WEB_HOST}(?::{_DID_WEB_SEGMENT})*"
+)
+_DID_MAX = 512
+
+
+def _is_did(value: object) -> bool:
+    """A DID of the two known methods, within the length bound."""
+    return type(value) is str and len(value) <= _DID_MAX and bool(_DID.fullmatch(value))
+
+
 _CURSOR = re.compile(r"^[A-Za-z0-9._:+=-]{1,128}$")
 
 
@@ -96,7 +114,7 @@ def check_actor(value: object) -> str:
         raise ValueError("the Bluesky actor is a handle or a DID")
     if len(value) <= 253 and _HANDLE.fullmatch(value):
         return value
-    if _DID.fullmatch(value):
+    if _is_did(value):
         return value
     raise ValueError("the Bluesky actor is a handle like name.example.com or a DID")
 
@@ -259,13 +277,15 @@ def collect(
             later_page=False,
         )
         did = profile.get("did")
-        if type(did) is not str or not _DID.fullmatch(did):
+        if type(did) is not str or not _is_did(did):
             raise _Stop("bad_shape")
         followers = _int(profile.get("followersCount"), MAX_COUNT)
         posts = _int(profile.get("postsCount"), MAX_COUNT)
 
-        rows: list[InteractionRow] = []
-        seen: set[str] = set()
+        # One row per post URI. A post can come twice in a run (a pin and the
+        # walk, or a repeated page) with counts read at different moments; a
+        # count of one post only grows, so the larger value of each field wins.
+        rows: dict[str, InteractionRow] = {}
         seen_cursors: set[str] = set()  # bounded by the page cap
         cursor: str | None = None
         for page in range(1, MAX_PAGES + 1):
@@ -293,9 +313,16 @@ def collect(
                     dropped += 1
                 elif isinstance(outcome, tuple):
                     key, row = outcome
-                    if key not in seen:
-                        seen.add(key)
-                        rows.append(row)
+                    old = rows.get(key)
+                    rows[key] = (
+                        row
+                        if old is None
+                        else InteractionRow(
+                            max(old.boosts, row.boosts),
+                            max(old.favorites, row.favorites),
+                            max(old.replies, row.replies),
+                        )
+                    )
             nxt = data.get("cursor")
             if nxt is None or nxt == "":
                 break  # the end of the feed: the window was read in full
@@ -307,7 +334,9 @@ def collect(
             cursor = nxt
         else:
             raise _Stop("page_cap")
-        by_value = tuple(sorted(rows, key=lambda r: (r.boosts, r.favorites, r.replies)))
+        by_value = tuple(
+            sorted(rows.values(), key=lambda r: (r.boosts, r.favorites, r.replies))
+        )
         return BlueskyRead(followers, posts, by_value, calls, dropped)
     except _Stop as stop:
         return BlueskyRead(followers, posts, NotProvided(stop.reason), calls, dropped)
@@ -340,14 +369,19 @@ def _item(
         # a pin is the account's own post: read it like any other below
     author = post.get("author")
     author_did = author.get("did") if isinstance(author, dict) else None
-    if type(author_did) is not str or not _DID.fullmatch(author_did):
+    if type(author_did) is not str or not _is_did(author_did):
         raise _Stop("bad_shape")  # who wrote it is unknown: it could be ours
     if author_did != did:
         return None
     record = post.get("record")
-    if item.get("reply") is not None or (
-        isinstance(record, dict) and record.get("reply") is not None
-    ):
+    # A reply marker that is present must be an object (the lexicon has no null
+    # reply): a present null or scalar is malformed, never an original post.
+    markers = [item["reply"]] if "reply" in item else []
+    if isinstance(record, dict) and "reply" in record:
+        markers.append(record["reply"])
+    if any(not isinstance(marker, dict) for marker in markers):
+        raise _Stop("bad_shape")
+    if markers:
         return None  # a reply to someone else is not counted
     when = post_time(post, "indexedAt")
     placed = classify(when, now)
