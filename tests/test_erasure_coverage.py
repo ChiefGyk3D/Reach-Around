@@ -55,13 +55,22 @@ WORKER_SRC = ROOT / "worker" / "src"
 LEAD_RETENTION = WORKER_SRC / "kit" / "leadretention.ts"
 
 CLASSES = {"lead", "lead_hash", "unlinkable", "aggregate", "internal"}
-# Tables of these classes are exempt from the per-column vocabulary check: the
-# first holds the person's data on purpose, the second only keyed hashes.
-PERSON_CLASSES = {"lead", "lead_hash"}
+# Tables of these classes are exempt from the per-column vocabulary check: they
+# hold the person's data on purpose. Test change (#856 round 7): lead_hash is no
+# longer exempt, because a class name cannot show a table holds only keyed hashes;
+# each of its flagged columns needs a reviewed reason of LEAD_HASH_REASON+ chars.
+PERSON_CLASSES = {"lead"}
 MIN_REASON = 12
+LEAD_HASH_REASON = 40
+# A lead_hash entry must say how its value is derived and how long it lives.
+HASH_DERIVATION = re.compile(r"keyed hash|hmac|truncat", re.IGNORECASE)
+HASH_LIFETIME = re.compile(
+    r"\b(?:minutes?|hours?|days?|expires?|expiry|lifetime|ttl)\b", re.IGNORECASE
+)
+MIN_ISSUE_TITLE = 10
 
 # A column whose name suggests a person, a device, a place, a session, a hashed
-# identifier or free-form content. In a table that is not class lead or lead_hash
+# identifier or free-form content. In a table that is not class lead
 # each such column needs its own reason in reviewed_columns.
 PERSONAL_COLUMN = re.compile(
     r"mail|name|phone|addr|(^|_)ip($|_)|(^|_)ua($|_)|agent|ident|sess|token|hash|hmac"
@@ -419,6 +428,38 @@ def review_reasons(
     return why
 
 
+def lead_hash_shape_violations(
+    table: str, entry: dict[str, Any], live_columns: list[str]
+) -> list[str]:
+    """A table classed lead_hash needs more than a name (#856 round 7): the column
+    list it was judged on, a reason that says how the value is derived (keyed hash,
+    HMAC, truncation) and how long it lives, and no column outside that list."""
+    found: list[str] = []
+    recorded = entry.get("columns")
+    if not isinstance(recorded, list) or not recorded:
+        found.append(f"{table}: a lead_hash table must record its columns")
+    else:
+        extra = [c for c in live_columns if c not in recorded]
+        if extra:
+            found.append(
+                f"{table}: lead_hash table has columns outside the recorded "
+                f"list: {extra}"
+            )
+    reason = str(entry.get("reason", "")).strip()
+    if len(reason) < LEAD_HASH_REASON:
+        found.append(
+            f"{table}: a lead_hash reason needs {LEAD_HASH_REASON}+ characters"
+        )
+    if not HASH_DERIVATION.search(reason):
+        found.append(
+            f"{table}: the lead_hash reason must name how the value is derived "
+            "(keyed hash, HMAC or truncation)"
+        )
+    if not HASH_LIFETIME.search(reason):
+        found.append(f"{table}: the lead_hash reason must name a bounded lifetime")
+    return found
+
+
 def schema_violations(
     schema: dict[str, dict[str, Any]],
     registry: dict[str, Any],
@@ -455,6 +496,7 @@ def schema_violations(
         if "email" in cols and entry["class"] != "lead":
             found.append(f"{table}: has an email column but is not class lead")
         reviewed = entry.get("reviewed_columns", {})
+        need = LEAD_HASH_REASON if entry["class"] == "lead_hash" else MIN_REASON
         if entry["class"] not in PERSON_CLASSES:
             for col in cols:
                 why = review_reasons(
@@ -463,11 +505,14 @@ def schema_violations(
                     info.get("defaults", {}).get(col),
                     info.get("hidden", {}).get(col, 0),
                 )
-                if why and len(str(reviewed.get(col, "")).strip()) < MIN_REASON:
+                if why and len(str(reviewed.get(col, "")).strip()) < need:
                     found.append(
                         f"{table}.{col}: {'; '.join(why)}; review it and list it in "
-                        "reviewed_columns with a reason, or class the table lead"
+                        f"reviewed_columns with a reason of {need}+ characters, or "
+                        "class the table lead"
                     )
+        if entry["class"] == "lead_hash":
+            found += lead_hash_shape_violations(table, entry, cols)
         for col in reviewed:
             if col not in cols:
                 found.append(f"{table}.{col}: reviewed but not a column")
@@ -1657,19 +1702,334 @@ def delete_sql() -> str:
     return "\n".join(_sql("0123456789abcdef0123456789abcdef", "nobody@example.test"))
 
 
-def test_the_delete_sql_deletes_every_lead_table_and_reads_each_back() -> None:
-    sql = delete_sql()
-    tables = [t for t, e in load_registry()["stores"].items() if e["class"] == "lead"]
-    assert tables
-    for table in tables:
-        stmt = f"DELETE FROM {table}"  # noqa: S608 - registry names
-        assert re.search(rf"{stmt}\b", sql), f"no {stmt}"
-        assert re.search(rf"COUNT\(\*\) FROM {table}\b", sql), (
-            f"no read-back of {table}"
+TARGET_LEAD = "0123456789abcdef0123456789abcdef"
+TARGET_MAIL = "nobody@example.test"
+OTHER_LEAD = "fedcba9876543210fedcba9876543210"
+OTHER_MAIL = "someone-else@example.test"
+# Values a generated row needs where a CHECK or a closed set rules out a filler.
+# A new lead table that needs another one fails the delete test until it is added.
+SEED_VALUES = {
+    ("leads", "source"): "gate",
+    ("kit_events", "kind"): "unlock",
+    ("kit_events", "ts"): 3_600_000,
+    ("alert_dedup", "event_hash"): "a" * 32,
+}
+
+
+def delete_statements() -> list[str]:
+    return _sql(TARGET_LEAD, TARGET_MAIL)
+
+
+def executable_statements(sql: str) -> list[str]:
+    """The statements SQLite would run, with every comment dropped (a comment is
+    whitespace) and quoted text copied exactly, split at each semicolon that is
+    outside a quote or a comment. Test change (#856 round 7): the delete checks
+    read this, never the raw text, so a comment that names a table covers nothing."""
+    out: list[str] = []
+    cur: list[str] = []
+    i, n = 0, len(sql)
+    while i < n:
+        j = _skip_quoted(sql, i)
+        if j != i:
+            cur.append(" " if sql.startswith(("--", "/*"), i) else sql[i:j])
+            i = j
+            continue
+        if sql[i] == ";":
+            text = "".join(cur).strip()
+            if text:
+                out.append(text)
+            cur = []
+        else:
+            cur.append(sql[i])
+        i += 1
+    tail = "".join(cur).strip()
+    if tail:
+        out.append(tail)
+    return out
+
+
+def covered_tables(registry: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """(lead tables, lead_hash tables the delete flow claims to clear). A lead_hash
+    table listed under known_gaps is a declared gap, not a claim."""
+    gaps = {g.get("table") for g in registry.get("known_gaps", [])}
+    stores = registry["stores"]
+    leads = [t for t, e in stores.items() if e["class"] == "lead"]
+    hashes = [
+        t for t, e in stores.items() if e["class"] == "lead_hash" and t not in gaps
+    ]
+    return leads, hashes
+
+
+def _link_column(db: sqlite3.Connection, table: str) -> str | None:
+    """The column that ties a lead table's row to a lead: leads.id itself, or the
+    foreign key to leads, or a lead_id column."""
+    if table == "leads":
+        return "id"
+    for row in db.execute(f'PRAGMA foreign_key_list("{table}")'):
+        if row[2] == "leads":
+            return str(row[3])
+    cols = [r[1] for r in db.execute(f'PRAGMA table_info("{table}")')]
+    return "lead_id" if "lead_id" in cols else None
+
+
+def _seed_row(
+    db: sqlite3.Connection, table: str, lead_id: str, email: str
+) -> str | None:
+    """Insert one row into the table for this lead; None when it worked, else why."""
+    link = _link_column(db, table)
+    cols: list[str] = []
+    vals: list[Any] = []
+    for _cid, name, ctype, notnull, default, pk, hidden in db.execute(
+        f'PRAGMA table_xinfo("{table}")'
+    ):
+        if hidden:
+            continue  # generated or hidden: SQLite fills it
+        kind = (ctype or "").upper()
+        if (table, name) in SEED_VALUES:
+            value: Any = SEED_VALUES[(table, name)]
+        elif name == link:
+            value = lead_id
+        elif table == "leads" and name == "email":
+            value = email
+        elif pk and "INT" in kind:
+            continue  # rowid alias: SQLite assigns it
+        elif notnull and default is None:
+            value = 0 if ("INT" in kind or "REAL" in kind) else lead_id + "x"
+        else:
+            continue
+        cols.append(name)
+        vals.append(value)
+    names = ", ".join(f'"{c}"' for c in cols)
+    marks = ", ".join("?" for _ in cols)
+    try:
+        if cols:
+            db.execute(f'INSERT INTO "{table}" ({names}) VALUES ({marks})', vals)  # noqa: S608
+        else:
+            db.execute(f'INSERT INTO "{table}" DEFAULT VALUES')  # noqa: S608
+    except sqlite3.Error as exc:
+        return f"{table}: cannot seed a row ({exc}); add it to SEED_VALUES"
+    return None
+
+
+def _zero_cells(db: sqlite3.Connection, statements: list[str]) -> tuple[int, int]:
+    """(cells, non-zero cells) of every SELECT among the statements."""
+    cells = nonzero = 0
+    for stmt in statements:
+        if stmt.lstrip().upper().startswith("SELECT"):
+            for row in db.execute(stmt).fetchall():
+                cells += len(row)
+                nonzero += sum(1 for v in row if v)
+    return cells, nonzero
+
+
+def delete_flow_violations(
+    statements: list[str],
+    registry: dict[str, Any],
+    migrations: list[tuple[str, str]] | None = None,
+    force_strip: bool = False,
+) -> list[str]:
+    """Run the delete flow's own SQL, with comments dropped, on the migrated schema
+    with one row for the target lead and one for an unrelated lead in every lead
+    table (plus one row in every lead_hash table the flow claims to clear), and
+    judge what happened to the rows, not the words in the file (#856 round 7)."""
+    found: list[str] = []
+    stmts = executable_statements("\n".join(statements))
+    code = " ".join(stmts)
+    lead_tables, hash_tables = covered_tables(registry)
+    migs = migrations or [(m.name, m.read_text(encoding="utf-8")) for m in MIGRATIONS]
+    db = build_db(migs, force_strip=force_strip)
+    for table in lead_tables:
+        for lid, mail in ((TARGET_LEAD, TARGET_MAIL), (OTHER_LEAD, OTHER_MAIL)):
+            why = _seed_row(db, table, lid, mail)
+            if why:
+                return [why]
+    for table in hash_tables:
+        why = _seed_row(db, table, TARGET_LEAD, TARGET_MAIL)
+        if why:
+            return [why]
+    # What the delete flow says it will delete is only the covered tables.
+    allowed = set(lead_tables) | set(hash_tables)
+    for deleted in re.findall(r"\bDELETE\s+FROM\s+\"?(\w+)", code, re.IGNORECASE):
+        if deleted not in allowed:
+            found.append(
+                f"the delete flow deletes from {deleted}, which is not covered"
+            )
+    # The read-back statements must see the rows before and read 0 after.
+    _cells, before = _zero_cells(db, stmts)
+    if before < len(lead_tables):
+        found.append(
+            f"the read-back sees {before} non-zero values before the delete; "
+            f"it must see every one of the {len(lead_tables)} lead tables"
         )
-    # Nothing the tool deletes is outside the registry's lead class.
-    for deleted in re.findall(r"DELETE FROM (\w+)", sql):
-        assert deleted in tables, deleted
+    for table in lead_tables:
+        if not re.search(rf"COUNT\(\*\)\s+FROM\s+{table}\b", code, re.IGNORECASE):
+            found.append(f"{table}: no read-back statement counts it")
+    for stmt in stmts:
+        try:
+            db.execute(stmt)
+        except sqlite3.Error as exc:
+            found.append(f"a delete statement fails on the real schema: {exc}")
+    _cells, after = _zero_cells(db, stmts)
+    if after:
+        found.append(
+            f"the read-back still sees {after} non-zero values after the delete"
+        )
+    for table in lead_tables:
+        link = _link_column(db, table)
+        assert link, f"{table}: no column ties it to a lead"
+        target = db.execute(
+            f'SELECT COUNT(*) FROM "{table}" WHERE "{link}" = ?',  # noqa: S608
+            (TARGET_LEAD,),
+        ).fetchone()[0]
+        other = db.execute(
+            f'SELECT COUNT(*) FROM "{table}" WHERE "{link}" = ?',  # noqa: S608
+            (OTHER_LEAD,),
+        ).fetchone()[0]
+        if target:
+            found.append(f"{table}: the target lead's rows remain after the delete")
+        if other != 1:
+            found.append(f"{table}: an unrelated lead's rows were touched")
+    for table in hash_tables:
+        left = db.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]  # noqa: S608
+        if left:
+            found.append(f"{table}: the flow claims to clear it but rows remain")
+    return found
+
+
+def test_the_delete_sql_deletes_every_lead_table_and_reads_each_back() -> None:
+    """Test change (#856 round 7): judged by running the SQL on seeded rows, not by
+    matching text, so a comment that names a table counts for nothing. Also run on
+    the CHECK-stripping fallback path."""
+    registry = load_registry()
+    assert covered_tables(registry)[0]
+    for strip in (False, True):
+        assert delete_flow_violations(delete_statements(), registry, None, strip) == []
+
+
+def _drop(statements: list[str], needle: str) -> list[str]:
+    return [s for s in statements if needle not in s]
+
+
+def _comment_out(statements: list[str], needle: str) -> list[str]:
+    return [f"-- {s}" if needle in s else s for s in statements]
+
+
+@pytest.mark.parametrize("strip", [False, True])
+def test_the_delete_check_bites_on_a_comment_a_wrong_table_or_a_dropped_delete(
+    strip: bool,
+) -> None:
+    """The high finding of round 6: a delete that only names a lead table in a
+    comment, deletes another table, or drops one table's DELETE must fail."""
+    registry = load_registry()
+    real = delete_statements()
+
+    def run(statements: list[str]) -> list[str]:
+        return delete_flow_violations(statements, registry, None, strip)
+
+    assert run(real) == []
+    kit_deletes = [s for s in real if s.startswith("DELETE FROM kit_events")]
+    assert len(kit_deletes) == 2
+    commented = [f"-- {s}" if s in kit_deletes else s for s in real]
+    out = run(commented)
+    assert any("kit_events" in v and "remain" in v for v in out), out
+    # Naming the table and the read-back only in comments covers nothing either.
+    only_words = [s for s in real if s not in kit_deletes] + [
+        "-- DELETE FROM kit_events",
+        "-- SELECT COUNT(*) FROM kit_events",
+    ]
+    assert any("kit_events" in v for v in run(only_words))
+    # A block comment around the statement is a comment too.
+    block = [f"/* {s} */" if s in kit_deletes else s for s in real]
+    assert any("kit_events" in v and "remain" in v for v in run(block))
+    # Deleting a different table instead.
+    wrong = [
+        s.replace("DELETE FROM kit_events", "DELETE FROM view_events") for s in real
+    ]
+    out = run(wrong)
+    assert any("view_events" in v and "not covered" in v for v in out), out
+    assert any("kit_events" in v and "remain" in v for v in out), out
+    # Dropping one table's DELETE.
+    out = run(_drop(real, "DELETE FROM kit_events"))
+    assert any("kit_events" in v and "remain" in v for v in out), out
+    out = run(_drop(real, "DELETE FROM leads"))
+    assert any("leads: the target lead's rows remain" in v for v in out), out
+    # A delete that is not scoped to the lead takes an unrelated lead's rows.
+    wide = [
+        s.replace(f" WHERE id = '{TARGET_LEAD}' AND email = '{TARGET_MAIL}'", "")
+        for s in real
+    ]
+    assert any("unrelated" in v for v in run(wide)), run(wide)
+    # A read-back that is only a comment, or that misses a table, fails.
+    out = run(_comment_out(real, "AS leads_remaining"))
+    assert any("read-back" in v for v in out), out
+    narrow = [
+        s.replace(
+            f", (SELECT COUNT(*) FROM kit_events WHERE lead_id = '{TARGET_LEAD}') "  # noqa: S608
+            "AS events_remaining",
+            "",
+        )
+        for s in real
+    ]
+    assert narrow != real
+    out = run(narrow)
+    assert any("kit_events: no read-back" in v for v in out), out
+
+
+def test_a_new_lead_table_the_delete_flow_does_not_touch_fails() -> None:
+    """A table added by a later migration and classed lead is seeded and judged
+    like the two real ones; naming it in a comment does not cover it."""
+    registry = copy.deepcopy(load_registry())
+    registry["stores"]["lead_notes"] = {
+        "class": "lead",
+        "reason": "a synthetic lead table added in a test",
+        "columns": ["id", "lead_id", "note"],
+    }
+    migs = [(m.name, m.read_text(encoding="utf-8")) for m in MIGRATIONS] + [
+        (
+            "9999_lead_notes.sql",
+            "CREATE TABLE lead_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "lead_id TEXT NOT NULL REFERENCES leads(id), note TEXT NOT NULL);",
+        )
+    ]
+    real = delete_statements()
+    out = delete_flow_violations(real, registry, migs)
+    assert any("lead_notes" in v and "remain" in v for v in out), out
+    named = [*real, "-- DELETE FROM lead_notes", "-- SELECT COUNT(*) FROM lead_notes"]
+    assert any("lead_notes" in v for v in delete_flow_violations(named, registry, migs))
+    # With a real delete and read-back for it, the same registry passes.
+    covered = [
+        *real,
+        f"DELETE FROM lead_notes WHERE lead_id = '{TARGET_LEAD}';",  # noqa: S608
+        f"SELECT (SELECT COUNT(*) FROM lead_notes WHERE lead_id = '{TARGET_LEAD}') "  # noqa: S608
+        "AS notes_remaining;",
+    ]
+    assert delete_flow_violations(covered, registry, migs) == []
+
+
+def test_a_lead_hash_table_the_flow_claims_to_clear_must_be_empty_after() -> None:
+    """A lead_hash table that is not a declared gap is seeded; a delete that only
+    names it in a comment leaves the row and fails, a real clear passes."""
+    registry = copy.deepcopy(load_registry())
+    registry["known_gaps"] = []
+    real = delete_statements()
+    out = delete_flow_violations(real, registry)
+    assert any("alert_dedup" in v and "rows remain" in v for v in out), out
+    named = [*real, "-- DELETE FROM alert_dedup;"]
+    assert any("alert_dedup" in v for v in delete_flow_violations(named, registry))
+    cleared = [*real, "DELETE FROM alert_dedup;"]
+    assert delete_flow_violations(cleared, registry) == []
+
+
+def test_the_executable_statement_splitter_drops_comments_and_keeps_literals() -> None:
+    sql = (
+        "-- DELETE FROM a;\n"
+        "/* DELETE FROM b; */ DELETE FROM c WHERE x = 'a;--b';\n"
+        'SELECT "d;e" -- DELETE FROM f\n'
+    )
+    assert executable_statements(sql) == [
+        "DELETE FROM c WHERE x = 'a;--b'",
+        'SELECT "d;e"',
+    ]
 
 
 def test_the_delete_sql_runs_against_the_real_schema() -> None:
@@ -2027,6 +2387,11 @@ def test_the_privacy_doc_has_the_store_table_and_the_hand_clear_statement() -> N
     assert "policy control" in body, (
         "the docs must say the registry review is a policy control"
     )
+    flat_body = " ".join(body.split())
+    assert "`known_gaps` entry" in flat_body and "`reviewed_issues`" in flat_body, (
+        "the docs must say a known gap needs a reviewed issue and a human reviewer"
+    )
+    assert "the test is not the reviewer" in flat_body
 
 
 def test_the_checklist_prints_no_statement_and_no_address() -> None:
@@ -2101,6 +2466,178 @@ def test_the_delete_flow_hands_over_the_alert_clear_and_the_docs_agree() -> None
     assert "does not clear this table" in alerts and "#905" in alerts
 
 
+# --- every place the repository states an erasure claim (#856 round 7) -------------
+
+CLAIM_WORDS = re.compile(
+    r"\berase[sd]?\b|\berasure\b|delete my data|deletion route|deletion requests?",
+    re.IGNORECASE,
+)
+# A file that makes an erasure claim must send the reader to the manual alert step.
+CLAIM_DISCLOSURE = re.compile(r"#905|manual alert step|mandatory manual step", re.I)
+CLAIM_SUFFIXES = {
+    ".md", ".py", ".html", ".toml", ".yaml", ".yml", ".json", ".ts", ".txt", ".j2",
+    ".sh", ".cfg",
+}  # fmt: skip
+# Tests hold the claims they check, changelog fragments describe the change, and
+# the changelog is history; none is a place a reader is told what erasure does.
+CLAIM_SKIP = EXPORT_SKIP_DIRS | {"tests", "test", "changelog.d"}
+# Overstated completeness in one sentence: "all data is deleted", "fully erased".
+COMPLETE_CLAIM = re.compile(
+    r"\b(?:all|every|everything|completely|entirely|fully|permanently)\b"
+    r"[^.\n]{0,60}\b(?:erase[sd]?|deleted|removed)\b"
+    r"|\b(?:erase[sd]?|deleted|removed)\b[^.\n]{0,20}\b(?:completely|entirely|fully)\b",
+    re.IGNORECASE,
+)
+# The visitor-facing and owner-facing surfaces whose wording must stay accurate.
+CLAIM_USER_SURFACES = (
+    "README.md",
+    "src/reach_around/site/privacy.py",
+    "src/reach_around/site/templates/privacy.html",
+    "src/reach_around/site/templates/kit_gated.html",
+    "docs/privacy.md",
+    "docs/alerts.md",
+    "docs/wiki/Security-and-Privacy.md",
+    "docs/wiki/Storage.md",
+    "docs/wiki/FAQ.md",
+)
+PRIVACY_PAGE_CLAIM = (
+    "your contact details are deleted; short-lived anonymous operational records "
+    "expire on their own"
+)
+
+
+def erasure_claim_files(root: Path = ROOT) -> dict[str, str]:
+    """Every file under the repository (docs, README, wiki, templates, config
+    defaults, examples, CLI help text, source) that uses an erasure word, mapped to
+    its text. A file that cannot be read is a failure, not a skip."""
+    found: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root)
+        if (
+            not path.is_file()
+            or path.is_symlink()
+            or CLAIM_SKIP & set(rel.parts)
+            or path.suffix not in CLAIM_SUFFIXES
+            or rel.name == "CHANGELOG.md"
+        ):
+            continue
+        text = path.read_bytes().decode("utf-8", errors="replace")
+        if CLAIM_WORDS.search(text):
+            found[rel.as_posix()] = text
+    return found
+
+
+def erasure_claim_violations(
+    files: dict[str, str], registry: dict[str, Any]
+) -> list[str]:
+    """Each file that makes an erasure claim must name #905 or the manual alert step,
+    or be on the registry's reviewed list (erasure_claim_review) with a reason; a
+    listed file must still exist, still use an erasure word, and not be stale."""
+    reviewed: dict[str, str] = registry.get("erasure_claim_review", {})
+    found: list[str] = []
+    for rel, text in sorted(files.items()):
+        if CLAIM_DISCLOSURE.search(text):
+            continue
+        if len(str(reviewed.get(rel, "")).strip()) < MIN_REASON:
+            found.append(
+                f"{rel}: uses an erasure word, but names neither #905 nor the manual "
+                "alert step and is not on erasure_claim_review"
+            )
+    for rel in sorted(reviewed):
+        if rel not in files:
+            found.append(f"erasure_claim_review lists {rel}, which has no erasure word")
+    return found
+
+
+def test_every_erasure_claim_in_the_repository_discloses_the_manual_step() -> None:
+    """Round 6 low: the disclosure used to be checked only in the checklist and two
+    docs. Every file that talks about erasure or deletion requests (docs, README,
+    wiki, the visitor privacy page and gate notice text, examples, CLI help) must
+    name the manual alert step (#905) or be on the reviewed list of files that make
+    no complete-erasure claim."""
+    files = erasure_claim_files()
+    assert "src/reach_around/commands/leads.py" in files  # the scan sees the CLI text
+    assert "src/reach_around/site/privacy.py" in files  # and the visitor text
+    assert erasure_claim_violations(files, load_registry()) == []
+
+
+def test_the_erasure_claim_check_bites_on_a_new_or_stale_file(tmp_path: Path) -> None:
+    registry = load_registry()
+    files = erasure_claim_files()
+    # A new page that says "delete my data" and says nothing else fails by name.
+    added = dict(files)
+    added["docs/wiki/New-Page.md"] = "Use the form to delete my data. All gone."
+    assert any("New-Page.md" in v for v in erasure_claim_violations(added, registry))
+    # So does a README line that talks about erasure with no disclosure.
+    readme = dict(files)
+    readme["README.md"] = "Erasure of a lead is one command."
+    assert any("README.md" in v for v in erasure_claim_violations(readme, registry))
+    # Naming #905 or the manual step clears it; the reviewed list does too.
+    added["docs/wiki/New-Page.md"] += " The alert hash step is manual (#905)."
+    assert erasure_claim_violations(added, registry) == []
+    listed = copy.deepcopy(registry)
+    listed["erasure_claim_review"]["docs/wiki/Gone.md"] = "no complete-erasure claim"
+    assert any("Gone.md" in v for v in erasure_claim_violations(files, listed))
+    # The real scan finds a claim planted in a real tree (tmp copy of the layout).
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "page.md").write_text("Request an erasure here.\n")
+    (tmp_path / "docs" / "ok.md").write_text("Erasure: see #905.\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "skipped.md").write_text("Erasure everywhere.\n")
+    seen = erasure_claim_files(tmp_path)
+    assert set(seen) == {"docs/page.md", "docs/ok.md"}
+
+
+def test_the_user_facing_texts_do_not_claim_complete_erasure() -> None:
+    """Where a visitor or owner text speaks of deleting data it must not claim that
+    everything is erased; the privacy page says what is deleted and what expires."""
+    files = erasure_claim_files()
+    for rel in CLAIM_USER_SURFACES:
+        path = ROOT / rel
+        if not path.is_file():
+            continue
+        text = " ".join(path.read_text(encoding="utf-8").split())
+        for sentence in re.split(r"(?<=[.!?])\s+", text):
+            if CLAIM_WORDS.search(sentence) and COMPLETE_CLAIM.search(sentence):
+                raise AssertionError(f"{rel}: overstates erasure: {sentence[:120]}")
+    privacy = " ".join(
+        (ROOT / "src/reach_around/site/privacy.py").read_text("utf-8").split()
+    )
+    assert PRIVACY_PAGE_CLAIM in privacy.lower()
+    assert "src/reach_around/site/privacy.py" in files
+    # The sentence is also in the built privacy page goldens (they are the output).
+    goldens = [
+        g
+        for g in (ROOT / "tests" / "site").glob("golden*/**/index.html")
+        if "can therefore be fulfilled" in g.read_text("utf-8")
+    ]
+    assert len(goldens) == 4, goldens
+    for golden in goldens:
+        flat = " ".join(golden.read_text("utf-8").split()).lower()
+        assert PRIVACY_PAGE_CLAIM in flat, str(golden)
+    assert COMPLETE_CLAIM.search("All of your data is deleted at once.")
+    assert COMPLETE_CLAIM.search("Your lead is fully erased.")
+    assert not COMPLETE_CLAIM.search(PRIVACY_PAGE_CLAIM)
+
+
+def test_the_delete_command_help_names_the_manual_alert_step() -> None:
+    import argparse
+
+    from reach_around.commands import leads as leads_cmd
+
+    parser = argparse.ArgumentParser(prog="reach-around")
+    leads_cmd.register(parser.add_subparsers(dest="command"))
+    sub = next(
+        a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
+    ).choices["leads"]
+    delete = next(
+        a for a in sub._actions if isinstance(a, argparse._SubParsersAction)
+    ).choices["delete"]
+    helped = " ".join(delete.format_help().split())
+    assert "mandatory manual step" in helped and "does not clear" in helped
+    assert not COMPLETE_CLAIM.search(helped)
+
+
 def lead_hash_gap_violations(
     registry: dict[str, Any], delete_statements: str
 ) -> list[str]:
@@ -2110,6 +2647,22 @@ def lead_hash_gap_violations(
     a table the delete flow now clears (a stale gap)."""
     found: list[str] = []
     listed: dict[str, dict[str, Any]] = {}
+    # Round 7: a gap cannot cite just any number. The issue must be in the
+    # registry's reviewed_issues with its title recorded, and the registry digest
+    # covers that list. This makes a waiver a visible, digest-changing edit; it does
+    # not make the test a reviewer (that is human review, a policy control).
+    reviewed: dict[int, str] = {}
+    for rec in registry.get("reviewed_issues", []):
+        num = rec.get("issue") if isinstance(rec, dict) else None
+        if isinstance(num, bool) or not isinstance(num, int) or num <= 0:
+            found.append(
+                f"reviewed_issues has an entry without an issue number: {rec!r}"
+            )
+            continue
+        title = str(rec.get("title", "")).strip()
+        if len(title) < MIN_ISSUE_TITLE:
+            found.append(f"reviewed issue #{num} has no recorded title")
+        reviewed[num] = title
     for gap in registry.get("known_gaps", []):
         table = gap.get("table")
         if not isinstance(table, str) or table not in registry["stores"]:
@@ -2119,14 +2672,19 @@ def lead_hash_gap_violations(
         issue = gap.get("issue")
         if isinstance(issue, bool) or not isinstance(issue, int) or issue <= 0:
             found.append(f"{table}: known gap has no issue number")
+        elif issue not in reviewed:
+            found.append(
+                f"{table}: known gap cites #{issue}, which is not in reviewed_issues"
+            )
         if len(str(gap.get("description", "")).strip()) < 20:
             found.append(f"{table}: known gap has no description")
         if registry["stores"][table].get("class") != "lead_hash":
             found.append(f"{table}: known gap for a table that is not lead_hash")
+    code = " ".join(executable_statements(delete_statements))  # comments dropped
     for table, entry in registry["stores"].items():
         if entry["class"] != "lead_hash":
             continue
-        cleared = re.search(rf"DELETE FROM {table}\b", delete_statements) is not None  # noqa: S608
+        cleared = re.search(rf"DELETE FROM {table}\b", code) is not None  # noqa: S608
         if cleared and table in listed:
             found.append(
                 f"{table}: listed as a known gap but the delete flow clears it"
@@ -2192,6 +2750,158 @@ def test_the_known_gap_guard_bites() -> None:
     other = copy.deepcopy(load_registry())
     other["known_gaps"].append({"table": "leads", "description": "x" * 30, "issue": 2})
     assert any("not lead_hash" in v for v in lead_hash_gap_violations(other, ""))
+
+
+def test_a_known_gap_must_cite_a_reviewed_issue_and_changes_the_digest() -> None:
+    """Round 6 medium: a gap is not self-approving. It must cite an issue listed in
+    reviewed_issues with its title, and any edit to that list changes the registry
+    digest, so adding a waiver is a visible edit. Whether a human agreed is a policy
+    control (docs/privacy.md); this only makes the waiver impossible to add quietly."""
+    registry = load_registry()
+    assert any(
+        r["issue"] == 905 and len(r["title"].strip()) >= MIN_ISSUE_TITLE
+        for r in registry["reviewed_issues"]
+    )
+    # A new hash store with a gap that cites an issue nobody reviewed fails.
+    waiver = copy.deepcopy(registry)
+    waiver["stores"]["new_hash"] = {
+        "class": "lead_hash",
+        "reason": "keyed hash of an event, added in a test",
+        "columns": ["h"],
+    }
+    waiver["known_gaps"].append(
+        {
+            "table": "new_hash",
+            "description": "Erasure is deferred, says me.",
+            "issue": 1,
+        }
+    )
+    assert any(
+        "new_hash" in v and "not in reviewed_issues" in v
+        for v in lead_hash_gap_violations(waiver, delete_sql())
+    )
+    # Listing the issue without a title fails as well.
+    waiver["reviewed_issues"].append({"issue": 1, "title": ""})
+    assert any(
+        "#1 has no recorded title" in v
+        for v in lead_hash_gap_violations(waiver, delete_sql())
+    )
+    # The issue list is covered by the registry digest, in both directions.
+    base = registry_digest(registry)
+    more = copy.deepcopy(registry)
+    more["reviewed_issues"].append({"issue": 1, "title": "Anything recorded here"})
+    assert registry_digest(more) != base
+    retitled = copy.deepcopy(registry)
+    retitled["reviewed_issues"][0]["title"] += " (edited)"
+    assert registry_digest(retitled) != base
+    gap_only = copy.deepcopy(registry)
+    gap_only["known_gaps"][0]["issue"] = 906
+    assert registry_digest(gap_only) != base
+
+
+def test_a_known_gap_is_only_ever_for_a_lead_hash_table() -> None:
+    """A gap cannot be added for any other class, which would waive a lead table
+    or a table that should hold no person-level data."""
+    registry = load_registry()
+    seen = set()
+    for table, entry in registry["stores"].items():
+        if entry["class"] == "lead_hash" or entry["class"] in seen:
+            continue
+        seen.add(entry["class"])
+        waived = copy.deepcopy(registry)
+        waived["known_gaps"].append(
+            {"table": table, "description": "x" * 30, "issue": 905}
+        )
+        assert any(
+            f"{table}: known gap for a table that is not lead_hash" in v
+            for v in lead_hash_gap_violations(waived, delete_sql())
+        ), (table, entry["class"])
+    assert seen == CLASSES - {"lead_hash"}
+
+
+def test_a_lead_hash_table_needs_more_than_a_name() -> None:
+    """Round 6 medium: classing a table lead_hash does not exempt its columns. It
+    needs the recorded column list, a reason that names the derivation and the
+    lifetime, no column outside the list, and a reviewed reason for every column
+    whose name or type looks personal (the hash column itself included)."""
+    db = real_db()
+    schema, objects = live_schema(db), live_objects(db)
+    registry = load_registry()
+    assert schema_violations(schema, registry, objects) == []
+    entry = registry["stores"]["alert_dedup"]
+    assert len(entry["reviewed_columns"]["event_hash"]) >= LEAD_HASH_REASON
+
+    def check(mutate: Any) -> list[str]:
+        mutated = copy.deepcopy(registry)
+        mutate(mutated["stores"]["alert_dedup"])
+        return schema_violations(schema, mutated, objects)
+
+    # The hash column has no reviewed reason, or a short one.
+    assert any(
+        "alert_dedup.event_hash" in v
+        for v in check(lambda e: e["reviewed_columns"].clear())
+    )
+    assert any(
+        "alert_dedup.event_hash" in v
+        for v in check(
+            lambda e: e["reviewed_columns"].update(event_hash="keyed hash, short")
+        )
+    )
+    # A column outside the recorded list.
+    assert any(
+        "outside the recorded list" in v
+        for v in check(lambda e: e["columns"].remove("expires_at"))
+    )
+    assert any(
+        "must record its columns" in v for v in check(lambda e: e.update(columns=[]))
+    )
+    # The reason must say how the value is derived and how long it lives.
+    nameless = "A table of values kept for a while, stored for ten minutes at most."
+    assert any(
+        "how the value is derived" in v
+        for v in check(lambda e: e.update(reason=nameless))
+    )
+    assert any(
+        "bounded lifetime" in v
+        for v in check(
+            lambda e: e.update(
+                reason="Keyed hash of an event, kept as long as needed here."
+            )
+        )
+    )
+    assert any(
+        "40+ characters" in v
+        for v in check(lambda e: e.update(reason="HMAC, 10 minutes"))
+    )
+    # A table with free-form content cannot become lead_hash by being named so.
+    hostile = [
+        (
+            "9999_cache.sql",
+            "CREATE TABLE contact_cache (payload TEXT, raw BLOB, note);",
+        )
+    ]
+    db2 = build_db(
+        [(m.name, m.read_text(encoding="utf-8")) for m in MIGRATIONS] + hostile
+    )
+    schema2, objects2 = live_schema(db2), live_objects(db2)
+    sneaky = copy.deepcopy(registry)
+    sneaky["stores"]["contact_cache"] = {
+        "class": "lead_hash",
+        "reason": "HMAC of an event, kept for 10 minutes then dropped by a purge",
+        "columns": ["payload", "raw", "note"],
+        "backup": "never",
+    }
+    out = schema_violations(schema2, sneaky, objects2)
+    for col in ("payload", "raw", "note"):
+        assert any(f"contact_cache.{col}" in v for v in out), (col, out)
+    # Reviewing each with a long enough reason is the one way through.
+    sneaky["stores"]["contact_cache"]["reviewed_columns"] = {
+        c: "individually reviewed: a keyed hash of fixed length, nothing else"
+        for c in ("payload", "raw", "note")
+    }
+    assert not any(
+        "contact_cache" in v for v in schema_violations(schema2, sneaky, objects2)
+    )
 
 
 # --- the alert hash lifetime, as the code really behaves -------------------------

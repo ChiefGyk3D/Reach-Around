@@ -319,7 +319,7 @@ The site may also use a small proof-of-work puzzle. It runs in your browser and 
 
 You may ask what identifying information is held about you, request correction or deletion, object to processing, or ask for a copy. Where applicable, you may also complain to your data protection authority.
 
-Measurement records cannot be matched to a person. Access and deletion requests can therefore be fulfilled only for information that identifies you, such as a media-kit lead. Privacy requests receive a reply within one month.
+Measurement records cannot be matched to a person. Access and deletion requests can therefore be fulfilled only for information that identifies you, such as a media-kit lead. On a deletion request your contact details are deleted; short-lived anonymous operational records expire on their own. Privacy requests receive a reply within one month.
 
 ## Children
 

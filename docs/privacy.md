@@ -310,7 +310,13 @@ The registry carries a digest of itself, so the schema digest, the column lists
 and the reviewed call sites cannot be edited one at a time; that proves the
 records were recomputed together, not that someone else approved them. Review of
 changes to `scripts/erasure-stores.json` (and to this table) by a second human is
-a policy control, not something CI enforces. The repository's CODEOWNERS file
+a policy control, not something CI enforces. That includes every `known_gaps`
+entry: it must cite an issue listed under `reviewed_issues` with its title, and
+the registry digest changes with either list, so a waiver cannot be added
+quietly, but the test is not the reviewer and cannot tell whether a person agreed
+to it. A table classed `lead_hash` also needs a reason that names how its value is
+derived and how long it lives, and a recorded reason for every column, the hash
+column included. The repository's CODEOWNERS file
 does not cover the registry and does not require a code owner review (see OPEN
 QUESTION 5).
 
