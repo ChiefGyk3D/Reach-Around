@@ -87,17 +87,40 @@ _HANDLE = re.compile(rf"^(?:{_LABEL}\.)+[A-Za-z](?:[A-Za-z0-9-]{{0,61}}[A-Za-z0-
 # percent escapes. No slash, no space, no empty segment; exact comparison only
 # (no case folding), and a total length bound apart from the grammar.
 _DID_WEB_SEGMENT = r"(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{2})+"
-_DID_WEB_HOST = r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?(?:%3[Aa][0-9]{1,5})?"
-_DID = re.compile(
-    r"did:plc:[A-Za-z0-9._:-]{1,120}"
-    rf"|did:web:{_DID_WEB_HOST}(?::{_DID_WEB_SEGMENT})*"
+_DID_WEB_HOST = r"[A-Za-z0-9.-]{1,253}"
+_DID_WEB_PORT = r"(?:%3[Aa]([0-9]{1,5}))?"
+_DID_PLC = re.compile(r"did:plc:[A-Za-z0-9._:-]{1,120}")
+_DID_WEB = re.compile(
+    rf"did:web:({_DID_WEB_HOST}){_DID_WEB_PORT}(?::{_DID_WEB_SEGMENT})*"
 )
 _DID_MAX = 512
+# The host of a did:web is a DNS name: dot-joined labels of 1 to 63 letters,
+# digits and hyphens, none starting or ending with a hyphen, no empty label (so
+# no leading, trailing or doubled dot); it needs a dot unless it is localhost.
+_DID_WEB_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+_MAX_PORT = 65535
+
+
+def _is_did_web_authority(host: str, port: str | None) -> bool:
+    """The host is a valid DNS name and the port, when present, is 1 to 65535."""
+    labels = host.split(".")
+    if not all(_DID_WEB_LABEL.fullmatch(label) for label in labels):
+        return False
+    if len(labels) < 2 and host.lower() != "localhost":
+        return False
+    if port is None:
+        return True
+    return port[0] != "0" and int(port) <= _MAX_PORT
 
 
 def _is_did(value: object) -> bool:
     """A DID of the two known methods, within the length bound."""
-    return type(value) is str and len(value) <= _DID_MAX and bool(_DID.fullmatch(value))
+    if type(value) is not str or len(value) > _DID_MAX:
+        return False
+    if _DID_PLC.fullmatch(value):
+        return True
+    match = _DID_WEB.fullmatch(value)
+    return match is not None and _is_did_web_authority(match.group(1), match.group(2))
 
 
 _CURSOR = re.compile(r"^[A-Za-z0-9._:+=-]{1,128}$")
@@ -377,7 +400,10 @@ def _item(
     # A reply marker that is present must be an object (the lexicon has no null
     # reply): a present null or scalar is malformed, never an original post.
     markers = [item["reply"]] if "reply" in item else []
-    if isinstance(record, dict) and "reply" in record:
+    if not isinstance(record, dict):
+        # Without the record there is no evidence the post is an original one.
+        raise _Stop("bad_shape")
+    if "reply" in record:
         markers.append(record["reply"])
     if any(not isinstance(marker, dict) for marker in markers):
         raise _Stop("bad_shape")
@@ -504,6 +530,10 @@ def check_snapshot(snapshot: Mapping[str, object]) -> None:
     as_of = snapshot.get("as_of")
     if type(as_of) is not str or not _AS_OF.fullmatch(as_of):
         raise ImportGuardError(NOT_ANONYMOUS)
+    try:
+        date.fromisoformat(as_of)  # the day must exist (no 2026-02-30)
+    except ValueError:
+        raise ImportGuardError(NOT_ANONYMOUS) from None
     complete = snapshot.get("complete")
     if type(complete) is not bool:
         raise ImportGuardError(NOT_ANONYMOUS)

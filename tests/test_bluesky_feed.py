@@ -381,6 +381,29 @@ def test_an_object_reply_marker_is_a_skipped_reply_and_a_missing_one_is_original
     assert read.complete and rows_of(read) == [(0, 4, 0)]
 
 
+@pytest.mark.parametrize("record", ["missing", None, "bad", [], ["a"], 7, 7.5, True])
+def test_a_missing_or_non_object_post_record_is_incomplete_not_an_original_post(
+    record: Any,
+) -> None:
+    # #922 round 5: no record means no evidence the post is not a reply.
+    bad = post(1, NOW - timedelta(days=1), likes=500)
+    if record == "missing":
+        del bad["post"]["record"]
+    else:
+        bad["post"]["record"] = record
+    good = post(2, NOW - timedelta(days=2), likes=4)
+    read = run(Pages([feed_page([good, bad])]))
+    assert isinstance(read.rows, NotProvided) and read.reason == "bad_shape"
+    assert bsky.history_aggregates(read) is None
+
+
+def test_an_object_record_without_a_reply_key_is_counted_even_when_empty() -> None:
+    bare = post(1, NOW - timedelta(days=1), likes=6)
+    bare["post"]["record"] = {}
+    read = run(Pages([feed_page([bare])]))
+    assert read.complete and rows_of(read) == [(0, 6, 0)]
+
+
 # --- own posts only -------------------------------------------------------------
 
 
@@ -682,7 +705,14 @@ def test_a_foreign_author_with_a_valid_did_is_still_skipped_cleanly() -> None:
         "did:web:example.com:users:alice",
         "did:web:example.com%3A3000:users:alice",
         "did:web:sub.example.co.uk:a%20b",
-        "did:web:" + "a" * 200 + ".example.com",  # longer than the old tail limit
+        # longer than the old tail limit, in valid labels of at most 63 characters
+        "did:web:" + ("a" * 60 + ".") * 3 + "example.com",
+        "did:web:" + "a" * 63 + ".example.com",
+        "did:web:localhost",
+        "did:web:localhost%3A3000",
+        "did:web:127.0.0.1%3A65535",
+        "did:web:xn--bcher-kva.example",
+        "did:web:a-b.example.com%3A1",
     ],
 )
 def test_valid_did_web_forms_are_the_profile_did_and_an_author_did(web: str) -> None:
@@ -716,6 +746,20 @@ def test_valid_did_web_forms_are_the_profile_did_and_an_author_did(web: str) -> 
         "did:web:-example.com",
         "did:web:" + "a" * 600,
         "did:web:example.com:" + "a" * 600,
+        # round 5: the authority must be a valid host and port
+        "did:web:a..example.com",
+        "did:web:.example.com",
+        "did:web:example.com.",
+        "did:web:example",
+        "did:web:" + "a" * 64 + ".example.com",
+        "did:web:" + "a" * 200 + ".example.com",
+        "did:web:example-.com",
+        "did:web:ex_ample.com",
+        "did:web:example.com%3A65536",
+        "did:web:example.com%3A99999",
+        "did:web:example.com%3A0",
+        "did:web:example.com%3A080",
+        "did:web:example.com%3A00080",
     ],
 )
 def test_hostile_did_web_forms_are_refused_everywhere(bad: str) -> None:
@@ -905,6 +949,36 @@ def test_the_guard_refuses_person_level_keys_and_values() -> None:
         bsky.check_snapshot({**base, "interactions": [{"boosts": "1"}]})
     with pytest.raises(ImportGuardError):
         bsky.check_snapshot({**base, "interactions": "x"})
+
+
+@pytest.mark.parametrize(
+    "as_of",
+    [
+        "2026-02-30",
+        "2026-13-01",
+        "2026-00-10",
+        "2026-11-31",
+        "2027-02-29",
+        "2026-99-99",
+    ],
+)
+def test_a_snapshot_date_that_does_not_exist_is_refused(as_of: str) -> None:
+    snapshot: dict[str, Any] = {
+        "platform": "bluesky",
+        "as_of": as_of,
+        "complete": True,
+        "interactions": [],
+    }
+    with pytest.raises(ImportGuardError):
+        bsky.check_snapshot(snapshot)
+    assert bsky.snapshot_aggregates(snapshot) is None
+
+
+@pytest.mark.parametrize("as_of", ["2026-02-28", "2028-02-29", "2026-12-31"])
+def test_a_snapshot_date_that_exists_is_accepted(as_of: str) -> None:
+    bsky.check_snapshot(
+        {"platform": "bluesky", "as_of": as_of, "complete": True, "interactions": []}
+    )
 
 
 def test_a_guard_hit_writes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
