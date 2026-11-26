@@ -258,44 +258,110 @@ Order of preference, least damage first:
 
 ## Migration rollback check
 
-Migration 0022 drops the two `kit_meta` floor guard triggers and creates them
-again in one file, which is safe only if a failing migration file is rolled back
-whole. The Cloudflare D1 Wrangler commands reference (read 2026-11-26,
-developers.cloudflare.com/workers/wrangler/commands/d1/) says `wrangler d1 migrations
-apply` does that. The property is proven by running a script by hand, not by CI
-or pytest:
+Migration 0022 drops the two `kit_meta` floor guard triggers
+(`kit_meta_floor_insert` and `kit_meta_floor_update`) and creates them again in
+one file. That is safe only if a failing migration file is rolled back whole.
 
-```
-cd worker && npm ci --ignore-scripts && cd ..
-python3 scripts/check-d1-migration-rollback.py
-```
+**Documented by Cloudflare (VERIFIED, read 2026-11-26,
+developers.cloudflare.com/workers/wrangler/commands/d1/):** a failed migration
+is rolled back by `wrangler d1 migrations apply`.
 
-It needs Node 22.12 or newer, uses the pinned Wrangler with `--local` and a
-disposable database in a temp directory, and prints one PASS or FAIL line per
-check. What it guarantees: every child process (the Node probe, the Wrangler
-version probe and every Wrangler run) gets the same allowlisted environment (a
-`PATH` holding the Node directory, a temp `HOME` and `WRANGLER_SEND_METRICS=false`;
-no Cloudflare, token, proxy or `NODE_OPTIONS` variable), so a network call could
-not authenticate; the installed Wrangler must report exactly the version pinned
-in `worker/package-lock.json` or the script refuses; the temp directory is
-removed, and a removal failure is printed as `FAIL cleanup` with the directory
-name and makes the exit code non-zero (a killed run can still leave the
-directory). What it does NOT guarantee: network isolation. `--local` does not
-request a remote D1 and metrics are off, but a modified binary could still open a
-connection; only a sandbox or firewall around the run enforces that. Wrangler
-documents no flag for disabling network use or update checks on this command, so
-none is used. The checks: a failing file that drops
-both triggers leaves both triggers and is not recorded, and a control (the drop
-as its own migration, then a failing one) shows the triggers gone, which proves
-the check can detect the opposite. It exits 0 only when both hold, and refuses to
-run when a CI marker is set unless `RA_ROLLBACK_CHECK_OWNER_RUN=1`.
+**Observed by the author (a record, not a recurring test):** on 2026-11-26, with
+the pinned Wrangler 4.162.0 and Node 22.23.5, run by hand against a disposable
+local database, a failing migration file that drops both triggers and then fails
+left both triggers in place and was not recorded in `d1_migrations`. The control
+(the drop as its own migration, then a failing one) lost both triggers, which
+shows the procedure can detect the opposite result.
 
-It is NOT part of CI or pytest, on purpose: the test guard that keeps any test
-from starting a real Wrangler stays exactly as it is.
-`tests/test_d1_rollback_script.py` only reads the script. One-time result,
-2026-11-26, pinned Wrangler 4.162.0, Node 22.23.5: both checks PASS (both
-triggers survive and the failing file is not recorded; the control shows them
-gone). Run it again after a Wrangler bump.
+This is a manual procedure. It is not part of CI or pytest: the test guard
+forbids any test from starting Wrangler, by design, and that guard is unchanged.
+No script in the repository runs it. Repeat it after a Wrangler bump, by a
+person, on a disposable database only.
+
+### Procedure
+
+1. Use Node 22.12 or newer (for example `nvm use 22`) and install the pinned
+   dependencies without running install scripts:
+
+   ```
+   cd worker && npm ci --ignore-scripts
+   ```
+
+2. Make a temp directory with the migrations up to 0021, a local-only config and
+   an empty entry file:
+
+   ```
+   work=$(mktemp -d) && mkdir "$work/migrations" "$work/home"
+   cp migrations/00[01]*.sql migrations/002[01]*.sql "$work/migrations/"
+   printf 'export default {};\n' > "$work/index.js"
+   ```
+
+   Put this in `"$work/wrangler.toml"` (one local D1 binding, a dummy id):
+
+   ```
+   name = "rollback-probe"
+   main = "index.js"
+   compatibility_date = "2026-10-01"
+
+   [[d1_databases]]
+   binding = "DB"
+   database_name = "rollback-probe-db"
+   database_id = "00000000-0000-0000-0000-000000000000"
+   migrations_dir = "migrations"
+   ```
+
+3. Run every Wrangler call with a clean environment and no credentials (no
+   Cloudflare token, no proxy variable, no `NODE_OPTIONS`), local only, with the
+   pinned binary and the temp state directory:
+
+   ```
+   env -i PATH="$(dirname "$(command -v node)"):/usr/bin:/bin" HOME="$work/home" \
+     WRANGLER_SEND_METRICS=false \
+     node_modules/.bin/wrangler --version
+   env -i PATH="$(dirname "$(command -v node)"):/usr/bin:/bin" HOME="$work/home" \
+     WRANGLER_SEND_METRICS=false \
+     node_modules/.bin/wrangler d1 migrations apply DB --local \
+     --persist-to "$work/state" --config "$work/wrangler.toml"
+   ```
+
+   The version must equal the one pinned in `worker/package-lock.json`. The
+   first apply creates the baseline; check it with the queries in step 5 (both
+   triggers present).
+
+4. Failing file: add `"$work/migrations/0022_fail.sql"` containing
+
+   ```
+   DROP TRIGGER IF EXISTS kit_meta_floor_insert;
+   DROP TRIGGER IF EXISTS kit_meta_floor_update;
+   THIS IS NOT VALID SQL;
+   ```
+
+   and run the same apply command. It must exit non-zero.
+
+5. Query the local database (the `.sqlite` file under `$work/state/v3/d1`, not
+   `metadata.sqlite`):
+
+   ```
+   sqlite3 -readonly <that file> "SELECT name FROM sqlite_master WHERE type = 'trigger';"
+   sqlite3 -readonly <that file> "SELECT name FROM d1_migrations;"
+   ```
+
+   Expected: both trigger names are listed, and `0022_fail.sql` is not in
+   `d1_migrations`.
+
+6. Control: in a fresh copy of steps 2 and 3, add `0022_drop.sql` holding only
+   the two `DROP TRIGGER` lines and `0023_fail.sql` holding only the invalid
+   line, then apply. Expected: non-zero exit, `0022_drop.sql` recorded, and no
+   triggers left.
+
+7. Remove the temp directory (`rm -r "$work"`).
+
+What the procedure does NOT guarantee: network isolation. `--local` does not
+request a remote D1 and metrics are off, but nothing here blocks a connection
+by a modified binary; run it inside a sandbox or behind a firewall if that
+matters. Wrangler documents no flag for disabling network use or update checks
+on this command, so none is used. The two trigger names above are kept in sync
+with migration 0022 by `tests/test_docs_migration_rollback_note.py`.
 
 ## When something fails
 
