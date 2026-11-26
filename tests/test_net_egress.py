@@ -369,9 +369,14 @@ class DripServer:
             pass
 
     def close(self) -> None:
+        try:
+            self.listener.shutdown(socket.SHUT_RDWR)  # wakes a blocked accept()
+        except OSError:
+            pass  # a listener that never connected: shutdown is refused
         self.listener.close()
         for conn in self._conns:
             conn.close()
+        self._thread.join(10)
 
 
 def drip(conn: socket.socket, data: bytes, gap: float = 0.1) -> None:

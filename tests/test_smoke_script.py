@@ -12,10 +12,12 @@ import subprocess
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 import pytest
+
+from joinedserver import JoinedHTTPServer
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "smoke.sh"
@@ -85,7 +87,7 @@ def make_handler(mode: str) -> type[BaseHTTPRequestHandler]:
 
 @contextmanager
 def serve(mode: str = "good") -> Iterator[str]:
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(mode))
+    srv = JoinedHTTPServer(("127.0.0.1", 0), make_handler(mode))
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
     try:

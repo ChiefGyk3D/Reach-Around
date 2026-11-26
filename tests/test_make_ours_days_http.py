@@ -11,12 +11,13 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from datetime import date
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from joinedserver import JoinedHTTPServer
 from test_make_ours_days import FIX, TODAY, Fake, go, mod
 
 Handler = Callable[[BaseHTTPRequestHandler], None]
@@ -58,8 +59,7 @@ class Local:
             def log_message(self, *_a: object) -> None:
                 pass
 
-        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
-        self.srv.daemon_threads = True
+        self.srv = JoinedHTTPServer(("127.0.0.1", 0), H)
         self.thread = threading.Thread(target=self.srv.serve_forever, daemon=True)
         self.thread.start()
 

@@ -15,11 +15,12 @@ import re
 import threading
 from collections.abc import Iterator
 from datetime import date
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from http.server import SimpleHTTPRequestHandler
 from pathlib import Path
 
 import pytest
 
+from joinedserver import JoinedHTTPServer
 from reach_around.config import load_site_config
 from reach_around.site.build import build_site
 
@@ -72,7 +73,8 @@ class _Quiet(SimpleHTTPRequestHandler):
 
 @pytest.fixture(scope="module")
 def pages(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, str]]:
-    servers = []
+    servers: list[JoinedHTTPServer] = []
+    threads: list[threading.Thread] = []
     urls: dict[str, str] = {}
     base = load_site_config(EXAMPLE)
     for name, avatar in (("noavatar", None), ("avatar", base.creator.avatar)):
@@ -83,9 +85,11 @@ def pages(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, str]]:
         config = base.model_copy(update={"creator": creator})
         build_site(config, out, today=date(2027, 3, 10), assets_dir=EXAMPLE.parent)
         handler = functools.partial(_Quiet, directory=str(out))
-        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        server = JoinedHTTPServer(("127.0.0.1", 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
         servers.append(server)
+        threads.append(thread)
         urls[name] = f"http://127.0.0.1:{server.server_address[1]}/"
     try:
         yield urls
@@ -93,6 +97,8 @@ def pages(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, str]]:
         for server in servers:
             server.shutdown()
             server.server_close()
+        for thread in threads:
+            thread.join(timeout=5)
 
 
 @pytest.mark.visual
