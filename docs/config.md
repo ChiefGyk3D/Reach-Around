@@ -187,7 +187,7 @@ socials:
 | --- | --- | --- | --- |
 | `id` | Slug | required | unique across the site |
 | `title` | Title | required | the label in the navigation |
-| `intent` | `watch`, `videos`, `follow`, `community`, `support`, `work`, `shop`, `blog`, `gear`, `more`, `hire`, `free`, `paid`, `crypto` or `contact` | none | Required by `page.layout: stack`; the tab becomes an ordered group and its title becomes the group heading. Each intent appears once per screen. |
+| `intent` | `watch`, `videos`, `follow`, `community`, `support`, `work`, `shop`, `blog`, `gear`, `services`, `more`, `hire`, `free`, `paid`, `crypto` or `contact` | none | Required by `page.layout: stack`; the tab becomes an ordered group and its title becomes the group heading. Each intent appears once per screen. |
 | `screen` | `support` or `contact` | none (the home screen) | Only with `page.density: compact`: draw the group on its own screen at `/support/` or `/contact/` instead of the home screen; see [Screens](#screens). |
 | `note` | plain text, 1 to 160 characters | none | Only with `page.density: compact`: one line under the group heading (an affiliate line, or the sentence of a hire block). Escaped, never markup; no control characters, no leading or trailing space. |
 | `page_title` | page title text | none | Replaces the whole browser title of this tab's page; see [Page titles](#page-titles). It is not called `title` because that key is the navigation label. |
@@ -214,7 +214,7 @@ tabs:
 | `icon` | Slug | none | |
 | `image` | local image path | none | A round thumbnail; wins over `icon`. Same path rules as a local `avatar`, file at most 256 KiB. See [Link thumbnails](customizing.md#link-thumbnails). |
 | `image_alt` | text | empty | At most 120 characters; empty means decorative. Refused without `image`. |
-| `affiliate` | boolean | `false` | |
+| `affiliate` | `true` or `false` (a real boolean; `yes` or `"true"` is refused) | `false` | Marks a link you earn from. It gets `rel="sponsored noopener noreferrer"` and turns the page's disclosure line on. |
 | `show_from` | Date | none | first day the link shows |
 | `show_until` | Date | none | last day the link shows; must not be before `show_from` (the same day is fine) |
 
@@ -359,9 +359,14 @@ example is [`examples/instance/site-link-grid.yaml`](../examples/instance/site-l
   240 px wide screen (a group is then at least 48 px wide: one 44 px tile plus
   its 4 px of gap); a tile cannot be both 44 px wide and inside a narrower
   container, so below that width the guarantee does not apply.
-- The `gear`, `more` and `hire` intents exist for the groups the grid uses
-  (a gear section, Website, GitHub, Email and RSS, a hire-me group); each may
-  appear once per screen like every intent. A `hire` group is exactly one link
+- The `gear`, `services`, `more` and `hire` intents exist for the groups the grid
+  uses (a hardware section, a software and services section, Website, GitHub,
+  Email and RSS, a hire-me group); each may appear once per screen like every
+  intent. Keep each recommendation group to what you actually use, and mark every
+  link you earn from with `affiliate: true`: it then carries
+  `rel="sponsored noopener noreferrer"` and the page shows the
+  [`disclosure`](#disclosure) line. A page with no flagged link shows no
+  disclosure (unless `disclosure.always` is on). A `hire` group is exactly one link
   and sets no `columns`: it draws as one separate panel (see [Screens](#screens)). Name the gear group anything you like in its
   tab `title`.
 - Tile height follows the viewport height, from the tap size up to 4.5 rem, so

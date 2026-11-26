@@ -111,7 +111,19 @@ SITE_BUDGET = Budget(
 MAX_LOC_SEGMENT_CHARS = 40
 MAX_LOC_SEGMENTS = 8
 
-Title = Annotated[str, StringConstraints(min_length=1, max_length=200)]
+
+def _not_blank(value: str) -> str:
+    # A title of only spaces draws an empty heading or an unlabeled tile (#873).
+    if not value.strip():
+        raise ValueError("must not be blank")
+    return value
+
+
+Title = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=200),
+    AfterValidator(_not_blank),
+]
 Subtitle = Annotated[str, StringConstraints(min_length=1, max_length=500)]
 Slug = Annotated[str, StringConstraints(pattern=_SLUG.pattern)]
 
@@ -171,7 +183,9 @@ class Link(_Model):
     icon: Slug | None = None
     image: Annotated[str, Field(max_length=_MAX_URL)] | None = None
     image_alt: Annotated[str, StringConstraints(max_length=120)] = ""
-    affiliate: bool = False
+    # Strict: "yes", 1 or "true" are refused, so a typo cannot silently turn a
+    # paid link into an unflagged one (#873).
+    affiliate: StrictBool = False
     featured: bool = False
     show_from: date | None = None
     show_until: date | None = None
@@ -233,6 +247,7 @@ Intent = Literal[
     "shop",
     "blog",
     "gear",
+    "services",
     "more",
     "hire",
     "free",
