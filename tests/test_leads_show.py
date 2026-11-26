@@ -36,15 +36,6 @@ def cli(argv: list[str]) -> int:
         and "--database" not in args
     ):
         args += ["--database", "reach-around-leads"]
-    # #856 round 5: `leads delete --yes` needs the database holding the alert
-    # hashes; the conftest stub answers its wrangler calls. Assertions unchanged.
-    if (
-        args[:2] == ["leads", "delete"]
-        and "--yes" in args
-        and "--alerts-database" not in args
-        and "--checklist" not in args
-    ):
-        args += ["--alerts-database", "alerts-db"]
     return main(args)
 
 

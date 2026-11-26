@@ -4,13 +4,12 @@
 The owner's way to honor a deletion request for one media kit lead (a person who
 typed an email address into the gate). It reads a local D1 export of the
 ``leads`` table, finds the one row for the address, and prints the SQL that
-deletes that lead and its kit events. It exposes no route and writes no file
-unless ``--sql-out`` is given: the owner applies the printed SQL with
-``wrangler d1 execute`` (docs/privacy.md, "Deleting one lead"). The one thing it
-runs itself is, with ``--yes``, a fixed clear and a read-back of the
-``alert_dedup`` hash table through ``npx wrangler`` (see ``clear_alert_hashes``);
-it uses the owner's own wrangler login and sends no value from the export or
-the address.
+deletes that lead and its kit events. It does not talk to Cloudflare, needs no
+token, exposes no route and writes no file unless ``--sql-out`` is given: the
+owner applies the printed SQL with ``wrangler d1 execute`` (docs/privacy.md,
+"Deleting one lead"). It does NOT clear the ``alert_dedup`` hash table: with
+``--yes`` it prints two constant hand commands for it, and clearing that table
+and reading it back as 0 is a mandatory manual checklist step (known gap, #905).
 
 Safety rules, all tested:
 
@@ -34,10 +33,8 @@ Safety rules, all tested:
   refuses the export before a row is read.
 * Exactly one match is required. None is exit 1; more than one is exit 2.
 
-Exit codes: 0 done (dry run, or SQL printed and the alert hashes cleared and read
-back as 0); 1 no lead matches; 2 usage problem or an export that was refused; 3
-the SQL was printed but the alert hash step did not finish (erasure is NOT
-complete: the message names the step).
+Exit codes: 0 done (dry run or SQL printed); 1 no lead matches; 2 usage problem
+or an export that was refused.
 """
 
 from __future__ import annotations
@@ -47,8 +44,6 @@ import json
 import os
 import re
 import shlex
-import shutil
-import subprocess
 import sys
 import unicodedata
 from datetime import UTC, datetime
@@ -405,26 +400,16 @@ _STATEMENTS = (
 _SQL_EMAIL = re.compile(r"[a-z0-9_+.@-]{6,254}")
 
 # The alert dedup table keeps a keyed hash of recent alerts, which can include
-# the address. The delete file does not touch it (a statement on a missing table
-# could fail the whole erasure file). Instead `--yes` runs, itself, one fixed
-# clear and one fixed read-back against the database the owner named, and exits
-# EXIT_ALERTS unless the read-back is 0 (or the schema says the table does not
-# exist there). Clearing every row only resets repeat-alert suppression for up
-# to 10 minutes. In this repository the Worker reaches the lead tables and the
-# alert tables through the same `DB` binding, so the database named by
-# --database is the one that holds both; a deployment that split them is not
-# detected by this tool (the schema check below would read "table absent").
-EXIT_ALERTS = 3
+# the address. This tool does NOT clear it (known gap, tracked in #905): the
+# delete file does not touch it, because a statement on a missing table could
+# fail the whole erasure file and this tool cannot tell which database holds the
+# alert tables. The two constant statements below are printed as separate hand
+# commands, and running them and reading 0 back is a mandatory manual checklist
+# step. Clearing every row only resets repeat-alert suppression for up to 10
+# minutes.
 ALERT_CLEAR_SQL = "DELETE FROM alert_dedup"
 ALERT_READBACK_SQL = "SELECT COUNT(*) AS alert_dedup_remaining FROM alert_dedup"
-ALERT_SCHEMA_SQL = (
-    "SELECT COUNT(*) AS alert_table_present FROM sqlite_master "
-    "WHERE type = 'table' AND name = 'alert_dedup'"
-)
-ALERT_MISSING_TEXT = "no such table: alert_dedup"
 _DATABASE_NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
-WRANGLER_TIMEOUT_SECONDS = 120
-MAX_WRANGLER_OUTPUT = 1_048_576
 
 
 def _checked_database(database: str) -> str:
@@ -445,105 +430,6 @@ def alert_clear_commands(database: str) -> list[str]:
         f'wrangler d1 execute {name} --remote --command "{sql}"'
         for sql in (ALERT_CLEAR_SQL, ALERT_READBACK_SQL)
     ]
-
-
-def _run_wrangler(database: str, sql: str) -> tuple[int, str, str]:
-    """One `npx wrangler d1 execute DATABASE --remote --json --command SQL` call:
-    argv list, no shell, no stdin, bounded time. Returns (exit code, stdout,
-    stderr); the caller never prints either stream (they can carry an error from
-    the remote database). A missing `npx`, a timeout or an OS error is exit 127."""
-    npx = shutil.which("npx")
-    if npx is None:
-        return 127, "", ""
-    argv = [
-        npx,
-        "wrangler",
-        "d1",
-        "execute",
-        _checked_database(database),
-        "--remote",
-        "--json",
-        "--command",
-        sql,
-    ]
-    try:
-        done = subprocess.run(  # noqa: S603 - fixed argv, validated name, constant SQL
-            argv,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=WRANGLER_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return 127, "", ""
-    return done.returncode, done.stdout[:MAX_WRANGLER_OUTPUT], done.stderr[:4096]
-
-
-def _single_count(stdout: str, column: str) -> int | None:
-    """The one integer a `--json` COUNT answer holds, or None for anything else
-    (every block must say success true, exactly one row, exactly that column)."""
-    try:
-        blocks = json.loads(stdout)
-    except ValueError:
-        return None
-    if not isinstance(blocks, list) or not blocks:
-        return None
-    count: int | None = None
-    for block in blocks:
-        if not isinstance(block, dict) or block.get("success") is not True:
-            return None
-        rows = block.get("results")
-        if (
-            not isinstance(rows, list)
-            or len(rows) != 1
-            or not isinstance(rows[0], dict)
-            or set(rows[0]) != {column}
-        ):
-            return None
-        value = rows[0][column]
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            return None
-        count = value
-    return count
-
-
-def _statement_ok(stdout: str) -> bool:
-    try:
-        blocks = json.loads(stdout)
-    except ValueError:
-        return False
-    return (
-        isinstance(blocks, list)
-        and bool(blocks)
-        and all(isinstance(b, dict) and b.get("success") is True for b in blocks)
-    )
-
-
-def clear_alert_hashes(database: str) -> tuple[str | None, str]:
-    """Clear `alert_dedup` in ``database`` and read it back. Returns
-    ``(outcome, detail)``: outcome ``"cleared"`` (read-back 0), ``"absent"`` (the
-    clear failed with the one missing-table error AND a schema query read 0 tables
-    of that name) or None (not done; detail is a fixed reason, never a remote
-    message)."""
-    code, out, err = _run_wrangler(database, ALERT_CLEAR_SQL)
-    if code == 0 and _statement_ok(out):
-        code, out, err = _run_wrangler(database, ALERT_READBACK_SQL)
-        if code != 0:
-            return None, "the read-back did not run"
-        remaining = _single_count(out, "alert_dedup_remaining")
-        if remaining is None:
-            return None, "the read-back answer was not a single count"
-        if remaining != 0:
-            return None, f"the read-back shows {remaining} rows, not 0"
-        return "cleared", "read back 0 rows"
-    if ALERT_MISSING_TEXT in out + err:
-        code, out, err = _run_wrangler(database, ALERT_SCHEMA_SQL)
-        if code == 0 and _single_count(out, "alert_table_present") == 0:
-            return "absent", "the schema has no alert_dedup table"
-        return None, "the table looked missing but the schema check did not confirm it"
-    return None, "the clear did not run or was refused"
 
 
 def _sql(lead_id: str, email: str) -> list[str]:
@@ -690,21 +576,20 @@ other copy exists. Tick each item in your reply and say what you checked.
    leaves the lead tables out). Delete them and empty the trash.
 6. Shell history and notes. Check that the address is not in your shell
    history, a ticket or a note (the tools take it from stdin or a file only).
-7. Short-lived alert hash (done by the tool, which fails if it cannot). The
-   `alert_dedup` table holds a keyed hash of each recent alert, which can
-   include the address. A row stops counting as a repeat after 10 minutes, but
-   it is deleted only when the next alert event is admitted (no timer), so on
-   a quiet site it can stay stored until then. The delete SQL does not touch
-   it. `reach-around leads delete --yes --alerts-database NAME` itself clears
-   the whole table in the database you name and reads it back through
-   wrangler; it exits 3 and says ERASURE IS NOT COMPLETE unless the read-back
-   shows 0 (or the schema has no such table there). Name the database that
-   holds the alert tables (the Worker's own `DB` today; the leads database
-   when they share it). Clearing the table only resets repeat-alert
-   suppression for up to 10 minutes. On exit 3, fix the cause and run it
-   again; until it reports a read-back of 0 the store is not clear. The
-   clear is a moment in time: if the person can still unlock the kit, run it
-   again after the lead SQL is applied.
+7. Short-lived alert hash (MANDATORY MANUAL STEP: lead rows erased; the alert
+   hash step is manual and mandatory). The `alert_dedup` table holds a keyed
+   hash of each recent alert, which can include the address. A row stops
+   counting as a repeat after 10 minutes, but it is deleted only when the next
+   alert event is admitted (no timer), so on a quiet site up to 500 rows stay
+   stored until the next alert or a hand clear. `leads delete` does NOT clear
+   this table and does not touch it (known gap; the automatic clear is tracked
+   in #905). `reach-around leads delete --yes` prints the exact clearing
+   command and a read-back above its apply command, to be run after it; run
+   both against the database that holds the alert tables (the leads database
+   when they share it; docs/privacy.md has the statement) and require the
+   read-back to show 0. Clearing the table only resets repeat-alert
+   suppression for up to 10 minutes. Until you have read 0, the store is not
+   clear and the erasure is not complete.
 8. Worker storage, as far as a text scan can show. The scripts/erasure-stores.json
    registry and its test list every file that names a KV, cache, R2, Durable
    Object or queue primitive or binding, and pin each statement that does. That
@@ -736,7 +621,6 @@ def run_delete(args: argparse.Namespace) -> int:
             or args.dry_run
             or args.database is not None
             or args.sql_out is not None
-            or args.alerts_database is not None
         ):
             print(
                 "error: --checklist prints a fixed list and takes no other option",
@@ -757,18 +641,6 @@ def run_delete(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return EXIT_USAGE
-    if args.alerts_database is not None and not args.yes:
-        print("error: --alerts-database needs --yes", file=sys.stderr)
-        return EXIT_USAGE
-    if args.alerts_database is not None and not _DATABASE_NAME.fullmatch(
-        args.alerts_database
-    ):
-        print(
-            "error: --alerts-database must be a database name made of letters, "
-            "digits, '_' and '-' (at most 64 characters)",
-            file=sys.stderr,
-        )
-        return EXIT_USAGE
     if args.sql_out is not None and not args.yes:
         print("error: --sql-out needs --yes", file=sys.stderr)
         return EXIT_USAGE
@@ -781,12 +653,6 @@ def run_delete(args: argparse.Namespace) -> int:
         return EXIT_USAGE
     try:
         database = _database(args.database)
-        if args.yes and args.alerts_database is None:
-            raise LeadsError(
-                "--yes needs --alerts-database NAME: the database that holds the "
-                "alert_dedup table (erasure clears it and reads it back, and fails "
-                "if it cannot)"
-            )
         email = _address(args.email)
         leads = load_leads(args.input)
     except LeadsError as exc:
@@ -837,26 +703,23 @@ def run_delete(args: argparse.Namespace) -> int:
         else "The SQL is on stdout; prefer --sql-out, which creates a private "
         "file and refuses a path that exists or ends in a symlink. "
     )
-    # The alert hash step runs here, before the apply command is printed, so the
-    # apply command stays the last thing on stderr when it succeeds (the tests and
-    # operators take the command from there). A failure is reported after it.
-    alerts_db = args.alerts_database
+    # Printed before the apply command, which stays the last thing on stderr (the
+    # tests and operators take the command from there). The two lines carry no
+    # `npx` prefix for the same reason: the apply command is the one that does.
+    clear, readback = alert_clear_commands(database)
     print(
-        f"alert hashes: clearing the alert_dedup table in {alerts_db} and reading "
-        "it back (a keyed hash of a recent alert can hold this address; clearing "
-        "it only resets repeat-alert suppression for up to 10 minutes)",
+        "MANDATORY MANUAL STEP (checklist item 7): this tool does NOT clear the "
+        "alert hashes, so the alert hash step is manual and mandatory and the "
+        "removal is not complete until it reads 0 (known gap, #905). Run it "
+        "after the apply command below: the `alert_dedup` table can hold a keyed "
+        "hash of this address until the next alert is admitted, and the file "
+        "does not touch it. "
+        "Clearing it only resets repeat-alert suppression for up to 10 minutes. "
+        f"This tool cannot tell whether the alert tables are in {database}; "
+        "run both lines, each after `npx`, against the database that holds them. "
+        f"The store is clear only when the read-back shows 0:\n{clear}\n{readback}",
         file=sys.stderr,
     )
-    outcome, detail = clear_alert_hashes(alerts_db)
-    if outcome == "cleared":
-        print("alert hashes: cleared, read back 0 rows", file=sys.stderr)
-    elif outcome == "absent":
-        print(
-            f"alert hashes: no alert_dedup table in {alerts_db} (the schema query "
-            "read 0); nothing to clear there. If your alert tables are in another "
-            "database, run this again with that database name",
-            file=sys.stderr,
-        )
     print(
         f"1 lead matches. {where}It holds the address, so delete it afterward. "
         "It deletes only a row in the live database that still pairs that id "
@@ -871,18 +734,6 @@ def run_delete(args: argparse.Namespace) -> int:
     )
     if args.sql_out is None:
         sys.stdout.write(text)
-    if outcome is None:
-        clear, readback = alert_clear_commands(alerts_db)
-        print(
-            f"error: ERASURE IS NOT COMPLETE: the alert hash step failed ({detail}). "
-            "The lead SQL above is still valid and can be applied. The alert_dedup "
-            "table may still hold a keyed hash of this address. Fix the cause "
-            "(wrangler login, network, database name) and run the step again, by "
-            "re-running this command or by hand, each line after `npx`; the store "
-            f"is clear only when the read-back shows 0:\n{clear}\n{readback}",
-            file=sys.stderr,
-        )
-        return EXIT_ALERTS
     return EXIT_OK
 
 
@@ -944,22 +795,12 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         description="Read a local export of the leads table (made with wrangler "
         "d1 execute --json, see docs/privacy.md), find the lead for one email "
         "address and print the SQL that deletes it. Dry run by default; --yes "
-        "prints the SQL and also clears the alert_dedup hash table through "
-        "wrangler (--alerts-database) and reads it back. The lead SQL is only "
-        "printed, never run, and no file is written unless --sql-out; the SQL "
-        "pairs the lead id with its address, so it deletes only a row that "
-        "still matches both. --database and --email - are required. Exit 0 "
-        "done, 1 no match, 2 usage problem or a refused export, 3 the SQL was "
-        "printed but the alert hash step did not finish (erasure not complete).",
-    )
-    delete.add_argument(
-        "--alerts-database",
-        default=None,
-        metavar="NAME",
-        help="required with --yes: the D1 database that holds the alert_dedup "
-        "table (letters, digits, _ and -); the tool clears that table and reads "
-        "it back with `npx wrangler d1 execute NAME --remote`, and exits 3 "
-        "unless the read-back is 0",
+        "prints the SQL and two hand commands for the alert hash table, which "
+        "this tool does not clear (a mandatory manual step). No network call, "
+        "no file written unless --sql-out; the SQL pairs "
+        "the lead id with its address, so it deletes only a row that still "
+        "matches both. --database and --email - are required. Exit 0 done, "
+        "1 no match, 2 usage problem or a refused export.",
     )
     delete.add_argument("--input", type=Path, metavar="PATH", help="leads export, JSON")
     delete.add_argument(

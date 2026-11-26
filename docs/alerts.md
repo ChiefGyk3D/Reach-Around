@@ -245,10 +245,10 @@ real zero and stays one. See [report.md](report.md#gaps) and
   at most 500 rows. A row stops counting as a repeat after those 10 minutes,
   but it is deleted only when the next alert event is admitted (there is no
   timer), so on a quiet site an expired row can stay stored until the next alert
-  or until cleared. An erasure clears the whole table: `reach-around leads delete
-  --yes --alerts-database NAME` empties `alert_dedup` and reads it back, and fails
-  (exit 3) if it cannot read 0; that only resets repeat-alert suppression for up
-  to 10 minutes (docs/privacy.md). A
+  or until cleared by hand. Erasure (`reach-around leads delete`) does not clear
+  this table: clearing it and reading it back to 0 is a mandatory manual step of
+  the erasure checklist (known gap, tracked in #905), and it only resets
+  repeat-alert suppression for up to 10 minutes (docs/privacy.md). A
   failed admission releases the claim, so a retry is not mistaken for a repeat.
 - Input is bounded: the address is cut to 254 characters before it is
   normalized or hashed, and only a normalized address of at most 254 characters

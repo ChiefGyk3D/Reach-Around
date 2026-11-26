@@ -2073,27 +2073,125 @@ def test_the_storage_conclusion_claims_only_what_the_scan_proves() -> None:
     )
 
 
-def test_the_delete_flow_clears_the_alert_hashes_and_the_docs_agree() -> None:
-    # Test change (#856 round 5): the tool now runs the clear itself and exits 3
-    # unless the read-back is 0; the printed commands are only the retry text.
+def test_the_delete_flow_hands_over_the_alert_clear_and_the_docs_agree() -> None:
+    # Test change (#856 round 6): the automatic clear is split out to #905; the
+    # tool prints the two hand commands again and the docs say it does not clear.
     clear, readback = alert_clear_commands("reach-around-leads")
     assert clear.endswith(f'--command "{ALERT_CLEAR_SQL}"')
     assert readback.endswith(f'--command "{ALERT_READBACK_SQL}"')
     assert "reach-around-leads" in clear and "--remote" in clear
     # The delete file itself never carries it (a missing table must not fail the
-    # erasure of the lead rows); the tool's own alert step covers the table.
+    # erasure of the lead rows); the checklist makes the step mandatory, read back.
     assert "alert_dedup" not in delete_sql()
     flat = " ".join(CHECKLIST.split())
-    assert "--alerts-database" in flat and "exits 3" in flat
-    assert "ERASURE IS NOT COMPLETE" in flat
+    assert "MANDATORY MANUAL STEP" in flat and "read-back to show 0" in flat
+    assert "does NOT clear" in flat and "#905" in flat
+    assert "lead rows erased; the alert hash step is manual and mandatory" in flat
     assert "without the Worker's secret key" not in flat, "no claim of harmlessness"
-    assert "until it reports a read-back of 0 the store is not clear" in flat
-    assert "by hand" not in flat.split("7. ", 1)[1].split("8. ", 1)[0]
+    assert "--alerts-database" not in flat and "exits 3" not in flat
+    assert "Until you have read 0, the store is not clear" in flat
     docs = " ".join(PRIVACY.read_text(encoding="utf-8").split())
     assert f'--command "{ALERT_CLEAR_SQL}"' in docs
     assert f'--command "{ALERT_READBACK_SQL}"' in docs
-    assert "--alerts-database" in docs and "ERASURE IS NOT COMPLETE" in docs
-    assert "--alerts-database" in " ".join(ALERTS_DOC.read_text("utf-8").split())
+    assert "--alerts-database" not in docs and "ERASURE IS NOT COMPLETE" not in docs
+    assert "does NOT clear" in docs and "#905" in docs
+    assert "up to 500 rows" in docs and "mandatory manual step" in docs.lower()
+    alerts = " ".join(ALERTS_DOC.read_text("utf-8").split())
+    assert "--alerts-database" not in alerts
+    assert "does not clear this table" in alerts and "#905" in alerts
+
+
+def lead_hash_gap_violations(
+    registry: dict[str, Any], delete_statements: str
+) -> list[str]:
+    """Every table classed lead_hash must be cleared by the delete flow or listed
+    under known_gaps with an issue number, so a gap cannot be silent; a listed gap
+    must name a real table, carry a description and an issue number, and not be for
+    a table the delete flow now clears (a stale gap)."""
+    found: list[str] = []
+    listed: dict[str, dict[str, Any]] = {}
+    for gap in registry.get("known_gaps", []):
+        table = gap.get("table")
+        if not isinstance(table, str) or table not in registry["stores"]:
+            found.append(f"known gap names no registered table: {table!r}")
+            continue
+        listed[table] = gap
+        issue = gap.get("issue")
+        if isinstance(issue, bool) or not isinstance(issue, int) or issue <= 0:
+            found.append(f"{table}: known gap has no issue number")
+        if len(str(gap.get("description", "")).strip()) < 20:
+            found.append(f"{table}: known gap has no description")
+        if registry["stores"][table].get("class") != "lead_hash":
+            found.append(f"{table}: known gap for a table that is not lead_hash")
+    for table, entry in registry["stores"].items():
+        if entry["class"] != "lead_hash":
+            continue
+        cleared = re.search(rf"DELETE FROM {table}\b", delete_statements) is not None  # noqa: S608
+        if cleared and table in listed:
+            found.append(
+                f"{table}: listed as a known gap but the delete flow clears it"
+            )
+        if not cleared and table not in listed:
+            found.append(
+                f"{table}: lead_hash table neither cleared by the delete flow nor "
+                "listed under known_gaps with an issue number"
+            )
+    return found
+
+
+def test_a_lead_hash_table_is_cleared_or_a_listed_known_gap() -> None:
+    """#856 (split to #905): the alert hash table is not cleared by `leads delete`;
+    the registry must say so with an issue number, so the gap is never silent."""
+    registry = load_registry()
+    assert lead_hash_gap_violations(registry, delete_sql()) == []
+    gaps = {g["table"]: g for g in registry["known_gaps"]}
+    assert gaps["alert_dedup"]["issue"] == 905
+    # The docs and the checklist name every gap's issue number.
+    docs = " ".join(PRIVACY.read_text(encoding="utf-8").split())
+    flat = " ".join(CHECKLIST.split())
+    for gap in gaps.values():
+        assert f"#{gap['issue']}" in docs and f"#{gap['issue']}" in flat
+
+
+def test_the_known_gap_guard_bites() -> None:
+    registry = copy.deepcopy(load_registry())
+    # A new lead_hash table that nobody lists fails by name.
+    registry["stores"]["new_hash"] = {
+        "class": "lead_hash",
+        "reason": "keyed hash of an event, added in a test",
+        "columns": ["h"],
+    }
+    assert any(
+        "new_hash" in v and "known_gaps" in v
+        for v in lead_hash_gap_violations(registry, delete_sql())
+    )
+    # Removing the entry for the real table fails too.
+    bare = copy.deepcopy(load_registry())
+    bare["known_gaps"] = []
+    assert any("alert_dedup" in v for v in lead_hash_gap_violations(bare, delete_sql()))
+    # An entry without a usable issue number fails.
+    for bad in (None, 0, "905", True, -3):
+        broken = copy.deepcopy(load_registry())
+        broken["known_gaps"][0]["issue"] = bad
+        assert any(
+            "no issue number" in v
+            for v in lead_hash_gap_violations(broken, delete_sql())
+        ), bad
+    # A gap for a table the delete flow clears is stale.
+    stale = copy.deepcopy(load_registry())
+    assert any(
+        "clears it" in v
+        for v in lead_hash_gap_violations(
+            stale, delete_sql() + "\nDELETE FROM alert_dedup;"
+        )
+    )
+    # A gap for a table that is not registered, or not lead_hash, fails.
+    ghost = copy.deepcopy(load_registry())
+    ghost["known_gaps"].append({"table": "nope", "description": "x" * 30, "issue": 1})
+    assert any("no registered table" in v for v in lead_hash_gap_violations(ghost, ""))
+    other = copy.deepcopy(load_registry())
+    other["known_gaps"].append({"table": "leads", "description": "x" * 30, "issue": 2})
+    assert any("not lead_hash" in v for v in lead_hash_gap_violations(other, ""))
 
 
 # --- the alert hash lifetime, as the code really behaves -------------------------
