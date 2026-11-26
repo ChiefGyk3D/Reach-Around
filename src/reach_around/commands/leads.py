@@ -61,8 +61,8 @@ Outside the repository a sticky shared directory owned by root (such as
 non-optional peers) that is not installed under ``worker/node_modules`` is
 refused, as is a ``node_modules`` in the repository root or any directory above
 it (or a legacy module folder in HOME); a symlink (to a file or a directory)
-must resolve inside ``worker/node_modules``, the directories between its target and the repository
-root are checked, and a directory target is walked.
+must resolve inside ``worker/node_modules``, the directories between its target
+and the repository root are checked, and a directory target is walked.
 
 Installation mode. Only the layout made by ``cd worker && npm ci
 --ignore-scripts`` is supported: the lock file is ``worker/package-lock.json`` and
@@ -1966,8 +1966,8 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "own private primary group on a machine with local account files is "
         "fine; otherwise run 'chmod -R g-w worker/node_modules'). Only the "
         "layout of 'cd worker && npm ci --ignore-scripts' is supported (hoisted "
-        "or workspace installs are refused). It receives your Cloudflare token: this is a trust "
-        "boundary, not an integrity check",
+        "or workspace installs are refused). It receives your Cloudflare token: "
+        "this is a trust boundary, not an integrity check",
     )
     delete.add_argument(
         "--finish",
