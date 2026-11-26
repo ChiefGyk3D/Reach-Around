@@ -1854,7 +1854,7 @@ def delete_flow_violations(
             found.append(
                 f"the delete flow deletes from {deleted}, which is not covered"
             )
-    # The read-back statements must see the rows before and read 0 after.
+    # Before anything runs, the read-backs must be able to see the seeded rows.
     _cells, before = _zero_cells(db, stmts)
     if before < len(lead_tables):
         found.append(
@@ -1864,16 +1864,38 @@ def delete_flow_violations(
     for table in lead_tables:
         if not re.search(rf"COUNT\(\*\)\s+FROM\s+{table}\b", code, re.IGNORECASE):
             found.append(f"{table}: no read-back statement counts it")
-    for stmt in stmts:
+    # Run the statements ONCE, in file order, and judge each read-back at its own
+    # position (round 7 finding): a read-back that runs before the deletes sees the
+    # rows and fails here, however the same SELECT would read afterwards.
+    last_delete: dict[str, int] = {}
+    readbacks: list[tuple[int, str]] = []
+    for pos, stmt in enumerate(stmts):
         try:
-            db.execute(stmt)
+            rows = db.execute(stmt).fetchall()
         except sqlite3.Error as exc:
             found.append(f"a delete statement fails on the real schema: {exc}")
-    _cells, after = _zero_cells(db, stmts)
-    if after:
-        found.append(
-            f"the read-back still sees {after} non-zero values after the delete"
-        )
+            continue
+        head = stmt.lstrip().upper()
+        if head.startswith("DELETE"):
+            for hit in re.findall(r"\bDELETE\s+FROM\s+\"?(\w+)", stmt, re.IGNORECASE):
+                last_delete[hit] = pos
+        elif head.startswith("SELECT"):
+            readbacks.append((pos, stmt))
+            seen = sum(1 for row in rows for v in row if v)
+            if seen:
+                found.append(
+                    f"the read-back at statement {pos} sees {seen} non-zero values "
+                    "when it runs in file order (it must read 0 after the deletes)"
+                )
+    for table in lead_tables:
+        counted_after = [
+            pos
+            for pos, stmt in readbacks
+            if re.search(rf"COUNT\(\*\)\s+FROM\s+{table}\b", stmt, re.IGNORECASE)
+            and pos > last_delete.get(table, -1)
+        ]
+        if not counted_after:
+            found.append(f"{table}: no read-back counts it after its last delete")
     for table in lead_tables:
         link = _link_column(db, table)
         assert link, f"{table}: no column ties it to a lead"
@@ -1973,6 +1995,50 @@ def test_the_delete_check_bites_on_a_comment_a_wrong_table_or_a_dropped_delete(
     assert narrow != real
     out = run(narrow)
     assert any("kit_events: no read-back" in v for v in out), out
+
+
+@pytest.mark.parametrize("strip", [False, True])
+def test_the_read_back_is_judged_at_its_position_after_the_deletes(
+    strip: bool,
+) -> None:
+    """Round 7 finding: the statements run once in file order and each read-back is
+    judged where it sits. Moving it before the deletes, pointing it at another
+    table, or making it a no-op must each fail, on both schema paths."""
+    registry = load_registry()
+    real = delete_statements()
+
+    def run(statements: list[str]) -> list[str]:
+        return delete_flow_violations(statements, registry, None, strip)
+
+    assert run(real) == []
+    selects = [s for s in real if s.lstrip().upper().startswith("SELECT")]
+    others = [s for s in real if s not in selects]
+    assert len(selects) == 1
+    # The same read-back ahead of every delete: it sees the rows when it runs.
+    early = run([*selects, *others])
+    assert any("when it runs in file order" in v for v in early), early
+    # Between the two table deletes, still before the last one.
+    deletes = [s for s in others if s.startswith("DELETE")]
+    middle = run([deletes[0], *selects, *deletes[1:]])
+    assert any("when it runs in file order" in v for v in middle), middle
+    # A read-back that counts a different table (one that is always empty).
+    other_table = [
+        s.replace(
+            f"FROM kit_events WHERE lead_id = '{TARGET_LEAD}'",  # noqa: S608
+            "FROM leads WHERE id = 'no-such-lead'",
+        )
+        for s in real
+    ]
+    assert other_table != real
+    out = run(other_table)
+    assert any("kit_events" in v and "read-back" in v for v in out), out
+    # A read-back that is a no-op.
+    noop = ["SELECT 0 AS leads_remaining, 0 AS events_remaining;"]
+    out = run([*others, *noop])
+    assert any("read-back" in v for v in out), out
+    # A read-back that is only a comment.
+    out = run([*others, *[f"-- {s}" for s in selects]])
+    assert any("read-back" in v for v in out), out
 
 
 def test_a_new_lead_table_the_delete_flow_does_not_touch_fails() -> None:
@@ -2524,6 +2590,12 @@ PRIVACY_PAGE_CLAIM = (
     "suppresses repeat owner alerts for 10 minutes and is removed when the next "
     "alert is processed or the owner clears it manually."
 )
+# The variant for a site with alerts but no media-kit gate (no lead list).
+PRIVACY_PAGE_HASH_ONLY = (
+    "a keyed hash of an identifier, which may include an email address, suppresses "
+    "repeat owner alerts for 10 minutes and is removed when the next alert is "
+    "processed or the owner clears it manually."
+)
 # Wording the page must never use again: the alert record is a keyed hash of an
 # identifier, so it is neither anonymous nor self-expiring on a quiet site.
 PRIVACY_PAGE_BANNED = ("anonymous operational records", "expire on their own")
@@ -2627,6 +2699,7 @@ def test_the_user_facing_texts_do_not_claim_complete_erasure() -> None:
         (ROOT / "src/reach_around/site/privacy.py").read_text("utf-8").split()
     )
     assert PRIVACY_PAGE_CLAIM in privacy.lower()
+    assert PRIVACY_PAGE_HASH_ONLY in privacy.lower()
     assert "src/reach_around/site/privacy.py" in files
     # The sentence is also in the gate-on privacy page golden (the output); the
     # gate-off goldens must lack it, which the next test checks.

@@ -258,15 +258,35 @@ ERASURE_SENTENCE = (
 )
 
 
-def test_the_erasure_sentence_shows_only_where_leads_or_alerts_exist() -> None:
-    """A site with neither the media-kit gate nor alerts keeps no lead list and no
-    alert hash, so the deletion sentence is dropped whole; with either it is shown
-    verbatim."""
-    assert ERASURE_SENTENCE not in notice_markdown(make_config())
-    assert "email" not in notice_markdown(make_config()).lower()
-    for extra in ({"features": {"kit_gate": True}}, {"alerts": ALERTS}):
-        assert ERASURE_SENTENCE in notice_markdown(make_config(**extra))
+HASH_ONLY_SENTENCE = (
+    "A keyed hash of an identifier, which may include an email address, suppresses "
+    "repeat owner alerts for 10 minutes and is removed when the next alert is "
+    "processed or the owner clears it manually."
+)
+
+
+def test_the_erasure_sentence_has_one_variant_per_feature_combination() -> None:
+    """Neither the gate nor alerts: no sentence. The gate (with or without alerts):
+    the approved sentence verbatim. Alerts only: there is no lead list, so only the
+    approved hash sentence, never the claim about the lead list."""
+    neither = notice_markdown(make_config())
+    assert ERASURE_SENTENCE not in neither and HASH_ONLY_SENTENCE not in neither
+    assert "removed from the lead list" not in neither
+    assert "keyed hash" not in neither
+    assert "email" not in neither.lower()
+    gate_only = notice_markdown(make_config(features={"kit_gate": True}))
+    assert ERASURE_SENTENCE in gate_only
+    both = notice_markdown(make_config(features={"kit_gate": True}, alerts=ALERTS))
+    assert ERASURE_SENTENCE in both
     assert ERASURE_SENTENCE in notice_markdown(every_feature_config())
+    alerts_only = notice_markdown(make_config(alerts=ALERTS))
+    assert HASH_ONLY_SENTENCE in alerts_only
+    assert ERASURE_SENTENCE not in alerts_only
+    assert "removed from the lead list" not in alerts_only
+    assert "When you request deletion" not in alerts_only
+    # The hash-only variant is exactly one sentence, set after the sentence before it.
+    assert alerts_only.count("keyed hash") == 1
+    assert both.count("keyed hash") == 1
 
 
 def has_word(word: str, text: str) -> bool:
