@@ -28,22 +28,36 @@
 # for example a test stub). The dry run makes no network call and writes nothing.
 #
 # Besides the table listing, the run makes one more read-only call, `SELECT name
-# FROM d1_migrations`, to learn which migrations the database has applied: a table
-# whose migration is applied must exist, or the run fails.
+# FROM d1_migrations`, to learn which migration files were RECORDED as applied.
+# That record says which files ran, not that the schema matches them (a table can
+# be changed out of band), so it is used for one decision only: whether a table
+# that is MISSING is an older schema (its migration is not recorded: skipped with
+# a notice) or lost data (recorded: the run fails). A table that EXISTS is always
+# exported, whatever the record says. A table in the database that this script
+# does not know (not in the lists below) fails the run before any export, so a
+# new or hand-made table is never silently left out of a backup.
 #
 # Requires bash 4.0 or newer (the script refuses with exit 2 on an older one).
 #
 # Exit: 0 done or dry run, 1 a step failed, 2 usage (or bash too old), 3 refused
 # (unsafe folder).
 
-set -euo pipefail
-
+# --- shell guard begin (POSIX syntax only: it must run on any shell, first) ---
 # Needs bash 4.0 or newer. macOS ships 3.2: install a newer bash first (for
-# example `brew install bash`).
-if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
-  echo "error: bash 4.0 or newer is required (this is ${BASH_VERSION:-unknown})" >&2
+# example `brew install bash`). Nothing above this block may use bash-only syntax.
+if [ -z "${BASH_VERSION:-}" ]; then
+  echo "error: bash 4.0 or newer is required (this is not bash)" >&2
   exit 2
 fi
+case "${BASH_VERSION%%.*}" in
+0 | 1 | 2 | 3)
+  echo "error: bash 4.0 or newer is required (this is ${BASH_VERSION})" >&2
+  exit 2
+  ;;
+esac
+# --- shell guard end ---
+
+set -euo pipefail
 
 # Tables worth keeping. Only the four tables named in the header are left out on
 # purpose; every other table of the schema is in this list (a test enforces it).
@@ -59,13 +73,16 @@ tables=(
 )
 
 # Inventory: the migration that introduced each table above (table:migration
-# file name; wrangler's own d1_migrations has no migration). The run reads the
-# migrations the database has APPLIED and decides per table: introduced by an
-# applied migration means REQUIRED (missing fails the run, so an incomplete
-# backup is never reported as a success); introduced by a migration that is not
-# applied means the table cannot exist yet and is skipped with a notice.
+# file name, exactly as wrangler records it in d1_migrations; wrangler's own
+# d1_migrations has no migration). The run reads which migrations are RECORDED as
+# applied and decides per MISSING table: introduced by a recorded migration means
+# REQUIRED (missing fails the run, so an incomplete backup is never reported as a
+# success); introduced by a migration that is not recorded is treated as an older
+# schema and skipped with a notice. The record is history, not proof of the
+# schema, so an existing table is exported either way. With no migration recorded
+# at all, or a table with no entry here, every table is treated as required.
 # tests/test_backup_d1.py derives this map from the migrations and fails when it
-# drifts. A table with no entry here is treated as required.
+# drifts.
 introduced_by=(
   alert_dedup:0013_alerts.sql alert_quota:0013_alerts.sql
   analytics_coverage:0014_health.sql
@@ -83,6 +100,25 @@ introduced_by=(
   view_hour_daily:0015_hour_patterns.sql view_meta:0005_page_views.sql
   view_rollup_log:0006_page_view_rollups.sql
 )
+
+# Every migration file of the repository (worker/migrations), used to name a
+# recorded migration this script does not know. A test keeps it equal to the folder.
+migrations=(
+  0001_click_events.sql 0005_page_views.sql 0006_page_view_rollups.sql
+  0007_rollup_max_id.sql 0008_sites.sql 0009_kit.sql 0010_click_source.sql
+  0011_click_funnel.sql 0013_alerts.sql 0014_health.sql 0015_hour_patterns.sql
+  0016_destination_kind.sql 0017_landing_hop.sql 0018_rollup_reroll_closed.sql
+  0019_view_city_daily.sql 0021_kit_floor_guard.sql
+  0022_kit_floor_guard_recreate.sql
+)
+
+# Tables that exist in the database and are left out on purpose (see the header).
+never_exported=(leads kit_events visitor_seen view_events)
+
+# The only other tables the run accepts without exporting them: SQLite's own
+# (every name that starts with sqlite_) and Cloudflare's reserved `_cf_KV`. Any
+# other table that is not above fails the run before an export starts.
+ignored_tables=(_cf_KV)
 
 usage() {
   echo "usage: $0 DATABASE DEST_DIR [--apply]" >&2
@@ -153,7 +189,7 @@ out="$dest/d1-$stamp"
 if [ "$apply" -eq 0 ]; then
   echo "dry run: nothing is written and no network call is made."
   echo "would create: $out (mode 700)"
-  echo "would export ${#tables[@]} tables (the run fails if a table whose migration is applied is missing), one file each, mode 600:"
+  echo "would export ${#tables[@]} tables (the run fails if a table whose migration is recorded as applied is missing, or if the database holds a table this script does not know), one file each, mode 600:"
   printf '  %s\n' "${tables[@]}"
   echo "never exported: leads, kit_events, visitor_seen, view_events"
   echo "note: the tables are exported one call at a time, so this is not a single point-in-time snapshot."
@@ -251,16 +287,84 @@ migration_of() {
   return 0
 }
 
-# A table is REQUIRED unless its migration is known and NOT applied (wrangler's
-# own d1_migrations has no migration, and a table with no entry is required).
+is_in() {
+  local needle="$1" e
+  shift
+  for e in "$@"; do
+    [ "$e" = "$needle" ] && return 0
+  done
+  return 1
+}
+
+# A table is accepted when the script knows it: exported, deliberately never
+# exported, or an exact-name system table (sqlite_ prefix or a listed name).
+is_known_table() {
+  case "$1" in
+  sqlite_*) return 0 ;;
+  esac
+  is_in "$1" "${tables[@]}" "${never_exported[@]}" "${ignored_tables[@]}"
+}
+
+# No recorded migration at all (a database never migrated through wrangler, or an
+# emptied record) cannot say which tables may be absent: trust nothing, require
+# every table.
+trust_record=1
+if [ -z "$applied" ]; then
+  trust_record=0
+  echo "notice: no applied migration is recorded in d1_migrations; treating every expected table as required" >&2
+fi
+
+# A table is REQUIRED unless the record is trusted and its migration is known and
+# NOT recorded (wrangler's own d1_migrations has no migration, and a table with no
+# entry is required).
 is_required() {
   local m
+  [ "$trust_record" -eq 1 ] || return 0
   m="$(migration_of "$1")"
   case "$m" in
   "" | wrangler) return 0 ;;
   esac
   is_applied "$m"
 }
+
+# A table that exists but is not in the inventory would be left out of the backup
+# without a word: fail before anything is exported, naming it (names only).
+unexpected=()
+while IFS= read -r t; do
+  [ -n "$t" ] || continue
+  is_known_table "$t" || unexpected+=("$t")
+done <<<"$existing"
+if [ "${#unexpected[@]}" -gt 0 ]; then
+  echo "error: table(s) in this database that this script does not know: ${unexpected[*]}" >&2
+  echo "       Add each to tables (or never_exported, or ignored_tables for a system table) in scripts/backup-d1.sh; nothing was backed up." >&2
+  exit 1
+fi
+
+# The migration record is history, not proof of the schema. Say loudly where it
+# disagrees with the repository or with the tables (names only; no decision here).
+unknown_recorded=()
+while IFS= read -r t; do
+  [ -n "$t" ] || continue
+  is_in "$t" "${migrations[@]}" || unknown_recorded+=("$t")
+done <<<"$applied"
+if [ "${#unknown_recorded[@]}" -gt 0 ]; then
+  echo "notice: recorded migration(s) this script does not know (renamed, renumbered or from another version?): ${unknown_recorded[*]}" >&2
+fi
+unrecorded_present=()
+if [ "$trust_record" -eq 1 ]; then
+  for t in "${tables[@]}"; do
+    m="$(migration_of "$t")"
+    case "$m" in
+    "" | wrangler) continue ;;
+    esac
+    if is_listed "$t" && ! is_applied "$m"; then
+      unrecorded_present+=("$t($m)")
+    fi
+  done
+fi
+if [ "${#unrecorded_present[@]}" -gt 0 ]; then
+  echo "notice: table(s) exist although their migration is not recorded (exported anyway): ${unrecorded_present[*]}" >&2
+fi
 
 # A missing REQUIRED table is an incomplete backup: fail before writing anything.
 missing=()

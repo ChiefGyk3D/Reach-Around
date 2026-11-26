@@ -153,12 +153,22 @@ secret.
    Expected: `done: N tables written to <BACKUPS>/d1-<UTC timestamp>`. The
    script keeps an inventory that names, for each expected table, the
    migration that creates it, and it reads which migrations the database has
-   applied (`SELECT name FROM d1_migrations`, a read-only call). A table whose
-   migration is applied must exist: if it is missing the run fails (exit 1, the
-   table names are printed, nothing is kept), because the copy would be
-   incomplete. A table whose migration is not applied cannot exist yet and is
-   listed as `skipped (not in this database)` with the migration name. If the
-   applied migrations cannot be read, the run fails instead of guessing. A
+   applied (`SELECT name FROM d1_migrations`, a read-only call). That record
+   shows which migration files ran, not that the schema matches them (SQL can
+   be run out of band), so every table that exists is exported whatever the
+   record says, and the record decides one thing only: a table that is
+   missing. If its migration is recorded the run fails (exit 1, the table
+   names are printed, nothing is kept), because the copy would be incomplete.
+   If its migration is not recorded the script treats it as an older schema
+   and lists it as `skipped (not in this database)` with the migration name.
+   When no migration is recorded at all, every expected table is required. A
+   recorded name the script does not know, or a table that exists although its
+   migration is not recorded, is reported as a `notice` (names only). A table
+   in the database that the script does not know (from a newer migration, or
+   made by hand) fails the run before any export and is named: add it to the
+   script's lists. SQLite's own `sqlite_*` tables and Cloudflare's reserved
+   `_cf_KV` are the only tables accepted without an export. If the applied
+   migrations cannot be read, the run fails instead of guessing. A
    listed table name that holds a line break is refused for the same reason.
    The script needs bash 4.0 or newer and refuses (exit 2) on an older one
    (macOS ships 3.2; install a newer bash). Each wrangler call is stopped after 120 seconds
