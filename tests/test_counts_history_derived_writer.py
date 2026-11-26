@@ -288,11 +288,15 @@ def test_the_fsync_calls_come_in_order_without_needing_proc(
 ) -> None:
     """The order of the fsync calls, by descriptor kind (works without /proc)."""
     events: list[str] = []
+    inodes: list[int] = []
     real_fsync = os.fsync
     real_redact = getattr(counts_cmd, "redact_records")  # noqa: B009
 
     def fsync(fd: int) -> None:
-        events.append("dir" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file")
+        info = os.fstat(fd)
+        if "redact" not in events:
+            inodes.append(info.st_ino)
+        events.append("dir" if stat.S_ISDIR(info.st_mode) else "file")
         real_fsync(fd)
 
     def redact(*a: Any, **k: Any) -> Any:
@@ -304,6 +308,148 @@ def test_the_fsync_calls_come_in_order_without_needing_proc(
     assert main(argv(history)) == 0
     # Parent of the new folder, the temporary manifest, then the folder itself.
     assert events[: events.index("redact")] == ["dir", "file", "dir"]
+    # The two directories are the history folder and the redactions folder, by
+    # inode (an unrelated directory fsync cannot satisfy this).
+    parent_ino = history.parent.stat().st_ino
+    folder_ino = (history.parent / "redactions").stat().st_ino
+    assert parent_ino != folder_ino
+    assert inodes[0] == parent_ino
+    assert inodes[2] == folder_ino
+
+
+class InstallProbe:
+    """Fail one operation of install() after it ran, and record the folder fd."""
+
+    def __init__(
+        self, monkeypatch: pytest.MonkeyPatch, step: str, failure: BaseException
+    ) -> None:
+        self.active = False
+        self.folder_fd = -1
+        self.calls = {"link": 0, "unlink": 0, "fsync": 0}
+        real_install = counts_cmd._StagedManifest.install
+        real: dict[str, Any] = {
+            "link": os.link,
+            "unlink": os.unlink,
+            "fsync": os.fsync,
+        }
+        probe = self
+
+        def install(staged: Any) -> None:
+            probe.folder_fd = staged.folder_fd
+            probe.active = True
+            try:
+                real_install(staged)
+            finally:
+                probe.active = False
+
+        def wrap(name: str) -> Any:
+            def call(*a: Any, **k: Any) -> Any:
+                if not probe.active:
+                    return real[name](*a, **k)
+                probe.calls[name] += 1
+                out = real[name](*a, **k)  # the operation completes first
+                if name == step:
+                    raise failure
+                return out
+
+            return call
+
+        monkeypatch.setattr(counts_cmd._StagedManifest, "install", install)
+        for name in real:
+            monkeypatch.setattr(os, name, wrap(name))
+
+
+def assert_closed(fd: int) -> None:
+    with pytest.raises(OSError) as info:
+        os.fstat(fd)
+    assert info.value.errno == 9  # EBADF: the folder descriptor was closed
+
+
+@pytest.mark.parametrize("failure_kind", ["interrupt", "oserror"])
+@pytest.mark.parametrize("step", ["link", "unlink", "fsync"])
+def test_a_stop_during_installation_prints_guidance_for_the_state_reached(
+    history: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    step: str,
+    failure_kind: str,
+) -> None:
+    failure: BaseException = (
+        KeyboardInterrupt() if failure_kind == "interrupt" else OSError(5, "boom")
+    )
+    probe = InstallProbe(monkeypatch, step, failure)
+    before = history.read_bytes()
+    final = manifest_name(history)
+    folder = history.parent / "redactions"
+    if failure_kind == "interrupt":
+        with pytest.raises(KeyboardInterrupt):
+            main(argv(history))
+    else:
+        assert main(argv(history)) == 5
+    assert history.read_bytes() != before  # the rewrite stays
+    assert probe.calls[step] == 1
+    assert_closed(probe.folder_fd)
+    err = capsys.readouterr().err
+    assert str(SECRET) not in err and "mv " not in err
+    names = sorted(p.name for p in folder.iterdir())
+    assert "ln " not in err and "could not be installed" not in err
+    if step == "link":
+        # Both names exist: the printed step checks them and removes the temp.
+        assert len(names) == 2 and final in names
+        assert "cmp" in err and "identical" in err
+        assert run_printed_step(err, folder).returncode == 0
+        assert [p.name for p in folder.iterdir()] == [final]
+    else:
+        # Only the final name exists: nothing to link, nothing to remove.
+        assert names == [final]
+        assert "installed as" in err and "nothing else to do" in err
+        assert "sync" in err and "history-verify" in err
+        assert "then run: " not in err
+
+
+@pytest.mark.parametrize("failure_kind", ["interrupt", "oserror"])
+def test_a_stop_before_the_link_prints_the_original_recovery_and_closes(
+    history: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure_kind: str,
+) -> None:
+    active = False
+    seen: list[int] = []
+    real_install = counts_cmd._StagedManifest.install
+
+    def install(staged: Any) -> None:
+        nonlocal active
+        seen.append(staged.folder_fd)
+        active = True
+        try:
+            real_install(staged)
+        finally:
+            active = False
+
+    real_link = os.link
+
+    def refuse(*a: Any, **k: Any) -> None:
+        if not active:
+            real_link(*a, **k)
+            return
+        raise KeyboardInterrupt() if failure_kind == "interrupt" else OSError(5, "x")
+
+    monkeypatch.setattr(counts_cmd._StagedManifest, "install", install)
+    monkeypatch.setattr(os, "link", refuse)
+    final = manifest_name(history)
+    folder = history.parent / "redactions"
+    if failure_kind == "interrupt":
+        with pytest.raises(KeyboardInterrupt):
+            main(argv(history))
+    else:
+        assert main(argv(history)) == 5
+    assert_closed(seen[0])
+    err = capsys.readouterr().err
+    tmp = next(p.name for p in folder.iterdir() if p.name.startswith("."))
+    assert f"ln {tmp} {final} && rm {tmp}" in err
+    run_printed_step(err, folder)
+    assert [p.name for p in folder.iterdir()] == [final]
 
 
 def replace_then_stop(monkeypatch: pytest.MonkeyPatch, stop: BaseException) -> None:

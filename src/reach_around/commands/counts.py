@@ -887,6 +887,12 @@ def _say(message: str, stream: TextIO | None = None) -> None:
     print(_safe(message), file=stream if stream is not None else sys.stdout)
 
 
+INSTALL_NOT_STARTED = "not-started"  # only the temporary name exists
+INSTALL_LINKED = "linked"  # both names exist
+INSTALL_UNLINKED = "unlinked"  # only the final name exists, not yet synced
+INSTALL_SYNCED = "synced"  # only the final name exists, folder synced
+
+
 class _StagedManifest:
     """The manifest of a derived redaction, written but not yet installed (#619).
 
@@ -907,6 +913,8 @@ class _StagedManifest:
         self.folder_fd = folder_fd
         self.final_name = f"{run_id}.manifest"
         self.tmp_name = tmp_name
+        # The last completed step of install(), for recovery guidance.
+        self.state = INSTALL_NOT_STARTED
 
     def discard(self) -> None:
         """Remove the temporary file and close the folder."""
@@ -923,7 +931,13 @@ class _StagedManifest:
             pass
 
     def install(self) -> None:
-        """Give the manifest its final name. Raises ``OSError`` on failure."""
+        """Give the manifest its final name.
+
+        ``self.state`` names the last completed operation (not-started, linked,
+        unlinked, synced), so a failure or an interruption at any point leaves
+        an accurate record of which names exist. The folder stays open; the
+        caller closes it.
+        """
         os.link(
             self.tmp_name,
             self.final_name,
@@ -931,9 +945,11 @@ class _StagedManifest:
             dst_dir_fd=self.folder_fd,
             follow_symlinks=False,
         )
+        self.state = INSTALL_LINKED
         os.unlink(self.tmp_name, dir_fd=self.folder_fd)
+        self.state = INSTALL_UNLINKED
         os.fsync(self.folder_fd)
-        self.close()
+        self.state = INSTALL_SYNCED
 
 
 def _stage_manifest(
@@ -1038,18 +1054,69 @@ def _retain_after_interruption(staged: _StagedManifest) -> None:
     staged.close()
 
 
+def _observed_install_state(staged: _StagedManifest) -> str:
+    """Which names exist now, read through the held folder descriptor.
+
+    An interruption can land between an operation and the line that records it,
+    so the recorded state is the fallback, not the authority.
+    """
+
+    def look(name: str) -> os.stat_result | bool | None:
+        try:
+            return os.stat(name, dir_fd=staged.folder_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return None
+
+    tmp, final = look(staged.tmp_name), look(staged.final_name)
+    if tmp is None or final is None:
+        return staged.state
+    if isinstance(tmp, os.stat_result) and isinstance(final, os.stat_result):
+        # Both names: ours (one file) or a final file somebody else made.
+        same = (tmp.st_dev, tmp.st_ino) == (final.st_dev, final.st_ino)
+        return INSTALL_LINKED if same else INSTALL_NOT_STARTED
+    if isinstance(final, os.stat_result):
+        return INSTALL_UNLINKED
+    return INSTALL_NOT_STARTED
+
+
+def _install_failure_message(staged: _StagedManifest) -> str:
+    """Recovery guidance for the state install() reached (never says ln when
+    the final name already exists)."""
+    state = _observed_install_state(staged)
+    if state == INSTALL_LINKED:
+        return (
+            "error: the history file was rewritten and the manifest was linked "
+            f"as {staged.final_name} but the temporary name {staged.tmp_name} "
+            "was not removed; in the folder redactions/ verify the two files "
+            "are identical with cmp, then run: "
+            f"cmp {staged.tmp_name} {staged.final_name} && rm {staged.tmp_name}"
+        )
+    if state in (INSTALL_UNLINKED, INSTALL_SYNCED):
+        return (
+            "error: the history file was rewritten and the manifest is "
+            f"installed as redactions/{staged.final_name}, but the folder was "
+            "not confirmed durable; nothing else to do: run sync on the "
+            "folder or run history-verify again"
+        )
+    return (
+        "error: the history file was rewritten but the manifest could not be "
+        "installed; " + _recovery_step(staged)
+    )
+
+
 def _install_staged(staged: _StagedManifest) -> bool:
     """Install the manifest after the rewrite; on failure name the recovery step."""
     try:
         staged.install()
-    except OSError:
-        _say(
-            "error: the history file was rewritten but the manifest could not be "
-            "installed; " + _recovery_step(staged),
-            sys.stderr,
-        )
-        staged.close()
+    except BaseException as stop:
+        _say(_install_failure_message(staged), sys.stderr)
+        if not isinstance(stop, Exception):
+            raise
         return False
+    finally:
+        staged.close()
     _say(f"wrote the manifest redactions/{staged.final_name} (commit it with the file)")
     return True
 
