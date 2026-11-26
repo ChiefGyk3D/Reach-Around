@@ -413,8 +413,11 @@ kit:
 
 Mastodon, Bluesky and Pixelfed publish their follower and post counts and the
 interaction counts of each public post. `kit.fediverse` holds what the public
-profile shows, typed by you on a date, one entry per platform (#630). It is hand-kept
-until a collector for public post data has its own design; nothing is fetched.
+profile shows, typed by you on a date, one entry per platform (#630). It is hand-kept;
+nothing is fetched into it yet. A Bluesky provider that reads the same counts from the
+public API exists in the engine (`reach_around.counts.bluesky_feed`, #922) and produces
+the same entry shape; it is not wired into the build until the collector's wiring slice, so
+the typed entry stays the way to fill this block.
 
 ```yaml
 kit:

@@ -446,6 +446,19 @@ body, and runs in no workflow. The guard pass over the snapshot and the page and
 belong with the first provider (slice 2), which is the first caller. Nothing is added to
 any egress allow-list in this slice.
 
+**Slice 2 as built (#922).** The Bluesky provider in `src/reach_around/counts/bluesky_feed.py`:
+`collect` (one profile call and at most 12 feed pages of 50, `filter=posts_no_replies`, a pause of
+1 s plus jitter between calls, 90 s for the run, the cursor checked against a closed alphabet and
+built into the next URL, never followed from a response), `check_actor` (handle or DID), the
+own-posts filter (the author DID must equal the profile's; any `reason` other than a pin skips the
+entry; a reply is skipped), the window by `indexedAt`, `build_snapshot` with the guard pass,
+`history_aggregates` (complete reads only) and `entry_from_snapshot` (a complete snapshot becomes
+the same `FediverseEntry` the owner types). `fetch_json_view` in `src/reach_around/net/fetch.py`
+is the object twin of `fetch_json_array`, since `getAuthorFeed` answers with an object. A server
+`Date` header is required on every response: a missing or unreadable one is `clock_skew`. The
+snapshot file write, the history write and the kit loader belong to slice 4, which owns the
+refresh wiring; the hand-kept `kit.fediverse` path is unchanged.
+
 Slices 1 to 4 are about 27 h; with slice 5, about 32 h. Slices 2 and 3 can run in parallel after
 slice 1. Nothing requires a Cloudflare or schema migration change: the history store accepts the
 new metric names today, and `FediverseEntry` already carries the fields.
