@@ -266,6 +266,26 @@ def test_the_export_restores_into_an_empty_database(tmp_path: Path) -> None:
     assert "kit_events" not in names
 
 
+def test_a_long_table_listing_never_skips_a_table_that_exists(tmp_path: Path) -> None:
+    """The listing is larger than a pipe buffer, with the wanted tables first.
+    A `printf | grep -q` membership test under pipefail then loses the race with
+    SIGPIPE and reports an existing table as missing (seen as a flaky
+    restore test on CI)."""
+    env = make(tmp_path)
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        for i in range(300):
+            db.execute(f"CREATE TABLE zz_{i:04d}_{'x' * 1000} (a)")
+        db.commit()
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    assert r.returncode == 0, r.stderr
+    assert "skipped (not in this database): view_daily" not in r.stdout
+    assert "skipped (not in this database): click_events" not in r.stdout
+    (out,) = list(d.iterdir())
+    assert (out / "view_daily.sql").exists()
+    assert (out / "click_events.sql").exists()
+
+
 def test_migration_history_is_part_of_the_backup(tmp_path: Path) -> None:
     env = make(tmp_path)
     d = dest(tmp_path)
