@@ -344,6 +344,10 @@ _ALERT_SENTENCE = (
     " The site owner’s chosen alert services, {alert_providers}, receive notices "
     "when someone unlocks the media kit or sends an inquiry."
 )
+# The erasure sentences describe the lead list and the alert hash, so they are
+# true only where the media-kit gate (leads) or owner alerts (the hash) exist.
+# A site with neither collects neither and drops them whole, verbatim otherwise.
+_ERASURE_SENTENCE = " When you request deletion, your name, email, and other details you provided are removed from the lead list, though backups may retain copies until they expire. A keyed hash of an identifier, which may include your email address, suppresses repeat owner alerts for 10 minutes and is removed when the next alert is processed or the owner clears it manually."  # noqa: E501 (approved copy, verbatim)
 # With neither the gate nor alerts on, a site may leave the controller and the
 # contact unset; the notice then points at the site owner.
 _OWNER_FALLBACK = "the site owner"
@@ -409,6 +413,8 @@ def notice_markdown(config: SiteConfig) -> str:
     template = NOTICE_TEMPLATE
     if not config.alerts.enabled:
         template = template.replace(_ALERT_SENTENCE, "")
+    if not (config.alerts.enabled or config.features.kit_gate):
+        template = template.replace(_ERASURE_SENTENCE, "")
     return _fill(template, _notice_values(config))
 
 

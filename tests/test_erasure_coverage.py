@@ -2628,14 +2628,17 @@ def test_the_user_facing_texts_do_not_claim_complete_erasure() -> None:
     )
     assert PRIVACY_PAGE_CLAIM in privacy.lower()
     assert "src/reach_around/site/privacy.py" in files
-    # The sentence is also in the built privacy page goldens (they are the output).
+    # The sentence is also in the gate-on privacy page golden (the output); the
+    # gate-off goldens must lack it, which the next test checks.
     goldens = [
         g
         for g in (ROOT / "tests" / "site").glob("golden*/**/index.html")
         if "can therefore be fulfilled" in g.read_text("utf-8")
     ]
     assert len(goldens) == 4, goldens
-    for golden in goldens:
+    gate_on = [g for g in goldens if "kit is unlocked" in g.read_text("utf-8")]
+    assert len(gate_on) == 1, gate_on
+    for golden in gate_on:
         flat = " ".join(golden.read_text("utf-8").split()).lower()
         assert PRIVACY_PAGE_CLAIM in flat, str(golden)
     assert COMPLETE_CLAIM.search("All of your data is deleted at once.")
@@ -2649,16 +2652,28 @@ def test_the_privacy_page_discloses_the_keyed_hash_never_anonymous() -> None:
     (rows go when the next alert is admitted or when the owner clears them). The
     page text and every rendered golden must say so and must never go back to the
     old wording."""
-    sources = [ROOT / "src/reach_around/site/privacy.py"]
-    sources += [
+    # The sentence is rendered only where the media-kit gate or alerts exist, so
+    # the template and the gate-on golden must carry it verbatim and every
+    # gate-off golden must carry none of it (no lead list, no alert hash).
+    template = ROOT / "src/reach_around/site/privacy.py"
+    goldens = [
         g
         for g in (ROOT / "tests" / "site").glob("golden*/**/index.html")
         if "can therefore be fulfilled" in g.read_text("utf-8")
     ]
-    assert len(sources) == 5, sources
-    for path in sources:
+    assert len(goldens) == 4, goldens
+    gate_on = [g for g in goldens if "kit is unlocked" in g.read_text("utf-8")]
+    gate_off = [g for g in goldens if g not in gate_on]
+    assert len(gate_on) == 1 and len(gate_off) == 3, (gate_on, gate_off)
+    for path in [template, *gate_on]:
         flat = " ".join(path.read_text("utf-8").split()).lower()
         assert PRIVACY_PAGE_CLAIM in flat, str(path)
+        for banned in PRIVACY_PAGE_BANNED:
+            assert banned not in flat, f"{path}: {banned}"
+    for path in gate_off:
+        flat = " ".join(path.read_text("utf-8").split()).lower()
+        assert "when you request deletion" not in flat, str(path)
+        assert "keyed hash" not in flat, str(path)
         for banned in PRIVACY_PAGE_BANNED:
             assert banned not in flat, f"{path}: {banned}"
 

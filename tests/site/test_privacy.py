@@ -16,7 +16,12 @@ from reach_around.config.privacy import (
     RAW_CLICK_KEEP_DAYS,
 )
 from reach_around.site.build import build_site, manifest_json
-from reach_around.site.privacy import Disclosure, collected_items, sets_cookies
+from reach_around.site.privacy import (
+    Disclosure,
+    collected_items,
+    notice_markdown,
+    sets_cookies,
+)
 
 TODAY = date(2027, 3, 10)
 GOLDEN = Path(__file__).parent / "golden_privacy" / "privacy" / "index.html"
@@ -242,6 +247,26 @@ def every_feature_config() -> SiteConfig:
         alerts=ALERTS,
         tabs=[{"id": "start", "title": "Start", "blocks": [LIVE_BLOCK]}],
     )
+
+
+ERASURE_SENTENCE = (
+    "When you request deletion, your name, email, and other details you provided "
+    "are removed from the lead list, though backups may retain copies until they "
+    "expire. A keyed hash of an identifier, which may include your email address, "
+    "suppresses repeat owner alerts for 10 minutes and is removed when the next "
+    "alert is processed or the owner clears it manually."
+)
+
+
+def test_the_erasure_sentence_shows_only_where_leads_or_alerts_exist() -> None:
+    """A site with neither the media-kit gate nor alerts keeps no lead list and no
+    alert hash, so the deletion sentence is dropped whole; with either it is shown
+    verbatim."""
+    assert ERASURE_SENTENCE not in notice_markdown(make_config())
+    assert "email" not in notice_markdown(make_config()).lower()
+    for extra in ({"features": {"kit_gate": True}}, {"alerts": ALERTS}):
+        assert ERASURE_SENTENCE in notice_markdown(make_config(**extra))
+    assert ERASURE_SENTENCE in notice_markdown(every_feature_config())
 
 
 def has_word(word: str, text: str) -> bool:
