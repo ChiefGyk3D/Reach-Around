@@ -48,6 +48,8 @@ How a run works:
 
 A survivor has two possible answers: add a test that fails without the control, or record `equivalent = "reason"` in the list when the edit cannot change anything a caller can see or another layer covers it. The harness warns when an entry marked equivalent is in fact killed, so a stale claim gets removed.
 
+The list has 136 mutations: 129 are expected to be killed and 7 are recorded as equivalent (each with its reason). The kill-switch mutation on the shared guard is not equivalent: the inquiry routes answer the kill switch with the complete killed page, and a test pins that whole response.
+
 ## What it proves
 
 - Each listed control is covered by a test that fails when that control is removed or weakened in the specific way listed (a flipped comparison, an off-by-one boundary, a skipped check, a fail-open error path, a widened allowlist).

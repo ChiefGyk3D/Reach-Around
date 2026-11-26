@@ -5,6 +5,7 @@
 // every budget stops at its limit instead of at the bill.
 import { env as testEnv } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { handleGate } from "../../src/kit/gate";
 import {
   CANARY,
   EMAIL,
@@ -292,8 +293,9 @@ describe("AB-2: the lead caps hold, and the answer does not depend on them", () 
     const env = makeEnv({ MAX_LEADS: "5" });
     const results = await Promise.all(Array.from({ length: 20 }, (_, i) => send(gateReq({ headers: { "cf-connecting-ip": `203.0.113.${100 + i}` }, fields: FIELDS(i) }), env)));
     expect(results.every((r) => r.status === 303 && r.headers.get("location") === "/k/view" && r.headers.get("set-cookie") !== null)).toBe(true);
-    expect(await count("leads")).toBeLessThanOrEqual(5);
-    expect(await count("leads")).toBeGreaterThan(0);
+    expect(await count("leads")).toBe(5);
+    const units = await testEnv.DB.prepare("SELECT count FROM counters WHERE key = 'newlead'").first<{ count: number }>();
+    expect(units!.count).toBe(5);
     const lengths = new Set(results.map((r) => r.headers.get("set-cookie")!.length));
     expect(lengths.size).toBe(1); // a stored and an unstored cookie are the same shape
   });
@@ -348,6 +350,33 @@ describe("AB-10: the alert path cannot be turned into a flood", () => {
     expect(res.status).toBe(303);
     expect(res.headers.get("location")).toBe("/k/view");
     expect(res.headers.get("set-cookie")).not.toBeNull();
+  });
+
+  it("the unlock answer is sent before a slow alert settles: the alert is background work, never awaited", async () => {
+    let release: (receipt: never[]) => void = () => undefined;
+    const slow = new Promise<never[]>((resolve) => {
+      release = resolve;
+    });
+    let alertStarted = false;
+    const background: Promise<unknown>[] = [];
+    const notify = (): Promise<never[]> => {
+      alertStarted = true;
+      return slow;
+    };
+    const ctx = { waitUntil: (p: Promise<unknown>) => void background.push(p) };
+    const answer = handleGate(gateReq(), makeEnv() as never, { notify: notify as never, ctx });
+    try {
+      // No timer: the answer must win a race against a promise that only this test can settle.
+      const first = await Promise.race([answer.then(() => "answer"), slow.then(() => "alert")]);
+      expect(first).toBe("answer");
+      const res = await answer;
+      expect(res.status).toBe(303);
+      expect(res.headers.get("set-cookie")).not.toBeNull();
+      expect(alertStarted).toBe(true);
+    } finally {
+      release([]);
+      await Promise.all(background);
+    }
   });
 
   it("the unlock page stays available for a client that holds a cookie when the allowances are spent for others", async () => {

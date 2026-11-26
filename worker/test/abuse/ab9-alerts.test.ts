@@ -5,6 +5,7 @@
 // reaches the sink, and a flood of unlocks or inquiries is bounded by the alert budgets. These tests
 // call the handlers with a fresh dispatcher each time, so the dispatcher's in-memory windows start
 // empty and the result does not depend on test order.
+import { env as testEnv } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDispatcher } from "../../src/alerts/dispatcher";
 import { handleGate } from "../../src/kit/gate";
@@ -251,11 +252,62 @@ describe("AB-9: floods of unlocks and inquiries produce a bounded number of aler
   it("when no channel takes the alert the visitor is told it failed, and the spent budget is given back", async () => {
     net.restore();
     net = installNetwork({ sink: 500 });
-    const env = makeEnv({ DAILY_ALERT_BUDGET: "1" });
+    // Budget 2: the dispatcher keeps its own daily unit for an attempted send, so one more unit is left for the retry.
+    const env = makeEnv({ DAILY_ALERT_BUDGET: "2" });
     const res = await inquire({}, env);
     expect(res.headers.get("location")).toBe(INQUIRY_ERROR_ROUTE);
+    expect(await inquiryUnits()).toBe(0);
+    // The channel recovers: the next valid inquiry is accepted and delivered.
+    net.restore();
+    net = installNetwork();
+    const next = await inquire({ fields: { ...INQUIRY_GOOD, email: "again@example.com" } }, env);
+    expect(next.headers.get("location")).toBe(INQUIRY_SENT_ROUTE);
+    expect(net.sink()).toHaveLength(1);
+    expect(await inquiryUnits()).toBe(1);
+  });
+
+  it("an inquiry that no channel could even attempt gives its unit back, so the next one is accepted at a budget of 1", async () => {
+    const env = makeEnv({ DAILY_ALERT_BUDGET: "1" });
+    const none = await handleInquiry(inquiryReq({ cookie: await signedCookie() }), env as never, { notify: () => Promise.resolve([]) });
+    expect(none.headers.get("location")).toBe(INQUIRY_ERROR_ROUTE);
+    expect(await inquiryUnits()).toBe(0);
+    const next = await inquire({ fields: { ...INQUIRY_GOOD, email: "again@example.com" } }, env);
+    expect(next.headers.get("location")).toBe(INQUIRY_SENT_ROUTE);
+    expect(net.sink()).toHaveLength(1);
+  });
+
+  it("a refund that fails never raises the budget: the unit stays spent and the next inquiry is refused", async () => {
+    net.restore();
+    net = installNetwork({ sink: 500 });
+    const failing = new Proxy(testEnv.DB, {
+      get(target, prop) {
+        if (prop === "prepare") {
+          return (q: string) => {
+            if (q.includes("count - 1")) throw new Error("refund unavailable");
+            return target.prepare(q);
+          };
+        }
+        const v = Reflect.get(target, prop) as unknown;
+        return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+      },
+    }) as D1Database;
+    const env = makeEnv({ DAILY_ALERT_BUDGET: "1", DB: failing });
+    const first = await inquire({}, env);
+    expect(first.headers.get("location")).toBe(INQUIRY_ERROR_ROUTE);
+    expect(await inquiryUnits()).toBe(1);
+    net.restore();
+    net = installNetwork();
+    const next = await inquire({ fields: { ...INQUIRY_GOOD, email: "again@example.com" } }, env);
+    expect(next.status).toBe(503);
+    expect(net.sink()).toHaveLength(0);
+    expect(await inquiryUnits()).toBe(1);
   });
 });
+
+async function inquiryUnits(): Promise<number> {
+  const row = await testEnv.DB.prepare("SELECT count FROM counters WHERE key = 'inquiry'").first<{ count: number }>();
+  return row === null ? 0 : row.count;
+}
 
 describe("AB-9: what the unlock alert contains", () => {
   it("masks the address by default and never carries the token, the client address, the user agent or the cookie", async () => {
