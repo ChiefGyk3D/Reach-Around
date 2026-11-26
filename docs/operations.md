@@ -248,10 +248,42 @@ Order of preference, least damage first:
    Leave all of them unset in the committed `wrangler.toml`.
 2. **Roll back the Worker or the site** to the previous deployment (see
    "Rolling back" in [deploy.md](deploy.md)).
-3. **Fix forward** with a new migration. Migrations never go backward.
+3. **Fix forward** with a new migration. Migrations never go backward. A
+   migration file that fails part way is rolled back as a unit by `wrangler d1
+   migrations apply` (see "Migration rollback check" below), so it leaves the
+   schema as it was.
 4. **Restore the database** from a Time Travel bookmark or an export, only as
    the last resort, because it overwrites the whole database in place
    ([backup-restore.md](backup-restore.md), "Restore, last resort").
+
+## Migration rollback check
+
+Migration 0022 drops the two `kit_meta` floor guard triggers and creates them
+again in one file, which is safe only if a failing migration file is rolled back
+whole. The Cloudflare D1 Wrangler commands reference (read 2026-11-26,
+developers.cloudflare.com/d1/wrangler-commands/) says `wrangler d1 migrations
+apply` does that. The property is proven by running a script by hand, not by CI
+or pytest:
+
+```
+cd worker && npm ci --ignore-scripts && cd ..
+python3 scripts/check-d1-migration-rollback.py
+```
+
+It needs Node 22.12 or newer, uses the pinned Wrangler with `--local` and a
+disposable database in a temp directory it removes (no account, token or
+network), and prints one PASS or FAIL line per check: a failing file that drops
+both triggers leaves both triggers and is not recorded, and a control (the drop
+as its own migration, then a failing one) shows the triggers gone, which proves
+the check can detect the opposite. It exits 0 only when both hold, and refuses to
+run when a CI marker is set unless `RA_ROLLBACK_CHECK_OWNER_RUN=1`.
+
+It is NOT part of CI or pytest, on purpose: the test guard that keeps any test
+from starting a real Wrangler stays exactly as it is.
+`tests/test_d1_rollback_script.py` only reads the script. One-time result,
+2026-11-26, pinned Wrangler 4.162.0, Node 22.23.5: both checks PASS (both
+triggers survive and the failing file is not recorded; the control shows them
+gone). Run it again after a Wrangler bump.
 
 ## When something fails
 

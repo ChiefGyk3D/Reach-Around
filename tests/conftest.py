@@ -28,11 +28,6 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers", "visual: browser layout tests, run only with --run-visual"
     )
-    config.addinivalue_line(
-        "markers",
-        "allow_local_wrangler: let ONE module start the pinned wrangler with "
-        "--local (see the opt-out comment in conftest.py)",
-    )
 
 
 def pytest_collection_modifyitems(
@@ -112,72 +107,6 @@ def _is_forbidden(command: object, strict: bool) -> bool:
     return any(_names_wrangler(w) for w in _words(command))
 
 
-# --- the one narrow opt-out: a LOCAL wrangler in one module (#907) -------------
-#
-# `@pytest.mark.allow_local_wrangler` lets a test start the PINNED wrangler
-# against a disposable local D1 database. It is honored only when ALL hold:
-#   1. the requesting module is exactly tests/test_d1_migration_rollback.py (a
-#      marker anywhere else, test_leads* included, is ignored);
-#   2. the command is a list whose program is the pinned
-#      worker/node_modules/.bin/wrangler of this repository, no other word names
-#      wrangler, no shell string;
-#   3. the command has `--local` and no `--remote`;
-#   4. the child environment is passed explicitly, holds no CLOUDFLARE_*, CF_* or
-#      token, secret or key variable, and its HOME is inside pytest's base temp
-#      directory.
-# Anything else is refused by the normal guard.
-_ROOT = Path(__file__).resolve().parent.parent
-_PINNED_WRANGLER = str(_ROOT / "worker" / "node_modules" / ".bin" / "wrangler")
-_LOCAL_WRANGLER_MODULE = (
-    Path(__file__).resolve().parent / "test_d1_migration_rollback.py"
-)
-_SECRETISH = ("TOKEN", "SECRET", "KEY", "PASSWORD", "CREDENTIAL")
-
-
-def _env_is_clean(env: dict[str, str], base_temp: str) -> bool:
-    for key in env:
-        upper = str(key).upper()
-        if upper.startswith(("CLOUDFLARE_", "CF_")):
-            return False
-        if any(bad in upper for bad in _SECRETISH):
-            return False
-    home = env.get("HOME")
-    if not home:
-        return False
-    try:
-        Path(home).resolve().relative_to(Path(base_temp).resolve())
-    except ValueError:
-        return False
-    return True
-
-
-def _local_wrangler_allowed(
-    command: object,
-    env: object,
-    module_file: str | None,
-    marked: bool,
-    base_temp: str | None,
-) -> bool:
-    if not marked or module_file is None or base_temp is None:
-        return False
-    if Path(module_file).resolve() != _LOCAL_WRANGLER_MODULE:
-        return False
-    if not isinstance(command, (list, tuple)) or not command:
-        return False
-    if not all(isinstance(w, (str, os.PathLike)) for w in command):
-        return False
-    words = [os.fsdecode(w) for w in command]
-    if os.path.abspath(words[0]) != _PINNED_WRANGLER:
-        return False
-    if any(_names_wrangler(w) for w in words[1:]):
-        return False
-    if "--local" not in words or "--remote" in words:
-        return False
-    if not isinstance(env, dict):
-        return False
-    return _env_is_clean(env, base_temp)
-
-
 def _names_wrangler(word: str) -> bool:
     """A word that is the wrangler program or a file of the wrangler package: the
     bin shim, its real entry file (`wrangler.js` and its module variants) started
@@ -196,9 +125,7 @@ def real_exec() -> Any:
 
 @pytest.fixture(autouse=True)
 def _no_real_wrangler(
-    monkeypatch: pytest.MonkeyPatch,
-    request: pytest.FixtureRequest,
-    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
 ) -> None:
     """No test may start a real wrangler (or node, npm, npx), whatever code path
     asks. The guard sits at the lowest level: `subprocess.Popen` (which
@@ -212,19 +139,10 @@ def _no_real_wrangler(
     `test_leads*` test modules. What it does not catch: an alias captured at
     import time in any other module (a library or a non-leads test), a process
     started by a child, or a program that builds its own name at run time. It is
-    defense in depth, not a sandbox.
-
-    One narrow opt-out exists (#907): the marker `allow_local_wrangler`, honored
-    only in tests/test_d1_migration_rollback.py, for the pinned wrangler with
-    `--local`, an explicit clean environment (no CLOUDFLARE_*, CF_* or token
-    variable, HOME inside pytest's temp directory). The rules are listed above
-    `_local_wrangler_allowed`; a marker anywhere else changes nothing."""
+    defense in depth, not a sandbox."""
     from reach_around.commands import leads
 
     strict = request.module.__name__.startswith(_STRICT_MODULES)
-    marked = request.node.get_closest_marker("allow_local_wrangler") is not None
-    module_file = getattr(request.module, "__file__", None)
-    base_temp = str(tmp_path_factory.getbasetemp())
 
     def refuse(*_a: object, **_k: object) -> tuple[int, bytes]:
         raise AssertionError("a test reached the real process runner (wrangler)")
@@ -233,11 +151,6 @@ def _no_real_wrangler(
 
     class GuardedPopen(subprocess.Popen[bytes]):
         def __init__(self, args: Any, *a: Any, **k: Any) -> None:
-            if not strict and _local_wrangler_allowed(
-                args, k.get("env"), module_file, marked, base_temp
-            ):
-                super().__init__(args, *a, **k)
-                return
             if _is_forbidden(args, strict):
                 raise AssertionError("a test started a real process (wrangler guard)")
             super().__init__(args, *a, **k)
