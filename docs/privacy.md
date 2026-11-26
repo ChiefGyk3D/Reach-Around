@@ -227,12 +227,73 @@ first item:
 5. Hand-made exports, dumps and spreadsheets (including the files you made for
    the steps above).
 6. Shell history, tickets and notes that hold the address.
-7. By hand, where neither this list nor the tool can look: Worker logs and any
+7. The `alert_dedup` hash (see the store table below): clear expired rows by hand.
+8. By hand, where neither this list nor the tool can look: Worker logs and any
    collector logs or exception output; alert delivery logs at the chat or mail
    provider; automated backups and exports of the database beyond Time Travel;
    CI artifacts and deploy logs; monitoring and error-tracking systems; any
    system wired to the Worker that stores request or alert payloads. Record the
    result of each check, even "nothing found".
+
+### Every store, checked against the schema
+
+Checked 2026-11-26 against every table and column the migrations create. The
+test `tests/test_erasure_coverage.py` reads them from `worker/migrations/` and
+fails when a table or column appears that `scripts/erasure-stores.json` has not
+reviewed, so this table cannot drift silently. Class "lead" means a row holds an
+address or carries a lead id; the delete tool removes those.
+
+| Store | Holds | Touched by the delete tool | How erasure is done or checked |
+|---|---|---|---|
+| `leads` (11 columns) | the address, country, times, session floor | yes | `DELETE`, read-back counts the row; also purged by age |
+| `kit_events` (4 columns) | hour-rounded unlock, view and verify events by lead id | yes | `DELETE`, read-back counts the rows; the foreign key also cascades |
+| `alert_dedup` (3 columns) | keyed hash of a recent alert, which can include the address, 10 minutes | no | cannot be matched without the secret key; clear expired rows by hand (below) |
+| `visitor_seen`, `view_events`, `click_events` | coarse visitor rows with no address, no IP address, no lead id | no | not matchable to a person by design (Art. 11); removed by retention |
+| 26 other tables (counters, rollups, budgets, logs, cursors) | counts and bookkeeping | no | aggregate, no row per person; counts cannot be un-counted |
+| KV, edge cache | the gated page, live status state, the public status body | no | no lead data; the Worker never writes the gated page key |
+| R2, Durable Objects, queues | not used | not applicable | the test fails if one is added without review |
+| Unlock cookie | a signed token, no server copy | not applicable | stops opening the kit once the `leads` row is gone |
+| `scripts/backup-d1.sh` exports | `leads`, `kit_events`, `visitor_seen`, `view_events` are never exported | not applicable | the only lead-related data an export can hold is the `alert_dedup` hashes; the test checks the script's table list against the registry |
+| D1 Time Travel | the whole database, 7 days Free, 30 days Paid | no | ages out; see the checklist |
+| Alert copies, inquiry text, hand-made exports, logs | outside the Worker | no | by hand, items 2, 3, 5, 6 and 8 of the checklist |
+
+Clear expired alert hashes now, against the database that holds the alert
+tables (this deletes only rows already past their 10 minute life; it takes the
+current time in milliseconds as the number):
+
+```
+npx wrangler d1 execute <DATABASE> --remote --command "DELETE FROM alert_dedup WHERE expires_at <= <NOW_MS>"
+```
+
+OPEN QUESTION 1, backups beyond Time Travel. The checklist can only tell you to
+look: the tool does not know where your automated backups go. Options: (a)
+accept that a copy outside the database ages out with that system's own
+retention and state the date in your reply (current text); (b) set a maximum
+age for any backup you keep and delete older ones on a schedule; (c) stop
+keeping backups of anything that can hold an address (the export script already
+leaves the lead tables out). Needs the owner's choice.
+
+OPEN QUESTION 2, the point-in-time read-back. Two runs reading 0 and 0 are still
+a moment in time: the Worker can write an event after the read. Options: (a)
+keep the repeat-until-two-clean-runs rule (current); (b) pause the event writes
+with the kit switch during the erasure window, then re-enable (loses unlock
+events for a few minutes); (c) rely on the foreign key cascade as well (already
+in the schema; D1 turning foreign keys on is inferred and unverified here).
+Needs the owner's choice.
+
+OPEN QUESTION 3, short-lived alert hashes. Options: (a) leave them to the 10
+minute life and the hand-clear statement above (current); (b) prune expired
+`alert_dedup` rows in the scheduled handler too, so a quiet site never holds one
+past its life (a Worker change); (c) add the statement to the delete SQL, which
+fails if alert tables ever move to another database than the leads one. Needs
+the owner's choice.
+
+OPEN QUESTION 4, aggregate counts. Hour-rounded counters (gate attempts, kit
+views by day) include the erased person's events and cannot be un-counted. The
+position written here is that they are not personal data about one person.
+Options: (a) keep that position (current); (b) say so in the visitor notice
+sentence; (c) drop counters that fall under a small threshold. Needs the owner's
+choice.
 
 TODO-copy: the visitor-facing sentence for the right of access, the right to
 erasure, the one-month answer and the Art. 11 position on page view rows.
@@ -272,9 +333,9 @@ Ctrl-C. Run it as one block from your project directory. The steps inside are:
    transaction in a file and the Worker can write an event after the read.
    `leads_remaining` 1 means the id did not belong to that address in the live
    database (a stale or wrong export): nothing was deleted, stop and re-export.
-   `events_remaining` above 0 means events remain; run the block again. Whether
-   the tables read here are every place the Worker stores lead data is
-   unverified against the full schema.
+   `events_remaining` above 0 means events remain; run the block again. The two
+   tables read here are the only tables that hold an address or a lead id (see
+   "Every store, checked against the schema" above).
 
 ```
 (

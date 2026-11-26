@@ -1,0 +1,99 @@
+{
+  "_comment": "Reviewed registry for tests/test_erasure_coverage.py (#856). Every table the Worker migrations create is listed with its exact column list, a class and a reason. A new table or column fails the test until it is added here on purpose, with review. classes: lead = rows that hold an address or carry a lead id, removed by `reach-around leads delete` (its SQL must delete the table and its read-back must count it); lead_hash = a keyed hash of an event that can include an address, short-lived, cleared by hand (docs/privacy.md); unlinkable = visitor rows with no address, no IP address and no lead id, so a request cannot be matched to them (Art. 11), bounded by retention; aggregate = counts, labels and bookkeeping with no row per person; internal = SQLite's own table. reviewed_columns: a column whose name looks personal (the test's PERSON_NAME pattern) in a table that is not class lead, each with the reason it holds no personal data. backup: whether scripts/backup-d1.sh exports the table (never or exported); only checked for classes lead, lead_hash and unlinkable.",
+  "stores": {
+    "leads": {
+      "class": "lead",
+      "backup": "never",
+      "reason": "One row per address typed into the kit gate. Removed by the delete tool (id and address paired). Also purged by age (worker/src/kit/leadretention.ts).",
+      "columns": ["id", "email", "created_ts", "last_seen_ts", "verified_ts", "source", "country", "last_view_alert_ts", "last_view_event_ts", "last_cc_alert_ts", "session_floor_ts"]
+    },
+    "kit_events": {
+      "class": "lead",
+      "backup": "never",
+      "reason": "Hour-rounded unlock, view and verify events keyed by lead_id. Removed by the delete tool; the foreign key cascades as a second layer.",
+      "columns": ["id", "ts", "lead_id", "kind"]
+    },
+    "alert_dedup": {
+      "class": "lead_hash",
+      "backup": "exported",
+      "reason": "HMAC of site, event kind and the event identity (an address, or the inquiry fields) under a secret key; held at most 10 minutes (expires_at) and pruned on the next alert write. Cannot be matched to an address without the key. Cleared by hand with the statement in docs/privacy.md.",
+      "columns": ["site", "event_hash", "expires_at"]
+    },
+    "visitor_seen": {
+      "class": "unlinkable",
+      "backup": "never",
+      "reason": "Daily keyed hash of the connection address with no other column; deleted after its day. Holds no lead id and no address, so it cannot be joined to a lead.",
+      "columns": ["day", "h"],
+      "reviewed_columns": {"h": "keyed daily hash of the connection address, own table, no join key; removed within about an hour of the day ending"}
+    },
+    "view_events": {
+      "class": "unlinkable",
+      "backup": "never",
+      "reason": "Raw page view rows: coarse categories only, no address, user agent string, referrer URL or lead id. Retention purge removes them.",
+      "columns": ["id", "ts", "page", "src_kind", "src", "country", "region", "city", "browser", "bmajor", "os", "device", "lang", "vp", "net", "bot_class", "reason", "first", "site"],
+      "reviewed_columns": {
+        "src_kind": "closed one-letter source kind (direct, internal, referrer host, utm label, other)",
+        "src": "referrer host or campaign label, not a URL",
+        "country": "two-letter country code from the edge",
+        "region": "coarse region name, default geo level",
+        "city": "empty unless GEO_LEVEL=city; never joined to a person",
+        "browser": "closed browser family",
+        "os": "closed operating system family",
+        "device": "closed device class",
+        "lang": "primary language tag",
+        "vp": "coarse viewport bucket",
+        "net": "closed network type"
+      }
+    },
+    "click_events": {
+      "class": "unlinkable",
+      "backup": "exported",
+      "reason": "One row per accepted click: hour-rounded time, link id, source label. No address, user agent or referrer. Retention purge removes them.",
+      "columns": ["id", "ts", "link_id", "country", "site", "src", "destination_kind"],
+      "reviewed_columns": {
+        "country": "two-letter country code; the Worker no longer writes it (migration 0010) and old rows age out",
+        "src": "closed source label, never a URL or an address"
+      }
+    },
+    "alert_quota": {"class": "aggregate", "reason": "Per-minute and per-day alert counters by site and channel; no content.", "columns": ["site", "channel", "scope", "window_start", "count"]},
+    "analytics_coverage": {"class": "aggregate", "reason": "24 letters per day saying whether collection ran.", "columns": ["day", "hours"]},
+    "click_budget": {"class": "aggregate", "reason": "Hourly click write budget counters.", "columns": ["site", "day", "hour", "clicks"]},
+    "click_budget_lh": {"class": "aggregate", "reason": "Hourly landing and hop write budget counters.", "columns": ["site", "day", "hour", "clicks"]},
+    "click_capacity": {"class": "aggregate", "reason": "Click capacity bookkeeping per day.", "columns": ["site", "day", "marked_at", "first_hour", "folded"]},
+    "click_country_daily": {"class": "aggregate", "reason": "Daily click counts by country.", "columns": ["site", "day", "link_id", "country", "clicks", "destination_kind"], "reviewed_columns": {"country": "country code in an aggregate count"}},
+    "click_country_monthly": {"class": "aggregate", "reason": "Monthly click counts by country.", "columns": ["site", "month", "link_id", "country", "clicks", "destination_kind"], "reviewed_columns": {"country": "country code in an aggregate count"}},
+    "click_funnel_state": {"class": "aggregate", "reason": "Rollup cursor.", "columns": ["site", "from_day"]},
+    "click_hop_daily": {"class": "aggregate", "reason": "Daily click counts by hop.", "columns": ["site", "day", "link_id", "destination_kind", "hop", "clicks"]},
+    "click_hop_monthly": {"class": "aggregate", "reason": "Monthly click counts by hop.", "columns": ["site", "month", "link_id", "destination_kind", "hop", "clicks"]},
+    "click_landing_daily": {"class": "aggregate", "reason": "Daily click counts by landing.", "columns": ["site", "day", "link_id", "destination_kind", "landing", "clicks"]},
+    "click_landing_monthly": {"class": "aggregate", "reason": "Monthly click counts by landing.", "columns": ["site", "month", "link_id", "destination_kind", "landing", "clicks"]},
+    "click_landing_state": {"class": "aggregate", "reason": "Rollup cursor.", "columns": ["site", "from_day"]},
+    "click_month_log": {"class": "aggregate", "reason": "Monthly rollup log.", "columns": ["site", "month", "rolled_at", "exhausted_days", "folded_clicks"]},
+    "click_seal": {"class": "aggregate", "reason": "Day seal markers.", "columns": ["site", "day", "sealed_at"]},
+    "click_src_daily": {"class": "aggregate", "reason": "Daily click counts by source label.", "columns": ["site", "day", "link_id", "src", "clicks", "destination_kind"], "reviewed_columns": {"src": "closed source label in an aggregate count"}},
+    "click_src_monthly": {"class": "aggregate", "reason": "Monthly click counts by source label.", "columns": ["site", "month", "link_id", "src", "clicks", "destination_kind"], "reviewed_columns": {"src": "closed source label in an aggregate count"}},
+    "counters": {"class": "aggregate", "reason": "Route budgets and daily or hourly counters keyed by a short slug. Counts of gate events cannot be un-counted and are not personal data about one person.", "columns": ["key", "day", "count"]},
+    "kit_meta": {"class": "aggregate", "reason": "Heartbeats and the unstored session floor: one integer per slug, no person.", "columns": ["key", "value"]},
+    "view_city_daily": {"class": "aggregate", "reason": "Daily view counts by city, only at GEO_LEVEL=city.", "columns": ["site", "day", "country", "region", "city", "bot_class", "views", "uniques"], "reviewed_columns": {"country": "country code in an aggregate count", "region": "region name in an aggregate count", "city": "city name in an aggregate count, purged on its own window"}},
+    "view_daily": {"class": "aggregate", "reason": "Daily view counts by page and source.", "columns": ["site", "day", "day_tz", "page", "src_kind", "src", "country", "bot_class", "views", "uniques"], "reviewed_columns": {"src_kind": "closed one-letter source kind", "src": "source label in an aggregate count", "country": "country code in an aggregate count"}},
+    "view_dim_daily": {"class": "aggregate", "reason": "Daily view counts by one coarse dimension.", "columns": ["site", "day", "day_tz", "dim", "value", "bot_class", "views", "uniques"]},
+    "view_geo_daily": {"class": "aggregate", "reason": "Daily view counts by geography.", "columns": ["site", "day", "day_tz", "country", "region", "city", "bot_class", "views", "uniques"], "reviewed_columns": {"country": "country code in an aggregate count", "region": "region name in an aggregate count", "city": "city name in an aggregate count"}},
+    "view_hour_daily": {"class": "aggregate", "reason": "Hour-of-day view and click counts.", "columns": ["site", "day", "hour", "bot_class", "views", "clicks"]},
+    "view_meta": {"class": "aggregate", "reason": "Small key and value state: cursors, budgets, health flags. Never request data.", "columns": ["key", "value"]},
+    "view_rollup_log": {"class": "aggregate", "reason": "Rollup bookkeeping per site and day.", "columns": ["site", "day", "day_tz", "raw_views", "views", "uniques", "rows_core", "rows_dim", "rows_geo", "rolled_at", "max_id", "rerolls", "reroll_closed"]},
+    "sqlite_sequence": {"class": "internal", "reason": "SQLite's own autoincrement bookkeeping: table names and counters.", "columns": ["name", "seq"]}
+  },
+  "runtime_stores": {
+    "_comment": "Non-D1 places the Worker can write, found by scanning worker/src and worker/wrangler.toml. A new one fails the test until it is listed here with the reason it holds no lead data.",
+    "primitives": {
+      "worker/src/live.ts": {
+        "put(": "live poller token cache and state in LIVE_KV, plus the edge cache of the public status body: platform tokens and stream state, no visitor data",
+        "caches.default": "edge cache of the public live status body, no visitor data"
+      },
+      "worker/src/kit/env.ts": {
+        "KVNamespace": "type of the KIT binding; the Worker only reads the gated page from it (key kit/v1) and never writes it"
+      }
+    },
+    "wrangler_tables": ["d1_databases", "kv_namespaces", "ratelimits", "routes", "triggers", "vars"]
+  }
+}

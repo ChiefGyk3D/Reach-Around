@@ -539,7 +539,18 @@ other copy exists. Tick each item in your reply and say what you checked.
    or spreadsheet you made holds addresses. Delete them and empty the trash.
 6. Shell history and notes. Check that the address is not in your shell
    history, a ticket or a note (the tools take it from stdin or a file only).
-7. By hand, places this tool and this list cannot see. Look in each and
+7. Short-lived alert hash. The `alert_dedup` table holds a keyed hash of each
+   recent alert, which can include the address, for at most 10 minutes. It
+   cannot be matched to an address without the Worker's secret key, and the
+   delete SQL does not touch it. Expired rows are only removed when the next
+   alert is written, so on a quiet site clear them by hand with the statement
+   in docs/privacy.md ("Every store, checked against the schema").
+8. Checked and clear: the Worker's KV namespace holds only the gated page and
+   live status state, and the Worker uses no R2, Durable Object or queue
+   storage. An unlock cookie is a signed token with no server copy; it stops
+   opening the kit once the `leads` row is gone. The scripts/erasure-stores.json
+   registry and its test keep this list in step with the database schema.
+9. By hand, places this tool and this list cannot see. Look in each and
    record the result, even when it is "nothing found": Worker logs and any
    collector logs or exception output; alert delivery logs at the chat or mail
    provider; automated backups and exports of the database beyond Time Travel;
