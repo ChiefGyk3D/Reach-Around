@@ -85,7 +85,8 @@ def test_the_section_has_exactly_these_fields() -> None:
     # (#610) are off by default and their privacy wording is still to be written
     # (docs/config.md and docs/deploy.md say to keep them off on a live site until
     # then; the turnstile fields wait for the storage check,
-    # docs/turnstile-storage-check.md).
+    # docs/turnstile-storage-check.md). `hop_label` (#593) only names this site in
+    # a link address; the hop the click ping reads is already in the privacy text.
     assert set(Analytics.model_fields) == {
         "page_views",
         "beacon_token",
@@ -93,6 +94,7 @@ def test_the_section_has_exactly_these_fields() -> None:
         "raw_keep_days",
         "geo_level",
         "other_sites",
+        "hop_label",
         "turnstile_beacon",
         "turnstile_site_key",
     }

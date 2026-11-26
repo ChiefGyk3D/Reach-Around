@@ -33,6 +33,7 @@ from reach_around.config.blocks import (
     Text,
 )
 from reach_around.config.footer import CREDIT_URL
+from reach_around.config.hoplabel import add_hop
 from reach_around.config.imported_history import ImportedHistory
 from reach_around.config.models import (
     SCREEN_PATHS,
@@ -334,6 +335,24 @@ def _nav(config: SiteConfig, current: int, root: str) -> list[dict[str, Any]]:
         }
         for i, tab in enumerate(config.tabs)
     ]
+
+
+def _link_href(config: SiteConfig) -> Callable[[Any], str]:
+    """The address a link is written with: its url, plus ``h=<label>`` if internal.
+
+    Only a link the owner marked ``internal`` gets the hop (#593); the config
+    check has already tied it to a listed site of the owner's and refused an
+    existing ``h``, and ``add_hop`` judges the label again at the point of use.
+    """
+    label = config.analytics.hop_label
+
+    def href(link: Any) -> str:
+        url = str(link.url)
+        if getattr(link, "internal", False) is True and label is not None:
+            return add_hop(url, label)
+        return url
+
+    return href
 
 
 def _internal_href(
@@ -1318,6 +1337,7 @@ def build_site(
         static[Path("static") / "custom.css"] = custom_css.encode("utf-8")
     named = fingerprint(static)
     env = make_environment(overrides)
+    env.globals["link_href"] = _link_href(config)
     env.globals["platform_rows"] = lambda block: platform_rows(
         block, numbers, number_day or today, config
     )
