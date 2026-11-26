@@ -342,12 +342,19 @@ CLIPPED = """
 }
 """
 
+# The column count is the most elements that share one row. An odd last element
+# sits centered on its own row (#337), so counting distinct left edges would
+# count that centered position as an extra column.
 COLUMNS = """
-(selector) => new Set(
-  Array.from(document.querySelectorAll(selector))
-    .filter((el) => el.getClientRects().length)
-    .map((el) => Math.round(el.getBoundingClientRect().left))
-).size
+(selector) => {
+  const rows = new Map();
+  for (const el of document.querySelectorAll(selector)) {
+    if (!el.getClientRects().length) continue;
+    const top = Math.round(el.getBoundingClientRect().top);
+    rows.set(top, (rows.get(top) || 0) + 1);
+  }
+  return Math.max(0, ...rows.values());
+}
 """
 
 LINE_LENGTHS = """

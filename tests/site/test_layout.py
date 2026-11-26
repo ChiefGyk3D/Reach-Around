@@ -42,6 +42,9 @@ class _Quiet(SimpleHTTPRequestHandler):
 @pytest.fixture(scope="module")
 def base_url(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
     raw = yaml.safe_load(EXAMPLE.read_text())
+    # These checks pin the default dark palette and pill buttons, so the example's
+    # own brand theme (its colors, square buttons, frame) is replaced, not merged.
+    raw["theme"] = {"mode": "dark", "frame": "none"}
     raw["tabs"][0]["blocks"].append(
         {
             "id": "long-one",

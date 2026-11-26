@@ -216,6 +216,9 @@ def test_copy_writes_the_address_announces_and_resets(
     )
     page = context.new_page()
     page.goto(url)
+    # The browser fetches the tab icon after the load event; let that settle so only
+    # requests made by the copy itself are counted.
+    page.wait_for_load_state("networkidle")
     watch = Watch(page)
     requests: list[str] = []
     page.on("request", lambda r: requests.append(r.url))

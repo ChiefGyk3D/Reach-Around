@@ -188,6 +188,12 @@ def _box(page: Page, selector: str, index: int = 0) -> Any:
     return box
 
 
+def _center_offset(page: Page, container: str, box: Any) -> float:
+    """How far a box's middle sits from the middle of its container."""
+    outer = _box(page, container)
+    return float(abs((box["x"] + box["width"] / 2) - (outer["x"] + outer["width"] / 2)))
+
+
 def _pixels(page: Page, y: int, xs: list[int]) -> list[list[int]]:
     """RGB at (x, y) of a screenshot, read back through a canvas (no imaging lib)."""
     png = base64.b64encode(page.screenshot()).decode()
@@ -288,26 +294,30 @@ def test_link_without_icon_reserves_no_slot(browser: Browser, base_url: str) -> 
     page.context.close()
 
 
-def test_lone_last_card_spans_the_row_on_desktop(
+def test_lone_last_card_is_centered_at_one_column_width_on_desktop(
     browser: Browser, base_url: str
 ) -> None:
+    # Since #337 an odd last card keeps one column width and sits in the middle
+    # of the row (see test_orphan_centering.py); it no longer spans the row.
     page = _open(browser, base_url, 1440)
     inner = _inner_width(page, ".blocks")
     last_link = page.locator(".blocks > .block-link").last
     box = last_link.bounding_box()
     assert box is not None
     assert last_link.evaluate("el => el.matches(':last-child:nth-child(odd)')")
-    assert box["width"] >= inner - 1, (box, inner)
+    assert box["width"] < inner - 1, (box, inner)
+    assert _center_offset(page, ".blocks", box) <= 1.0, box
     page.context.close()
 
 
-def test_lone_last_link_in_an_open_section_spans(
+def test_lone_last_link_in_an_open_section_is_centered_at_one_column_width(
     browser: Browser, base_url: str
 ) -> None:
     page = _open(browser, base_url, 1440, open_all=True)
     inner = _inner_width(page, ".section-links")
     link = _box(page, ".section-links > li a.link")
-    assert link["width"] >= inner - 1, (link, inner)
+    assert link["width"] < inner - 1, (link, inner)
+    assert _center_offset(page, ".section-links", link) <= 1.0, link
     page.context.close()
 
 
@@ -357,7 +367,8 @@ def _link(n: int) -> dict[str, Any]:
 
 
 _TEXT: dict[str, Any] = {"id": "t", "markdown": "Some text"}
-# name -> (blocks, which link cards (0-based) must span the row)
+# name -> (blocks, which link cards (0-based) are alone in their row: centered at
+# one column width, never spanning the row)
 _ROW_CASES: dict[str, tuple[list[dict[str, Any]], set[int]]] = {
     "ll": ([_link(1), _link(2)], set()),
     "lll": ([_link(1), _link(2), _link(3)], {2}),
@@ -416,7 +427,7 @@ def cases_url(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
 
 
 @pytest.mark.parametrize("name", list(_ROW_CASES))
-def test_only_a_card_alone_in_its_row_spans(
+def test_only_a_card_alone_in_its_row_is_centered(
     browser: Browser, cases_url: str, name: str
 ) -> None:
     _, spans = _ROW_CASES[name]
@@ -427,17 +438,22 @@ def test_only_a_card_alone_in_its_row_spans(
     for i in range(cards.count()):
         box = cards.nth(i).bounding_box()
         assert box is not None
-        assert (box["width"] >= inner - 1) == (i in spans), (name, i, box, inner)
+        assert box["width"] < inner - 1, (name, i, box, inner)
+        if i in spans:
+            assert _center_offset(page, ".blocks", box) <= 1.0, (name, i, box)
+        else:
+            assert _center_offset(page, ".blocks", box) > 1.0, (name, i, box)
     page.context.close()
 
 
 @pytest.mark.parametrize(("name", "spans"), [("sec2", False), ("sec3", True)])
-def test_section_links_span_only_when_last_is_alone(
+def test_section_links_center_only_when_last_is_alone(
     browser: Browser, cases_url: str, name: str, spans: bool
 ) -> None:
     page = _open(browser, cases_url + name + "/", 1440)
     inner = _inner_width(page, ".section-links")
     last = page.locator(".section-links > li a.link").last.bounding_box()
     assert last is not None
-    assert (last["width"] >= inner - 1) == spans, (last, inner)
+    assert last["width"] < inner - 1, (last, inner)
+    assert (_center_offset(page, ".section-links", last) <= 1.0) == spans, last
     page.context.close()
