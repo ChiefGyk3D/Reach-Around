@@ -84,7 +84,7 @@ describe("AB-8: what is stored", () => {
         expect(text, table).not.toContain("person");
       }
     }
-    const leads = tables.find((t) => t.table === "leads")!.text;
+    const leads = tables.filter((t) => t.table === "leads").map((t) => t.text).join(" "); // the analytics database keeps an empty legacy leads table
     expect(leads).toContain("person0@example.com");
   });
 

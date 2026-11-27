@@ -551,8 +551,39 @@ You run a local command, and then apply the SQL it prints with `wrangler`.
 
 Installations that collected leads before the leads database existed: until the one-time move in
 [deploy.md](deploy.md) ("The one-time move of existing leads") has emptied the analytics database,
-the same lead can also be in its `leads` table. Run the export and the delete below against the
-analytics database too (name it in the `wrangler d1 execute` lines), or run the move first.
+the same lead can also be in its `leads` and `kit_events` tables. Erase that copy with its own run,
+after the run below for the leads database (two runs, in this order: first the leads database, then the
+legacy analytics database). `leads delete` has an explicit legacy mode for it: you name the legacy
+database and type the same name again, and the run deletes from the `leads` and `kit_events` tables
+only. It takes no `--database`, `--alerts-database`, database id or `--finish`: the alert hashes are
+cleared by the first run's `--finish`.
+
+```
+(
+  set -eu
+  umask 077
+  WORK="$(mktemp -d)"
+  cleanup() { rm -rf -- "$WORK"; }
+  trap cleanup EXIT
+  trap 'exit 130' HUP INT TERM
+  LEGACY=your-analytics-database-name   # the legacy analytics database, never reach-around-leads
+  npx wrangler d1 execute "$LEGACY" --remote --json \
+    --command "SELECT id, email FROM leads" > "$WORK/legacy-export.json"
+  printf 'Address to delete: ' >&2
+  read -r ADDR
+  printf '%s\n' "$ADDR" | reach-around leads delete --input "$WORK/legacy-export.json" --email - --legacy-database "$LEGACY" --confirm-legacy "$LEGACY" --yes --sql-out "$WORK/delete-lead-legacy.sql"
+  # The tool prints two commands: the apply command and the read-back command. Apply the file,
+  # wait a minute, apply it again, then run the read-back command twice; both must show 0 and 0.
+)
+```
+
+Exit 10 from the legacy run means the checks passed and NOTHING was erased yet (as in the normal
+run); exit 1 means no lead has that address in the legacy copy; exit 2 means a refused request (an
+unconfirmed or mistyped name, the leads database name, a mixed option). Run the printed read-back
+twice, a minute apart and each after a file run; erasure of the legacy copy is done only when both
+read `0` and `0` (a point-in-time check, as for the leads database). The block above removes its
+work directory on exit, so copy the printed read-back command from the terminal before it ends,
+and apply the file while the block is still running (put the printed apply command inside it).
 
 The export holds every address, so the procedure below keeps it in a private
 temporary directory and removes it however the run ends: on success, on a
@@ -668,7 +699,7 @@ reach.
 The one-time lead move (docs/deploy.md) deletes rows from the analytics database one
 statement at a time, with no personal value on a command line. A row that changed
 after the tool copied it comes back from the database different; the tool saves that
-version to a private file (`lead-returned-*.json`, mode 600, personal data: delete it
+version to a private file (`lead-returned-*.json`, mode 600, personal data, registered in the manifest; recovery consumes it, and the cleanup in docs/deploy.md shreds it
 after the move is verified) before anything else. Only such differing rows get a file
 of their own; matching rows are already in the recovery export.
 

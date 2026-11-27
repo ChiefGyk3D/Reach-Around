@@ -243,7 +243,7 @@ describe("AB-4: revocation and deleted leads", () => {
     const t = nowSec();
     const cookie = await signedCookie({ lid: unstored, iat: t - 20, exp: t + 3000 });
     await opens(cookie, "unstored before the floor");
-    await setUnstoredSessionFloor(testEnv.LEADS_DB, (t - 20) * 1000);
+    await setUnstoredSessionFloor(testEnv.DB, (t - 20) * 1000);
     await refused(cookie, "unstored at the floor");
     await opens(await signedCookie({ lid: unstored, iat: t - 5, exp: t + 3000 }), "unstored after the floor");
   });

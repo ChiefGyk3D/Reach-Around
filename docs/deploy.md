@@ -562,11 +562,11 @@ npx wrangler d1 execute <ANALYTICS DATABASE> --remote --command "SELECT name FRO
 database whose freeze you have already lifted by hand; use `--freeze` afterwards.
 
 Keep all
-`lead-recovery-*.json` files private until the retention decision and recovery
+`lead-recovery-*.json` and `lead-returned-*.json` files private until the retention decision and recovery
 window have ended. Then destroy them with exactly:
 
 ```bash
-find ~/lead-move-work -maxdepth 1 -type f -name 'lead-recovery-*.json' -exec shred -u -- {} +
+find ~/lead-move-work -maxdepth 1 -type f \( -name 'lead-recovery-*.json' -o -name 'lead-returned-*.json' \) -exec shred -u -- {} +
 ```
 
 Trust boundary of the work directory. The tool trusts the same operating-system user and the work
@@ -592,7 +592,7 @@ the database returns is compared by its full digest. If the address changed afte
 returned version differs. The tool first saves that version to its own private file in the work directory
 (`lead-returned-*.json`, mode 600, holds personal data), then writes it to the leads database through a private
 file, reads it back, records it in the manifest and in its own recovery export, and only then counts it as
-deleted. A failure after the first step ends the run with exit 5 and names the file. Only rows that differ from
+deleted. The file name is registered in the manifest (`rescue_files`) before the file is written, and the file is removed with its registration once the row is safe elsewhere; after a crash at any point, `--recover-from-export` consumes every registered rescue file (writes the row to the leads database, records it, removes the file), and the cleanup command below shreds any that remain. A failure after the first step ends the run with exit 5 and names the file. Only rows that differ from
 the copied row get their own file: a matching row is already in the recovery export written before the first
 DELETE. The tool fails closed: if the database refuses the clause, the delete fails and the run
 needs `--verify`; if no rows come back, nothing is recorded and the final verification reports the
