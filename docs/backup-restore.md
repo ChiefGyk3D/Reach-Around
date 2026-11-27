@@ -39,13 +39,21 @@ tables, `analytics_coverage` (24 letters per day saying whether the Worker was
 collecting; no counts and no visitor data) and `d1_migrations` (the list of migrations already applied, which a
 rebuilt database needs so that "apply migrations" only runs newer ones).
 
-The script checks each export. Every table's row count must be the same before
-and after the exports, so a write during the run fails it (exit 1): pause both
-write routes and run again. Each file's rows are then counted by reading it line
-by line (nothing in it is executed, size limits apply, `BACKUP_MAX_BYTES` sets
-the per-file one) and must equal that count. Residual (inferred, not verified:
-D1 gives no snapshot across separate queries): a write that replaces rows and
-leaves every count equal during the run is not seen.
+The script checks each export. A table may gain rows during the run (visits,
+clicks and alerts keep arriving) but must not lose any: if a table's count after
+the exports is lower than before, the run fails (exit 1, "rows decreased"), so
+run it again. Each file's rows are then counted by reading it line by line
+(nothing in it is executed; the file is opened once, no link is followed, and
+`BACKUP_MAX_BYTES`, default 1 GiB, bounds what is read) and the count must lie
+between the count before and the count after. The accepted file grammar was
+verified on 2026-11-27 against real D1 exports (wrangler 4.162.0, synthetic
+data): one `INSERT INTO "<table>" ("col",...) VALUES(...);` line per row, a value
+with a newline escaped on the same line, and `CREATE TABLE` lines that may come
+after inserts. Anything else (several rows in one statement, another spelling of
+INSERT, a NUL byte, bad UTF-8, an unbalanced quote) fails the run. Residual
+(inferred, not verified: D1 gives no snapshot across separate queries): deleting
+one row and adding another during the run, which leaves the counts level, is not
+seen.
 
 **Country in `click_events`.** The Worker now writes no country there, but the
 column still exists and rows written before migration 0010 and the new Worker

@@ -75,6 +75,8 @@ elif args[:2] == ["d1", "export"]:
     inserts = [l for l in db.iterdump() if l.startswith(f'INSERT INTO "{{table}}"')]
     if os.environ.get("STUB_TRUNCATE") == table:
         inserts = inserts[:-1]
+    if os.environ.get("STUB_DUP_ROW") == table:
+        inserts = inserts + inserts[-1:]
     with open(out, "w") as fh:
         fh.write(schema + ";\\n" + "\\n".join(inserts) + "\\n")
     if os.environ.get("STUB_REPLACE") == table:
@@ -919,28 +921,47 @@ def test_a_table_replaced_during_the_run_fails(tmp_path: Path) -> None:
     assert "changed while the export ran" in r.stderr
 
 
-def test_a_write_during_the_run_fails_and_asks_for_a_rerun(tmp_path: Path) -> None:
-    """The before and after counts must be equal: a row added while the export
-    runs fails the run (no range is accepted) and keeps nothing."""
+def test_a_table_may_grow_during_the_run(tmp_path: Path) -> None:
+    """Visits and clicks keep arriving: a row added while the exports run is
+    allowed (the after count is higher, the export holds the earlier rows)."""
     env = make(tmp_path)
     env["STUB_GROW"] = "view_hour_daily"
     d = dest(tmp_path)
     r = run(env, "reach-db", str(d), "--apply")
+    assert r.returncode == 0, r.stderr
+
+
+def test_a_table_that_loses_rows_during_the_run_fails(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    env["STUB_DELETE_AFTER"] = "view_daily"
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
     _fails_before_keeping(r, d)
-    assert "changed during the run" in r.stderr
-    assert "view_hour_daily" in r.stderr
+    assert "rows decreased" in r.stderr
+    assert "view_daily" in r.stderr
 
 
 def test_a_truncated_export_with_a_matching_delete_still_fails(
     tmp_path: Path,
 ) -> None:
     """The review's case: the export lost a row and a live delete made the after
-    count match it. Equal before and after counts are required, so it fails."""
+    count match it. The count went down, so it fails."""
     env = make(tmp_path)
     env["STUB_TRUNCATE"] = "view_daily"
     env["STUB_DELETE_AFTER"] = "view_daily"
     d = dest(tmp_path)
     _fails_before_keeping(run(env, "reach-db", str(d), "--apply"), d)
+
+
+def test_an_export_with_more_rows_than_the_database_ever_held_fails(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    env["STUB_DUP_ROW"] = "view_daily"
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    _fails_before_keeping(r, d)
+    assert "does not match" in r.stderr
 
 
 def test_exported_sql_is_never_executed(tmp_path: Path) -> None:

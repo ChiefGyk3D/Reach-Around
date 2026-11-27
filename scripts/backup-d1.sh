@@ -30,14 +30,15 @@
 # The run makes read-only queries (the table listing with each table's definition,
 # once before and once after the exports, and a row count of every table, once
 # before and once after) plus the exports. An answer that is not a single
-# successful result is never trusted. Every table's count must be the same before
-# and after the exports (a write during the run fails it: rerun, ideally with the
-# write routes paused), and each export file's row count, counted by reading it
-# line by line (single-row INSERT lines only, size limits, nothing executed), must
-# equal that count, so an export cut short fails. If the listing after the
-# exports differs from the first (a table dropped, replaced or changed) the run
-# fails. Residual (inferred, not verified: D1 gives no snapshot across separate
-# queries): a write that replaces rows and leaves every count equal is not seen. Every
+# successful result is never trusted. A table may GAIN rows during the run (page
+# views, clicks and alerts keep arriving) but must not lose any: the count after
+# the exports must be at least the count before (else exit 1, rows decreased:
+# rerun), and each export file's row count, counted by reading it line by line
+# (single-row INSERT lines only, size limits, nothing executed), must lie between
+# the two, so an export cut short fails. If the listing after the exports differs
+# from the first (a table dropped, replaced or changed) the run fails. Residual
+# (inferred, not verified: D1 gives no snapshot across separate queries): a delete
+# plus an insert that leaves the counts level is not seen. Every
 # table in the `tables` list below is ALWAYS required: if the database lacks any
 # of them the run fails (exit 1) before any export and names the missing tables
 # (at most 10, then "... and K more"). A database that lacks a current table (an
@@ -139,6 +140,18 @@ case "$limit" in
 esac
 if [ "$limit" -gt 900 ]; then
   echo "error: BACKUP_TIMEOUT must be a whole number from 1 to 900" >&2
+  exit 2
+fi
+
+max_bytes="${BACKUP_MAX_BYTES:-1073741824}"
+case "$max_bytes" in
+"" | *[!0-9]* | 0*)
+  echo "error: BACKUP_MAX_BYTES must be a whole number from 1 to 1099511627776" >&2
+  exit 2
+  ;;
+esac
+if [ "${#max_bytes}" -gt 13 ] || [ "$max_bytes" -gt 1099511627776 ]; then
+  echo "error: BACKUP_MAX_BYTES must be a whole number from 1 to 1099511627776" >&2
   exit 2
 fi
 
@@ -413,21 +426,35 @@ if [ "$fingerprint_before" != "$fingerprint_after" ]; then
   exit 1
 fi
 
-# The database must not have changed while the exports ran: every table's count
-# before and after must be equal (a write means rerun, exit 1). Then each file's
-# row count must equal that count. The files are only READ, line by line, with a
-# size limit per file (BACKUP_MAX_BYTES, default 1 GiB) and per line (1 MiB); no
-# exported SQL is ever executed. Only lines that start with INSERT INTO <table>
-# are counted, and such a line must be a single-row statement on one line (it
-# ends with ");"): any shape that cannot be counted fails closed. Names and
-# verdicts only are printed, never a value.
-if ! BACKUP_MAX_BYTES="${BACKUP_MAX_BYTES:-1073741824}" python3 -I - "$out" "${exported[@]}" <<'PY'
-import os, re, sys
+# No table may have lost rows while the exports ran: its count after must be at
+# least its count before (rows decreased: rerun, exit 1). Growth is allowed. Then
+# each file's row count must be at least the before count and at most the after
+# count. The files are only READ, never executed: each
+# is opened once (no symbolic link followed), checked on that descriptor, and
+# read with a cumulative limit (BACKUP_MAX_BYTES, default 1 GiB, whatever the
+# size was at the start) and a 1 MiB line limit. A NUL byte or invalid UTF-8
+# fails. A small quote-aware scanner tracks single and double quotes ACROSS lines
+# and counts a statement only when it is exactly `INSERT INTO <table> ... VALUES
+# (one tuple);`. Every other line that begins like an insert (any case, leading
+# space, other quoting, REPLACE), a statement with more than one VALUES tuple, an
+# unbalanced quote or a statement cut off at the end of the file fails closed.
+# GRAMMAR: VERIFIED on 2026-11-27 against real D1 exports (wrangler 4.162.0,
+# synthetic data, three runs): a PRAGMA line first, `CREATE TABLE <bare name>`,
+# one INSERT per row on one line, `INSERT INTO "<table>" ("col",...) VALUES(...);`
+# (a value with a newline is escaped and stays on one line), no CR, statements
+# not grouped by table (a CREATE TABLE can follow INSERT lines), no INSERT line
+# for an empty table. Both `VALUES(` and `VALUES (` are accepted. Anything outside
+# that grammar fails closed. Names and verdicts only are printed, never a value.
+if ! BACKUP_MAX_BYTES="$max_bytes" python3 -I - "$out" "${exported[@]}" <<'PY'
+import os, re, stat, sys
 
 out = sys.argv[1]
 tables = sys.argv[2:]
 max_bytes = int(os.environ["BACKUP_MAX_BYTES"])
 max_line = 1 << 20
+TOKEN = re.compile(r"""['"();]""")
+INSERTISH = re.compile(r"(?is)\s*(insert|replace)\b")
+
 
 def read(name):
     counts = {}
@@ -437,43 +464,116 @@ def read(name):
             counts[t] = int(n)
     return counts
 
+
 def say(msg, names):
     shown = " ".join(names[:10])
     more = f" ... and {len(names) - 10} more" if len(names) > 10 else ""
     sys.stderr.write(f"error: {msg}: {shown}{more}\n")
 
+
+def scan(path, table):
+    """Returns (verdict, count): verdict is ok, big or odd."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return "odd", 0
+    accept = re.compile(r'INSERT INTO ("?)' + re.escape(table) + r'\1[ (]')
+    # A quoted identifier is one Q in the head (its text is skipped).
+    head_ok = re.compile(r"INSERT INTO (?:Q|" + re.escape(table) + r") VALUES")
+    with os.fdopen(fd, "rb") as fh:
+        st = os.fstat(fh.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            return "odd", 0
+        if st.st_size > max_bytes:
+            return "big", 0
+        total = n = 0
+        sq = dq = False
+        stmt = None  # [depth, tuples, head] while inside a counted statement
+        while True:
+            raw = fh.readline(max_line + 1)
+            if not raw:
+                break
+            total += len(raw)
+            if total > max_bytes or len(raw) > max_line:
+                return "big", 0
+            if b"\0" in raw:
+                return "odd", 0
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                return "odd", 0
+            if stmt is None and not sq and not dq:
+                if INSERTISH.match(text):
+                    if not accept.match(text):
+                        return "odd", 0
+                    stmt = [0, 0, ""]
+            pos = 0
+            for m in TOKEN.finditer(text):
+                ch = m.group()
+                seg = text[pos : m.start()]
+                pos = m.end()
+                if sq:
+                    sq = ch != "'"
+                    continue
+                if dq:
+                    dq = ch != '"'
+                    continue
+                if stmt is not None and stmt[0] == 0:
+                    stmt[2] += seg
+                if ch in "'\"":
+                    sq, dq = ch == "'", ch == '"'
+                    if stmt is not None and stmt[0] == 0:
+                        stmt[2] += "Q"
+                elif stmt is None:
+                    continue
+                elif ch == "(":
+                    if stmt[0] == 0 and re.search(r"(?i)\bVALUES\b", stmt[2]):
+                        stmt[1] += 1
+                    stmt[0] += 1
+                elif ch == ")":
+                    stmt[0] -= 1
+                    if stmt[0] < 0:
+                        return "odd", 0
+                elif stmt[0] == 0:  # ;
+                    head = " ".join(stmt[2].split())
+                    if stmt[1] != 1 or not head_ok.fullmatch(head):
+                        return "odd", 0
+                    if text[pos:].strip():
+                        return "odd", 0
+                    n += 1
+                    stmt = None
+                    break
+                # a ';' inside a tuple (depth > 0) belongs to the statement
+            else:
+                # The real export keeps every INSERT on one physical line (a
+                # newline inside a value is escaped): a statement that is still
+                # open at the end of its line is outside the grammar.
+                if stmt is not None:
+                    return "odd", 0
+        if sq or dq or stmt is not None:
+            return "odd", 0
+    return "ok", n
+
+
 before, after = read(".counts-before"), read(".counts-after")
-changed = [t for t in tables if before.get(t) != after.get(t)]
-if changed:
-    say("rows changed during the run (rerun it, ideally with the write routes paused)", changed)
+shrunk = [
+    t
+    for t in tables
+    if t not in before or t not in after or after[t] < before[t]
+]
+if shrunk:
+    say("rows decreased during the run (rerun it)", shrunk)
     sys.exit(1)
 
 big, odd, wrong = [], [], []
 for t in tables:
-    path = f"{out}/{t}.sql"
-    if os.path.getsize(path) > max_bytes:
+    verdict, n = scan(f"{out}/{t}.sql", t)
+    if verdict == "big":
         big.append(t)
-        continue
-    start = re.compile(rb'^INSERT INTO ("?)' + re.escape(t.encode()) + rb'\1[ (]')
-    n = 0
-    with open(path, "rb") as fh:
-        while True:
-            line = fh.readline(max_line + 1)
-            if not line:
-                break
-            if len(line) > max_line:
-                big.append(t)
-                break
-            if start.match(line):
-                if not line.rstrip(b"\r\n").endswith(b");") or b"VALUES" not in line:
-                    odd.append(t)
-                    break
-                n += 1
-        else:
-            pass
-    if t in big or t in odd:
-        continue
-    if n != before[t]:
+    elif verdict == "odd":
+        odd.append(t)
+    elif not before[t] <= n <= after[t]:
         wrong.append(t)
 if big:
     say("export too large to check", big)

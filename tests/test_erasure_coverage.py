@@ -1157,20 +1157,23 @@ def _is_inventory_count(sql: str, stores: dict[str, Any], extra: set[str]) -> bo
     """Exactly the read-only count query of the backup: one `SELECT 'T' AS name,
     COUNT(*) AS n FROM "T"` per table, joined by UNION ALL, each T an exported
     table (never a lead or internal table, never one marked backup: never)."""
-    parts = sql.split(" UNION ALL ")
-    for part in parts:
+    names: list[str] = []
+    for part in sql.split(" UNION ALL "):
         m = COUNT_PART.match(part)
         if not m or m.group(1) != m.group(2):
             return False
-        t = m.group(1)
-        entry = stores.get(t)
-        if t in extra:
-            continue
-        if entry is None or entry["class"] in {"lead", "internal"}:
-            return False
-        if entry.get("backup") == "never":
-            return False
-    return True
+        names.append(m.group(1))
+    # Exactly the exported set: no duplicate, no subset, no other table (the
+    # order is the script's own and is not part of the rule).
+    return len(names) == len(set(names)) and set(names) == _exported_set(stores, extra)
+
+
+def _exported_set(stores: dict[str, Any], extra: set[str]) -> set[str]:
+    return {
+        t
+        for t, entry in stores.items()
+        if entry["class"] not in {"lead", "internal"} and entry.get("backup") != "never"
+    } | extra
 
 
 def backup_call_violations(
@@ -3887,17 +3890,44 @@ def test_a_broader_or_different_query_is_still_a_violation(sql: str) -> None:
     assert backup_call_violations(calls, load_registry()) != []
 
 
+def _count_sql(names: list[str]) -> str:
+    return " UNION ALL ".join(
+        f"SELECT '{t}' AS name, COUNT(*) AS n FROM \"{t}\""  # noqa: S608
+        for t in names
+    )
+
+
+def _exported_names() -> list[str]:
+    reg = load_registry()
+    extra = set(reg["export_paths"]["backup_extra_tables"])
+    return sorted(_exported_set(reg["stores"], extra))
+
+
+def _count_call(names: list[str]) -> list[list[str]]:
+    return [["d1", "execute", "db", "--command", _count_sql(names)]]
+
+
 def test_the_exact_listing_and_count_queries_are_allowed() -> None:
     reg = load_registry()
-    count = (
-        "SELECT 'view_daily' AS name, COUNT(*) AS n FROM \"view_daily\""
-        " UNION ALL SELECT 'counters' AS name, COUNT(*) AS n FROM \"counters\""
-    )
-    calls = [
-        ["d1", "execute", "db", "--command", LISTING_SQL],
-        ["d1", "execute", "db", "--command", count],
-    ]
-    assert backup_call_violations(calls, reg) == []
+    names = _exported_names()
+    assert len(names) > 20
+    calls = [["d1", "execute", "db", "--command", LISTING_SQL]]
+    assert backup_call_violations(calls + _count_call(names), reg) == []
+    # The set is what counts, not the order.
+    assert backup_call_violations(_count_call(names[::-1]), reg) == []
+
+
+def test_a_count_query_over_a_subset_or_with_a_duplicate_is_a_violation() -> None:
+    reg = load_registry()
+    names = _exported_names()
+    for bad in (
+        names[:-1],  # a subset: one table missing
+        names[:1],
+        names + names[:1],  # a duplicate
+        names + [names[0]] * 2,
+        [names[0]] * len(names),  # right length, one table repeated
+    ):
+        assert backup_call_violations(_count_call(bad), reg) != []
 
 
 # --- non-D1 stores ---------------------------------------------------------------
