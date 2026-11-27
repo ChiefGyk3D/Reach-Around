@@ -800,6 +800,122 @@ def test_a_low_rate_limit_on_the_last_empty_page_does_not_spoil_a_finished_read(
     assert run(p).complete
 
 
+def _rated(value: str, payload: Any) -> Any:
+    return reply(payload, headers={**DATE_OK, "x-ratelimit-remaining": value})
+
+
+@pytest.mark.parametrize("value", ["garbage", "-1", "", "9" * 11, "٥"])
+def test_a_malformed_rate_header_on_the_lookup_is_bad_shape(value: str) -> None:
+    p = Pages([[status(5, day(1))], []], look=_rated(value, lookup()))
+    read = run(p)
+    assert isinstance(read.rows, NotProvided) and read.reason == "bad_shape"
+    assert len(p.transport.calls) == 1  # no status page was asked for
+
+
+@pytest.mark.parametrize("value", ["0", "4"])
+def test_a_low_rate_header_on_the_lookup_stops_before_the_next_request(
+    value: str,
+) -> None:
+    p = Pages([[status(5, day(1))], []], look=_rated(value, lookup()))
+    read = run(p)
+    assert isinstance(read.rows, NotProvided) and read.reason == "rate_limited"
+    assert len(p.transport.calls) == 1
+
+
+def test_a_malformed_rate_header_on_the_last_empty_page_is_bad_shape() -> None:
+    p = Pages(
+        [[status(5, day(1))], []],
+        page_headers={1: {"x-ratelimit-remaining": "garbage"}},
+    )
+    read = run(p)
+    assert isinstance(read.rows, NotProvided) and read.reason == "bad_shape"
+
+
+@pytest.mark.parametrize("code", [429, 500, 503])
+def test_a_malformed_rate_header_on_an_error_answer_is_bad_shape(code: int) -> None:
+    bad = reply({}, status=code, headers={"x-ratelimit-remaining": "garbage"})
+    read = run(Pages([[]], look=bad))
+    assert isinstance(read.rows, NotProvided) and read.reason == "bad_shape"
+    later = run(Pages([[status(5, day(1))], bad]))
+    assert isinstance(later.rows, NotProvided) and later.reason == "bad_shape"
+
+
+def test_a_malformed_rate_header_on_a_retried_answer_is_bad_shape() -> None:
+    p = Pages([[]])
+    answers = iter(
+        [
+            reply({}, status=503, headers={"x-ratelimit-remaining": "garbage"}),
+            reply([], headers=DATE_OK),
+        ]
+    )
+    p.transport.routes[STATUSES] = lambda r: next(answers)
+    read = run(p)
+    assert isinstance(read.rows, NotProvided) and read.reason == "bad_shape"
+
+
+# --- one canonical account id everywhere ---------------------------------------
+
+_ODD_IDS: list[Any] = [
+    "01000",
+    "0001000",
+    " 1000",
+    "1000 ",
+    "1000\n",
+    "١٠٠٠",
+    1000,
+    None,
+]
+
+
+@pytest.mark.parametrize("odd", ["00", "01", "01000", "٧", "7\n", " 7", "+7", "7.0"])
+def test_a_noncanonical_configured_account_id_is_refused(odd: str) -> None:
+    with pytest.raises(ValueError):
+        masto.check_account_id(odd)
+    t = FakeTransport()
+    with pytest.raises(ValueError):
+        masto.collect(HOST, None, account_id=odd, now=NOW, transport=t)
+    assert t.calls == []
+
+
+@pytest.mark.parametrize("odd", _ODD_IDS)
+def test_a_noncanonical_lookup_id_is_bad_shape_never_a_complete_read(odd: Any) -> None:
+    p = Pages([[status(5, day(1))], []], look=lookup(id=odd))
+    read = run(p)
+    assert isinstance(read.rows, NotProvided) and read.reason == "bad_shape"
+    assert len(p.transport.calls) == 1
+
+
+@pytest.mark.parametrize("odd", _ODD_IDS)
+def test_a_noncanonical_status_author_is_bad_shape_never_a_zero(odd: Any) -> None:
+    for author in (ME, OTHER):
+        item = status(5, day(1), author=author)
+        item["account"]["id"] = odd
+        read = run(Pages([[item], []]))
+        assert isinstance(read.rows, NotProvided), (author, odd)
+        assert read.reason == "bad_shape"
+        snap = masto.build_snapshot(read, as_of=date(2026, 11, 26))
+        assert snap is not None and snap["complete"] is False
+
+
+@pytest.mark.parametrize("odd", _ODD_IDS[:-1])  # None is the no-reply marker
+def test_a_noncanonical_reply_target_account_is_bad_shape(odd: Any) -> None:
+    item = status(5, day(1), in_reply_to_id="4", in_reply_to_account_id=odd)
+    read = run(Pages([[item], []]))
+    assert isinstance(read.rows, NotProvided) and read.reason == "bad_shape"
+
+
+def test_a_padded_author_id_cannot_hide_an_own_status_as_a_complete_zero() -> None:
+    item = status(5, day(1), favs=9, author="01000")
+    read = run(Pages([[item], []]), acct=None, account_id=ME)
+    assert not read.complete and read.reason == "bad_shape"
+
+
+def test_canonical_ids_still_count_an_own_status_and_skip_a_foreign_one() -> None:
+    p = Pages([[status(5, day(1), favs=9), status(4, day(1), author=OTHER)], []])
+    assert rows_of(run(p)) == [(0, 9, 0)]
+    assert run(Pages([[status(3, day(1), author="0")], []])).complete  # "0" is fine
+
+
 # --- Link header and cursors are never followed --------------------------------
 
 

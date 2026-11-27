@@ -97,8 +97,13 @@ PAUSE = 1.0  # seconds between two calls to the host, plus up to one more of jit
 MAX_COUNT = 10**12  # the profile's own follower and post counts
 LOW_RATE_LIMIT = 5  # stop when the server says fewer calls than this remain
 
-_ID = re.compile(r"[0-9]{1,20}")
-_STATUS_ID = re.compile(r"0|[1-9][0-9]{0,19}")  # canonical: one spelling per id
+# One canonical spelling per id (ASCII digits, no leading zero except "0", at
+# most 20): every account id (configured, lookup, author, reply target) goes
+# through ``_account_id`` below before any comparison, so two spellings of one
+# number can never make an own status look foreign or the reverse.
+_ID = re.compile(r"0|[1-9][0-9]{0,19}", re.ASCII)
+_STATUS_ID = _ID
+_VALUE_MAX = 512  # the fetch layer's own cap on a header value it hands on
 _RATE = re.compile(r"[0-9]{1,10}", re.ASCII)
 _ACCT = re.compile(r"[A-Za-z0-9_](?:[A-Za-z0-9_.-]{0,28}[A-Za-z0-9_])?")
 _VISIBLE = frozenset({"public", "unlisted"})
@@ -142,6 +147,18 @@ def check_account_id(value: object) -> str:
         value = str(value)
     if type(value) is not str or not _ID.fullmatch(value):
         raise ValueError("the account id is a string of digits")
+    return value
+
+
+def _account_id(value: object) -> str:
+    """The one canonical account id, or ``_Stop('bad_shape')`` for anything else.
+
+    A string of ASCII digits with no leading zero (``0`` alone is allowed), at
+    most 20 long. A number, a padded, spaced or non-ASCII spelling, ``None`` and
+    every other type are refused, so equality below is exact string equality.
+    """
+    if type(value) is not str or not _ID.fullmatch(value):
+        raise _Stop("bad_shape")
     return value
 
 
@@ -247,6 +264,7 @@ def collect(
     followers: int | None = None
     posts: int | None = None
     dropped = 0
+    rate = {"bad": False, "low": False}  # what the responses of one fetch said
 
     def counted(request: TransportRequest) -> RawResponse:
         """Every request, retries included, draws on the shared budget."""
@@ -260,6 +278,21 @@ def collect(
         calls += 1
         # Never later than the run's deadline, whatever the fetch layer asked.
         response = send(replace(request, deadline=min(request.deadline, deadline)))
+        # Every response, whatever its status and whether it is a first try, a
+        # retry or a redirect hop, passes the rate header check here.
+        seen = response.headers.get("x-ratelimit-remaining")
+        if isinstance(seen, str) and len(seen) > _VALUE_MAX:
+            seen = None  # the fetch layer drops such a value, so it is absent
+        try:
+            left = _remaining(
+                {"x-ratelimit-remaining": seen} if seen is not None else {}
+            )
+        except _Stop:
+            rate["bad"] = True  # sticky for this fetch; checked in ``get``
+            left = None
+        if seen is not None and not isinstance(seen, str):
+            rate["bad"] = True
+        rate["low"] = left is not None and left < LOW_RATE_LIMIT  # latest response
         if clock() >= deadline:
             # A response that arrived at or after the deadline is discarded, so
             # a late page is never merged into the result (the transport is not
@@ -283,6 +316,7 @@ def collect(
     ) -> dict[str, object] | FetchedArray:
         if calls >= MAX_CALLS:
             raise _Stop("page_cap")
+        rate["bad"] = rate["low"] = False
         try:
             if calls:
                 bounded_sleep(PAUSE + jitter())  # the pause is inside the deadline
@@ -316,9 +350,19 @@ def collect(
         except FetchError as error:
             if ended:  # the budget stopped a request: its own word, not a fetch one
                 raise _Stop(ended[0]) from None
+            if rate["bad"]:  # an error answer with a malformed rate header
+                raise _Stop("bad_shape") from None
             raise _Stop(_reason_of(error, later_page=later_page)) from None
         if clock() >= deadline:  # nothing is accepted after the absolute deadline
             raise _Stop("timeout")
+        if rate["bad"]:
+            raise _Stop("bad_shape")
+        # A low count ends the read before the next request. The one exception
+        # is the terminal empty page: it was the last request of a finished
+        # walk, so there is no further call to protect and nothing to lose.
+        terminal = isinstance(result, FetchedArray) and not result.items
+        if rate["low"] and not terminal:
+            raise _Stop("rate_limited")
         if isinstance(result, FetchedArray) and server_clock_skewed(
             result.headers.get("date"), now
         ):
@@ -336,9 +380,7 @@ def collect(
             )
             if not isinstance(found, dict):
                 raise _Stop("bad_shape")
-            account = found.get("id")
-            if type(account) is not str or not _ID.fullmatch(account):
-                raise _Stop("bad_shape")
+            account = _account_id(found.get("id"))
             if found.get("moved") is not None:
                 raise _Stop("account_moved")  # a move is never followed
             if found.get("suspended") is True:
@@ -405,9 +447,6 @@ def collect(
             if cursor is not None and smallest >= cursor:
                 raise _Stop("partial_pages")  # no progress: the cursor must fall
             cursor = smallest
-            remaining_calls = _remaining(fetched.headers)
-            if remaining_calls is not None and remaining_calls < LOW_RATE_LIMIT:
-                raise _Stop("rate_limited")
         else:
             raise _Stop("page_cap")
         rows = [o for o in by_id.values() if isinstance(o, InteractionRow)]
@@ -445,16 +484,15 @@ def _item(
         raise _Stop("bad_shape")
     author = item.get("account")
     author_id = author.get("id") if isinstance(author, dict) else None
-    if type(author_id) is not str or not _ID.fullmatch(author_id):
-        raise _Stop("bad_shape")  # who wrote it is unknown: it could be ours
+    author_id = _account_id(author_id)  # unknown or odd author: it could be ours
     reply_to = item.get("in_reply_to_id")  # null or missing: not a reply
     if reply_to is not None and (
         type(reply_to) is not str or not _STATUS_ID.fullmatch(reply_to)
     ):
         raise _Stop("bad_shape")
     parent = item.get("in_reply_to_account_id")
-    if parent is not None and (type(parent) is not str or not _ID.fullmatch(parent)):
-        raise _Stop("bad_shape")
+    if parent is not None:
+        parent = _account_id(parent)
     if (reply_to is None) != (parent is None):
         raise _Stop("bad_shape")  # a reply and its target author go together
     visibility = item.get("visibility")
