@@ -1,0 +1,1 @@
+- CI container jobs survive Docker Hub blob timeouts (#933): the Podman smoke test retries the image build up to three times with a growing pause and then fails, and both container jobs now allow the one S3 host Docker Hub redirects layer blobs to (`docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443`); the base image stays pinned by digest and no check is weakened.
