@@ -1208,20 +1208,20 @@ def test_every_allowed_defer_foreign_keys_form_passes(
         "PRAGMA main.defer_foreign_keys=1;",
         "PRAGMAdefer_foreign_keys=1;",
         "PRAGMA defer_foreign_keys=1 foo;",
-        # Lookalikes: IGNORECASE without ASCII matches U+017F (long s) as s and
-        # U+0131 (dotless i) as i; \s matches Unicode spaces.
-        "PRAGMA defer_foreign_keyſ=1;",
-        "PRAGMA defer_foreign_keys=TRUEſ;",
-        "PRAGMA defer_foreign_keys=ONı;",
-        "PRAGMA defer_foreıgn_keys=1;",
-        "PRAGMA defer_foreign_keys=ſOFF;",
-        "PRAGMA defer_foreign_keys=1;",
-        "PRAGMA defer_foreign_keys =1;",
-        "PRAGMA defer_foreign_keys= 1;",
-        "PRAGMA defer_foreign_keys=1 ;",
-        "PRAGMA　defer_foreign_keys=1;",
-        "PRAGMA defer_foreign_keys= 1;",
-        "PRAGMA defer_foreign_keys=1; ",
+        # Lookalikes: IGNORECASE without ASCII folds LATIN SMALL LETTER LONG S
+        # to s and DOTLESS I to i; \s matches Unicode spaces.
+        "PRAGMA defer_foreign_key\N{LATIN SMALL LETTER LONG S}=1;",
+        "PRAGMA defer_foreign_keys=TRUE\N{LATIN SMALL LETTER LONG S};",
+        "PRAGMA defer_foreign_keys=ON\N{LATIN SMALL LETTER DOTLESS I};",
+        "PRAGMA defer_fore\N{LATIN SMALL LETTER DOTLESS I}gn_keys=1;",
+        "PRAGMA defer_foreign_keys=\N{LATIN SMALL LETTER LONG S}OFF;",
+        "PRAGMA\N{NO-BREAK SPACE}defer_foreign_keys=1;",
+        "PRAGMA defer_foreign_keys\N{NO-BREAK SPACE}=1;",
+        "PRAGMA defer_foreign_keys=\N{EM SPACE}1;",
+        "PRAGMA defer_foreign_keys=\N{LINE SEPARATOR}1;",
+        "PRAGMA\N{IDEOGRAPHIC SPACE}defer_foreign_keys=1;",
+        "PRAGMA defer_foreign_keys=\N{NO-BREAK SPACE}1;",
+        "PRAGMA defer_foreign_keys=1\N{NO-BREAK SPACE}1;",
     ],
 )
 def test_lookalike_and_adjacent_pragma_forms_are_refused(
