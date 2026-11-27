@@ -589,12 +589,20 @@ could be recorded from a file run. The tool therefore sends every DELETE as its 
 run. No personal value goes on a command line (it would show in the process list to other local users): the DELETE
 matches a row by its id and its non-personal columns, leaving out the email and country, and the removed row that
 the database returns is compared by its full digest. If the address changed after the tool read the row, the
-returned version differs. The tool first saves that version to its own private file in the work directory
-(`lead-returned-*.json`, mode 600, holds personal data), then writes it to the leads database through a private
-file, reads it back, records it in the manifest and in its own recovery export, and only then counts it as
-deleted. The file name is registered in the manifest (`rescue_files`) before the file is written, and the file is removed with its registration once the row is safe elsewhere; after a crash at any point, `--recover-from-export` consumes every registered rescue file (writes the row to the leads database, records it, removes the file), and the cleanup command below shreds any that remain. A failure after the first step ends the run with exit 5 and names the file. Only rows that differ from
-the copied row get their own file: a matching row is already in the recovery export written before the first
-DELETE. The tool fails closed: if the database refuses the clause, the delete fails and the run
+returned version differs. Before it sends the first DELETE of a chunk, the tool creates one private file for that chunk
+(`lead-returned-*.json`, exclusively, mode 600, fsynced) and registers its name in the manifest (`rescue_files`); the file
+names the table and the chunk's ids (no personal data) and starts with no rows. A changed row is added to it atomically
+before anything else is done with the row, then written to the leads database through a private file, read back,
+recorded in the manifest and in its own recovery export. The chunk's file is overwritten with a consumed marker, unregistered
+and removed once the chunk ends; only after the chunk's rows are safe. If the file could not be written, the row is still
+written to the leads database and the export. A failure after the row was added to the file ends the run with exit 5 and
+names the file. After a crash, `--recover-from-export` reads every registered rescue file first: a file that is missing or
+empty, or a deleted row that no file, acknowledgement or source row accounts for, makes it refuse (exit 5, "Time Travel")
+before it restores anything, so a stale export is never put back over a lost newer row and nothing is unregistered; use
+the recorded Time Travel bookmark. Otherwise it restores the rows, writes each rescued row to the leads database, records it
+and consumes the file (checked on the open descriptor: a regular file of yours, mode 600, one link, the inode and size it
+validated). The cleanup command below shreds any that remain. Only rows that differ from the copied row go in a rescue
+file: a matching row is already in the recovery export written before the first DELETE. The tool fails closed: if the database refuses the clause, the delete fails and the run
 needs `--verify`; if no rows come back, nothing is recorded and the final verification reports the
 rows as unaccounted.
 
