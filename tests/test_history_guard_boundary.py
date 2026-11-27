@@ -1223,11 +1223,13 @@ def test_the_workflow_file_matches_its_pinned_digest() -> None:
         ),
         (
             "    # No `environment`",
-            "    services:\n      db:\n        image: evil/image\n    # No `environment`",
+            "    services:\n      db:\n        image: evil/image\n"
+            "    # No `environment`",
         ),
         (
             "    permissions:\n      contents: read\n      pull-requests",
-            "    permissions:\n      contents: read\n      issues: read\n      pull-requests",
+            "    permissions:\n      contents: read\n      issues: read\n"
+            "      pull-requests",
         ),
         ("name: History guard\n\non:", "name: History guard\n\nenv:\n  X: y\n\non:"),
     ],
