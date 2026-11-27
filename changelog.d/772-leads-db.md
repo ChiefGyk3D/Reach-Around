@@ -27,3 +27,6 @@
   prints only messages that name our own options, never the text typed; accepting
   unaccounted rows prints a count-only warning and records the count and time in
   the manifest.
+  Round 18: the stand-alone `scripts/move-legacy-leads.py` has the same fail-closed
+  command line parser (no abbreviations, no @file arguments, an error prints only
+  messages that name its own options), so a mistyped value never reaches stderr.
