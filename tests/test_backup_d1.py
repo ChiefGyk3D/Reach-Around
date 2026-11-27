@@ -1113,8 +1113,14 @@ def test_exported_sql_is_never_executed(tmp_path: Path) -> None:
 PY_GUARD = """#!{python}
 import os, runpy, sys
 LOG = {log!r}
-sys.modules["sqlite3"] = None
-sys.modules["_sqlite3"] = None
+class Block:
+    def find_spec(self, name, path=None, target=None):
+        if name in ("sqlite3", "_sqlite3"):
+            with open(LOG, "a") as fh:
+                fh.write("sqlite3 import attempted\\n")
+            raise ImportError(name)
+        return None
+sys.meta_path.insert(0, Block())
 def boom(*a, **k):
     with open(LOG, "a") as fh:
         fh.write("process start attempted\\n")
