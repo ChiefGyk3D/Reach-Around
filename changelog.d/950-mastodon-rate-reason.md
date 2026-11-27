@@ -1,0 +1,1 @@
+- Mastodon provider: a low or malformed rate header on an error answer now ends the read as `rate_limited` or `bad_shape` before any retry wait, instead of `server_error` or `timeout` (#950).
