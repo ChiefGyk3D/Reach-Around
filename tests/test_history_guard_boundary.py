@@ -1416,9 +1416,7 @@ def pinned_callee_problems(root: Path = TEMPLATE) -> list[str]:
     return found
 
 
-def test_the_pinned_scripts_name_only_pinned_callees_and_run_no_recognised_dynamic_form() -> (
-    None
-):
+def test_the_pinned_scripts_name_only_pinned_callees_and_no_dynamic_form() -> None:
     assert pinned_callee_problems() == []
 
 
