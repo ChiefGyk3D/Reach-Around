@@ -318,12 +318,12 @@ collector adds that a platform is `complete` or not, as a whole.
 | Account moved (`moved` present) or suspended (410) | `account_moved`, `account_suspended` | no write; the collector never follows a move |
 | 429, or `Retry-After` over 60 s, or headers say the budget is nearly spent | `rate_limited` | as above |
 | A page after the first fails or is too large | `partial_pages` | no interactions, no history write; followers may still be written from the profile call, which is complete on its own |
-| Page cap reached before the window start | `page_cap` | as `partial_pages` |
+| Page cap reached before the window start, or while a next cursor still exists (the Bluesky walk never ends early on old posts: the feed order is not trusted, so it ends only at the end of the cursor chain or at a budget) | `page_cap` | as `partial_pages` |
 | More than 200 posts in the window | `window_truncated` | no interactions and no medians (200 newest rows would describe a shorter window than the card states); question 6 asks whether to raise `MAX_POSTS` |
 | Server `Date` differs from our clock by more than 10 minutes | `clock_skew` | no write; a post time more than 10 minutes in the future is dropped and counted |
 | Window read in full and there are zero posts | none (complete) | `posts` 0, empty `interactions`; the card prints medians as "not provided", since a median of nothing does not exist |
 | Account hides counts or the server reports a count it cannot compute (a negative or missing field on compatible software) | `counts_unavailable` | no write for that field; "not provided", never 0 |
-| Wrong content type, bad JSON, wrong shape | `content_type`, `bad_json`, `bad_shape` | as `partial_pages` |
+| Wrong content type, bad JSON, wrong shape (for Bluesky this includes any feed entry that cannot be read: no author or a malformed one, a `reason` that is present but not a known repost or pin value, a bad time or count; such an entry is never treated as absence) | `content_type`, `bad_json`, `bad_shape` | as `partial_pages` |
 | Guard hit on a person-level key or value | `guard` | nothing written, platform named |
 
 **Deleted and edited posts.** A deleted post is absent from the next read and so leaves the window;
@@ -446,6 +446,38 @@ body, and runs in no workflow. The guard pass over the snapshot and the page and
 belong with the first provider (slice 2), which is the first caller. Nothing is added to
 any egress allow-list in this slice.
 
+**Slice 2 as built (#922).** The Bluesky provider in `src/reach_around/counts/bluesky_feed.py`:
+`collect` (one profile call and at most 12 feed pages of 50, `filter=posts_no_replies`, a pause of
+1 s plus jitter between calls, 90 s for the run, the cursor checked against a closed alphabet and
+built into the next URL, never followed from a response), `check_actor` (handle or DID), the
+own-posts filter (the author DID must equal the profile's; any `reason` other than a pin skips the
+entry; a reply is skipped), the window by `indexedAt`, `build_snapshot` with the guard pass,
+`history_aggregates` (complete reads only) and `entry_from_snapshot` (a complete snapshot becomes
+the same `FediverseEntry` the owner types). `fetch_json_view` in `src/reach_around/net/fetch.py`
+is the object twin of `fetch_json_array`, since `getAuthorFeed` answers with an object. A server
+`Date` header is required on every response: a missing or unreadable one is `clock_skew`. The
+snapshot file write, the history write and the kit loader belong to slice 4, which owns the
+refresh wiring; the hand-kept `kit.fediverse` path is unchanged.
+
+Rules fixed in review (#922): a DID is `did:plc:` plus a short tail or a `did:web:` id (a host,
+an optional percent-encoded port such as `%3A3000`, then `:` separated path segments; no slash,
+no space, no empty segment, 512 characters at most), checked the same way for the profile DID
+and every author DID, and compared exactly (no case folding). When the same post URI comes twice
+in one run (a pin and the walk, or a repeated page), one row is recorded with the larger value of
+each of the three counts, since the count of one post only grows. A `reply` key that is present
+on the entry or on its record must be an object (the entry is then skipped as a reply); a
+present null or any other value is `bad_shape`, and a missing key is an original post.
+
+**Supported-input constraint (accepted, #922).** The run reads at most 12 pages of 50, so 600
+feed entries (the account's own posts plus any entries the filter still lists). An account with
+more than about 600 such entries inside the 30-day window cannot reach the end of its cursor
+chain: every run ends `page_cap`, the read is incomplete, and the prior or hand-kept values stay
+in place. This is by design: 13 calls and 90 seconds are the budget of the run, and the feed's
+order is not trusted, so there is no early end. The hand-kept `kit.fediverse` path remains the
+way to fill the block for such an account. A later slice (slice 4, which owns the refresh
+wiring) can make the page cap a config value, with the absolute call and time bounds kept; a
+test pins the behavior today (700 in-window posts over 14 pages end `page_cap`).
+
 Slices 1 to 4 are about 27 h; with slice 5, about 32 h. Slices 2 and 3 can run in parallel after
 slice 1. Nothing requires a Cloudflare or schema migration change: the history store accepts the
 new metric names today, and `FediverseEntry` already carries the fields.
@@ -484,6 +516,19 @@ new metric names today, and `FediverseEntry` already carries the fields.
 - Each instance's own terms; Bluesky has no separate developer policy.
 - That `account_id` alone is enough for the Mastodon statuses endpoint without a prior lookup.
 - That `unlisted` posts are returned to unauthenticated reads (they are counted if returned).
+- Bluesky provider (#922): the owner-run live probe must confirm each INFERRED shape the parser
+  relies on. Until it does, any other shape ends the read as `bad_shape`, never a zero.
+  - The reply object: `feed[].reply` and `post.record.reply` carry `root` and `parent`, each with
+    `uri` and `cid`; a blocked or not-found parent in the feed view has a `uri` and a literal
+    `blocked` or `notFound` flag and no `cid`.
+  - The post uri form `at://<did>/app.bsky.feed.post/<tid>`, with the authority equal to the
+    resolved profile DID (not the requested handle) and a 13 character TID key.
+  - The profile DID form: `did:plc:` plus 24 lowercase base32 characters (INFERRED from the
+    did:plc method specification, not read live), or a `did:web` id.
+  - The `Date` response header on every response (a missing or unreadable one is `clock_skew`).
+  - The `filter=posts_no_replies` value of `getAuthorFeed`.
+  - The `reason` type name of a pin (`app.bsky.feed.defs#reasonPin`) and of a repost.
+  - The 100-entry page limit (the provider asks for 50 per page).
 - Bluesky pages read through a mirror because the official host redirected to `bsky.network` and
   returned no text to the fetcher on 2026-11-26.
 

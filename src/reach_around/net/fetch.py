@@ -384,10 +384,15 @@ def fetch_json_array(
     )
     if not isinstance(parsed, list) or len(parsed) > ARRAY_MAX_ITEMS:
         raise FetchError("bad_json")
+    return FetchedArray(items=parsed, headers=_header_view(response.headers))
+
+
+def _header_view(raw: Mapping[str, str]) -> Mapping[str, str]:
+    """The read-only view of the headers in ``VIEW_HEADERS`` and no others."""
     # Names are matched case-insensitively. A name present twice (two spellings)
     # is ambiguous, so it is dropped rather than guessed.
     found: dict[str, list[str]] = {}
-    for raw_name, raw_value in response.headers.items():
+    for raw_name, raw_value in raw.items():
         if isinstance(raw_name, str) and raw_name.lower() in VIEW_HEADERS:
             found.setdefault(raw_name.lower(), []).append(raw_value)
     view: dict[str, str] = {}
@@ -399,7 +404,66 @@ def fetch_json_array(
             and len(values[0]) <= _VIEW_VALUE_MAX
         ):
             view[name] = values[0]
-    return FetchedArray(items=parsed, headers=MappingProxyType(view))
+    return MappingProxyType(view)
+
+
+@dataclass(frozen=True)
+class FetchedObject:
+    """A parsed top-level JSON object and a read-only view of a few headers."""
+
+    data: dict[str, object]
+    headers: Mapping[str, str]
+
+
+def fetch_json_view(
+    url: str,
+    *,
+    transport: Transport | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    jitter: Callable[[], float] = _RNG.random,
+    clock: Callable[[], float] = time.monotonic,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    max_bytes: int = ARRAY_MAX_BYTES,
+    timeout: float = TIMEOUT,
+    max_attempts: int = MAX_ATTEMPTS,
+) -> FetchedObject:
+    """GET ``url`` and return its JSON object plus the same header view.
+
+    The object twin of ``fetch_json_array``: the same checks, the same strict
+    number rules (no ``NaN``, no overflow, integers of at most 18 digits), the
+    same 1 MiB ceiling, GET only, and no caller headers.
+    """
+    limit = max(1, min(max_bytes, ARRAY_MAX_BYTES))
+    fetched: RawResponse | None = None
+    try:
+        fetched = _fetch_raw(
+            url,
+            transport=transport,
+            headers=None,
+            method="GET",
+            body=None,
+            sleep=sleep,
+            jitter=jitter,
+            clock=clock,
+            now=now,
+            max_bytes=limit,
+            timeout=timeout,
+            follow_redirects=True,
+            max_attempts=max_attempts,
+            error_code=False,
+        )
+    except FetchError:
+        raise
+    except Exception:
+        fetched = None
+    if fetched is None:
+        raise FetchError("transport_error")
+    parsed = _parse(
+        fetched.headers, fetched.body, limit, frozenset(), strict_numbers=True
+    )
+    if not isinstance(parsed, dict):
+        raise FetchError("bad_json")
+    return FetchedObject(data=parsed, headers=_header_view(fetched.headers))
 
 
 def _parse(
