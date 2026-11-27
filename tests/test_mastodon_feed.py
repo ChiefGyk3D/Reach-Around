@@ -773,8 +773,8 @@ def test_a_malformed_rate_limit_header_ends_the_read_and_never_raises(
 
 
 def test_the_header_parser_itself_never_raises_on_a_huge_digit_string() -> None:
-    # The fetch layer drops values over 512 characters, so this guards the parser
-    # on its own: it refuses by length before any integer conversion.
+    # Values over 512 characters are refused before the parser runs, so this guards
+    # the parser on its own: it refuses by length before any integer conversion.
     huge = {"x-ratelimit-remaining": "9" * 100_000}
     with pytest.raises(masto._Stop) as caught:
         masto._remaining(huge)
@@ -783,12 +783,72 @@ def test_the_header_parser_itself_never_raises_on_a_huge_digit_string() -> None:
     assert masto._remaining({"x-ratelimit-remaining": "0"}) == 0
 
 
-def test_an_over_long_rate_limit_header_dropped_by_the_fetch_layer_is_absent() -> None:
+@pytest.mark.parametrize("size", [513, 100_000])
+def test_an_over_long_rate_limit_header_is_bad_shape(size: int) -> None:
+    # #938: an oversized value is no longer read as absent; it fails closed like
+    # any other malformed value (more than ten characters).
     p = Pages(
         [[status(5, day(1))], []],
-        page_headers={0: {"x-ratelimit-remaining": "9" * 100_000}},
+        page_headers={0: {"x-ratelimit-remaining": "9" * size}},
     )
-    assert run(p).complete  # no exception; the call budget and deadline still bound it
+    read = run(p)
+    assert isinstance(read.rows, NotProvided) and read.reason == "bad_shape"
+    assert p.served == 1  # nothing after the bad header was asked
+
+
+def test_an_over_long_rate_limit_header_on_the_lookup_is_bad_shape() -> None:
+    p = Pages([[status(5, day(1))], []], look=_rated("9" * 600, lookup()))
+    read = run(p)
+    assert isinstance(read.rows, NotProvided) and read.reason == "bad_shape"
+    assert len(p.transport.calls) == 1
+
+
+def test_an_over_long_rate_limit_header_on_an_error_answer_is_bad_shape() -> None:
+    bad = reply({}, status=503, headers={"x-ratelimit-remaining": "9" * 600})
+    read = run(Pages([[]], look=bad))
+    assert isinstance(read.rows, NotProvided) and read.reason == "bad_shape"
+
+
+@pytest.mark.parametrize("value", ["0", "4"])
+def test_a_low_rate_header_on_an_error_answer_stops_the_retry(value: str) -> None:
+    # #938: the low count seen on a 503 must prevent the retry of that request.
+    p = Pages([[]])
+    answers = iter(
+        [
+            reply({}, status=503, headers={"x-ratelimit-remaining": value}),
+            reply([], headers=DATE_OK),
+        ]
+    )
+    p.transport.routes[STATUSES] = lambda r: next(answers)
+    read = run(p)
+    assert isinstance(read.rows, NotProvided) and read.reason == "rate_limited"
+    assert len(p.transport.calls) == 2  # the lookup and one status try, no retry
+
+
+def test_a_low_rate_header_on_a_429_of_the_lookup_stops_the_retry() -> None:
+    answers = iter(
+        [
+            reply({}, status=429, headers={"x-ratelimit-remaining": "1"}),
+            reply(lookup(), headers=DATE_OK),
+        ]
+    )
+    p = Pages([[]])
+    p.transport.routes[LOOKUP] = lambda r: next(answers)
+    read = run(p)
+    assert isinstance(read.rows, NotProvided) and read.reason == "rate_limited"
+    assert len(p.transport.calls) == 1
+
+
+def test_a_healthy_rate_header_on_an_error_answer_still_retries() -> None:
+    p = Pages([[]])
+    answers = iter(
+        [
+            reply({}, status=503, headers={"x-ratelimit-remaining": "50"}),
+            reply([], headers=DATE_OK),
+        ]
+    )
+    p.transport.routes[STATUSES] = lambda r: next(answers)
+    assert run(p).complete
 
 
 def test_a_low_rate_limit_on_the_last_empty_page_does_not_spoil_a_finished_read() -> (
