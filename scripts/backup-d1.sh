@@ -27,7 +27,14 @@
 # 1 to 900). Uses `wrangler d1 export --remote` (set WRANGLER to another command,
 # for example a test stub). The dry run makes no network call and writes nothing.
 #
-# The run makes ONE read-only query (the table listing) plus the exports. Every
+# The run makes read-only queries (the table listing with each table's definition,
+# once before and once after the exports, and a row count of every table, once
+# before and once after) plus the exports. An answer that is not a single
+# successful result is never trusted. After each export the file is loaded into a
+# scratch in-memory SQLite database and its row count must lie between the counts
+# taken before and after (an export that is cut short fails); and if the listing
+# after the exports differs from the first one (a table was dropped, replaced or
+# changed during the run) the run fails. Every
 # table in the `tables` list below is ALWAYS required: if the database lacks any
 # of them the run fails (exit 1) before any export and names the missing tables
 # (at most 10, then "... and K more"). A database that lacks a current table (an
@@ -95,6 +102,9 @@ never_exported=(leads kit_events visitor_seen view_events)
 # The only other tables the run accepts without exporting them: SQLite's own
 # (every name that starts with sqlite_) and Cloudflare's reserved `_cf_KV`. Any
 # other table that is not above fails the run before an export starts.
+# _cf_KV is Cloudflare's own internal table, not part of this schema (a test
+# proves no migration creates it). Ignoring it means anything stored in it would
+# not be backed up: the match is the exact name only, so a look-alike fails.
 ignored_tables=(_cf_KV)
 
 usage() {
@@ -192,30 +202,76 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# One table name per line from a wrangler --json answer on stdin. The names are
-# compared as whole lines below, so a name that holds a line break could make a
-# missing table look present: refuse it outright (also a carriage return or NUL).
-names_of() {
+# Read a wrangler --json answer on stdin; MODE is names, fingerprint or counts.
+# Only a single result object with success true and a list of row objects is
+# accepted: anything else (an error object, several results, a failed result) is
+# an error, never an authoritative answer. Names are printed one per line and are
+# compared as whole lines, so a name that holds a line break, a carriage return
+# or NUL is refused outright. fingerprint prints one hash of every (name, sql)
+# pair; counts prints "name n" lines (n a whole number).
+parse_answer() {
   python3 -I -c '
-import json, sys
-data = json.load(sys.stdin)
-rows = data[0]["results"] if isinstance(data, list) else data["results"]
+import hashlib, json, sys
+
+def bad(msg):
+    sys.stderr.write("error: " + msg + "\n")
+    sys.exit(1)
+
+mode = sys.argv[1]
+try:
+    data = json.load(sys.stdin)
+except ValueError:
+    bad("the answer is not JSON")
+if isinstance(data, list):
+    if len(data) != 1:
+        bad("unexpected number of results in the answer")
+    data = data[0]
+if not isinstance(data, dict) or data.get("success") is not True:
+    bad("the answer is not a successful result")
+rows = data.get("results")
+if not isinstance(rows, list):
+    bad("the answer has no result rows")
+pairs = []
 for r in rows:
-    name = r["name"]
+    if not isinstance(r, dict):
+        bad("invalid row in the answer")
+    name = r.get("name")
     if not isinstance(name, str) or any(c in name for c in "\r\n\0"):
-        sys.stderr.write("error: invalid table name in the listing\n")
-        sys.exit(1)
-    print(name)
-'
+        bad("invalid table name in the answer")
+    if mode == "counts":
+        n = r.get("n")
+        if type(n) is not int or n < 0:
+            bad("invalid row count in the answer")
+        print(name, n)
+    elif mode == "fingerprint":
+        sql = r.get("sql")
+        if sql is not None and not isinstance(sql, str):
+            bad("invalid table definition in the answer")
+        pairs.append([name, sql])
+    else:
+        print(name)
+if mode == "fingerprint":
+    pairs.sort(key=lambda p: (p[0], p[1] or ""))
+    print(hashlib.sha256(json.dumps(pairs).encode()).hexdigest())
+' "$1"
 }
 
-# Which of our tables exist in this database.
-listing=$(timeout "$limit" "${wrangler[@]}" d1 execute "$db" --remote --json \
-  --command "SELECT name FROM sqlite_master WHERE type = 'table'" 2>/dev/null) || {
+list_tables() {
+  timeout "$limit" "${wrangler[@]}" d1 execute "$db" --remote --json \
+    --command "SELECT name, sql FROM sqlite_master WHERE type = 'table'" 2>/dev/null
+}
+
+# Which of our tables exist in this database, and a fingerprint of their
+# definitions to compare with a second listing after the exports.
+listing=$(list_tables) || {
   echo "error: could not list the tables (wrong name, not signed in, or timed out)" >&2
   exit 1
 }
-existing=$(printf '%s' "$listing" | names_of) || {
+existing=$(printf '%s' "$listing" | parse_answer names) || {
+  echo "error: unexpected answer from the database (table listing)" >&2
+  exit 1
+}
+fingerprint_before=$(printf '%s' "$listing" | parse_answer fingerprint) || {
   echo "error: unexpected answer from the database (table listing)" >&2
   exit 1
 }
@@ -304,6 +360,21 @@ if [ "${#missing[@]}" -gt 0 ]; then
   exit 1
 fi
 
+# Row count of every inventory table in one query (the names are this script's
+# own). Taken before and after the exports: an export must hold a count between.
+count_sql=""
+for t in "${tables[@]}"; do
+  count_sql="${count_sql:+$count_sql UNION ALL }SELECT '$t' AS name, COUNT(*) AS n FROM \"$t\""
+done
+count_tables() {
+  timeout "$limit" "${wrangler[@]}" d1 execute "$db" --remote --json \
+    --command "$count_sql" 2>/dev/null | parse_answer counts
+}
+count_tables >"$out/.counts-before" || {
+  echo "error: could not count the rows before the export" >&2
+  exit 1
+}
+
 count=0
 exported=()
 for t in "${tables[@]}"; do
@@ -321,6 +392,69 @@ for t in "${tables[@]}"; do
   exported+=("$t")
   count=$((count + 1))
 done
+
+count_tables >"$out/.counts-after" || {
+  echo "error: could not count the rows after the export" >&2
+  exit 1
+}
+listing_after=$(list_tables) || {
+  echo "error: could not list the tables again after the export" >&2
+  exit 1
+}
+fingerprint_after=$(printf '%s' "$listing_after" | parse_answer fingerprint) || {
+  echo "error: unexpected answer from the database (second table listing)" >&2
+  exit 1
+}
+if [ "$fingerprint_before" != "$fingerprint_after" ]; then
+  echo "error: the tables changed while the export ran (one was added, dropped or replaced); nothing was kept. Pause the write routes and run again." >&2
+  exit 1
+fi
+
+# Every file must be a complete dump: load it into a scratch in-memory database
+# and compare its row count with the two database counts (names and verdicts
+# only; no value is printed).
+if ! python3 -I - "$out" "${exported[@]}" <<'PY'
+import sqlite3, sys
+
+out = sys.argv[1]
+tables = sys.argv[2:]
+
+def read(name):
+    counts = {}
+    with open(f"{out}/{name}") as fh:
+        for line in fh:
+            t, n = line.split()
+            counts[t] = int(n)
+    return counts
+
+before, after = read(".counts-before"), read(".counts-after")
+bad = []
+for t in tables:
+    try:
+        if t not in before or t not in after:
+            raise ValueError(t)
+        with open(f"{out}/{t}.sql") as fh:
+            sql = fh.read()
+        db = sqlite3.connect(":memory:")
+        db.executescript(sql)
+        got = db.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0]
+        db.close()
+        if not min(before[t], after[t]) <= got <= max(before[t], after[t]):
+            raise ValueError(t)
+    except (sqlite3.Error, ValueError, OSError):
+        bad.append(t)
+if bad:
+    sys.stderr.write(
+        "error: export incomplete or changed during the run: " + " ".join(bad[:10])
+        + (f" ... and {len(bad) - 10} more" if len(bad) > 10 else "") + "\n"
+    )
+    sys.exit(1)
+PY
+then
+  echo "error: an export does not match the database row counts; removed" >&2
+  exit 1
+fi
+rm -f -- "$out/.counts-before" "$out/.counts-after"
 
 # Check everything written, in one pass, against the repo's allowlist cut down to
 # the tables exported. Reports line numbers and kinds, never values.

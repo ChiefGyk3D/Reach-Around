@@ -21,11 +21,13 @@ from test_check_dump import schema_sql
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "backup-d1.sh"
-LISTING_SQL = "SELECT name FROM sqlite_master WHERE type = 'table'"
+LISTING_SQL = "SELECT name, sql FROM sqlite_master WHERE type = 'table'"
 
 STUB = """#!{python}
 import json, os, sqlite3, sys, time
 args = sys.argv[1:]
+def listing_q(sql):
+    return sql.startswith("SELECT name, sql FROM sqlite_master")
 if os.environ.get("STUB_HANG"):
     time.sleep(30)
 log = os.environ.get("STUB_TRACE")
@@ -35,10 +37,13 @@ if args[:2] == ["d1", "execute"]:
     if log:
         with open(log, "a") as fh:
             fh.write("execute: " + sql + "\\n")
+    if os.environ.get("STUB_BAD_ANSWER") and listing_q(sql):
+        print(os.environ["STUB_BAD_ANSWER"])
+        sys.exit(0)
     cur = db.execute(sql)
     cols = [c[0] for c in cur.description]
     rows = [dict(zip(cols, r)) for r in cur.fetchall()]
-    listing = sql.startswith("SELECT name FROM sqlite_master")
+    listing = sql.startswith("SELECT name, sql FROM sqlite_master")
     if os.environ.get("STUB_PAD_LISTING") and listing:
         # Synthetic system-table names (the script accepts sqlite_*) to make the
         # listing larger than a pipe buffer.
@@ -56,8 +61,20 @@ elif args[:2] == ["d1", "export"]:
         "SELECT sql FROM sqlite_master WHERE name = ?", (table,)
     ).fetchone()[0]
     inserts = [l for l in db.iterdump() if l.startswith(f'INSERT INTO "{{table}}"')]
+    if os.environ.get("STUB_TRUNCATE") == table:
+        inserts = inserts[:-1]
     with open(out, "w") as fh:
         fh.write(schema + ";\\n" + "\\n".join(inserts) + "\\n")
+    if os.environ.get("STUB_REPLACE") == table:
+        # The table is replaced after its export (a race with the listing).
+        db.execute(f'ALTER TABLE "{{table}}" ADD COLUMN raced TEXT')
+        db.commit()
+    if os.environ.get("STUB_GROW") == table:
+        db.execute(
+            "INSERT INTO view_hour_daily (site, day, hour, bot_class, views,"
+            " clicks) VALUES ('links', '2026-11-02', 3, 'h', 1, 0)"
+        )
+        db.commit()
     print("Executing on remote database SECRET-DB-ID-0000")
 else:
     sys.exit(2)
@@ -627,17 +644,26 @@ def test_the_full_inventory_passes_whatever_the_migration_record_holds(
         assert (out / f"{table}.sql").exists(), table
 
 
-def test_the_run_makes_only_the_table_listing_query(tmp_path: Path) -> None:
-    """One read-only query (the table listing) plus one export per table: the
-    migration history is never read."""
+def test_the_run_makes_only_listing_and_count_queries(tmp_path: Path) -> None:
+    """Read-only queries only (the listing twice, the row counts twice) plus one
+    export per table: the migration history is never read."""
     env = make(tmp_path)
     log = _log(env, tmp_path)
     r = run(env, "reach-db", str(dest(tmp_path)), "--apply")
     assert r.returncode == 0, r.stderr
     lines = log.read_text().splitlines()
-    assert [ln for ln in lines if ln.startswith("execute:")] == [
-        f"execute: {LISTING_SQL}"
-    ]
+    queries = [ln for ln in lines if ln.startswith("execute:")]
+    assert len(queries) == 4
+    assert queries[0] == queries[3] == f"execute: {LISTING_SQL}"
+    assert queries[1] == queries[2]
+    assert queries[1].startswith("execute: SELECT '")
+    assert all(re.match(r"execute: (SELECT )", q) for q in queries)
+    assert not any(w in " ".join(queries) for w in ("INSERT", "UPDATE", "DELETE"))
+    # Order: listing, counts, every export, counts, listing.
+    kinds = [ln.split(":")[0] for ln in lines]
+    first, last = kinds.index("export"), len(kinds) - 1 - kinds[::-1].index("export")
+    assert kinds[:first] == ["execute", "execute"]
+    assert kinds[last + 1 :] == ["execute", "execute"]
     exports = [ln for ln in lines if ln.startswith("export:")]
     assert len(exports) == len(_script_array("tables"))
 
@@ -841,3 +867,73 @@ def test_the_lists_in_the_script_match_the_repository_and_each_other() -> None:
     for gone in ("introduced_by", "trust_record", "optional_tables", "is_applied"):
         assert gone not in text, gone
     assert "SELECT name FROM d1_migrations" not in text
+
+
+def _fails_before_keeping(r: subprocess.CompletedProcess[str], d: Path) -> None:
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "done:" not in r.stdout
+    assert list(d.iterdir()) == []
+
+
+def test_a_truncated_export_is_caught(tmp_path: Path) -> None:
+    """An export that succeeds but holds fewer rows than the database is not a
+    backup: the run fails, removes the partial export and names the table."""
+    env = make(tmp_path)
+    env["STUB_TRUNCATE"] = "view_daily"
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    _fails_before_keeping(r, d)
+    assert "view_daily" in r.stderr
+    assert "incomplete" in r.stderr
+
+
+def test_a_table_replaced_during_the_run_fails(tmp_path: Path) -> None:
+    """A table changed between the first listing and the end of the run (same
+    name, different definition) is detected by the second listing."""
+    env = make(tmp_path)
+    env["STUB_REPLACE"] = "view_meta"
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    _fails_before_keeping(r, d)
+    assert "changed while the export ran" in r.stderr
+
+
+def test_a_growing_table_within_the_counts_still_passes(tmp_path: Path) -> None:
+    """A row added during the run lies between the before and after counts."""
+    env = make(tmp_path)
+    env["STUB_GROW"] = "view_hour_daily"
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    assert r.returncode == 0, r.stderr
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "not json",
+        "[]",
+        '[{"results": [], "success": false}]',
+        '[{"results": [{"name": "view_daily"}]}]',
+        '[{"results": [{"name": "view_daily"}], "success": true},'
+        ' {"results": [], "success": true}]',
+        '{"error": "boom"}',
+        '[{"results": "x", "success": true}]',
+        '[{"results": [{"name": 5}], "success": true}]',
+    ],
+)
+def test_a_listing_that_is_not_one_successful_result_is_not_trusted(
+    tmp_path: Path, answer: str
+) -> None:
+    env = make(tmp_path)
+    env["STUB_BAD_ANSWER"] = answer
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    _fails_before_keeping(r, d)
+    assert "unexpected answer" in r.stderr
+
+
+def test_the_ignored_system_table_is_not_created_by_any_migration(
+    tmp_path: Path,
+) -> None:
+    assert not any(t.lower() == "_cf_kv" for t in _migration_tables(tmp_path))
+    assert "Cloudflare's own internal table" in SCRIPT.read_text()
