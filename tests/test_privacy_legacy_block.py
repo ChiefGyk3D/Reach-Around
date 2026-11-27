@@ -96,8 +96,8 @@ def run_block(
         "FAKE_LEFT": str(left),
         "HOME": str(tmp_path),
     }
-    done = subprocess.run(
-        ["bash", str(script)],
+    done = subprocess.run(  # noqa: S603 - a script made here, fakes on a private PATH
+        ["bash", str(script)],  # noqa: S607 - bash from the test's own PATH
         cwd=repo,
         env=env,
         input="x@example.test\n",
