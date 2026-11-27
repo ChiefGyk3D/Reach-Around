@@ -1106,28 +1106,69 @@ def test_exported_sql_is_never_executed(tmp_path: Path) -> None:
     assert list(d.iterdir()) == []
 
 
+# A python3 stand-in for the verifier and the dump check. It runs the real
+# program, but first makes the sqlite3 module unimportable and every way of
+# starting another process raise (leaving a note), so a script that runs the
+# dump through Python sqlite3, a subprocess, a shell or an exec goes red.
+PY_GUARD = """#!{python}
+import os, runpy, sys
+LOG = {log!r}
+sys.modules["sqlite3"] = None
+sys.modules["_sqlite3"] = None
+def boom(*a, **k):
+    with open(LOG, "a") as fh:
+        fh.write("process start attempted\\n")
+    raise SystemExit(97)
+import subprocess
+subprocess.Popen.__init__ = boom
+for name in ("system", "execv", "execve", "execvp", "execvpe", "posix_spawn",
+             "posix_spawnp", "spawnv", "spawnve", "spawnvp", "spawnvpe"):
+    if hasattr(os, name):
+        setattr(os, name, boom)
+args = [a for a in sys.argv[1:] if a != "-I"]
+if args[0] == "-":
+    sys.argv = ["-"] + args[1:]
+    exec(compile(sys.stdin.read(), "<stdin>", "exec"), {{"__name__": "__main__"}})
+else:
+    sys.argv = args
+    runpy.run_path(args[0], run_name="__main__")
+"""
+
+
 def test_a_passing_export_is_read_never_executed(tmp_path: Path) -> None:
-    """Isolates the property: the export passes verification (a comment line is
-    outside the INSERT grammar's reach), so the run succeeds, yet a SQL engine
-    on PATH is never started and the ATTACH in the file never runs."""
+    """Isolates the property. The export passes verification and holds a plain
+    statement (a CREATE INDEX, which the dump check lets through) that would
+    leave a mark in the database if anything ran it. Every route to running it
+    is closed or watched: no sqlite3 or sqlite program on PATH, no Python
+    sqlite3 module and no process started by the verifier or the dump check, and
+    wrangler is only asked to export and to run listing and count queries."""
     env = make(tmp_path)
-    marker = tmp_path / "probe.db"
     spy_dir = tmp_path / "spy"
     spy_dir.mkdir()
-    spied = tmp_path / "spy.log"
+    notes = tmp_path / "spy.log"
     for name in ("sqlite3", "sqlite"):
         spy = spy_dir / name
-        spy.write_text(f'#!/usr/bin/bash\necho "{name}" >> "{spied}"\nexit 1\n')
+        spy.write_text(f'#!/usr/bin/bash\necho "{name}" >> "{notes}"\nexit 1\n')
         spy.chmod(0o755)
+    py = spy_dir / "python3"
+    py.write_text(PY_GUARD.format(python=sys.executable, log=str(notes)))
+    py.chmod(0o755)
     env["PATH"] = f"{spy_dir}:{env['PATH']}"
-    env["STUB_APPEND"] = f"-- ATTACH DATABASE '{marker}' AS probe;"
+    trace = _log(env, tmp_path)
+    env["STUB_APPEND"] = "CREATE INDEX probe_idx ON view_daily (views);"
     d = dest(tmp_path)
     r = run(env, "reach-db", str(d), "--apply")
     assert r.returncode == 0, r.stdout + r.stderr
-    kept = [f for f in d.rglob("*.sql") if "ATTACH DATABASE" in f.read_text()]
-    assert kept, "the line must be in the kept backup, or the test proves nothing"
-    assert not marker.exists()
-    assert not spied.exists()
+    kept = [f for f in d.rglob("*.sql") if "probe_idx" in f.read_text()]
+    assert kept, "the statement must be in the kept backup, or the test proves nothing"
+    assert not notes.exists(), notes.read_text()
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        marks = db.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'probe_idx'"
+        ).fetchall()
+    assert marks == []
+    for line in trace.read_text().splitlines():
+        assert line.startswith(("export: ", "execute: SELECT ")), line
 
 
 @pytest.mark.parametrize("mode", ["duplicate", "extra", "missing"])

@@ -1175,9 +1175,56 @@ def test_standalone_non_insert_restore_sql_is_refused(
     assert "unexpected statement" in r.stdout
 
 
-def test_the_defer_foreign_keys_pragma_of_a_real_export_still_passes(
-    tmp_path: Path,
+@pytest.mark.parametrize("value", ["TRUE", "FALSE", "ON", "OFF", "0", "1"])
+@pytest.mark.parametrize(
+    "shape",
+    [
+        "PRAGMA defer_foreign_keys={v};",
+        "PRAGMA defer_foreign_keys={v}",
+        "pragma DEFER_foreign_KEYS={v};",
+        "Pragma defer_foreign_keys = {v} ;",
+        "PRAGMA \t defer_foreign_keys\t=\t{v};",
+    ],
+)
+def test_every_allowed_defer_foreign_keys_form_passes(
+    value: str, shape: str, tmp_path: Path
 ) -> None:
-    for line in ("PRAGMA defer_foreign_keys=TRUE;", "PRAGMA defer_foreign_keys=OFF;"):
-        r = run(line + "\n" + SCHEMA_DUMP + GOOD_ROW, tmp_path=tmp_path)
-        assert r.returncode == 0, r.stdout + r.stderr
+    line = shape.format(v=value.lower() if shape.startswith("Pragma") else value)
+    r = run(line + "\n" + SCHEMA_DUMP + GOOD_ROW, tmp_path=tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "PRAGMA defer_foreign_keys=2;",
+        "PRAGMA defer_foreign_keys=YES;",
+        "PRAGMA defer_foreign_keys=TRUEX;",
+        "PRAGMA defer_foreign_keys;",
+        "PRAGMA defer_foreign_keys=;",
+        "PRAGMA defer_foreign_keys(1);",
+        "PRAGMA defer_foreign_keysX=1;",
+        "PRAGMA main.defer_foreign_keys=1;",
+        "PRAGMAdefer_foreign_keys=1;",
+        "PRAGMA defer_foreign_keys=1 foo;",
+        # Lookalikes: IGNORECASE without ASCII matches U+017F (long s) as s and
+        # U+0131 (dotless i) as i; \s matches Unicode spaces.
+        "PRAGMA defer_foreign_keyſ=1;",
+        "PRAGMA defer_foreign_keys=TRUEſ;",
+        "PRAGMA defer_foreign_keys=ıN;",
+        "PRAGMA defer_foreign_keys=ONı;",
+        "PRAGMA defer_foreign_keys=ıſ;",
+        "PRAGMA defer_foreign_keys=1;",
+        "PRAGMA defer_foreign_keys =1;",
+        "PRAGMA defer_foreign_keys= 1;",
+        "PRAGMA defer_foreign_keys=1 ;",
+        "PRAGMA　defer_foreign_keys=1;",
+        "PRAGMA defer_foreign_keys= 1;",
+        "PRAGMA defer_foreign_keys=1; ",
+    ],
+)
+def test_lookalike_and_adjacent_pragma_forms_are_refused(
+    line: str, tmp_path: Path
+) -> None:
+    r = run(SCHEMA_DUMP + GOOD_ROW + line + "\n", tmp_path=tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
