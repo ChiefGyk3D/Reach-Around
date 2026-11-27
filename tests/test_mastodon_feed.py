@@ -913,6 +913,81 @@ def test_a_malformed_rate_header_on_a_retried_answer_is_bad_shape() -> None:
     assert isinstance(read.rows, NotProvided) and read.reason == "bad_shape"
 
 
+_MALFORMED = ["9" * 600, "garbage", "-1", "9" * 11, ""]
+
+
+@pytest.mark.parametrize("value", _MALFORMED)
+@pytest.mark.parametrize("code", [429, 503])
+def test_a_malformed_rate_header_on_an_error_answer_never_causes_a_retry(
+    code: int, value: str
+) -> None:
+    # #938 round 1: exactly one status request after the lookup, no retry.
+    p = Pages([[]])
+    answers = iter(
+        [
+            reply({}, status=code, headers={"x-ratelimit-remaining": value}),
+            reply([], headers=DATE_OK),
+        ]
+    )
+    p.transport.routes[STATUSES] = lambda r: next(answers)
+    read = run(p)
+    assert isinstance(read.rows, NotProvided) and read.reason == "bad_shape"
+    assert len(p.transport.calls) == 2  # the lookup and one status try
+
+
+@pytest.mark.parametrize("value", _MALFORMED)
+def test_a_malformed_rate_header_on_a_redirect_never_causes_a_hop(
+    value: str,
+) -> None:
+    hop = reply(
+        {},
+        status=302,
+        headers={
+            "location": "/api/v1/accounts/lookup?acct=" + ACCT,
+            "x-ratelimit-remaining": value,
+        },
+    )
+    answers = iter([hop, reply(lookup(), headers=DATE_OK)])
+    p = Pages([[]])
+    p.transport.routes[LOOKUP] = lambda r: next(answers)
+    read = run(p)
+    assert isinstance(read.rows, NotProvided) and read.reason == "bad_shape"
+    assert len(p.transport.calls) == 1
+
+
+def test_a_low_rate_header_on_a_redirect_never_causes_a_hop() -> None:
+    hop = reply(
+        {},
+        status=302,
+        headers={
+            "location": "/api/v1/accounts/lookup?acct=" + ACCT,
+            "x-ratelimit-remaining": "1",
+        },
+    )
+    answers = iter([hop, reply(lookup(), headers=DATE_OK)])
+    p = Pages([[]])
+    p.transport.routes[LOOKUP] = lambda r: next(answers)
+    read = run(p)
+    assert isinstance(read.rows, NotProvided) and read.reason == "rate_limited"
+    assert len(p.transport.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("value", "reason"), [("2", "rate_limited"), ("garbage", "bad_shape")]
+)
+def test_the_rate_state_outranks_the_call_cap_in_the_reported_reason(
+    value: str, reason: str
+) -> None:
+    # The 13th (last permitted) call carries the rate signal; the retry that
+    # follows is refused with the rate word, not with page_cap.
+    stuck = reply({}, status=503, headers={"x-ratelimit-remaining": value})
+    pages: list[Any] = [[status(1000 - i, day(1))] for i in range(11)] + [stuck]
+    p = Pages(pages)
+    read = run(p)
+    assert isinstance(read.rows, NotProvided) and read.reason == reason
+    assert len(p.transport.calls) == masto.MAX_CALLS
+
+
 # --- one canonical account id everywhere ---------------------------------------
 
 _ODD_IDS: list[Any] = [

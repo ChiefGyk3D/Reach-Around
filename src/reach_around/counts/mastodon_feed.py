@@ -272,13 +272,18 @@ def collect(
         if deadline - clock() <= 0:
             ended.append("timeout")
             raise _BudgetEnded
-        if calls >= MAX_CALLS:
-            ended.append("page_cap")
+        # The terminal rate state of this fetch outranks the call cap, so the
+        # reported reason is the rate one, and no further request is made.
+        if rate["bad"]:
+            ended.append("bad_shape")
             raise _BudgetEnded
         if rate["low"]:
             # A low count seen on the previous response of this fetch also stops
             # the retry or redirect hop that would follow it (#938).
             ended.append("rate_limited")
+            raise _BudgetEnded
+        if calls >= MAX_CALLS:
+            ended.append("page_cap")
             raise _BudgetEnded
         calls += 1
         # Never later than the run's deadline, whatever the fetch layer asked.
