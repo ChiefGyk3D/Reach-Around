@@ -739,7 +739,7 @@ def _with_read_back(captured: Any) -> str:
     can run both. The file itself holds no SELECT: D1 returns no rows for a file."""
     out, err = captured
     assert "leads_remaining" not in out
-    return out + _read_back_command(err) + "\n"
+    return str(out) + _read_back_command(err) + "\n"
 
 
 def _statements(sql: str) -> list[str]:

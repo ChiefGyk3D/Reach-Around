@@ -2877,7 +2877,8 @@ def test_a_crash_after_each_stage_of_keeping_a_changed_row_loses_nothing(
     if stage == "rescue-written":
         crash_after(mod, "save_returned_row", monkeypatch)
     elif stage == "dest-written":
-        crash_in_record(mod, monkeypatch)  # record() follows the dest write and read-back
+        # record() follows the dest write and its read-back
+        crash_in_record(mod, monkeypatch)
     elif stage == "manifest-saved":
         crash_before_export(mod, monkeypatch)
     else:

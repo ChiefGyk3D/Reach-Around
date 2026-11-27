@@ -7,8 +7,8 @@ import io
 import json
 import os
 import shlex
-import sqlite3
 import shutil
+import sqlite3
 import sys
 import threading
 from pathlib import Path
@@ -2867,9 +2867,7 @@ class TestLegacyDatabase:
     ) -> None:
         dbs = _two_databases()
         # Run 1: the leads database (the normal run).
-        code, out1, err1 = run(
-            capsys, "--input", str(export), "--email", ADDR, "--yes"
-        )
+        code, out1, err1 = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
         assert code == CHECKED
         apply1, read1 = _commands(err1)
         # Run 2: the legacy analytics database.

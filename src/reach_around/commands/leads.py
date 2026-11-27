@@ -1693,9 +1693,7 @@ def _run_delete_legacy(args: argparse.Namespace) -> int:
     hashes are cleared by the normal run's --finish, and the read-back below is
     the proof for this copy)."""
     if args.legacy_database is None:
-        print(
-            "error: --confirm-legacy needs --legacy-database NAME", file=sys.stderr
-        )
+        print("error: --confirm-legacy needs --legacy-database NAME", file=sys.stderr)
         return EXIT_USAGE
     if (
         args.database is not None
@@ -1738,7 +1736,9 @@ def _run_delete_legacy(args: argparse.Namespace) -> int:
     )
     ids = [lead_id for lead_id, stored in leads if stored == email]
     if not ids:
-        print("no lead matches the supplied address; nothing to delete", file=sys.stderr)
+        print(
+            "no lead matches the supplied address; nothing to delete", file=sys.stderr
+        )
         return EXIT_NO_MATCH
     if len(ids) > 1:
         print(
