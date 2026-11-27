@@ -199,7 +199,7 @@ MATCH_FIXTURES = [
     ("/scripts/ @o", "scripts/a.sh", True),
     ("/scripts/ @o", "scripts", False),
     ("/scripts/ @o", "other/scripts/a.sh", False),
-    ("scripts/ @o", "other/scripts/a.sh", False),
+    ("scripts/ @o", "other/scripts/a.sh", True),
     ("/scripts @o", "scripts", True),
     ("/scripts @o", "scripts/a.sh", False),  # strict: a name claims only itself
     ("**/name.py @o", "name.py", True),
@@ -774,13 +774,19 @@ STEP_TABLE: list[tuple[str, str, str]] = [
 ]
 
 
-def shell_problems(text: str, where: str) -> list[str]:
+def shell_problems(
+    text: str, where: str, allow: frozenset[str] = frozenset()
+) -> list[str]:
     """Network-capable commands and foreign hosts in shell text. Comments are
     ignored: only what runs is read."""
     code = "\n".join(
         line for line in text.splitlines() if not line.lstrip().startswith("#")
     )
-    found = [f"{where}: network command {m}" for m in NETWORK_WORD.findall(code)]
+    found = [
+        f"{where}: network command {m}"
+        for m in NETWORK_WORD.findall(code)
+        if m not in allow
+    ]
     found += [f"{where}: network use {m}" for m in NETWORK_TOKEN.findall(code)]
     for host in URL_HOST.findall(code):
         if host not in ALLOWED_HOSTS:
@@ -940,7 +946,17 @@ def test_the_script_reaches_only_the_github_api_and_runs_only_git_and_bash() -> 
 @pytest.mark.parametrize("name", SCRIPTS_RUN_BY_THE_JOB)
 def test_the_shell_scripts_the_job_runs_reach_nothing(name: str) -> None:
     text = (TEMPLATE / "scripts" / name).read_text(encoding="utf-8")
-    assert shell_problems(text, name) == []
+    # The wrapper runs the engine image with docker or podman. The runtime is
+    # allowed only here, and only with the network switched off for the run.
+    runtimes = (
+        frozenset({"docker", "podman"}) if name.startswith("verify") else frozenset()
+    )
+    assert shell_problems(text, name, runtimes) == []
+    if runtimes:
+        run_lines = [ln for ln in text.splitlines() if '"$runtime" run' in ln]
+        assert run_lines
+        assert all("--network none" in ln for ln in run_lines)
+        assert text.count("--network") == len(run_lines)
 
 
 def mutated(edit: Any) -> dict[Any, Any]:

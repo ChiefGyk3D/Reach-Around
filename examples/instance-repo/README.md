@@ -506,35 +506,119 @@ never replace the code-owner review:
 
 **Offline check and live check of the CODEOWNERS boundary.** Offline, the
 engine repository's test `tests/test_history_guard_boundary.py` reads the
-shipped `.github/CODEOWNERS` with GitHub's rule that the last matching pattern
-wins, and proves that every file of the guard (the workflow, the approvers
-file, `scripts/`, `engine.lock`, `engine.release.json`, `history/redactions/`
-and the CODEOWNERS file itself) has an owner and that the history file and
-`numbers.json` have none. That proves the file's coverage, not that GitHub
-enforces it. The live check is an owner step and proves the enforcement. Run it
-on this repository before you add any approver login and record what you saw.
-Until step 4 blocks, the boundary is UNVERIFIED and activation stays blocked.
+shipped `.github/CODEOWNERS` with segment-aware matching after GitHub's CODEOWNERS
+page (read 2026-11-27: `*` does not cross `/`, the last matching pattern wins,
+an empty owner list un-owns a path; `!`, `[ ]` and backslash escapes are not
+supported by GitHub and are refused by the test). It proves that every file of
+the guard (the workflow, the approvers file, `scripts/`, `engine.lock`,
+`engine.release.json`, `history/redactions/` and the CODEOWNERS file itself) has
+an owner and that the history file and `numbers.json` have none. That proves the
+file's coverage, not that GitHub enforces it. The live check is an owner step and
+proves the enforcement. Run it before you add any approver login and record what
+you saw. Until step 4 blocks, the boundary is UNVERIFIED and activation stays
+blocked.
 
-1. Replace `OWNER-LOGIN` with the review account and merge the file to `main`.
-2. Ask GitHub whether it reads the file without errors (UNVERIFIED until run:
-   `gh api repos/OWNER/REPO/codeowners/errors`; expect an empty list).
-3. From the authoring account, open a pull request that changes one comment line
-   in `.github/workflows/history-guard.yml`. The pull request page must list the
-   code owner as a required reviewer.
-4. With every other check green, read the merge state (UNVERIFIED until run:
-   `gh pr view NUMBER --json reviewDecision,mergeStateStatus`). It must show a
-   review still required and a blocked merge. Try the merge as the author and
-   as an administrator: both must be refused (administrators are included).
-5. Approve as the independent code owner, push one more commit, and confirm the
-   approval is dismissed and the merge is blocked again (stale approvals and
-   most recent reviewable push). Close the pull request without merging.
+**Never test the enforcement on `main`.** A merge attempt on an unprotected or
+misconfigured `main` would succeed and change the guard. Use a temporary
+protected branch of this repository (below) or a disposable repository set up
+the same way. Do not issue any merge command against `main` until you have read
+`main`'s protection back and it shows what the checklist demands. Every command
+below is UNVERIFIED until you have run it; check the field names against
+GitHub's REST documentation for branch protection first.
 
-**Trusted inputs the workflow reads.** This is the complete inventory of what
+1. Set the names, create the temporary target from `main` and protect it
+   (replace `OWNER/REPO`; the review account must already be in `CODEOWNERS` on
+   `main`):
+
+   ```sh
+   R=OWNER/REPO
+   T=guard-live-check
+   gh api -X POST "repos/$R/git/refs" -f ref="refs/heads/$T" \
+     -f sha="$(gh api "repos/$R/commits/main" --jq .sha)" > /dev/null
+   gh api -X PUT "repos/$R/branches/$T/protection" --input - > /dev/null <<'JSON'
+   {
+     "required_status_checks": null,
+     "enforce_admins": true,
+     "required_pull_request_reviews": {
+       "require_code_owner_reviews": true,
+       "dismiss_stale_reviews": true,
+       "require_last_push_approval": true,
+       "required_approving_review_count": 1
+     },
+     "restrictions": null
+   }
+   JSON
+   ```
+
+   The `History guard` workflow only runs for pull requests into `main`, so the
+   temporary branch does not require that check: it tests the code-owner
+   boundary only.
+2. Read the protection back and compare it with `main`'s. Both must show code
+   owner review, stale dismissal, last-push approval and administrators
+   included:
+
+   ```sh
+   Q='{admins: .enforce_admins.enabled, owners: .required_pull_request_reviews.require_code_owner_reviews, stale: .required_pull_request_reviews.dismiss_stale_reviews, lastpush: .required_pull_request_reviews.require_last_push_approval}'
+   gh api "repos/$R/branches/$T/protection" --jq "$Q"
+   gh api "repos/$R/branches/main/protection" --jq "$Q"
+   ```
+
+   If `main` is protected by a ruleset rather than branch protection, the second
+   command shows nothing useful: read the ruleset in the repository settings and
+   set the temporary branch up the same way by hand (UNVERIFIED).
+3. From the authoring account, push a branch that changes one comment line of
+   `.github/workflows/history-guard.yml` and open the pull request into the
+   temporary branch. The pull request page must list the code owner as a
+   required reviewer:
+
+   ```sh
+   git fetch origin "$T"
+   git switch -c guard-live-check-edit "origin/$T"
+   sed -i '0,/^# /s//# (live check) /' .github/workflows/history-guard.yml
+   git commit -am "live check: comment only"
+   git push -u origin guard-live-check-edit
+   gh pr create --repo "$R" --base "$T" --head guard-live-check-edit \
+     --title "live check, do not merge" --body "Temporary boundary test."
+   ```
+4. Read the merge state and try the merge, as the author and as an
+   administrator. Both attempts must be refused, and the state must show a
+   review still required (`NUMBER` is the pull request number printed above):
+
+   ```sh
+   gh pr view NUMBER --repo "$R" --json reviewDecision,mergeStateStatus
+   gh pr merge NUMBER --repo "$R" --merge
+   ```
+5. Approve as the independent code owner, push one more commit to the branch
+   and confirm the approval is dismissed and the merge is refused again.
+6. Delete the temporary target, whatever the outcome:
+
+   ```sh
+   gh pr close NUMBER --repo "$R" --delete-branch
+   gh api -X DELETE "repos/$R/branches/$T/protection" > /dev/null
+   gh api -X DELETE "repos/$R/git/refs/heads/$T" > /dev/null
+   ```
+
+   Confirm it is gone: `gh api "repos/$R/branches/$T"` must answer not found.
+
+**Trusted inputs the workflow reads.** This is the inventory of what
 `.github/workflows/history-guard.yml` and `scripts/history-guard.py` take in.
-The same test file parses both and fails when one of them reads an input that
-is not listed here. Nothing outside this list is read: no `secrets`, no `vars`,
-no workflow `inputs`, no artifacts, no cache, and no network address except the
-GitHub API of this repository.
+What the tests in `tests/test_history_guard_boundary.py` PROVE: every context
+path, step environment name and shell variable the workflow reads, and every
+environment name the script reads, is listed here, and no row lists something
+nothing reads (names); every job and every step of the workflow matches a
+pinned table (a changed, added or removed step, or a second job, fails the test
+and names the step); the workflow and the shell scripts it runs contain no
+network command and no host other than `api.github.com`; the script's imports,
+subprocess programs and the one URL it builds (the GitHub API host plus a
+`/repos/` path) are fixed, read from its syntax tree. What they do NOT prove:
+that each listed input is used safely at run time (that is the guard's own
+tests and the engine's compare) or anything about GitHub's own behavior, which
+the live check and gate G1 cover. The engine image the wrapper runs is started
+with the network off; the container runtime's own pull of that image is outside
+these tests.
+
+Nothing outside this list is read: no `secrets`, no `vars`, no workflow `inputs`,
+no artifacts and no cache.
 
 | Input | Where it comes from | Trust |
 | --- | --- | --- |
