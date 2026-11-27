@@ -22,3 +22,8 @@
   cleans up (a test runs it); each delete chunk gets a pre-created, registered rescue
   file and recovery refuses (Time Travel) when one is missing or a deleted row is
   unaccounted for.
+  Round 17: every command accepts only full option names (no abbreviations, so
+  `--accept-unacc` can never switch on a dangerous flag), and a command line error
+  prints only messages that name our own options, never the text typed; accepting
+  unaccounted rows prints a count-only warning and records the count and time in
+  the manifest.
