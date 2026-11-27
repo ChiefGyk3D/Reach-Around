@@ -598,6 +598,15 @@ find = 'if (lead === null) return "expired";'
 replace = 'if (lead === null) return "ok";'
 
 [[mutation]]
+id = "session-separation-proof-removed"
+file = "src/kit/session.ts"
+group = "session"
+controls = ["session-separation"]
+what = "a cookie is opened without proving the leads database is a different database from the main one"
+find = 'await assertLeadsSeparated({ DB: floorDb, LEADS_DB: leadsDb }); // CONTROL:session-separation'
+replace = '// CONTROL:session-separation'
+
+[[mutation]]
 id = "session-malformed-floor-opens"
 file = "src/kit/session.ts"
 group = "session"

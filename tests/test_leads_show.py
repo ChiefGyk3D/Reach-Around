@@ -731,7 +731,7 @@ def _read_back_command(err: str) -> str:
         "--command",
     ]
     assert len(tokens) == 8
-    return tokens[7]
+    return str(tokens[7])
 
 
 def _with_read_back(captured: Any) -> str:
