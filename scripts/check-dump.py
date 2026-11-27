@@ -90,8 +90,10 @@ SKIP_OTHER = (
 # foreign_keys, ...) changes how a restore behaves and fails as an unexpected
 # statement.
 PRAGMA_OK = re.compile(
-    r"^PRAGMA\s+defer_foreign_keys\s*=\s*(?:TRUE|FALSE|ON|OFF|0|1)\s*;?\s*$",
-    re.IGNORECASE,
+    r"\APRAGMA[ \t\r\n]+defer_foreign_keys[ \t\r\n]*=[ \t\r\n]*"
+    r"(?:TRUE|FALSE|ON|OFF|0|1)[ \t\r\n]*;?[ \t\r\n]*\Z",
+    # ASCII only: without re.ASCII, IGNORECASE folds U+017F to s and U+0131 to i.
+    re.IGNORECASE | re.ASCII,
 )
 SAFE_NAME = re.compile(r"^[A-Za-z0-9_]{1,40}$")
 IDENT = r'(?:"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]|[A-Za-z_][A-Za-z0-9_$]*)'

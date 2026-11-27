@@ -1190,7 +1190,8 @@ def test_every_allowed_defer_foreign_keys_form_passes(
     value: str, shape: str, tmp_path: Path
 ) -> None:
     line = shape.format(v=value.lower() if shape.startswith("Pragma") else value)
-    r = run(line + "\n" + SCHEMA_DUMP + GOOD_ROW, tmp_path=tmp_path)
+    # Last in the dump, so a form with no semicolon ends at the end of the text.
+    r = run(SCHEMA_DUMP + GOOD_ROW + line + "\n", tmp_path=tmp_path)
     assert r.returncode == 0, r.stdout + r.stderr
 
 
@@ -1211,9 +1212,9 @@ def test_every_allowed_defer_foreign_keys_form_passes(
         # U+0131 (dotless i) as i; \s matches Unicode spaces.
         "PRAGMA defer_foreign_keyſ=1;",
         "PRAGMA defer_foreign_keys=TRUEſ;",
-        "PRAGMA defer_foreign_keys=ıN;",
         "PRAGMA defer_foreign_keys=ONı;",
-        "PRAGMA defer_foreign_keys=ıſ;",
+        "PRAGMA defer_foreıgn_keys=1;",
+        "PRAGMA defer_foreign_keys=ſOFF;",
         "PRAGMA defer_foreign_keys=1;",
         "PRAGMA defer_foreign_keys =1;",
         "PRAGMA defer_foreign_keys= 1;",

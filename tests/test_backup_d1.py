@@ -1126,7 +1126,10 @@ for name in ("system", "execv", "execve", "execvp", "execvpe", "posix_spawn",
     if hasattr(os, name):
         setattr(os, name, boom)
 args = [a for a in sys.argv[1:] if a != "-I"]
-if args[0] == "-":
+if args[0] == "-c":
+    sys.argv = ["-c"] + args[2:]
+    exec(compile(args[1], "<string>", "exec"), {{"__name__": "__main__"}})
+elif args[0] == "-":
     sys.argv = ["-"] + args[1:]
     exec(compile(sys.stdin.read(), "<stdin>", "exec"), {{"__name__": "__main__"}})
 else:
