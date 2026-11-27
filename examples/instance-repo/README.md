@@ -515,26 +515,42 @@ the guard (the workflow, the approvers file, `scripts/`, `engine.lock`,
 an owner and that the history file and `numbers.json` have none. That proves the
 file's coverage, not that GitHub enforces it. The live check is an owner step and
 proves the enforcement. Run it before you add any approver login and record what
-you saw. Until step 4 blocks, the boundary is UNVERIFIED and activation stays
-blocked.
+you saw. Until the merge in step 4 is refused, the boundary is UNVERIFIED and
+activation stays blocked.
 
 **Never test the enforcement on `main`.** A merge attempt on an unprotected or
-misconfigured `main` would succeed and change the guard. Use a temporary
-protected branch of this repository (below) or a disposable repository set up
-the same way. Do not issue any merge command against `main` until you have read
-`main`'s protection back and it shows what the checklist demands. Every command
-below is UNVERIFIED until you have run it; check the field names against
-GitHub's REST documentation for branch protection first.
+misconfigured `main` would succeed and change the guard. The check below uses a
+temporary protected branch of this repository with a random name, or a
+disposable repository set up the same way. No merge command is issued against
+`main` until you have read `main`'s protection back and it shows what the
+checklist demands. Every command below is UNVERIFIED until you have run it: check
+the field names against GitHub's REST documentation for branch protection first.
+You need `gh` logged in as the authoring account and, for step 5, a second
+logged-in account (`gh auth login` again) that is the code owner. Each block is
+pasted into a terminal as is and runs in its own `bash` with `-euo pipefail`, so
+a failed command stops it. State is carried in `live-check.env` in the current
+folder. Replace `OWNER/REPO` and `REVIEW-ACCOUNT-LOGIN` in step 1 only.
 
-1. Set the names, create the temporary target from `main` and protect it
-   (replace `OWNER/REPO`; the review account must already be in `CODEOWNERS` on
-   `main`):
+1. Pick the random names, stop if either branch already exists, create the
+   temporary branch from `main`, protect it, and record what was created.
+   Expected output: nothing on success, or `exists: NAME` and a stop.
 
    ```sh
+   bash -euo pipefail <<'SH'
    R=OWNER/REPO
-   T=guard-live-check
-   gh api -X POST "repos/$R/git/refs" -f ref="refs/heads/$T" \
-     -f sha="$(gh api "repos/$R/commits/main" --jq .sha)" > /dev/null
+   REVIEWER=REVIEW-ACCOUNT-LOGIN
+   AUTHOR="$(gh api user --jq .login)"
+   S="$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+   T="guard-live-check-$S"
+   E="guard-live-check-edit-$S"
+   for b in "$T" "$E"; do
+     if gh api "repos/$R/branches/$b" > /dev/null 2>&1; then
+       echo "exists: $b"
+       exit 1
+     fi
+   done
+   SHA="$(gh api "repos/$R/commits/main" --jq .sha)"
+   gh api -X POST "repos/$R/git/refs" -f ref="refs/heads/$T" -f sha="$SHA" > /dev/null
    gh api -X PUT "repos/$R/branches/$T/protection" --input - > /dev/null <<'JSON'
    {
      "required_status_checks": null,
@@ -548,76 +564,147 @@ GitHub's REST documentation for branch protection first.
      "restrictions": null
    }
    JSON
+   printf 'R=%s\nT=%s\nE=%s\nSHA=%s\nREVIEWER=%s\nAUTHOR=%s\n' \
+     "$R" "$T" "$E" "$SHA" "$REVIEWER" "$AUTHOR" > live-check.env
+   SH
    ```
 
    The `History guard` workflow only runs for pull requests into `main`, so the
    temporary branch does not require that check: it tests the code-owner
    boundary only.
-2. Read the protection back and compare it with `main`'s. Both must show code
-   owner review, stale dismissal, last-push approval and administrators
-   included:
+2. Read the protection back and compare it with `main`'s. Expected output: two
+   identical lines, `{"admins":true,"lastpush":true,"owners":true,"stale":true}`.
+   If `main` uses a ruleset instead of branch protection, the second command
+   fails: read the ruleset in the repository settings and set the temporary
+   branch up the same way by hand (UNVERIFIED).
 
    ```sh
+   bash -euo pipefail <<'SH'
+   . ./live-check.env
    Q='{admins: .enforce_admins.enabled, owners: .required_pull_request_reviews.require_code_owner_reviews, stale: .required_pull_request_reviews.dismiss_stale_reviews, lastpush: .required_pull_request_reviews.require_last_push_approval}'
    gh api "repos/$R/branches/$T/protection" --jq "$Q"
    gh api "repos/$R/branches/main/protection" --jq "$Q"
+   SH
    ```
-
-   If `main` is protected by a ruleset rather than branch protection, the second
-   command shows nothing useful: read the ruleset in the repository settings and
-   set the temporary branch up the same way by hand (UNVERIFIED).
-3. From the authoring account, push a branch that changes one comment line of
-   `.github/workflows/history-guard.yml` and open the pull request into the
-   temporary branch. The pull request page must list the code owner as a
-   required reviewer:
+3. From the authoring account, in a fresh clone, push a branch that changes one
+   comment line of `.github/workflows/history-guard.yml` and open the pull
+   request into the temporary branch. Expected output: the pull request URL; the
+   page lists the code owner as a required reviewer.
 
    ```sh
-   git fetch origin "$T"
-   git switch -c guard-live-check-edit "origin/$T"
+   bash -euo pipefail <<'SH'
+   . ./live-check.env
+   gh repo clone "$R" live-check-clone
+   cd live-check-clone
+   git switch -c "$E" "origin/$T"
    sed -i '0,/^# /s//# (live check) /' .github/workflows/history-guard.yml
-   git commit -am "live check: comment only"
-   git push -u origin guard-live-check-edit
-   gh pr create --repo "$R" --base "$T" --head guard-live-check-edit \
-     --title "live check, do not merge" --body "Temporary boundary test."
+   git commit -q -am "live check: comment only"
+   git push -q -u origin "$E"
+   URL="$(gh pr create --repo "$R" --base "$T" --head "$E" \
+     --title "live check, do not merge" --body "Temporary boundary test.")"
+   echo "$URL"
+   echo "NUMBER=${URL##*/}" >> ../live-check.env
+   SH
    ```
-4. Read the merge state and try the merge, as the author and as an
-   administrator. Both attempts must be refused, and the state must show a
-   review still required (`NUMBER` is the pull request number printed above):
+4. Read the merge state and try the merge as the authoring account, with and
+   without `--admin` (an owner is an administrator). Expected output: the state
+   `REVIEW_REQUIRED` and `BLOCKED` (UNVERIFIED wording), then both merge attempts
+   refused. The block stops with `MERGE WAS ACCEPTED` if either goes through:
+   then the boundary is NOT enforced, do not activate anything.
 
    ```sh
-   gh pr view NUMBER --repo "$R" --json reviewDecision,mergeStateStatus
-   gh pr merge NUMBER --repo "$R" --merge
+   bash -euo pipefail <<'SH'
+   . ./live-check.env
+   gh pr view "$NUMBER" --repo "$R" --json reviewDecision,mergeStateStatus
+   for flag in "" "--admin"; do
+     if gh pr merge "$NUMBER" --repo "$R" --merge $flag; then
+       echo "MERGE WAS ACCEPTED ($flag)"
+       exit 1
+     fi
+   done
+   echo "both merge attempts were refused"
+   SH
    ```
-5. Approve as the independent code owner, push one more commit to the branch
-   and confirm the approval is dismissed and the merge is refused again.
-6. Delete the temporary target, whatever the outcome:
+5. Approve as the independent code owner, then push one more commit as the
+   author. Expected output: after the approval the state is `APPROVED` (the merge
+   would be allowed, so it is not attempted); after the new commit it is
+   `REVIEW_REQUIRED` and `BLOCKED` again and the merge is refused (stale
+   approvals dismissed, approval of the most recent reviewable push required).
 
    ```sh
-   gh pr close NUMBER --repo "$R" --delete-branch
+   bash -euo pipefail <<'SH'
+   . ./live-check.env
+   gh auth switch --user "$REVIEWER"
+   gh pr review "$NUMBER" --repo "$R" --approve
+   gh auth switch --user "$AUTHOR"
+   gh pr view "$NUMBER" --repo "$R" --json reviewDecision,mergeStateStatus
+   cd live-check-clone
+   git commit -q --allow-empty -m "live check: one more commit"
+   git push -q origin "$E"
+   gh pr view "$NUMBER" --repo "$R" --json reviewDecision,mergeStateStatus
+   if gh pr merge "$NUMBER" --repo "$R" --merge; then
+     echo "MERGE WAS ACCEPTED AFTER A NEW PUSH"
+     exit 1
+   fi
+   echo "the merge was refused after the new push"
+   SH
+   ```
+6. Delete the temporary target, whatever the outcome. The pull request branch
+   has a random name that step 1 proved absent before it was created. The
+   temporary branch is deleted only if it still points at the commit step 1
+   recorded; otherwise the block stops and you remove it by hand. Expected
+   output: `removed` and the folder cleanup.
+
+   ```sh
+   bash -euo pipefail <<'SH'
+   . ./live-check.env
+   gh pr close "$NUMBER" --repo "$R" --delete-branch
+   NOW="$(gh api "repos/$R/git/ref/heads/$T" --jq .object.sha)"
+   if [ "$NOW" != "$SHA" ]; then
+     echo "refusing: $T no longer points at the commit this check created"
+     exit 1
+   fi
    gh api -X DELETE "repos/$R/branches/$T/protection" > /dev/null
    gh api -X DELETE "repos/$R/git/refs/heads/$T" > /dev/null
+   if gh api "repos/$R/branches/$T" > /dev/null 2>&1; then
+     echo "still exists: $T"
+     exit 1
+   fi
+   rm -rf live-check-clone live-check.env
+   echo removed
+   SH
    ```
-
-   Confirm it is gone: `gh api "repos/$R/branches/$T"` must answer not found.
 
 **Trusted inputs the workflow reads.** This is the inventory of what
 `.github/workflows/history-guard.yml` and `scripts/history-guard.py` take in.
-What the tests in `tests/test_history_guard_boundary.py` PROVE: every context
-path, step environment name and shell variable the workflow reads, and every
-environment name the script reads, is listed here, and no row lists something
-nothing reads (names); every job and every step of the workflow matches a
-pinned table (a changed, added or removed step, or a second job, fails the test
-and names the step); the workflow and the shell scripts it runs contain no
-network command and no host other than `api.github.com`; the script's imports,
-subprocess programs and the one URL it builds (the GitHub API host plus a
-`/repos/` path) are fixed, read from its syntax tree. What they do NOT prove:
-that each listed input is used safely at run time (that is the guard's own
-tests and the engine's compare) or anything about GitHub's own behavior, which
-the live check and gate G1 cover. The engine image the wrapper runs is started
+`tests/test_history_guard_boundary.py` checks it in three ways, none of which
+is a security boundary:
+
+- Names (checked, exact): every context path, step environment name and shell
+  variable the workflow reads, and every environment name the script reads, is
+  listed here, and no row lists something nothing reads.
+- Change detection (the real mechanism of the tests, a review trigger): every
+  step of the workflow and every file it executes (the guard script,
+  `scripts/read-lock.sh` and `scripts/verify-history-rewrite.sh`) is pinned by
+  SHA-256, and an unexpected job fails the test. A changed, added or removed
+  step or file fails a test that names it, so a human must update the table on
+  purpose. The table is not an independent check: a pull request can update it
+  in the same change, so the file that holds it is owned in the engine
+  repository's CODEOWNERS and its update needs the maintainer's review.
+- Heuristic (best effort): a scan for common network commands and foreign hosts
+  in the workflow and shell scripts and a syntax-tree scan of the guard script.
+  It catches common mistakes and cannot prove the absence of network use; a
+  split string, an alias or an indirect command gets past any such scan.
+
+The tests do not prove that a listed input is used safely at run time (that is
+the guard's own tests and the engine's compare), and they do not prove what the
+job can reach. The protection is CODEOWNERS plus branch protection on `main`,
+which the live check above exercises. Confining the job's network access at run
+time is tracked as a separate follow-up. The wrapper starts the engine image
 with the network off; the container runtime's own pull of that image is outside
 these tests.
 
-Nothing outside this list is read: no `secrets`, no `vars`, no workflow `inputs`,
+Nothing outside this list is read by design: no `secrets`, no `vars`, no workflow `inputs`,
 no artifacts and no cache.
 
 | Input | Where it comes from | Trust |

@@ -38,3 +38,7 @@
 /docs/deploy.md                         @ChiefGyk3D
 /.github/scripts/deploy-guard.py        @ChiefGyk3D
 /.github/scripts/verify-manifest.py     @ChiefGyk3D
+
+# The change detectors of the instance history guard: updating their pinned
+# tables needs the maintainer's review (#926).
+/tests/test_history_guard_boundary.py   @ChiefGyk3D

