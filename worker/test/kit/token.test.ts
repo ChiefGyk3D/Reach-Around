@@ -57,6 +57,11 @@ describe("length cap", () => {
     const small = await forge(base);
     expect(small.length).toBeLessThanOrEqual(1024);
     expect(await verifyToken(K, small, IAT + 10)).toEqual(claims);
+    // The validator ignores unknown claims and every accepted field is short, so a padding claim is the only
+    // way to exceed the cap. Control: the same shape with a small pad verifies, so only the length refuses it.
+    const padded = await forge({ ...base, pad: "x".repeat(100) });
+    expect(padded.length).toBeLessThanOrEqual(1024);
+    expect(await verifyToken(K, padded, IAT + 10)).toEqual(claims);
     const big = await forge({ ...base, pad: "x".repeat(1100) });
     expect(big.length).toBeGreaterThan(1024);
     expect(await verifyToken(K, big, IAT + 10)).toBeNull();

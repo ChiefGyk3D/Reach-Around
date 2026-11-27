@@ -835,15 +835,21 @@ describe("per-client limits do not spend shared budgets", () => {
     expect(await count("counters")).toBe(0);
   });
 
-  it("a missing or unverifiable cookie is refused before the view allowance is spent (#927)", async () => {
-    await seedLead();
-    for (const cookie of [null, `${COOKIE_NAME}=v1.AAAA.BBBB`]) {
+  for (const [name, cookie] of [
+    ["a missing cookie", null],
+    ["a malformed cookie", `${COOKIE_NAME}=v1.AAAA.BBBB`],
+  ] as const) {
+    it(`${name} is refused before any view allowance or counter is spent (#927)`, async () => {
+      await seedLead();
       const viewLim = keyedLimiter(4);
+      const counters = async () => (await testEnv.DB.prepare("SELECT key, day, count FROM counters ORDER BY key, day").all()).results;
+      const before = await counters();
       const res = await view({ cookie }, baseEnv({ KIT_VIEW_LIMITER: viewLim }));
       expect(res.status).toBe(303);
       expect(viewLim.hits.size).toBe(0);
-    }
-  });
+      expect(await counters()).toEqual(before);
+    });
+  }
 
   it("a view with no usable client address is refused before the budget", async () => {
     await seedLead();
