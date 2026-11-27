@@ -2085,11 +2085,14 @@ def _write_private(path: Path, text: str) -> None:
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     leads = subparsers.add_parser(
-        "leads", help="owner tools for media kit leads (deletion requests)"
+        "leads",
+        help="owner tools for media kit leads (deletion requests)",
+        allow_abbrev=False,  # an abbreviated destructive flag is never accepted
     )
     actions = leads.add_subparsers(dest="leads_command", required=True)
     delete = actions.add_parser(
         "delete",
+        allow_abbrev=False,
         help="erase one lead, its events and the alert hashes",
         description="Read a local export of the leads table (made with wrangler "
         "d1 execute --json, see docs/privacy.md), find the lead for one email "
@@ -2227,6 +2230,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 
     show = actions.add_parser(
         "show",
+        allow_abbrev=False,
         help="print what is stored about one lead (access request)",
         description="Read two local exports, the leads table and the kit events "
         "(see docs/privacy.md) and print what an access request needs for one "

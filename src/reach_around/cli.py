@@ -52,6 +52,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="reach-around",
         description="Build a static link page from a validated config.",
+        allow_abbrev=False,
     )
     parser.add_argument(
         "--version", action="store_true", help="print the version and exit"

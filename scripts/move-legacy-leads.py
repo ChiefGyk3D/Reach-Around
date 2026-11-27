@@ -772,6 +772,11 @@ class Manifest:
         # (lead-returned-*.json). Registered here BEFORE the file is written, so a
         # crash at any point leaves a name that recovery and cleanup can find.
         self.rescue_files: list[str] = []
+        # One entry (count, UTC time) each time the owner accepted deleted rows that
+        # nothing accounts for (--accept-unaccounted-rows): the audit record of that
+        # choice. Counts only, never a value.
+        self.accepted_unaccounted: list[dict[str, Any]] = []
+        self.accept_logged = False  # once per run, not once per check
         # Digests this manifest once held for a row that was re-moved with new data:
         # an export made before the re-move is stale, not foreign.
         self.superseded: dict[str, dict[str, list[str]]] = {t: {} for t, _ in TABLES}
@@ -882,6 +887,15 @@ class Manifest:
         ):
             raise Refused("the manifest is unreadable; resolve it by hand.")
         self.rescue_files = list(rescue)
+        accepted = data.get("accepted_unaccounted", [])
+        if not isinstance(accepted, list) or not all(
+            isinstance(a, dict)
+            and isinstance(a.get("count"), int)
+            and isinstance(a.get("timestamp"), str)
+            for a in accepted
+        ):
+            raise Refused("the manifest is unreadable; resolve it by hand.")
+        self.accepted_unaccounted = [dict(a) for a in accepted]
         self.run_id = run_id if isinstance(run_id, str) else self.run_id
         open_flag = data.get("purge_open", False)
         if not isinstance(open_flag, bool):
@@ -935,6 +949,7 @@ class Manifest:
                 "bookmark_attempts": self.bookmark_attempts,
                 "recovery_exports": self.recovery_exports,
                 "rescue_files": self.rescue_files,
+                "accepted_unaccounted": self.accepted_unaccounted,
                 "superseded": self.superseded,
                 "run_id": self.run_id,
                 "purge_open": self.purge_open,
@@ -1974,6 +1989,7 @@ def check_rescue_accounting(
     acknowledged by the manifest as deleted unchanged. Anything else was deleted
     and is accounted for nowhere: refuse, naming Time Travel."""
     records = load_rescue_files(work, m)
+    accepted = 0
     acked = {(e[0], e[1]) for entries in m.deleted.values() for e in entries}
     present = present_tables(w, args.source)
     for rec in records:
@@ -1984,10 +2000,23 @@ def check_rescue_accounting(
         carried = {str(r.get("id")) for r in rec.rows}
         for ident in rec.ids:
             if ident not in have and ident not in carried:
-                if (rec.table, ident) not in acked and not getattr(
-                    args, "accept_unaccounted_rows", False
-                ):
-                    raise _unrecoverable()
+                if (rec.table, ident) not in acked:
+                    if not getattr(args, "accept_unaccounted_rows", False):
+                        raise _unrecoverable()
+                    accepted += 1
+    if accepted and not m.accept_logged:
+        m.accept_logged = True
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        print(
+            f"WARNING: --accept-unaccounted-rows: {accepted} deleted row(s) that "
+            "nothing accounts for are being accepted. If one changed in the instant "
+            "its delete answer was lost, its newest version exists only in the Time "
+            "Travel bookmark recorded in the manifest. This choice is recorded in "
+            "the manifest.",
+            file=sys.stderr,
+        )
+        m.accepted_unaccounted.append({"count": accepted, "timestamp": stamp})
+        m.save()
     return records
 
 
@@ -2280,7 +2309,9 @@ def locked_run(w: Wrangler, work: Path, args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description="Move legacy leads (issue #772).")
+    parser = argparse.ArgumentParser(
+        description="Move legacy leads (issue #772).", allow_abbrev=False
+    )
     parser.add_argument("--source", required=True, help="the analytics D1 database")
     parser.add_argument(
         "--source-id", required=True, help="its platform id (d1 info --json: uuid)"

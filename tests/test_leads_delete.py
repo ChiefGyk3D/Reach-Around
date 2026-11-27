@@ -2857,6 +2857,38 @@ def _legacy_fake(role: str | None = "analytics") -> None:
         fake.dbs[LEGACY_DB].execute("INSERT INTO db_identity VALUES (?)", (role,))
 
 
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "--ye",
+        "--legacy-d",
+        "--legacy-database-i",
+        "--confirm-l",
+        "--fini",
+        "--sql-o",
+        "--alerts-d",
+        "--leads-database-i",
+    ],
+)
+def test_leads_delete_refuses_an_abbreviated_option(
+    capsys: pytest.CaptureFixture[str], export: Path, flag: str
+) -> None:
+    """argparse would take `--ye` for `--yes`: a destructive flag is never accepted
+    abbreviated."""
+    sys_stdin = io.StringIO(ADDR + "\n")
+    old = sys.stdin
+    sys.stdin = sys_stdin
+    try:
+        with pytest.raises(SystemExit) as info:
+            main(["leads", "delete", "--input", str(export), "--email", "-", flag, "x"])
+    finally:
+        sys.stdin = old
+    assert info.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and ADDR not in captured.err
+    assert "unrecognized arguments" in captured.err, flag
+
+
 class TestLegacyDatabase:
     @pytest.fixture(autouse=True)
     def _fake_legacy_database(self) -> None:

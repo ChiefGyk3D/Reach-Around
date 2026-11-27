@@ -12,6 +12,7 @@ from __future__ import annotations
 import itertools
 import json
 import os
+import re
 import shutil
 import sqlite3
 import stat
@@ -2500,6 +2501,52 @@ def test_a_lost_delete_answer_is_not_restored_without_the_explicit_acceptance(
     assert refused.returncode == 5 and "Time Travel" in refused.stderr
     assert src_rows(env) == before  # nothing restored without the acceptance
     assert run(env, work, "--accept-unaccounted-rows").returncode == 2  # wrong mode
+
+
+def test_accepting_unaccounted_rows_warns_and_leaves_an_audit_record(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    env["MOVE_BATCH"] = "1"
+    env["STUB_DELETE_THEN_FAIL"] = "1"
+    work = workdir(tmp_path)
+    assert purge(env, work).returncode == 5
+    del env["STUB_DELETE_THEN_FAIL"]
+    assert saved_manifest(work)["accepted_unaccounted"] == []
+    done = run(env, work, "--recover-from-export", "--accept-unaccounted-rows")
+    assert done.returncode == 0, done.stderr
+    # A plain warning with a count, no value of any row.
+    assert "WARNING: --accept-unaccounted-rows: 1 deleted row(s)" in done.stderr
+    assert "example.test" not in done.stdout + done.stderr
+    # And a record in the manifest: a count and a UTC time, written once.
+    audit = saved_manifest(work)["accepted_unaccounted"]
+    assert len(audit) == 1 and audit[0]["count"] == 1
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", audit[0]["timestamp"])
+    assert done.stderr.count("WARNING: --accept-unaccounted-rows") == 1
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "--accept-unacc",
+        "--accept",
+        "--restore-from-e",
+        "--recover-from-e",
+        "--locked-window-c",
+        "--restart-c",
+        "--pur",
+    ],
+)
+def test_the_move_tool_refuses_an_abbreviated_option(
+    tmp_path: Path, flag: str
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    before = src_rows(env)
+    r = run(env, work, flag)
+    assert r.returncode == 2, (flag, r.returncode, r.stderr)
+    assert "unrecognized arguments" in r.stderr, (flag, r.stderr)
+    assert src_rows(env) == before and count(env["STUB_DEST"], "leads") == 0
 
 
 def test_resume_compares_event_ids_as_numbers_not_text(tmp_path: Path) -> None:
