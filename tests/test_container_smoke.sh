@@ -24,7 +24,20 @@ trap cleanup EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-"$engine" build -f "$root/Containerfile" -t "$image" "$root"
+# The base image comes from Docker Hub, whose blob CDN times out now and then (#933).
+# A few bounded attempts with a growing pause absorb that; a real build error still
+# fails after the last attempt, so nothing is skipped. Tunable for tests.
+attempts="${BUILD_ATTEMPTS:-3}"
+pause="${BUILD_RETRY_PAUSE:-10}"
+case "$attempts" in [1-5]) ;; *) echo "BUILD_ATTEMPTS must be an integer from 1 to 5" >&2; exit 2 ;; esac
+case "$pause" in [0-9] | [1-5][0-9] | 60) ;; *) echo "BUILD_RETRY_PAUSE must be an integer from 0 to 60" >&2; exit 2 ;; esac
+n=1
+until "$engine" build -f "$root/Containerfile" -t "$image" "$root"; do
+    [ "$n" -lt "$attempts" ] || fail "image build failed after $n attempts"
+    echo "build attempt $n of $attempts failed; retrying in $((pause * n)) s" >&2
+    sleep $((pause * n))
+    n=$((n + 1))
+done
 
 # Same hardening as compose.yaml. The empty /out is made world-writable because the
 # container runs as a fixed non-root uid that differs from the host user.

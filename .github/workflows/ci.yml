@@ -64,6 +64,9 @@ jobs:
       docker-build: true
       dockerfile: Containerfile
       egress-policy: block
+      # Docker Hub redirects some layer blobs to this S3 host; python-ci's default list
+      # lacks it, so the Container build failed on a blob fetch (#933, GYST#284).
+      extra-allowed-endpoints: docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443
 
   podman:
     name: Podman smoke test
@@ -79,6 +82,7 @@ jobs:
             api.github.com:443
             auth.docker.io:443
             deb.debian.org:80
+            docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443
             files.pythonhosted.org:443
             github.com:443
             production.cloudfront.docker.com:443

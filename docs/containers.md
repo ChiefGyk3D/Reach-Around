@@ -111,6 +111,23 @@ CONTAINER_ENGINE=podman bash tests/test_container_smoke.sh
 CONTAINER_ENGINE=docker bash tests/test_container_smoke.sh
 ```
 
+The script retries the image build up to `BUILD_ATTEMPTS` times (integer 1 to 5,
+default 3) with a pause of `BUILD_RETRY_PAUSE` seconds times the attempt number
+(integer 0 to 60, default 10), then fails. Podman and Docker exit with the same code
+for a network timeout and for a Containerfile error, so the retry cannot tell them
+apart; a real build error simply fails on every attempt.
+
+### Accepted egress residual (#933)
+
+CI runs under harden-runner in `block` mode. Docker Hub redirects some layer blobs to
+`docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443`, which the `python-ci`
+default allow-list lacks. `python-ci` (git-your-ship-together v1.34.0) offers only the
+workflow-wide `extra-allowed-endpoints` input, not a per-job one, so this one host is
+allowed for every job that workflow runs, not only the container build. This is
+accepted: it is a single exact hostname on port 443, and the base image is pinned by
+digest, so a blob served from it cannot change what the build accepts. It goes away
+once git-your-ship-together#284 adds the host to the default list.
+
 ## Updating pins
 
 - Base image: pull the new tag, copy the multi-architecture index digest into the
