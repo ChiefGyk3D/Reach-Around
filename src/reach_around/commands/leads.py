@@ -202,9 +202,14 @@ def _check_row(row: Any) -> tuple[str, str]:
     return lead_id, email
 
 
-_TWO_SETS = (
-    "export: expected exactly two result sets in order, the leads query and "
-    "the kit events query (the second may be empty)"
+# `leads show` takes two files, each from its own `wrangler d1 execute --json
+# --command "<one statement>"` call. VERIFIED 2026-11-27 (wrangler 4.162.0, real D1,
+# synthetic data): one statement gives ONE result block. A file with any other number
+# of blocks, or the wrong kind of rows, is a wrong export and is refused.
+_ONE_SET = (
+    "export: expected exactly one result set from a single statement "
+    "(the leads query in --input, the kit events query in --events; the "
+    "events set may be empty)"
 )
 
 
@@ -255,7 +260,7 @@ def _load_blocks(path: Path, *, wrapped: bool = False) -> list[list[Any]]:
             blocks.append(results)
             total += len(results)
         elif wrapped:
-            raise LeadsError(_TWO_SETS)
+            raise LeadsError(_ONE_SET)
         else:
             blocks.append([item])
             total += 1
@@ -322,21 +327,23 @@ def _iso(ts_ms: int, *, hour: bool = False) -> str:
 
 
 def load_lead_views(
-    path: Path,
+    leads_path: Path, events_path: Path
 ) -> tuple[dict[str, str], dict[str, dict[str, Any]], list[tuple[str, str, int]]]:
-    """``(email by id, lead fields by id, events)`` from a leads plus events export."""
+    """``(email by id, lead fields by id, events)`` from the leads export and the kit
+    events export, each the one result block of its own single-statement call."""
     emails: dict[str, str] = {}
     fields: dict[str, dict[str, Any]] = {}
     events: list[tuple[str, str, int]] = []
-    blocks = _load_blocks(path, wrapped=True)
-    if len(blocks) != 2:
-        raise LeadsError(_TWO_SETS)
-    lead_rows, event_rows = blocks
+    lead_blocks = _load_blocks(leads_path, wrapped=True)
+    event_blocks = _load_blocks(events_path, wrapped=True)
+    if len(lead_blocks) != 1 or len(event_blocks) != 1:
+        raise LeadsError(_ONE_SET)
+    lead_rows, event_rows = lead_blocks[0], event_blocks[0]
     # An event row in the leads result (or the reverse) is a wrong export.
     if any(isinstance(r, dict) and "lead_id" in r for r in lead_rows) or any(
         not (isinstance(r, dict) and "lead_id" in r) for r in event_rows
     ):
-        raise LeadsError(_TWO_SETS)
+        raise LeadsError(_ONE_SET)
     for row in event_rows:
         if set(row) != EVENT_COLUMNS:
             raise LeadsError("export: an event row has unexpected columns")
@@ -485,7 +492,7 @@ def run_show(args: argparse.Namespace) -> int:
     try:
         database = _database(args.database)
         email = _address_from_file(args.email_file)
-        emails, fields, events = load_lead_views(args.input)
+        emails, fields, events = load_lead_views(args.input, args.events)
     except LeadsError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
@@ -778,7 +785,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     show = actions.add_parser(
         "show",
         help="print what is stored about one lead (access request)",
-        description="Read a local export of the leads table and the kit events "
+        description="Read two local exports, the leads table and the kit events "
         "(see docs/privacy.md) and print what an access request needs for one "
         "address: the masked address, country, created and verified times and "
         "the kit event kinds with their hours. Nothing else, no SQL, no network "
@@ -786,7 +793,18 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "line. Exit 0 done, 1 no match, 2 usage problem or a refused export.",
     )
     show.add_argument(
-        "--input", type=Path, required=True, metavar="PATH", help="export, JSON"
+        "--input",
+        type=Path,
+        required=True,
+        metavar="PATH",
+        help="the leads export, JSON (one result block)",
+    )
+    show.add_argument(
+        "--events",
+        type=Path,
+        required=True,
+        metavar="PATH",
+        help="the kit events export, JSON (one result block, may be empty)",
     )
     show.add_argument(
         "--email-file",

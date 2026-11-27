@@ -1750,6 +1750,9 @@ def keep_changed_rows(
     3. record it in the manifest and in a recovery export;
     only then does it count as deleted. A failure after step 1 raises VerifyRequired
     naming the file (never a value): the row is in that file, nothing else is lost."""
+    # Only a row that DIFFERS from the copied one gets its own private file: a matching
+    # row is identical to what the recovery export, written before the first DELETE,
+    # already holds, so saving it again would only add personal data on disk.
     for r in back:
         if str(r.get("id")) != str(sent.get("id")) or digest(table, r) == digest(
             table, sent

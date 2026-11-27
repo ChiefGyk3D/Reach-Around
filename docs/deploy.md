@@ -589,8 +589,12 @@ could be recorded from a file run. The tool therefore sends every DELETE as its 
 run. No personal value goes on a command line (it would show in the process list to other local users): the DELETE
 matches a row by its id and its non-personal columns, leaving out the email and country, and the removed row that
 the database returns is compared by its full digest. If the address changed after the tool read the row, the
-returned version differs: the tool writes it to the leads database through a private file, reads it back,
-records it in the manifest and in its own recovery export, and only then counts it as deleted. The tool fails closed: if the database refuses the clause, the delete fails and the run
+returned version differs. The tool first saves that version to its own private file in the work directory
+(`lead-returned-*.json`, mode 600, holds personal data), then writes it to the leads database through a private
+file, reads it back, records it in the manifest and in its own recovery export, and only then counts it as
+deleted. A failure after the first step ends the run with exit 5 and names the file. Only rows that differ from
+the copied row get their own file: a matching row is already in the recovery export written before the first
+DELETE. The tool fails closed: if the database refuses the clause, the delete fails and the run
 needs `--verify`; if no rows come back, nothing is recorded and the final verification reports the
 rows as unaccounted.
 

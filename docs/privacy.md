@@ -161,17 +161,21 @@ about one person.
 
 ### Access: what you hold about one address
 
-1. Export the lead and its events to a private local file in a fresh private
-   directory (the file holds every address, so delete the directory when you
-   are done). The export must be these two queries, in this order: the tool
-   refuses an export with a missing, extra or swapped result set, because a
-   missing events result would otherwise read as "no events":
+1. Export the lead and its events to two private local files in a fresh private
+   directory (they hold every address, so delete the directory when you are
+   done). Each file is the one result block of its own single-statement call
+   (verified on real D1 with wrangler 4.162.0, 2026-11-27: one statement gives
+   one block). The tool refuses a file with any other number of blocks or the
+   wrong kind of rows, because a missing events result would otherwise read as
+   "no events":
 
    ```
    umask 077
    WORK=$(mktemp -d "$HOME/leads-request-XXXXXX") && cd "$WORK" && set -o noclobber
    npx wrangler d1 execute reach-around-leads --remote --json \
-     --command "SELECT id, email, created_ts, verified_ts, country FROM leads; SELECT lead_id, kind, ts FROM kit_events" > leads-export.json
+     --command "SELECT id, email, created_ts, verified_ts, country FROM leads" > leads-export.json
+   npx wrangler d1 execute reach-around-leads --remote --json \
+     --command "SELECT lead_id, kind, ts FROM kit_events" > events-export.json
    ```
 
 2. Put the address in a file or on stdin, never on the command line, and show
@@ -179,7 +183,7 @@ about one person.
 
    ```
    read -r ADDR   # type the address, press Enter
-   printf '%s\n' "$ADDR" | reach-around leads show --input leads-export.json --email-file - --database reach-around-leads
+   printf '%s\n' "$ADDR" | reach-around leads show --input leads-export.json --events events-export.json --email-file - --database reach-around-leads
    ```
 
    It prints the masked address, the country, the created and verified times
@@ -188,7 +192,7 @@ about one person.
    Exit 1 means no lead has that address (it may already be gone, or the
    spelling differs). It makes no network call and writes no file. Its error
    messages are fixed and never carry the address, even masked, because stderr
-   can reach a log. The export must hold exactly the five lead columns and the
+   can reach a log. The exports must hold exactly the five lead columns and the
    three event columns above, and a lead id that appears twice refuses the whole
    export. An event time that is not on the hour is shown as its hour.
 
@@ -337,6 +341,13 @@ After a deletion, a lead who comes back and types the address again is a new
 lead. Remove copies that sit outside D1 yourself: see the inventory in
 docs/security/threat-model.md (T-17), and say in your reply what you could not
 reach.
+
+The one-time lead move (docs/deploy.md) deletes rows from the analytics database one
+statement at a time, with no personal value on a command line. A row that changed
+after the tool copied it comes back from the database different; the tool saves that
+version to a private file (`lead-returned-*.json`, mode 600, personal data: delete it
+after the move is verified) before anything else. Only such differing rows get a file
+of their own; matching rows are already in the recovery export.
 
 ## Click counters (funnel rollups, aggregate only)
 

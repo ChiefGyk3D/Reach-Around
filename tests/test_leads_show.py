@@ -66,6 +66,19 @@ def blocks(*row_lists: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{"results": rows, "success": True, "meta": {}} for rows in row_lists]
 
 
+def make_export(
+    path: Path, leads: list[dict[str, Any]], events: list[dict[str, Any]]
+) -> Path:
+    """The two files `leads show` takes: the leads export at ``path`` and the kit
+    events export beside it, each the one block of its own single-statement call."""
+    write(path.with_suffix(".events.json"), blocks(events))
+    return write(path, blocks(leads))
+
+
+def events_of(path: Path) -> Path:
+    return path.with_suffix(".events.json")
+
+
 @pytest.fixture
 def export(tmp_path: Path) -> Path:
     leads = [
@@ -77,7 +90,7 @@ def export(tmp_path: Path) -> Path:
         event(ID_A, "view", EVENT_TS + HOUR),
         event(ID_B, "view"),
     ]
-    return write(tmp_path / "leads.json", blocks(leads, events))
+    return make_export(tmp_path / "leads.json", leads, events)
 
 
 def show(
@@ -88,7 +101,19 @@ def show(
     *extra: str,
 ) -> tuple[int, str, str]:
     monkeypatch.setattr("sys.stdin", io.StringIO(stdin))
-    code = cli(["leads", "show", "--input", str(export), "--email-file", "-", *extra])
+    code = cli(
+        [
+            "leads",
+            "show",
+            "--input",
+            str(export),
+            "--events",
+            str(events_of(export)),
+            "--email-file",
+            "-",
+            *extra,
+        ]
+    )
     captured = capsys.readouterr()
     return code, captured.out, captured.err
 
@@ -118,7 +143,7 @@ def test_show_unverified_and_no_events(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    path = write(tmp_path / "e.json", blocks([lead(ID_A, ADDR)], []))
+    path = make_export(tmp_path / "e.json", [lead(ID_A, ADDR)], [])
     code, out, _ = show(capsys, monkeypatch, path)
     assert code == 0
     assert "verified: no" in out
@@ -126,26 +151,57 @@ def test_show_unverified_and_no_events(
     assert "events: none" in out
 
 
-def test_show_refuses_an_export_that_lacks_the_kit_events_result(
+def test_show_refuses_an_export_that_is_not_one_block_per_call(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    # Only the leads query was exported: "events: none" would be a false
-    # statement, so the export is refused. An empty second result is fine.
+    # Each file is the one block of a single-statement call (VERIFIED 2026-11-27).
+    # A wrong number of blocks or the wrong kind of rows is refused: an events file
+    # that is not events would otherwise read as "events: none".
+    one = blocks([lead(ID_A, ADDR)])
+    ev = blocks([event(ID_A, "view")])
     cases = {
-        "leads-only": blocks([lead(ID_A, ADDR)]),
-        "three-blocks": blocks([lead(ID_A, ADDR)], [], []),
-        "swapped": blocks([event(ID_A, "view")], [lead(ID_A, ADDR)]),
-        "events-in-first": blocks([lead(ID_A, ADDR), event(ID_A, "view")], []),
-        "bare-rows": [lead(ID_A, ADDR)],
+        "two-blocks-in-leads": (blocks([lead(ID_A, ADDR)], []), ev),
+        "two-blocks-in-events": (one, blocks([event(ID_A, "view")], [])),
+        "leads-where-events-go": (one, blocks([lead(ID_A, ADDR)])),
+        "events-where-leads-go": (ev, blocks([event(ID_A, "view")])),
+        "events-in-leads": (blocks([lead(ID_A, ADDR), event(ID_A, "view")]), blocks([])),
+        "bare-rows": ([lead(ID_A, ADDR)], blocks([])),
+        "summary-row": (
+            blocks([{"Total queries executed": 1, "Rows read": 1}]),
+            blocks([]),
+        ),
     }
-    for name, data in cases.items():
-        path = write(tmp_path / f"{name}.json", data)
+    for name, (leads_data, events_data) in cases.items():
+        path = write(tmp_path / f"{name}.json", leads_data)
+        write(events_of(path), events_data)
         code, out, err = show(capsys, monkeypatch, path)
         assert code == 2 and out == "", name
         assert ADDR not in err and "events: none" not in out, name
-        assert "two result sets" in err, name
+
+
+def test_show_needs_the_events_export_as_its_own_file(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    export: Path,
+) -> None:
+    monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
+    with pytest.raises(SystemExit) as info:
+        main(
+            [
+                "leads",
+                "show",
+                "--input",
+                str(export),
+                "--email-file",
+                "-",
+                "--database",
+                "reach-around-leads",
+            ]
+        )
+    assert info.value.code == 2
+    assert ADDR not in capsys.readouterr().err
 
 
 def test_show_no_match_exit_1(
@@ -168,7 +224,7 @@ def test_show_duplicate_match_refuses(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    path = write(tmp_path / "e.json", blocks([lead(ID_A, ADDR), lead(ID_B, ADDR)], []))
+    path = make_export(tmp_path / "e.json", [lead(ID_A, ADDR), lead(ID_B, ADDR)], [])
     code, out, err = show(capsys, monkeypatch, path)
     assert code == 2
     assert out == ""
@@ -182,7 +238,16 @@ def test_show_reads_address_from_a_file(
 ) -> None:
     addr_file = write(tmp_path / "addr.txt", ADDR + "\n")
     code = cli(
-        ["leads", "show", "--input", str(export), "--email-file", str(addr_file)]
+        [
+            "leads",
+            "show",
+            "--input",
+            str(export),
+            "--events",
+            str(events_of(export)),
+            "--email-file",
+            str(addr_file),
+        ]
     )
     out = capsys.readouterr().out
     assert code == 0 and "p***@***.test" in out
@@ -209,7 +274,16 @@ def test_show_unreadable_address_file_does_not_leak_path_or_content(
     capsys: pytest.CaptureFixture[str], export: Path, tmp_path: Path
 ) -> None:
     code = cli(
-        ["leads", "show", "--input", str(export), "--email-file", str(tmp_path / ADDR)]
+        [
+            "leads",
+            "show",
+            "--input",
+            str(export),
+            "--events",
+            str(events_of(export)),
+            "--email-file",
+            str(tmp_path / ADDR),
+        ]
     )
     err = capsys.readouterr().err
     assert code == 2
@@ -224,7 +298,18 @@ def test_show_email_on_argv_is_refused_without_echo(
     # A valid address on argv must not be used even when stdin also has one.
     monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
     code = cli(
-        ["leads", "show", "--input", str(export), "--email-file", "-", "--email", ADDR]
+        [
+            "leads",
+            "show",
+            "--input",
+            str(export),
+            "--events",
+            str(events_of(export)),
+            "--email-file",
+            "-",
+            "--email",
+            ADDR,
+        ]
     )
     captured = capsys.readouterr()
     assert code == 2
@@ -235,7 +320,18 @@ def test_show_email_on_argv_is_refused_without_echo(
 def test_show_abbreviated_flag_reads_the_value_as_a_path_not_an_address(
     capsys: pytest.CaptureFixture[str], export: Path
 ) -> None:
-    code = cli(["leads", "show", "--input", str(export), "--email-f", ADDR])
+    code = cli(
+        [
+            "leads",
+            "show",
+            "--input",
+            str(export),
+            "--events",
+            str(events_of(export)),
+            "--email-f",
+            ADDR,
+        ]
+    )
     captured = capsys.readouterr()
     assert code == 2
     assert ADDR not in captured.out + captured.err
@@ -279,10 +375,9 @@ def test_show_refuses_a_hostile_export(
     rows: list[dict[str, Any]],
 ) -> None:
     if rows and "lead_id" in rows[0]:
-        data = blocks([lead(ID_A, ADDR)], rows)
+        path = make_export(tmp_path / "e.json", [lead(ID_A, ADDR)], rows)
     else:
-        data = blocks(rows, [])
-    path = write(tmp_path / "e.json", data)
+        path = make_export(tmp_path / "e.json", rows, [])
     code, out, err = show(capsys, monkeypatch, path)
     assert code == 2
     assert out == ""
@@ -294,10 +389,14 @@ def test_show_refuses_failed_result_block(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    data = blocks([lead(ID_A, ADDR)], [])
-    data[1]["success"] = False
-    code, out, _ = show(capsys, monkeypatch, write(tmp_path / "e.json", data))
-    assert code == 2 and out == ""
+    for failed in ("leads", "events"):
+        path = make_export(tmp_path / "e.json", [lead(ID_A, ADDR)], [])
+        target = path if failed == "leads" else events_of(path)
+        data = blocks([] if failed == "events" else [lead(ID_A, ADDR)])
+        data[0]["success"] = False
+        write(target, data)
+        code, out, _ = show(capsys, monkeypatch, path)
+        assert code == 2 and out == ""
 
 
 def test_show_events_of_other_leads_never_attributed(
@@ -305,10 +404,7 @@ def test_show_events_of_other_leads_never_attributed(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    path = write(
-        tmp_path / "e.json",
-        blocks([lead(ID_A, ADDR)], [event(ID_B, "verify")]),
-    )
+    path = make_export(tmp_path / "e.json", [lead(ID_A, ADDR)], [event(ID_B, "verify")])
     _, out, _ = show(capsys, monkeypatch, path)
     assert "verify" not in out
     assert "events: none" in out
@@ -326,44 +422,39 @@ def test_existing_delete_still_rejects_the_richer_export(
     assert ADDR not in capsys.readouterr().err
 
 
-def wrangler_two_statement_output(
-    leads: list[dict[str, Any]], events: list[dict[str, Any]]
-) -> str:
-    """The shape of wrangler d1 execute --remote --json with two statements.
+def wrangler_single_statement_output(rows: list[dict[str, Any]]) -> str:
+    """The shape of `wrangler d1 execute --remote --json --command "<one statement>"`.
 
-    Sources: the D1 result object (success, meta with the keys below, results
-    as an array; developers.cloudflare.com/d1/worker-api/return-object, read
-    2026-11-24) and the wrangler `--command` flag, which takes several queries
-    separated by ';' (developers.cloudflare.com/d1/wrangler-commands, read
-    2026-11-24). INFERRED, not captured from a live run: that wrangler prints
-    one such object per statement, in one JSON array, with no other text on
-    stdout. If a live capture differs, replace this builder with the capture.
-    """
-
-    def result(rows: list[dict[str, Any]]) -> dict[str, Any]:
-        return {
-            "results": rows,
-            "success": True,
-            "meta": {
-                "served_by": "v3-prod",
-                "served_by_region": "ENAM",
-                "served_by_primary": True,
-                "timings": {"sql_duration_ms": 0.3},
-                "duration": 0.3,
-                "changes": 0,
-                "last_row_id": 0,
-                "changed_db": False,
-                "size_after": 28672,
-                "rows_read": len(rows),
-                "rows_written": 0,
-                "total_attempts": 1,
-            },
-        }
-
-    return json.dumps([result(leads), result(events)], indent=2)
+    VERIFIED 2026-11-27 (wrangler 4.162.0 on real Cloudflare D1, synthetic data, the
+    owner's own run): ONE block per call, with the rows in `results`. The meta keys
+    follow the D1 result object (developers.cloudflare.com/d1/worker-api/return-object,
+    read 2026-11-24)."""
+    return json.dumps(
+        [
+            {
+                "results": rows,
+                "success": True,
+                "meta": {
+                    "served_by": "v3-prod",
+                    "served_by_region": "ENAM",
+                    "served_by_primary": True,
+                    "timings": {"sql_duration_ms": 0.3},
+                    "duration": 0.3,
+                    "changes": 0,
+                    "last_row_id": 0,
+                    "changed_db": False,
+                    "size_after": 28672,
+                    "rows_read": len(rows),
+                    "rows_written": 0,
+                    "total_attempts": 1,
+                },
+            }
+        ],
+        indent=2,
+    )
 
 
-def test_show_reads_the_documented_wrangler_output_shape(
+def test_show_reads_the_verified_wrangler_output_shape(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -378,7 +469,8 @@ def test_show_reads_the_documented_wrangler_output_shape(
         }
     ]
     events = [{"lead_id": ID_A, "kind": "view", "ts": EVENT_TS + 5}]
-    path = write(tmp_path / "w.json", wrangler_two_statement_output(leads, events))
+    path = write(tmp_path / "w.json", wrangler_single_statement_output(leads))
+    write(events_of(path), wrangler_single_statement_output(events))
     code, out, _ = show(capsys, monkeypatch, path)
     assert code == 0
     assert "country: DE" in out
@@ -396,7 +488,7 @@ def test_show_lead_rows_must_have_exactly_the_documented_columns(
     missing = lead(ID_A, ADDR)
     del missing["country"]
     for row in (extra, missing):
-        path = write(tmp_path / "e.json", blocks([row], []))
+        path = make_export(tmp_path / "e.json", [row], [])
         code, out, err = show(capsys, monkeypatch, path)
         assert code == 2 and out == ""
         assert ADDR not in err
@@ -408,7 +500,7 @@ def test_show_accepts_event_times_that_are_not_on_the_hour(
     tmp_path: Path,
 ) -> None:
     rows = [event(ID_A, "view", EVENT_TS + 2_800_005)]
-    path = write(tmp_path / "e.json", blocks([lead(ID_A, ADDR)], rows))
+    path = make_export(tmp_path / "e.json", [lead(ID_A, ADDR)], rows)
     code, out, _ = show(capsys, monkeypatch, path)
     assert code == 0
     # Shown with its hour only; the minutes and seconds are dropped.
@@ -426,7 +518,7 @@ def test_show_refuses_a_lead_id_that_appears_twice(
         [lead(ID_A, ADDR), lead(ID_A, second_addr, country="FR")],
         [lead(ID_A, second_addr, country="FR"), lead(ID_A, ADDR)],
     ):
-        path = write(tmp_path / "e.json", blocks(rows, []))
+        path = make_export(tmp_path / "e.json", rows, [])
         code, out, err = show(capsys, monkeypatch, path)
         assert code == 2 and out == ""
         assert "a lead id appears more than once" in err
@@ -985,7 +1077,18 @@ def test_delete_requires_a_database_name_and_show_too(
     delete_export: Path,
 ) -> None:
     monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
-    code = main(["leads", "show", "--input", str(export), "--email-file", "-"])
+    code = main(
+        [
+            "leads",
+            "show",
+            "--input",
+            str(export),
+            "--events",
+            str(events_of(export)),
+            "--email-file",
+            "-",
+        ]
+    )
     captured = capsys.readouterr()
     assert code == 2 and captured.out == ""
     assert "--database is required" in captured.err
