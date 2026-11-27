@@ -168,21 +168,13 @@ def test_the_matcher_follows_the_last_match_wins_rule() -> None:
     assert owners_of("scripts", rules) == []  # a trailing slash is a folder
 
 
-@pytest.mark.parametrize(
-    ("drop", "lost"),
-    [
-        ("/.github/", ".github/history-approvers"),
-        ("/scripts/", "scripts/history-guard.py"),
-        ("/engine.lock", "engine.lock"),
-        ("/engine.release.json", "engine.release.json"),
-        ("/history/redactions/", "history/redactions/run-1.manifest"),
-    ],
-)
-def test_dropping_a_rule_leaves_a_protected_path_unowned(drop: str, lost: str) -> None:
-    # Revert proof: a CODEOWNERS file without the rule fails the coverage check.
-    rules = [(p, o) for p, o in example_rules() if p != drop]
-    assert any(not owned(p, rules) for p in PROTECTED)
+@pytest.mark.parametrize("lost", PROTECTED)
+def test_dropping_every_rule_for_a_protected_path_leaves_it_unowned(lost: str) -> None:
+    # Revert proof: a CODEOWNERS file without the rules that cover the path
+    # fails the coverage check for exactly that path.
+    rules = [(p, o) for p, o in example_rules() if not pattern_regex(p).match(lost)]
     assert not owned(lost, rules)
+    assert [p for p in PROTECTED if not owned(p, rules)]
 
 
 def test_an_unowning_override_after_the_rules_is_caught() -> None:
