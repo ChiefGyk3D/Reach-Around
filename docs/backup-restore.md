@@ -39,6 +39,30 @@ tables, `analytics_coverage` (24 letters per day saying whether the Worker was
 collecting; no counts and no visitor data) and `d1_migrations` (the list of migrations already applied, which a
 rebuilt database needs so that "apply migrations" only runs newer ones).
 
+The script checks each export. A table may gain rows during the run (visits,
+clicks and alerts keep arriving) but must not lose any: if a table's count after
+the exports is lower than before, the run fails (exit 1, "rows decreased"), so
+run it again. Each file's rows are then counted by reading it line by line
+(nothing in it is executed; the file is opened once, no link is followed, and
+`BACKUP_MAX_BYTES`, default 1 GiB, bounds what is read) and the count must lie
+between the count before and the count after. The accepted file grammar was
+verified on 2026-11-27 against real D1 exports (wrangler 4.162.0, synthetic
+data): one `INSERT INTO "<table>" ("col",...) VALUES(...);` line per row, a value
+with a newline escaped on the same line, and `CREATE TABLE` lines that may come
+after inserts. Anything else (several rows in one statement, another spelling of
+INSERT, a NUL byte, bad UTF-8, an unbalanced quote) fails the run. Residual
+(inferred, not verified: D1 gives no snapshot across separate queries): deleting
+one row and adding another during the run, which leaves the counts level, is not
+seen.
+
+Limit: when a table grows during the run, the row count cannot prove that every
+row that existed before the run is in the export (an omitted old row could be
+hidden by a new one); the count range proves the number of rows only. D1's own
+documentation says a running export blocks other requests to the database, which
+suggests the export is one consistent snapshot, but that is inferred, not
+documented. `BACKUP_MAX_BYTES` is one budget shared by all the export files of a
+run.
+
 **Country in `click_events`.** The Worker now writes no country there, but the
 column still exists and rows written before migration 0010 and the new Worker
 can still hold one. The export copies the table as it is, so an old backup can

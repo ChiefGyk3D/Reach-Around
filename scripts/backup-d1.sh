@@ -27,7 +27,24 @@
 # 1 to 900). Uses `wrangler d1 export --remote` (set WRANGLER to another command,
 # for example a test stub). The dry run makes no network call and writes nothing.
 #
-# The run makes ONE read-only query (the table listing) plus the exports. Every
+# The run makes read-only queries (the table listing with each table's definition,
+# once before and once after the exports, and a row count of every table, once
+# before and once after) plus the exports. An answer that is not a single
+# successful result is never trusted. A table may GAIN rows during the run (page
+# views, clicks and alerts keep arriving) but must not lose any: the count after
+# the exports must be at least the count before (else exit 1, rows decreased:
+# rerun), and each export file's row count, counted by reading it line by line
+# (single-row INSERT lines only, size limits, nothing executed), must lie between
+# the two, so an export cut short fails. If the listing after the exports differs
+# from the first (a table dropped, replaced or changed) the run fails. Residual
+# (inferred, not verified: D1 gives no snapshot across separate queries): a delete
+# plus an insert that leaves the counts level is not seen. LIMIT: when a table
+# grows during the run, the row COUNT cannot prove that every row that existed
+# before is in the export (an omitted old row can be hidden by a new one); the
+# count range proves cardinality only. D1's documentation says a running export
+# blocks other requests to the database, which suggests one consistent snapshot,
+# but that is INFERRED, not documented. BACKUP_MAX_BYTES is one budget for all
+# export files of the run. Every
 # table in the `tables` list below is ALWAYS required: if the database lacks any
 # of them the run fails (exit 1) before any export and names the missing tables
 # (at most 10, then "... and K more"). A database that lacks a current table (an
@@ -95,6 +112,9 @@ never_exported=(leads kit_events visitor_seen view_events)
 # The only other tables the run accepts without exporting them: SQLite's own
 # (every name that starts with sqlite_) and Cloudflare's reserved `_cf_KV`. Any
 # other table that is not above fails the run before an export starts.
+# _cf_KV is Cloudflare's own internal table, not part of this schema (a test
+# proves no migration creates it). Ignoring it means anything stored in it would
+# not be backed up: the match is the exact name only, so a look-alike fails.
 ignored_tables=(_cf_KV)
 
 usage() {
@@ -126,6 +146,18 @@ case "$limit" in
 esac
 if [ "$limit" -gt 900 ]; then
   echo "error: BACKUP_TIMEOUT must be a whole number from 1 to 900" >&2
+  exit 2
+fi
+
+max_bytes="${BACKUP_MAX_BYTES:-1073741824}"
+case "$max_bytes" in
+"" | *[!0-9]* | 0*)
+  echo "error: BACKUP_MAX_BYTES must be a whole number from 1 to 1099511627776" >&2
+  exit 2
+  ;;
+esac
+if [ "${#max_bytes}" -gt 13 ] || [ "$max_bytes" -gt 1099511627776 ]; then
+  echo "error: BACKUP_MAX_BYTES must be a whole number from 1 to 1099511627776" >&2
   exit 2
 fi
 
@@ -192,30 +224,85 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# One table name per line from a wrangler --json answer on stdin. The names are
-# compared as whole lines below, so a name that holds a line break could make a
-# missing table look present: refuse it outright (also a carriage return or NUL).
-names_of() {
+# Read a wrangler --json answer on stdin; MODE is names, fingerprint or counts.
+# Only a single result object with success true and a list of row objects is
+# accepted: anything else (an error object, several results, a failed result) is
+# an error, never an authoritative answer. Names are printed one per line and are
+# compared as whole lines, so a name that holds a line break, a carriage return
+# or NUL is refused outright. fingerprint prints one hash of every (name, sql)
+# pair; counts prints "name n" lines (n a whole number).
+parse_answer() {
   python3 -I -c '
-import json, sys
-data = json.load(sys.stdin)
-rows = data[0]["results"] if isinstance(data, list) else data["results"]
+import hashlib, json, sys
+
+def bad(msg):
+    sys.stderr.write("error: " + msg + "\n")
+    sys.exit(1)
+
+mode = sys.argv[1]
+expected = set(sys.argv[2:])  # counts: exactly these tables, once each
+seen = set()
+try:
+    data = json.load(sys.stdin)
+except ValueError:
+    bad("the answer is not JSON")
+if isinstance(data, list):
+    if len(data) != 1:
+        bad("unexpected number of results in the answer")
+    data = data[0]
+if not isinstance(data, dict) or data.get("success") is not True:
+    bad("the answer is not a successful result")
+rows = data.get("results")
+if not isinstance(rows, list):
+    bad("the answer has no result rows")
+pairs = []
 for r in rows:
-    name = r["name"]
+    if not isinstance(r, dict):
+        bad("invalid row in the answer")
+    name = r.get("name")
     if not isinstance(name, str) or any(c in name for c in "\r\n\0"):
-        sys.stderr.write("error: invalid table name in the listing\n")
-        sys.exit(1)
-    print(name)
-'
+        bad("invalid table name in the answer")
+    if mode == "counts":
+        n = r.get("n")
+        if type(n) is not int or n < 0:
+            bad("invalid row count in the answer")
+        if name in seen:
+            bad("duplicate table in the row counts")
+        if name not in expected:
+            bad("unexpected table in the row counts")
+        seen.add(name)
+        print(name, n)
+    elif mode == "fingerprint":
+        sql = r.get("sql")
+        if sql is not None and not isinstance(sql, str):
+            bad("invalid table definition in the answer")
+        pairs.append([name, sql])
+    else:
+        print(name)
+if mode == "counts" and seen != expected:
+    bad("the row counts do not cover exactly the expected tables")
+if mode == "fingerprint":
+    pairs.sort(key=lambda p: (p[0], p[1] or ""))
+    print(hashlib.sha256(json.dumps(pairs).encode()).hexdigest())
+' "$@"
 }
 
-# Which of our tables exist in this database.
-listing=$(timeout "$limit" "${wrangler[@]}" d1 execute "$db" --remote --json \
-  --command "SELECT name FROM sqlite_master WHERE type = 'table'" 2>/dev/null) || {
+list_tables() {
+  timeout "$limit" "${wrangler[@]}" d1 execute "$db" --remote --json \
+    --command "SELECT name, sql FROM sqlite_master WHERE type = 'table'" 2>/dev/null
+}
+
+# Which of our tables exist in this database, and a fingerprint of their
+# definitions to compare with a second listing after the exports.
+listing=$(list_tables) || {
   echo "error: could not list the tables (wrong name, not signed in, or timed out)" >&2
   exit 1
 }
-existing=$(printf '%s' "$listing" | names_of) || {
+existing=$(printf '%s' "$listing" | parse_answer names) || {
+  echo "error: unexpected answer from the database (table listing)" >&2
+  exit 1
+}
+fingerprint_before=$(printf '%s' "$listing" | parse_answer fingerprint) || {
   echo "error: unexpected answer from the database (table listing)" >&2
   exit 1
 }
@@ -304,6 +391,21 @@ if [ "${#missing[@]}" -gt 0 ]; then
   exit 1
 fi
 
+# Row count of every inventory table in one query (the names are this script's
+# own). Taken before and after the exports: an export must hold a count between.
+count_sql=""
+for t in "${tables[@]}"; do
+  count_sql="${count_sql:+$count_sql UNION ALL }SELECT '$t' AS name, COUNT(*) AS n FROM \"$t\""
+done
+count_tables() {
+  timeout "$limit" "${wrangler[@]}" d1 execute "$db" --remote --json \
+    --command "$count_sql" 2>/dev/null | parse_answer counts "${tables[@]}"
+}
+count_tables >"$out/.counts-before" || {
+  echo "error: could not count the rows before the export" >&2
+  exit 1
+}
+
 count=0
 exported=()
 for t in "${tables[@]}"; do
@@ -321,6 +423,202 @@ for t in "${tables[@]}"; do
   exported+=("$t")
   count=$((count + 1))
 done
+
+count_tables >"$out/.counts-after" || {
+  echo "error: could not count the rows after the export" >&2
+  exit 1
+}
+listing_after=$(list_tables) || {
+  echo "error: could not list the tables again after the export" >&2
+  exit 1
+}
+fingerprint_after=$(printf '%s' "$listing_after" | parse_answer fingerprint) || {
+  echo "error: unexpected answer from the database (second table listing)" >&2
+  exit 1
+}
+if [ "$fingerprint_before" != "$fingerprint_after" ]; then
+  echo "error: the tables changed while the export ran (one was added, dropped or replaced); nothing was kept. Pause the write routes and run again." >&2
+  exit 1
+fi
+
+# No table may have lost rows while the exports ran: its count after must be at
+# least its count before (rows decreased: rerun, exit 1). Growth is allowed. Then
+# each file's row count must be at least the before count and at most the after
+# count. The files are only READ, never executed: each
+# is opened once (no symbolic link followed), checked on that descriptor, and
+# read with a cumulative limit (BACKUP_MAX_BYTES, default 1 GiB, whatever the
+# size was at the start) and a 1 MiB line limit. A NUL byte or invalid UTF-8
+# fails. A small quote-aware scanner tracks single and double quotes ACROSS lines
+# and counts a statement only when it is exactly `INSERT INTO <table> ... VALUES
+# (one tuple);`. Every other line that begins like an insert (any case, leading
+# space, other quoting, REPLACE), a statement with more than one VALUES tuple, an
+# unbalanced quote or a statement cut off at the end of the file fails closed.
+# GRAMMAR: VERIFIED on 2026-11-27 against real D1 exports (wrangler 4.162.0,
+# synthetic data, three runs): a PRAGMA line first, `CREATE TABLE <bare name>`,
+# one INSERT per row on one line, `INSERT INTO "<table>" ("col",...) VALUES(...);`
+# (a value with a newline is escaped and stays on one line), no CR, statements
+# not grouped by table (a CREATE TABLE can follow INSERT lines), no INSERT line
+# for an empty table. Both `VALUES(` and `VALUES (` are accepted. Anything outside
+# that grammar fails closed. Names and verdicts only are printed, never a value.
+if ! BACKUP_MAX_BYTES="$max_bytes" python3 -I - "$out" "${exported[@]}" <<'PY'
+import os, re, stat, sys
+
+out = sys.argv[1]
+tables = sys.argv[2:]
+max_bytes = int(os.environ["BACKUP_MAX_BYTES"])
+# One budget for the whole run: every byte read from every export file counts.
+budget = [max_bytes]
+max_line = 1 << 20
+TOKEN = re.compile(r"""['"();]""")
+INSERTISH = re.compile(r"(?is)\s*(insert|replace)\b")
+# An INSERT or REPLACE word outside quotes anywhere else (a CTE-prefixed insert,
+# INSERT OR ..., a statement that does not start with it) fails closed. Only the
+# trigger event words of the allowlisted guard triggers are let through.
+DML = re.compile(r"(?i)\b(insert|replace)\b")
+TRIGGER_EVENT = re.compile(r"(?i)\b(before|after|of)\s+insert\s+on\b")
+
+
+def has_dml(text):
+    return bool(DML.search(TRIGGER_EVENT.sub(" ", text)))
+
+
+def read(name):
+    counts = {}
+    with open(f"{out}/{name}") as fh:
+        for line in fh:
+            t, n = line.split()
+            counts[t] = int(n)
+    return counts
+
+
+def say(msg, names):
+    shown = " ".join(names[:10])
+    more = f" ... and {len(names) - 10} more" if len(names) > 10 else ""
+    sys.stderr.write(f"error: {msg}: {shown}{more}\n")
+
+
+def scan(path, table):
+    """Returns (verdict, count): verdict is ok, big or odd."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return "odd", 0
+    accept = re.compile(r'INSERT INTO ("?)' + re.escape(table) + r'\1[ (]')
+    # A quoted identifier is one Q in the head (its text is skipped).
+    head_ok = re.compile(r"INSERT INTO (?:Q|" + re.escape(table) + r") VALUES")
+    with os.fdopen(fd, "rb") as fh:
+        st = os.fstat(fh.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            return "odd", 0
+        if st.st_size > budget[0]:
+            return "big", 0
+        n = 0
+        sq = dq = False
+        stmt = None  # [depth, tuples, head] while inside a counted statement
+        while True:
+            raw = fh.readline(max_line + 1)
+            if not raw:
+                break
+            budget[0] -= len(raw)
+            if budget[0] < 0 or len(raw) > max_line:
+                return "big", 0
+            if b"\0" in raw:
+                return "odd", 0
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                return "odd", 0
+            if stmt is None and not sq and not dq:
+                if INSERTISH.match(text):
+                    if not accept.match(text):
+                        return "odd", 0
+                    stmt = [0, 0, ""]
+            pos = 0
+            for m in TOKEN.finditer(text):
+                ch = m.group()
+                seg = text[pos : m.start()]
+                pos = m.end()
+                if sq:
+                    sq = ch != "'"
+                    continue
+                if dq:
+                    dq = ch != '"'
+                    continue
+                if stmt is None and has_dml(seg):
+                    return "odd", 0
+                if stmt is not None and stmt[0] == 0:
+                    stmt[2] += seg
+                if ch in "'\"":
+                    sq, dq = ch == "'", ch == '"'
+                    if stmt is not None and stmt[0] == 0:
+                        stmt[2] += "Q"
+                elif stmt is None:
+                    continue
+                elif ch == "(":
+                    if stmt[0] == 0 and re.search(r"(?i)\bVALUES\b", stmt[2]):
+                        stmt[1] += 1
+                    stmt[0] += 1
+                elif ch == ")":
+                    stmt[0] -= 1
+                    if stmt[0] < 0:
+                        return "odd", 0
+                elif stmt[0] == 0:  # ;
+                    head = " ".join(stmt[2].split())
+                    if stmt[1] != 1 or not head_ok.fullmatch(head):
+                        return "odd", 0
+                    if text[pos:].strip():
+                        return "odd", 0
+                    n += 1
+                    stmt = None
+                    break
+                # a ';' inside a tuple (depth > 0) belongs to the statement
+            else:
+                # The real export keeps every INSERT on one physical line (a
+                # newline inside a value is escaped): a statement that is still
+                # open at the end of its line is outside the grammar.
+                if stmt is not None:
+                    return "odd", 0
+                if not (sq or dq) and has_dml(text[pos:]):
+                    return "odd", 0
+        if sq or dq or stmt is not None:
+            return "odd", 0
+    return "ok", n
+
+
+before, after = read(".counts-before"), read(".counts-after")
+shrunk = [
+    t
+    for t in tables
+    if t not in before or t not in after or after[t] < before[t]
+]
+if shrunk:
+    say("rows decreased during the run (rerun it)", shrunk)
+    sys.exit(1)
+
+big, odd, wrong = [], [], []
+for t in tables:
+    verdict, n = scan(f"{out}/{t}.sql", t)
+    if verdict == "big":
+        big.append(t)
+    elif verdict == "odd":
+        odd.append(t)
+    elif not before[t] <= n <= after[t]:
+        wrong.append(t)
+if big:
+    say("export too large to check", big)
+if odd:
+    say("export holds an INSERT shape that cannot be counted", odd)
+if wrong:
+    say("export row count does not match the database", wrong)
+if big or odd or wrong:
+    sys.exit(1)
+PY
+then
+  echo "error: the export could not be verified; removed" >&2
+  exit 1
+fi
+rm -f -- "$out/.counts-before" "$out/.counts-after"
 
 # Check everything written, in one pass, against the repo's allowlist cut down to
 # the tables exported. Reports line numbers and kinds, never values.

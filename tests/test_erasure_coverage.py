@@ -121,7 +121,8 @@ LITERAL_DEFAULT = re.compile(
     r"|CURRENT_(?:TIMESTAMP|DATE|TIME)",
     re.IGNORECASE,
 )
-LISTING_SQL = "SELECT name FROM sqlite_master WHERE type = 'table'"
+LISTING_SQL = "SELECT name, sql FROM sqlite_master WHERE type = 'table'"
+COUNT_PART = re.compile(r"""SELECT '(\w+)' AS name, COUNT\(\*\) AS n FROM "(\w+)"\Z""")
 
 
 # --- the schema, from a real SQLite -------------------------------------------
@@ -1152,6 +1153,29 @@ def export_inventory_violations(
     return found
 
 
+def _is_inventory_count(sql: str, stores: dict[str, Any], extra: set[str]) -> bool:
+    """Exactly the read-only count query of the backup: one `SELECT 'T' AS name,
+    COUNT(*) AS n FROM "T"` per table, joined by UNION ALL, each T an exported
+    table (never a lead or internal table, never one marked backup: never)."""
+    names: list[str] = []
+    for part in sql.split(" UNION ALL "):
+        m = COUNT_PART.match(part)
+        if not m or m.group(1) != m.group(2):
+            return False
+        names.append(m.group(1))
+    # Exactly the exported set: no duplicate, no subset, no other table (the
+    # order is the script's own and is not part of the rule).
+    return len(names) == len(set(names)) and set(names) == _exported_set(stores, extra)
+
+
+def _exported_set(stores: dict[str, Any], extra: set[str]) -> set[str]:
+    return {
+        t
+        for t, entry in stores.items()
+        if entry["class"] not in {"lead", "internal"} and entry.get("backup") != "never"
+    } | extra
+
+
 def backup_call_violations(
     calls: list[list[str]], registry: dict[str, Any]
 ) -> list[str]:
@@ -1162,9 +1186,10 @@ def backup_call_violations(
     for argv in calls:
         if argv[:2] == ["d1", "execute"]:
             sql = argv[argv.index("--command") + 1] if "--command" in argv else ""
-            if sql != LISTING_SQL:
+            if sql != LISTING_SQL and not _is_inventory_count(sql, stores, extra):
                 found.append(
-                    f"backup ran a query other than the table listing: {sql[:40]}"
+                    "backup ran a query other than the table listing or the"
+                    f" inventory row counts: {sql[:40]}"
                 )
         elif argv[:2] == ["d1", "export"]:
             tables = [a.split("=", 1)[1] for a in argv if a.startswith("--table=")]
@@ -3844,6 +3869,65 @@ def test_a_backup_script_with_a_second_export_path_is_caught(
     work.mkdir()
     calls, _ = _run_backup(work, script)
     assert backup_call_violations(calls, load_registry()) != []
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM leads",
+        "SELECT 'leads' AS name, COUNT(*) AS n FROM \"leads\"",
+        "SELECT 'view_daily' AS name, COUNT(*) AS n FROM \"view_events\"",
+        "SELECT 'view_daily' AS name, COUNT(*) AS n FROM \"view_daily\" WHERE 1",
+        "SELECT 'view_daily' AS name, COUNT(*) AS n FROM \"view_daily\" UNION ALL"
+        " SELECT email AS name, 1 AS n FROM leads",
+        "DELETE FROM view_daily",
+        "SELECT name, sql FROM sqlite_master",
+        "SELECT name FROM sqlite_master WHERE type = 'table'",
+    ],
+)
+def test_a_broader_or_different_query_is_still_a_violation(sql: str) -> None:
+    calls = [["d1", "execute", "db", "--remote", "--json", "--command", sql]]
+    assert backup_call_violations(calls, load_registry()) != []
+
+
+def _count_sql(names: list[str]) -> str:
+    return " UNION ALL ".join(
+        f"SELECT '{t}' AS name, COUNT(*) AS n FROM \"{t}\""  # noqa: S608
+        for t in names
+    )
+
+
+def _exported_names() -> list[str]:
+    reg = load_registry()
+    extra = set(reg["export_paths"]["backup_extra_tables"])
+    return sorted(_exported_set(reg["stores"], extra))
+
+
+def _count_call(names: list[str]) -> list[list[str]]:
+    return [["d1", "execute", "db", "--command", _count_sql(names)]]
+
+
+def test_the_exact_listing_and_count_queries_are_allowed() -> None:
+    reg = load_registry()
+    names = _exported_names()
+    assert len(names) > 20
+    calls = [["d1", "execute", "db", "--command", LISTING_SQL]]
+    assert backup_call_violations(calls + _count_call(names), reg) == []
+    # The set is what counts, not the order.
+    assert backup_call_violations(_count_call(names[::-1]), reg) == []
+
+
+def test_a_count_query_over_a_subset_or_with_a_duplicate_is_a_violation() -> None:
+    reg = load_registry()
+    names = _exported_names()
+    for bad in (
+        names[:-1],  # a subset: one table missing
+        names[:1],
+        names + names[:1],  # a duplicate
+        names + [names[0]] * 2,
+        [names[0]] * len(names),  # right length, one table repeated
+    ):
+        assert backup_call_violations(_count_call(bad), reg) != []
 
 
 # --- non-D1 stores ---------------------------------------------------------------

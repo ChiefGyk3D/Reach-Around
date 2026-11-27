@@ -41,13 +41,19 @@ def make_handler(mode: str) -> type[BaseHTTPRequestHandler]:
         ) -> None:
             self.send_response(status)
             headers = dict(GOOD_HEADERS)
+            if mode == "ctype-trick" and status == 200:
+                headers["X-Ctype-Trick"] = "1"
+            if mode == "nosniff-trick":
+                headers["X-Content-Type-Options"] = "not-nosniff"
             if mode == "no-csp":
                 del headers["Content-Security-Policy"]
             if mode == "cookie":
                 headers["Set-Cookie"] = "sid=1"
             headers.update(extra or {})
             ctype = "text/html; charset=utf-8" if status == 200 else None
-            if ctype and mode != "plain-root":
+            if ctype and mode == "ctype-trick":
+                self.send_header("Content-Type", "application/xml; note=text/html")
+            elif ctype and mode != "plain-root":
                 self.send_header("Content-Type", ctype)
             if mode == "plain-root" and status == 200:
                 self.send_header("Content-Type", "text/plain")
@@ -126,6 +132,8 @@ def test_trailing_slash_in_url_is_accepted() -> None:
     [
         ("root-500", "page"),
         ("plain-root", "content-type"),
+        ("ctype-trick", "content-type"),
+        ("nosniff-trick", "nosniff"),
         ("no-csp", "content-security-policy"),
         ("cookie", "set-cookie"),
         ("view-200", "204"),

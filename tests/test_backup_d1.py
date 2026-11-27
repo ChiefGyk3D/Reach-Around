@@ -21,11 +21,13 @@ from test_check_dump import schema_sql
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "backup-d1.sh"
-LISTING_SQL = "SELECT name FROM sqlite_master WHERE type = 'table'"
+LISTING_SQL = "SELECT name, sql FROM sqlite_master WHERE type = 'table'"
 
 STUB = """#!{python}
 import json, os, sqlite3, sys, time
 args = sys.argv[1:]
+def listing_q(sql):
+    return sql.startswith("SELECT name, sql FROM sqlite_master")
 if os.environ.get("STUB_HANG"):
     time.sleep(30)
 log = os.environ.get("STUB_TRACE")
@@ -35,14 +37,37 @@ if args[:2] == ["d1", "execute"]:
     if log:
         with open(log, "a") as fh:
             fh.write("execute: " + sql + "\\n")
+    if os.environ.get("STUB_BAD_ANSWER") and listing_q(sql):
+        print(os.environ["STUB_BAD_ANSWER"])
+        sys.exit(0)
+    envelope = os.environ.get("STUB_ENVELOPE")
     cur = db.execute(sql)
     cols = [c[0] for c in cur.description]
     rows = [dict(zip(cols, r)) for r in cur.fetchall()]
-    listing = sql.startswith("SELECT name FROM sqlite_master")
+    listing = sql.startswith("SELECT name, sql FROM sqlite_master")
     if os.environ.get("STUB_PAD_LISTING") and listing:
         # Synthetic system-table names (the script accepts sqlite_*) to make the
         # listing larger than a pipe buffer.
         rows += [{{"name": f"sqlite_pad_{{i:04d}}_" + "x" * 1000}} for i in range(300)]
+    if envelope and listing:
+        good = {{"results": rows, "success": True}}
+        answer = {{
+            "failed": [{{"results": rows, "success": False}}],
+            "no-success": [{{"results": rows}}],
+            "two-results": [good, {{"results": [], "success": True}}],
+            "bare-failed": {{"results": rows, "success": False}},
+            "bad-name": [{{"results": rows + [{{"name": 5}}], "success": True}}],
+        }}[envelope]
+        print(json.dumps(answer))
+        sys.exit(0)
+    count_mode = os.environ.get("STUB_COUNT_MODE")
+    if count_mode and sql.startswith("SELECT '"):
+        if count_mode == "duplicate":
+            rows = rows + [{{"name": rows[0]["name"], "n": 1000000}}]
+        elif count_mode == "extra":
+            rows = rows + [{{"name": "leads", "n": 1}}]
+        elif count_mode == "missing":
+            rows = rows[1:]
     print(json.dumps([{{"results": rows, "success": True}}]))
 elif args[:2] == ["d1", "export"]:
     table = [a for a in args if a.startswith("--table=")][0].split("=", 1)[1]
@@ -56,8 +81,31 @@ elif args[:2] == ["d1", "export"]:
         "SELECT sql FROM sqlite_master WHERE name = ?", (table,)
     ).fetchone()[0]
     inserts = [l for l in db.iterdump() if l.startswith(f'INSERT INTO "{{table}}"')]
+    if os.environ.get("STUB_TRUNCATE") == table:
+        inserts = inserts[:-1]
+    if os.environ.get("STUB_DUP_ROW") == table:
+        inserts = inserts + inserts[-1:]
     with open(out, "w") as fh:
         fh.write(schema + ";\\n" + "\\n".join(inserts) + "\\n")
+    if os.environ.get("STUB_REPLACE") == table:
+        # The table is replaced after its export (a race with the listing).
+        db.execute(f'ALTER TABLE "{{table}}" ADD COLUMN raced TEXT')
+        db.commit()
+    if os.environ.get("STUB_APPEND"):
+        with open(out, "a") as fh:
+            fh.write(os.environ["STUB_APPEND"] + "\\n")
+    if os.environ.get("STUB_BIG_LINE"):
+        with open(out, "a") as fh:
+            fh.write("-- " + "x" * 2000000 + "\\n")
+    if os.environ.get("STUB_DELETE_AFTER") == table:
+        db.execute(f'DELETE FROM "{{table}}"')
+        db.commit()
+    if os.environ.get("STUB_GROW") == table:
+        db.execute(
+            "INSERT INTO view_hour_daily (site, day, hour, bot_class, views,"
+            " clicks) VALUES ('links', '2026-11-02', 3, 'h', 1, 0)"
+        )
+        db.commit()
     print("Executing on remote database SECRET-DB-ID-0000")
 else:
     sys.exit(2)
@@ -627,17 +675,26 @@ def test_the_full_inventory_passes_whatever_the_migration_record_holds(
         assert (out / f"{table}.sql").exists(), table
 
 
-def test_the_run_makes_only_the_table_listing_query(tmp_path: Path) -> None:
-    """One read-only query (the table listing) plus one export per table: the
-    migration history is never read."""
+def test_the_run_makes_only_listing_and_count_queries(tmp_path: Path) -> None:
+    """Read-only queries only (the listing twice, the row counts twice) plus one
+    export per table: the migration history is never read."""
     env = make(tmp_path)
     log = _log(env, tmp_path)
     r = run(env, "reach-db", str(dest(tmp_path)), "--apply")
     assert r.returncode == 0, r.stderr
     lines = log.read_text().splitlines()
-    assert [ln for ln in lines if ln.startswith("execute:")] == [
-        f"execute: {LISTING_SQL}"
-    ]
+    queries = [ln for ln in lines if ln.startswith("execute:")]
+    assert len(queries) == 4
+    assert queries[0] == queries[3] == f"execute: {LISTING_SQL}"
+    assert queries[1] == queries[2]
+    assert queries[1].startswith("execute: SELECT '")
+    assert all(re.match(r"execute: (SELECT )", q) for q in queries)
+    assert not any(w in " ".join(queries) for w in ("INSERT", "UPDATE", "DELETE"))
+    # Order: listing, counts, every export, counts, listing.
+    kinds = [ln.split(":")[0] for ln in lines]
+    first, last = kinds.index("export"), len(kinds) - 1 - kinds[::-1].index("export")
+    assert kinds[:first] == ["execute", "execute"]
+    assert kinds[last + 1 :] == ["execute", "execute"]
     exports = [ln for ln in lines if ln.startswith("export:")]
     assert len(exports) == len(_script_array("tables"))
 
@@ -841,3 +898,199 @@ def test_the_lists_in_the_script_match_the_repository_and_each_other() -> None:
     for gone in ("introduced_by", "trust_record", "optional_tables", "is_applied"):
         assert gone not in text, gone
     assert "SELECT name FROM d1_migrations" not in text
+
+
+def _fails_before_keeping(r: subprocess.CompletedProcess[str], d: Path) -> None:
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "done:" not in r.stdout
+    assert list(d.iterdir()) == []
+
+
+def test_a_truncated_export_is_caught(tmp_path: Path) -> None:
+    """An export that succeeds but holds fewer rows than the database is not a
+    backup: the run fails, removes the partial export and names the table."""
+    env = make(tmp_path)
+    env["STUB_TRUNCATE"] = "view_daily"
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    _fails_before_keeping(r, d)
+    assert "view_daily" in r.stderr
+    assert "does not match" in r.stderr
+
+
+def test_a_table_replaced_during_the_run_fails(tmp_path: Path) -> None:
+    """A table changed between the first listing and the end of the run (same
+    name, different definition) is detected by the second listing."""
+    env = make(tmp_path)
+    env["STUB_REPLACE"] = "view_meta"
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    _fails_before_keeping(r, d)
+    assert "changed while the export ran" in r.stderr
+
+
+def test_a_table_may_grow_during_the_run(tmp_path: Path) -> None:
+    """Visits and clicks keep arriving: a row added while the exports run is
+    allowed (the after count is higher, the export holds the earlier rows)."""
+    env = make(tmp_path)
+    env["STUB_GROW"] = "view_hour_daily"
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    assert r.returncode == 0, r.stderr
+
+
+def test_a_table_that_loses_rows_during_the_run_fails(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    env["STUB_DELETE_AFTER"] = "view_daily"
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    _fails_before_keeping(r, d)
+    assert "rows decreased" in r.stderr
+    assert "view_daily" in r.stderr
+
+
+def test_a_truncated_export_with_a_matching_delete_still_fails(
+    tmp_path: Path,
+) -> None:
+    """The review's case: the export lost a row and a live delete made the after
+    count match it. The count went down, so it fails."""
+    env = make(tmp_path)
+    env["STUB_TRUNCATE"] = "view_daily"
+    env["STUB_DELETE_AFTER"] = "view_daily"
+    d = dest(tmp_path)
+    _fails_before_keeping(run(env, "reach-db", str(d), "--apply"), d)
+
+
+def test_an_export_with_more_rows_than_the_database_ever_held_fails(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    env["STUB_DUP_ROW"] = "view_daily"
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    _fails_before_keeping(r, d)
+    assert "does not match" in r.stderr
+
+
+def test_exported_sql_is_never_executed(tmp_path: Path) -> None:
+    """A file that holds ATTACH (or anything else) is never run. The run itself
+    also fails (the line is outside the export grammar) and removes the export."""
+    env = make(tmp_path)
+    marker = tmp_path / "probe.db"
+    env["STUB_APPEND"] = f"ATTACH DATABASE '{marker}' AS probe;"
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    assert not marker.exists()
+    assert "sqlite3" not in SCRIPT.read_text()
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "done:" not in r.stdout
+    assert "partial export was removed" in r.stderr
+    assert list(d.iterdir()) == []
+
+
+@pytest.mark.parametrize("mode", ["duplicate", "extra", "missing"])
+def test_a_count_answer_that_is_not_the_exact_table_set_is_not_trusted(
+    tmp_path: Path, mode: str
+) -> None:
+    """A duplicate row (last one would win), a table outside the inventory or a
+    missing table: the run fails at the counts, before any export."""
+    env = make(tmp_path)
+    env["STUB_COUNT_MODE"] = mode
+    log = _log(env, tmp_path)
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    _fails_before_keeping(r, d)
+    assert "could not count the rows" in r.stderr
+    assert "export:" not in log.read_text()
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'WITH x(v) AS (VALUES(1))\nINSERT INTO "view_daily" ("views") SELECT v FROM x;',
+        'WITH x(v) AS (SELECT 1) INSERT INTO "view_daily" ("views") SELECT v FROM x;',
+        'INSERT OR IGNORE INTO "view_daily" ("views") VALUES(1);',
+        'SELECT 1; INSERT INTO "view_daily" ("views") VALUES(1);',
+    ],
+)
+def test_the_shell_runs_the_verifier_and_a_cte_insert_fails_the_whole_run(
+    tmp_path: Path, line: str
+) -> None:
+    """End to end: the backup run itself fails, with the verifier's verdict, and
+    leaves nothing behind."""
+    env = make(tmp_path)
+    env["STUB_APPEND"] = line
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    _fails_before_keeping(r, d)
+    assert "cannot be counted" in r.stderr
+    assert "could not be verified" in r.stderr
+
+
+def test_an_oversized_line_or_file_fails_closed(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    env["STUB_BIG_LINE"] = "1"
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    _fails_before_keeping(r, d)
+    assert "too large" in r.stderr
+    env.pop("STUB_BIG_LINE")
+    env["BACKUP_MAX_BYTES"] = "100"
+    d2 = dest_second(tmp_path)
+    r2 = run(env, "reach-db", str(d2), "--apply")
+    assert r2.returncode == 1
+    assert "too large" in r2.stderr
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'INSERT INTO "view_daily" VALUES(1);\nINSERT INTO "view_daily" VALUES(2',
+        "INSERT INTO view_daily VALUES(1)",
+    ],
+)
+def test_an_insert_shape_it_cannot_count_fails_closed(
+    tmp_path: Path, line: str
+) -> None:
+    env = make(tmp_path)
+    env["STUB_APPEND"] = line
+    d = dest(tmp_path)
+    _fails_before_keeping(run(env, "reach-db", str(d), "--apply"), d)
+
+
+@pytest.mark.parametrize(
+    "mode", ["failed", "no-success", "two-results", "bare-failed", "bad-name"]
+)
+def test_an_invalid_envelope_around_a_complete_listing_is_not_trusted(
+    tmp_path: Path, mode: str
+) -> None:
+    """Each answer holds every required table: only the envelope is wrong. The
+    run must fail at the listing, before any count query or export."""
+    env = make(tmp_path)
+    env["STUB_ENVELOPE"] = mode
+    log = _log(env, tmp_path)
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    _fails_before_keeping(r, d)
+    assert "unexpected answer" in r.stderr
+    lines = log.read_text().splitlines()
+    assert lines == [f"execute: {LISTING_SQL}"]
+
+
+@pytest.mark.parametrize("answer", ["not json", "[]", '{"error": "boom"}'])
+def test_a_listing_that_is_not_json_results_is_not_trusted(
+    tmp_path: Path, answer: str
+) -> None:
+    env = make(tmp_path)
+    env["STUB_BAD_ANSWER"] = answer
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    _fails_before_keeping(r, d)
+    assert "unexpected answer" in r.stderr
+
+
+def test_the_ignored_system_table_is_not_created_by_any_migration(
+    tmp_path: Path,
+) -> None:
+    assert not any(t.lower() == "_cf_kv" for t in _migration_tables(tmp_path))
+    assert "Cloudflare's own internal table" in SCRIPT.read_text()
