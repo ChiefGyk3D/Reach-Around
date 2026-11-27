@@ -178,7 +178,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 LEAD_COLUMNS = (
@@ -2308,10 +2308,47 @@ def locked_run(w: Wrangler, work: Path, args: argparse.Namespace) -> int:
     return 0
 
 
+# Command line errors. argparse repeats the offending text in many of its messages
+# (an unrecognized argument, an ignored explicit value, an invalid choice), and the
+# text can be a database name or a value that must not reach a log. Only the messages
+# built from this script's OWN option names are printed; every other one is the same
+# fixed text (fail closed). This is the same rule as the `reach-around` command's
+# `_Parser` in src/reach_around/cli.py; the script must run stand-alone, so the few
+# lines are repeated here and tests/test_move_legacy_leads.py checks that both reject
+# and accept the same hostile command lines.
+_SAFE_ERRORS = (
+    re.compile(r"the following arguments are required: [A-Za-z0-9_,/ .-]+"),
+    re.compile(r"argument [A-Za-z0-9_,/ .-]+: expected (one|at least one) argument"),
+    re.compile(r"argument [A-Za-z0-9_,/ .-]+: expected \d+ arguments?"),
+    re.compile(r"one of the arguments [A-Za-z0-9_,/ .-]+ is required"),
+    re.compile(
+        r"argument [A-Za-z0-9_,/ .-]+: not allowed with argument [A-Za-z0-9_,/ .-]+"
+    ),
+)
+_GENERIC_ERROR = "invalid command line: see --help"
+
+
+class _Parser(argparse.ArgumentParser):
+    """No abbreviations (a prefix is never taken for a flag), no @file arguments, and
+    no echo of typed text in an error."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        kwargs["allow_abbrev"] = False
+        kwargs["fromfile_prefix_chars"] = None
+        super().__init__(*args, **kwargs)
+
+    def error(self, message: str) -> NoReturn:
+        if not any(p.fullmatch(message) for p in _SAFE_ERRORS):
+            message = _GENERIC_ERROR
+        super().error(message)
+
+    def refuse(self, message: str) -> NoReturn:
+        """One of this script's own fixed messages (no typed text in it)."""
+        super().error(message)
+
+
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(
-        description="Move legacy leads (issue #772).", allow_abbrev=False
-    )
+    parser = _Parser(description="Move legacy leads (issue #772).")
     parser.add_argument("--source", required=True, help="the analytics D1 database")
     parser.add_argument(
         "--source-id", required=True, help="its platform id (d1 info --json: uuid)"
@@ -2358,14 +2395,14 @@ def main(argv: list[str]) -> int:
     if args.accept_unaccounted_rows and not (
         args.restore_from_export or args.recover_from_export
     ):
-        parser.error(
+        parser.refuse(
             "--accept-unaccounted-rows is only for --restore-from-export or "
             "--recover-from-export"
         )
     if args.locked_window_confirmed and not args.purge:
-        parser.error("--locked-window-confirmed is only for --purge")
+        parser.refuse("--locked-window-confirmed is only for --purge")
     if args.restart_copy and not (args.copy or args.purge):
-        parser.error("--restart-copy is only for --copy or --purge")
+        parser.refuse("--restart-copy is only for --copy or --purge")
     for value in (args.source, args.dest):
         if not NAME.match(value):
             print("error: bad database name", file=sys.stderr)

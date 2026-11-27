@@ -2543,8 +2543,102 @@ def test_the_move_tool_refuses_an_abbreviated_option(tmp_path: Path, flag: str) 
     before = src_rows(env)
     r = run(env, work, flag)
     assert r.returncode == 2, (flag, r.returncode, r.stderr)
-    assert "unrecognized arguments" in r.stderr, (flag, r.stderr)
+    assert "invalid command line" in r.stderr, (flag, r.stderr)
     assert src_rows(env) == before and count(env["STUB_DEST"], "leads") == 0
+
+
+HOSTILE_VALUES = ("partner@example.test", "analytics-prod-db")
+HOSTILE_SHAPES = [
+    ["--yes={v}"],
+    ["--copy={v}"],
+    ["--purge={v}"],
+    ["--freeze={v}"],
+    ["--verify={v}"],
+    ["--accept-unaccounted-rows={v}"],
+    ["--locked-window-confirmed={v}"],
+    ["--{v}"],
+    ["--{v}={v}"],
+    ["--ye={v}"],
+    ["--sourc={v}"],
+    ["{v}"],
+    ["{v}", "{v}"],
+    ["-{v}"],
+    ["--purge", "--purge={v}"],
+    ["--source", "--source", "{v}"],
+    ["@{v}"],
+]
+MODES = [
+    "--copy",
+    "--purge",
+    "--freeze",
+    "--verify",
+    "--restore-from-export",
+    "--recover-from-export",
+]
+
+
+@pytest.mark.parametrize("value", HOSTILE_VALUES)
+@pytest.mark.parametrize("shape", HOSTILE_SHAPES, ids=lambda s: " ".join(s))
+@pytest.mark.parametrize("mode", MODES)
+def test_the_move_tool_never_repeats_typed_text_in_any_mode(
+    tmp_path: Path, mode: str, shape: list[str], value: str
+) -> None:
+    env = make(tmp_path)
+    work = workdir(tmp_path)
+    before = src_rows(env)
+    r = run(env, work, mode, *[part.format(v=value) for part in shape])
+    assert r.returncode == 2, (mode, shape, r.returncode, r.stderr)
+    for text in (r.stdout, r.stderr):
+        assert "partner" not in text and "example.test" not in text, (mode, shape)
+        assert "analytics-prod" not in text, (mode, shape)
+    assert src_rows(env) == before and count(env["STUB_DEST"], "leads") == 0
+
+
+def test_the_script_and_the_cli_parser_answer_the_same_hostile_command_lines(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The script runs stand-alone and repeats the few lines of the CLI's `_Parser`:
+    the allowlist and the fixed text are identical, and a toy parser built with each
+    class refuses and words the same hostile command lines the same way."""
+    import argparse
+
+    from reach_around import cli
+
+    mod = load_script()
+    assert [p.pattern for p in mod._SAFE_ERRORS] == [
+        p.pattern for p in cli._SAFE_ERRORS
+    ]
+    assert mod._GENERIC_ERROR == cli._GENERIC_ERROR
+
+    def build(cls: Any) -> argparse.ArgumentParser:
+        parser = cls(prog="x")
+        parser.add_argument("--name", required=True)
+        group = parser.add_mutually_exclusive_group()
+        group.add_argument("--a", action="store_true")
+        group.add_argument("--b", action="store_true")
+        return parser  # type: ignore[no-any-return]
+
+    shapes = [
+        ["--a={v}"],
+        ["--na={v}"],
+        ["--zzz", "{v}"],
+        ["{v}"],
+        ["--name"],
+        ["--name", "n", "--a", "--b"],
+        ["--name", "n", "--a={v}"],
+        [],
+    ]
+    for shape in shapes:
+        argv = [part.format(v="partner@example.test") for part in shape]
+        seen = []
+        for cls in (mod._Parser, cli._Parser):
+            try:
+                build(cls).parse_args(argv)
+                seen.append(("ok", ""))
+            except SystemExit as exc:
+                seen.append((exc.code, capsys.readouterr().err))
+        assert seen[0] == seen[1], (argv, seen)
+        assert "partner" not in seen[0][1]
 
 
 def test_resume_compares_event_ids_as_numbers_not_text(tmp_path: Path) -> None:
