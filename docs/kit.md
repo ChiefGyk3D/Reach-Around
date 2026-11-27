@@ -835,10 +835,26 @@ The text is neutralized like every alert (no markup, mention or link survives,
 line breaks become spaces), so a visitor cannot make the alert do anything. The
 daily alert budget (`DAILY_ALERT_BUDGET`, default 20) is also the daily cap on
 inquiries. It is an attempt bound: a unit is spent before delivery is tried and
-is not given back when delivery fails. A failed delivery therefore uses up that
-unit for the day (an accepted availability trade-off that keeps the cap on the
-work the form can cause); the owner sees failures through the alert health
-signals and the budget being reached.
+is not given back when delivery fails. The cap is one counter for the whole
+site, not one per visitor. **Availability impact:** anyone who can unlock the
+gate (an unlock needs only an email address that passes the gate's checks) can
+post valid inquiry forms, and every one spends a unit whether or not delivery
+works. An attacker can therefore use up the day's budget (20 by default), most
+cheaply while a channel is failing, and until the next UTC day every other
+visitor gets the temporary "unavailable" answer. The per-client limit slows one
+address, not several. This is accepted: it bounds the work the form can cause
+and costs availability of the form only, never the kit pages.
+
+**What the owner sees.** Only the Worker logs show each case: the kit logger
+writes `send` / `failed` / `provider` for a failed delivery and `send` /
+`over_budget` / `route_budget` when the inquiry budget is spent. There is no
+health alert for the inquiry budget itself (its counter is separate from the
+alert counter). The `alert_budget_near` health alert (80 percent of
+`DAILY_ALERT_BUDGET`) counts alert units, and a failed delivery still spends
+one, but it is sent over the same channels, so it cannot arrive when every
+channel is down. With no alert channel enabled for `inquiry_received` no alert
+unit is spent at all, so only the logs show it. Check the Worker logs for
+these lines; the `alert_budget_near` alert is a hint, not a guarantee.
 
 The private PDF prints the owner details and drops the form (the form's
 `<aside>` is chrome, like the footer). The privacy page gains one entry for the

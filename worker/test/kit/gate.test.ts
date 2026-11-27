@@ -293,6 +293,19 @@ describe("gate routes: refusals, limits and session rules", () => {
     expect(await count("counters")).toBe(0);
   });
 
+  it("a wrong content type or an oversize declared length is refused before any limiter is spent (#927)", async () => {
+    const cases: Record<string, string>[] = [{ "content-type": "text/plain" }, { "content-length": "999999" }];
+    for (const headers of cases) {
+      const client = limiter();
+      const net = limiter();
+      const { res } = await post({ headers }, baseEnv({ GATE_LIMITER: client, GATE_CHECK_LIMITER: net }));
+      expect(res.headers.get("location")).toBe("/kit/retry/");
+      expect(client.keys).toHaveLength(0);
+      expect(net.keys).toHaveLength(0);
+      expect(await count("counters")).toBe(0);
+    }
+  });
+
   it("the limiter key is a keyed hash, never the address", async () => {
     const lim = limiter();
     await post({}, baseEnv({ GATE_LIMITER: lim }));
@@ -820,6 +833,16 @@ describe("per-client limits do not spend shared budgets", () => {
     const res = await view({ cookie: await unlockCookieFor() }, baseEnv({ KIT_VIEW_LIMITER: undefined }));
     expect(res.status).toBe(303);
     expect(await count("counters")).toBe(0);
+  });
+
+  it("a missing or unverifiable cookie is refused before the view allowance is spent (#927)", async () => {
+    await seedLead();
+    for (const cookie of [null, `${COOKIE_NAME}=v1.AAAA.BBBB`]) {
+      const viewLim = keyedLimiter(4);
+      const res = await view({ cookie }, baseEnv({ KIT_VIEW_LIMITER: viewLim }));
+      expect(res.status).toBe(303);
+      expect(viewLim.hits.size).toBe(0);
+    }
   });
 
   it("a view with no usable client address is refused before the budget", async () => {

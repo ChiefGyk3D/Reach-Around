@@ -50,7 +50,6 @@ controls = ["gate-content-type"]
 what = "the gate stops requiring the form content type (checked again in readForm)"
 find = 'if (request.headers.get("content-type") !== FORM_CONTENT_TYPE) return fail("other");'
 replace = 'if (false) return fail("other");'
-equivalent = "readForm repeats the exact content-type test and ends in the same fixed refusal; only the log reason word differs (other versus size)"
 
 [[mutation]]
 id = "gate-bot-ua-check-removed"
@@ -69,7 +68,6 @@ controls = ["gate-declared-length"]
 what = "an over-cap Content-Length is no longer refused before the body read (readForm repeats it)"
 find = 'Number(declared) > MAX_FORM_BYTES)) return fail("size");'
 replace = 'Number(declared) > 1e9)) return fail("size");'
-equivalent = "readForm applies the same declared-length cap before reading and the bounded reader enforces the byte cap, so the outcome is the same fixed refusal"
 
 [[mutation]]
 id = "gate-ip-minute-removed"
@@ -338,7 +336,6 @@ group = "limits"
 what = "a zero hourly gate budget no longer closes the gate"
 find = 'if (limit <= 0) return "budget";'
 replace = ''
-equivalent = "the conditional insert in the same batch is guarded by WHERE ?3 > 0, so a zero limit reserves nothing and the unit check answers budget anyway; the early return only saves two statements"
 
 [[mutation]]
 id = "budget-view-route-name-confusion"
@@ -491,7 +488,6 @@ group = "token"
 what = "an oversized cookie value is no longer refused up front"
 find = 'token.length > MAX_TOKEN_LENGTH) return null;'
 replace = 'false) return null;'
-equivalent = "readUnlockCookie and the claim shape checks already bound what a real token can be; an oversized token still fails the signature"
 
 [[mutation]]
 id = "token-previous-key-ignored"
@@ -1161,7 +1157,6 @@ controls = ["view-token"]
 what = "a cookie that does not verify is no longer refused up front"
 find = 'if (claims === null) return back("expired");'
 replace = 'if (claims === null && raw === null) return back("expired");'
-equivalent = "the null claims reach authorizeSession, which throws inside its own try block and answers error; the view then gives the same fixed redirect as an invalid cookie, so only the log reason word differs"
 
 [[mutation]]
 id = "budget-view-uses-gate-limit"
