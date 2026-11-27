@@ -1168,12 +1168,101 @@ NOT_EXECUTED: dict[str, str] = {
         "read as data by read-lock.sh with jq, never executed; bumped with the lock"
     ),
     ".github/workflows/history-guard.yml": (
-        "the workflow itself: every step is pinned in STEP_TABLE and the job "
-        "compares the running copy with the base copy"
+        "interpreted by Actions, not run by the job: its bytes are pinned in "
+        "WORKFLOW_FILE_DIGESTS and every step in STEP_TABLE"
     ),
 }
 
-SCRIPT_TOKEN = re.compile(r"[\w./$-]+\.(?:sh|py|js|mjs|rb|pl)\b")
+# The workflow FILE, byte for byte (triggers, runs-on, permissions, timeout,
+# concurrency, defaults, strategy, container, services, env, comments and
+# steps). STEP_TABLE only pins the steps; this entry closes the rest. Like the
+# other tables it is a review trigger, not an independent check.
+WORKFLOW_FILE_DIGESTS: dict[str, str] = {
+    ".github/workflows/history-guard.yml": (
+        "c8cbfdc6aadbea17a6f9b01b4dcc95fc0051bd290b2b9c2ff5f749279f182138"
+    ),
+}
+
+
+def workflow_file_problems(root: Path = TEMPLATE) -> list[str]:
+    found: list[str] = []
+    for rel, digest in WORKFLOW_FILE_DIGESTS.items():
+        target = root / rel
+        if not target.is_file():
+            found.append(f"workflow file {rel}: missing")
+        elif file_digest(target) != digest:
+            found.append(
+                f"workflow file {rel}: changed; new digest {file_digest(target)}"
+            )
+    return found
+
+
+def test_the_workflow_file_matches_its_pinned_digest() -> None:
+    assert workflow_file_problems() == []
+    assert set(WORKFLOW_FILE_DIGESTS) <= set(NOT_EXECUTED)
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("    branches: [main]\n", "    branches: [main, dev]\n"),
+        ("    runs-on: ubuntu-latest\n", "    runs-on: self-hosted\n"),
+        ("    timeout-minutes: 10\n", "    timeout-minutes: 600\n"),
+        ("cancel-in-progress: true", "cancel-in-progress: false"),
+        (
+            "    # No `environment`",
+            "    defaults:\n      run:\n        shell: sh\n    # No `environment`",
+        ),
+        (
+            "    # No `environment`",
+            "    strategy:\n      matrix:\n        x: [1]\n    # No `environment`",
+        ),
+        (
+            "    # No `environment`",
+            "    container: evil/image\n    # No `environment`",
+        ),
+        (
+            "    # No `environment`",
+            "    services:\n      db:\n        image: evil/image\n    # No `environment`",
+        ),
+        (
+            "    permissions:\n      contents: read\n      pull-requests",
+            "    permissions:\n      contents: read\n      issues: read\n      pull-requests",
+        ),
+        ("name: History guard\n\non:", "name: History guard\n\nenv:\n  X: y\n\non:"),
+    ],
+)
+def test_a_top_level_workflow_change_fails_the_file_digest_and_names_it(
+    tmp_path: Path, old: str, new: str
+) -> None:
+    rel = ".github/workflows/history-guard.yml"
+    text = (TEMPLATE / rel).read_text(encoding="utf-8")
+    assert old in text, old
+    target = tmp_path / rel
+    target.parent.mkdir(parents=True)
+    target.write_text(text.replace(old, new, 1), encoding="utf-8")
+    problems = workflow_file_problems(tmp_path)
+    assert len(problems) == 1 and rel in problems[0], problems
+
+
+# Prefixes under which the workflow refers to the trusted copies. A path in a
+# step is reduced to a repository-relative path and compared EXACTLY.
+STEP_PATH_PREFIXES = ("$TRUSTED/", "${TRUSTED}/", "$dir/", "${dir}/", "trusted-src/")
+SCRIPT_TOKEN = re.compile(r"[\w./${}-]+\.(?:sh|py|js|mjs|rb|pl)\b")
+
+
+def repository_path(token: str) -> str | None:
+    """The repository-relative path a step token names, or None when it is
+    absolute, climbs out with .., or uses an unknown variable."""
+    for prefix in sorted(STEP_PATH_PREFIXES, key=len, reverse=True):
+        if token.startswith(prefix):
+            token = token[len(prefix) :]
+            break
+    if token.startswith("/") or "$" in token or "{" in token:
+        return None
+    if any(part in {"..", "."} or not part for part in token.split("/")):
+        return None
+    return token
 
 
 def sparse_paths(data: dict[Any, Any]) -> list[str]:
@@ -1201,7 +1290,7 @@ def execution_coverage_problems(data: dict[Any, Any]) -> list[str]:
     for job in data["jobs"].values():
         for step in job.get("steps", []):
             for token in SCRIPT_TOKEN.findall(step.get("run", "")):
-                if not any(token.endswith(k) for k in known):
+                if repository_path(token) not in known:
                     found.append(f"{token}: named in a step but in neither table")
     return found
 
@@ -1241,6 +1330,33 @@ def test_a_new_sparse_or_named_file_outside_scripts_is_caught() -> None:
         "tools/extra.sh: named in a step" in p
         for p in execution_coverage_problems(mutated(add_call))
     )
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "$TRUSTED/evil/scripts/read-lock.sh",
+        "../scripts/read-lock.sh",
+        "$TRUSTED/../scripts/read-lock.sh",
+        "/opt/scripts/read-lock.sh",
+        "$OTHER/scripts/read-lock.sh",
+        "evil/scripts/read-lock.sh",
+        "scripts//read-lock.sh",
+    ],
+)
+def test_a_foreign_or_traversing_path_is_not_accepted_as_an_inventoried_file(
+    token: str,
+) -> None:
+    def edit(data: dict[Any, Any]) -> None:
+        data["jobs"]["history-guard"]["steps"][3]["run"] += f'\nbash "{token}"\n'
+
+    problems = execution_coverage_problems(mutated(edit))
+    assert any(token in p for p in problems), (token, problems)
+    # ...while the real prefixes still resolve exactly.
+    assert repository_path("$TRUSTED/scripts/history-guard.py") == (
+        "scripts/history-guard.py"
+    )
+    assert repository_path("$dir/scripts/read-lock.sh") == "scripts/read-lock.sh"
 
 
 def test_every_executed_file_matches_its_pinned_digest() -> None:

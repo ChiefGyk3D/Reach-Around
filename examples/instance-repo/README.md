@@ -529,13 +529,15 @@ is a security boundary:
   variable the workflow reads, and every environment name the script reads, is
   listed here, and no row lists something nothing reads.
 - Change detection (the real mechanism of the tests, a review trigger): every
-  step of the workflow and every file it executes (the guard script,
+  step of the workflow and every file the job runs (the guard script,
   `scripts/read-lock.sh` and `scripts/verify-history-rewrite.sh`) is pinned by
   SHA-256, every other file the job checks out from the base commit is listed
-  with the reason it is not executed (the engine lock and release manifest are
-  read as data), and an unexpected job fails the test. A changed, added or removed
-  step or file fails a test that names it, so a human must update the table on
-  purpose. The table is not an independent check: a pull request can update it
+  with the reason it is not run (the engine lock and release manifest are
+  read as data, the workflow is interpreted by Actions), and an unexpected job fails the test. A changed, added or removed
+  step, pinned script or workflow file fails a test that names it, so a human
+  must update the table on purpose. The workflow file is pinned byte for byte, so
+  a change to its triggers, permissions, timeout, concurrency or any other
+  top-level field, or to a comment, fails too. The table is not an independent check: a pull request can update it
   in the same change, so the file that holds it is owned in the engine
   repository's CODEOWNERS and its update needs the maintainer's review.
 - Heuristic (best effort): a scan for common network commands and foreign hosts
@@ -568,7 +570,9 @@ no artifacts and no cache.
 | `steps.trust.outputs.dir` | an earlier step | the read-only folder of base copies |
 | `REPO`, `PR_NUMBER`, `GH_TOKEN`, `HEAD_SHA`, `BASE_SHA`, `HEAD_REPO`, `HEAD_REF`, `PR_CREATED_AT`, `TRUSTED`, `WORKFLOW_REF` | environment of the steps | set only from the rows above |
 | `RUNNER_TEMP`, `GITHUB_OUTPUT`, `GITHUB_STEP_SUMMARY` | runner environment | scratch folder and result files of the job |
-| `scripts/read-lock.sh`, `scripts/verify-history-rewrite.sh`, `scripts/history-guard.py`, `engine.lock`, `engine.release.json`, `.github/workflows/history-guard.yml` | files of the BASE commit | trusted, sparse checkout, executed |
+| `scripts/read-lock.sh`, `scripts/verify-history-rewrite.sh`, `scripts/history-guard.py` | files of the BASE commit | trusted, sparse checkout, run by the job |
+| `engine.lock`, `engine.release.json` | files of the BASE commit | trusted, sparse checkout, read as data by `scripts/read-lock.sh` |
+| `.github/workflows/history-guard.yml` | file of the BASE commit | trusted, sparse checkout, compared with the running copy; interpreted by Actions |
 | `.github/history-approvers` | file of the BASE commit | trusted, read as a git object |
 | `history/social.jsonl`, `numbers.json`, one manifest under `history/redactions/` | files of the HEAD commit | untrusted data, never executed, checked by the engine |
 | `issues/{number}/events`, `issues/{number}/labels`, `actions/runs`, `pulls`, `git/ref/heads/main` | GitHub API of this repository | read-only calls |
