@@ -1146,3 +1146,86 @@ def test_the_checker_parses_the_raw_migration_tables_with_their_nested_checks() 
     )
     assert nesting_depth(leads) > 30
     assert [c.lower() for c in mod.parse_create(leads)[1]] == allow["leads"]
+
+
+@pytest.mark.parametrize(
+    "stmt",
+    [
+        "ATTACH DATABASE 'other.db' AS probe;",
+        "DETACH probe;",
+        "DROP TABLE view_events;",
+        "UPDATE view_events SET page = 'x';",
+        "ALTER TABLE view_events ADD COLUMN z TEXT;",
+        "VACUUM INTO 'copy.db';",
+        "CREATE VIEW v AS SELECT 1;",
+        "REINDEX;",
+        "PRAGMA writable_schema=ON;",
+        "PRAGMA foreign_keys=OFF;",
+        "PRAGMA defer_foreign_keys=TRUE; PRAGMA writable_schema=ON;",
+    ],
+)
+def test_standalone_non_insert_restore_sql_is_refused(
+    stmt: str, tmp_path: Path
+) -> None:
+    """The allowlist is the guard against restore SQL that is not an INSERT: each
+    of these, alone in an otherwise good dump, fails the check."""
+    assert run(SCHEMA_DUMP + GOOD_ROW, tmp_path=tmp_path).returncode == 0
+    r = run(SCHEMA_DUMP + GOOD_ROW + stmt + "\n", tmp_path=tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "unexpected statement" in r.stdout
+
+
+@pytest.mark.parametrize("value", ["TRUE", "FALSE", "ON", "OFF", "0", "1"])
+@pytest.mark.parametrize(
+    "shape",
+    [
+        "PRAGMA defer_foreign_keys={v};",
+        "PRAGMA defer_foreign_keys={v}",
+        "pragma DEFER_foreign_KEYS={v};",
+        "Pragma defer_foreign_keys = {v} ;",
+        "PRAGMA \t defer_foreign_keys\t=\t{v};",
+    ],
+)
+def test_every_allowed_defer_foreign_keys_form_passes(
+    value: str, shape: str, tmp_path: Path
+) -> None:
+    line = shape.format(v=value.lower() if shape.startswith("Pragma") else value)
+    # Last in the dump, so a form with no semicolon ends at the end of the text.
+    r = run(SCHEMA_DUMP + GOOD_ROW + line + "\n", tmp_path=tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "PRAGMA defer_foreign_keys=2;",
+        "PRAGMA defer_foreign_keys=YES;",
+        "PRAGMA defer_foreign_keys=TRUEX;",
+        "PRAGMA defer_foreign_keys;",
+        "PRAGMA defer_foreign_keys=;",
+        "PRAGMA defer_foreign_keys(1);",
+        "PRAGMA defer_foreign_keysX=1;",
+        "PRAGMA main.defer_foreign_keys=1;",
+        "PRAGMAdefer_foreign_keys=1;",
+        "PRAGMA defer_foreign_keys=1 foo;",
+        # Lookalikes: IGNORECASE without ASCII folds LATIN SMALL LETTER LONG S
+        # to s and DOTLESS I to i; \s matches Unicode spaces.
+        "PRAGMA defer_foreign_key\N{LATIN SMALL LETTER LONG S}=1;",
+        "PRAGMA defer_foreign_keys=TRUE\N{LATIN SMALL LETTER LONG S};",
+        "PRAGMA defer_foreign_keys=ON\N{LATIN SMALL LETTER DOTLESS I};",
+        "PRAGMA defer_fore\N{LATIN SMALL LETTER DOTLESS I}gn_keys=1;",
+        "PRAGMA defer_foreign_keys=\N{LATIN SMALL LETTER LONG S}OFF;",
+        "PRAGMA\N{NO-BREAK SPACE}defer_foreign_keys=1;",
+        "PRAGMA defer_foreign_keys\N{NO-BREAK SPACE}=1;",
+        "PRAGMA defer_foreign_keys=\N{EM SPACE}1;",
+        "PRAGMA defer_foreign_keys=\N{LINE SEPARATOR}1;",
+        "PRAGMA\N{IDEOGRAPHIC SPACE}defer_foreign_keys=1;",
+        "PRAGMA defer_foreign_keys=\N{NO-BREAK SPACE}1;",
+        "PRAGMA defer_foreign_keys=1\N{NO-BREAK SPACE}1;",
+    ],
+)
+def test_lookalike_and_adjacent_pragma_forms_are_refused(
+    line: str, tmp_path: Path
+) -> None:
+    r = run(SCHEMA_DUMP + GOOD_ROW + line + "\n", tmp_path=tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr

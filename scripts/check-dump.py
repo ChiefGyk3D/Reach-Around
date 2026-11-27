@@ -78,7 +78,6 @@ HEX8 = re.compile(
 )
 SKIP_CREATE = ("CREATE INDEX", "CREATE UNIQUE INDEX")
 SKIP_OTHER = (
-    "PRAGMA",
     "BEGIN",
     "COMMIT",
     "END",
@@ -86,6 +85,15 @@ SKIP_OTHER = (
     "DELETE FROM",
     "SAVEPOINT",
     "RELEASE",
+)
+# The one PRAGMA a wrangler export writes. Any other PRAGMA (writable_schema,
+# foreign_keys, ...) changes how a restore behaves and fails as an unexpected
+# statement.
+PRAGMA_OK = re.compile(
+    r"\APRAGMA[ \t\r\n]+defer_foreign_keys[ \t\r\n]*=[ \t\r\n]*"
+    r"(?:TRUE|FALSE|ON|OFF|0|1)[ \t\r\n]*;?[ \t\r\n]*\Z",
+    # ASCII only: without re.ASCII, IGNORECASE folds U+017F to s and U+0131 to i.
+    re.IGNORECASE | re.ASCII,
 )
 SAFE_NAME = re.compile(r"^[A-Za-z0-9_]{1,40}$")
 IDENT = r'(?:"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]|[A-Za-z_][A-Za-z0-9_$]*)'
@@ -666,7 +674,7 @@ def scan(
             elif upper.startswith("INSERT"):
                 rows += 1
                 findings += scan_insert(line, stmt, cfg, seen_cols, forbid)
-            elif upper.startswith(SKIP_OTHER):
+            elif upper.startswith(SKIP_OTHER) or PRAGMA_OK.match(stmt):
                 continue
             else:
                 findings.append((line, "unexpected statement"))

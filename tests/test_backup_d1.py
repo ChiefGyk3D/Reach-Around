@@ -1106,6 +1106,81 @@ def test_exported_sql_is_never_executed(tmp_path: Path) -> None:
     assert list(d.iterdir()) == []
 
 
+# A python3 stand-in for the verifier and the dump check. It runs the real
+# program, but first watches these routes and leaves a note on each use: the
+# Python sqlite3 import, subprocess.Popen and a fixed list of os process calls
+# (system, exec*, posix_spawn*, spawn*). Other routes are not covered here.
+PY_GUARD = """#!{python}
+import os, runpy, sys
+LOG = {log!r}
+class Block:
+    def find_spec(self, name, path=None, target=None):
+        if name in ("sqlite3", "_sqlite3"):
+            with open(LOG, "a") as fh:
+                fh.write("sqlite3 import attempted\\n")
+            raise ImportError(name)
+        return None
+sys.meta_path.insert(0, Block())
+def boom(*a, **k):
+    with open(LOG, "a") as fh:
+        fh.write("process start attempted\\n")
+    raise SystemExit(97)
+import subprocess
+subprocess.Popen.__init__ = boom
+for name in ("system", "execv", "execve", "execvp", "execvpe", "posix_spawn",
+             "posix_spawnp", "spawnv", "spawnve", "spawnvp", "spawnvpe"):
+    if hasattr(os, name):
+        setattr(os, name, boom)
+args = [a for a in sys.argv[1:] if a != "-I"]
+if args[0] == "-c":
+    sys.argv = ["-c"] + args[2:]
+    exec(compile(args[1], "<string>", "exec"), {{"__name__": "__main__"}})
+elif args[0] == "-":
+    sys.argv = ["-"] + args[1:]
+    exec(compile(sys.stdin.read(), "<stdin>", "exec"), {{"__name__": "__main__"}})
+else:
+    sys.argv = args
+    runpy.run_path(args[0], run_name="__main__")
+"""
+
+
+def test_a_passing_export_is_read_never_executed(tmp_path: Path) -> None:
+    """Regression coverage for the never-executed property, not proof for every
+    possible route. The export passes verification and holds a plain statement
+    (a CREATE INDEX, which the dump check lets through) that would leave a mark
+    in the database if it ran. The monitored routes: the Python sqlite3 import,
+    selected os process calls, subprocess.Popen, sqlite3 and sqlite spies on
+    PATH, and wrangler, which may only export and run listing and count
+    queries (no d1 execute of the file)."""
+    env = make(tmp_path)
+    spy_dir = tmp_path / "spy"
+    spy_dir.mkdir()
+    notes = tmp_path / "spy.log"
+    for name in ("sqlite3", "sqlite"):
+        spy = spy_dir / name
+        spy.write_text(f'#!/usr/bin/bash\necho "{name}" >> "{notes}"\nexit 1\n')
+        spy.chmod(0o755)
+    py = spy_dir / "python3"
+    py.write_text(PY_GUARD.format(python=sys.executable, log=str(notes)))
+    py.chmod(0o755)
+    env["PATH"] = f"{spy_dir}:{env['PATH']}"
+    trace = _log(env, tmp_path)
+    env["STUB_APPEND"] = "CREATE INDEX probe_idx ON view_daily (views);"
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    assert r.returncode == 0, r.stdout + r.stderr
+    kept = [f for f in d.rglob("*.sql") if "probe_idx" in f.read_text()]
+    assert kept, "the statement must be in the kept backup, or the test proves nothing"
+    assert not notes.exists(), notes.read_text()
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        marks = db.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'probe_idx'"
+        ).fetchall()
+    assert marks == []
+    for line in trace.read_text().splitlines():
+        assert line.startswith(("export: ", "execute: SELECT ")), line
+
+
 @pytest.mark.parametrize("mode", ["duplicate", "extra", "missing"])
 def test_a_count_answer_that_is_not_the_exact_table_set_is_not_trusted(
     tmp_path: Path, mode: str
