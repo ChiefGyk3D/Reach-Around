@@ -1798,8 +1798,24 @@ def read_rescue_file(work: Path, name: str, m: Manifest) -> tuple[str, dict[str,
 def consume_rescue(work: Path, m: Manifest, name: str) -> None:
     """The row is safe elsewhere: remove the file, then the registration. In this
     order a crash leaves a registered name with no file, which is harmless."""
+    path = work / name
     try:
-        os.unlink(work / name)
+        # Overwrite before removing (what `shred -u` does for the documented
+        # cleanup): the file holds a personal row. Best effort on the overwrite, the
+        # removal is not optional.
+        fd = os.open(path, os.O_WRONLY | os.O_NOFOLLOW)
+        try:
+            size = os.fstat(fd).st_size
+            os.write(fd, b"\0" * size)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass  # still removed below
+    try:
+        os.unlink(path)
     except FileNotFoundError:
         pass
     if name in m.rescue_files:

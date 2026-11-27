@@ -2935,6 +2935,28 @@ def test_the_normal_path_consumes_its_rescue_file(tmp_path: Path) -> None:
     assert [p for p in work.iterdir() if p.name.startswith("lead-returned-")] == []
 
 
+def test_consuming_a_rescue_file_overwrites_it_before_removing_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = load_script()
+    name = "lead-returned-" + "ab" * 8 + ".json"
+    (tmp_path / name).write_text('{"row": {"email": "changed@example.test"}}')
+    saved: list[int] = []
+    m = SimpleNamespace(rescue_files=[name], save=lambda: saved.append(1))
+    seen: list[bytes] = []
+    real_unlink = os.unlink
+
+    def spy(path: Any, *a: Any, **k: Any) -> None:
+        seen.append(Path(path).read_bytes())  # what is on disk at removal time
+        real_unlink(path, *a, **k)
+
+    monkeypatch.setattr(mod.os, "unlink", spy)
+    mod.consume_rescue(tmp_path, m, name)
+    assert not (tmp_path / name).exists()
+    assert m.rescue_files == [] and saved == [1]
+    assert seen and set(seen[0]) == {0}  # zeros, never the row
+
+
 def frozen_names(env: dict[str, str]) -> set[str]:
     with closing(sqlite3.connect(env["STUB_SRC"])) as db:
         return {
