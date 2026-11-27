@@ -12,6 +12,7 @@ import pkgutil
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NoReturn
 
 from jinja2 import TemplateError
 
@@ -48,8 +49,19 @@ def _idle_minutes(text: str) -> float:
     return value
 
 
+class _Parser(argparse.ArgumentParser):
+    """argparse echoes unrecognized arguments in its error. With abbreviations off, a
+    mistyped `--email-f ADDRESS` would put the address on stderr (it can reach a log),
+    so that one message never repeats the arguments."""
+
+    def error(self, message: str) -> NoReturn:
+        if message.startswith("unrecognized arguments:"):
+            message = "unrecognized arguments (not repeated: they may hold a value)"
+        super().error(message)
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _Parser(
         prog="reach-around",
         description="Build a static link page from a validated config.",
         allow_abbrev=False,

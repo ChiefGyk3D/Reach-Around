@@ -343,20 +343,24 @@ def test_show_email_on_argv_is_refused_without_echo(
 def test_show_abbreviated_flag_reads_the_value_as_a_path_not_an_address(
     capsys: pytest.CaptureFixture[str], export: Path
 ) -> None:
-    code = cli(
-        [
-            "leads",
-            "show",
-            "--input",
-            str(export),
-            "--events",
-            str(events_of(export)),
-            "--email-f",
-            ADDR,
-        ]
-    )
+    # Abbreviations are off (a destructive or private flag is never taken from a
+    # prefix): `--email-f` is unrecognized, and the error never repeats the value.
+    with pytest.raises(SystemExit) as info:
+        cli(
+            [
+                "leads",
+                "show",
+                "--input",
+                str(export),
+                "--events",
+                str(events_of(export)),
+                "--email-f",
+                ADDR,
+            ]
+        )
     captured = capsys.readouterr()
-    assert code == 2
+    assert info.value.code == 2
+    assert "unrecognized arguments" in captured.err
     assert ADDR not in captured.out + captured.err
 
 
