@@ -210,9 +210,9 @@ describe("AB-3: the kill switch closes everything, per request, for free", () =>
   for (const value of ENGAGED) {
     it(`KIT_KILL=${JSON.stringify(value)} answers 503 on the gate and the view, with no database, KV, vendor or alert call`, async () => {
       const cookie = await unlock();
-      const { db, sql } = countingDb();
+      const { db, leads, sql } = countingDb();
       const page = kv();
-      const env = makeEnv({ KIT_KILL: value, DB: db, KIT: page });
+      const env = makeEnv({ KIT_KILL: value, DB: db, LEADS_DB: leads, KIT: page });
       const before = net.calls.length;
       for (const request of [gateReq(), viewReq({ cookie }), viewReq({ method: "HEAD", cookie }), gateReq({ method: "GET" })]) {
         const res = await send(request, env);
@@ -260,8 +260,8 @@ describe("AB-3: origin on the gate POST is an exact match", () => {
   ];
   for (const origin of BAD) {
     it(`Origin ${JSON.stringify(origin)} gets the one refusal and writes nothing`, async () => {
-      const { db, sql } = countingDb();
-      const res = await send(gateReq({ headers: { origin } }), makeEnv({ DB: db }));
+      const { db, leads, sql } = countingDb();
+      const res = await send(gateReq({ headers: { origin } }), makeEnv({ DB: db, LEADS_DB: leads }));
       expect(res.status).toBe(303);
       expect(res.headers.get("location")).toBe("/kit/retry/");
       expect(res.headers.get("set-cookie")).toBeNull();

@@ -202,6 +202,7 @@ TABLES = (("leads", LEAD_COLUMNS), ("kit_events", EVENT_COLUMNS))  # leads first
 COLUMNS = dict(TABLES)
 MANIFEST = "move-manifest.json"
 EXPORT_PREFIX = "lead-recovery-"
+RETURNED_PREFIX = "lead-returned-"
 EXISTS_SQL = (
     "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'leads' "
     "UNION ALL SELECT name FROM sqlite_master WHERE type = 'table' "
@@ -767,6 +768,10 @@ class Manifest:
         self.bookmarks: list[str] = []
         self.bookmark_attempts: list[dict[str, str]] = []
         self.recovery_exports: list[str] = []
+        # Names of the private files that hold a row the database handed back changed
+        # (lead-returned-*.json). Registered here BEFORE the file is written, so a
+        # crash at any point leaves a name that recovery and cleanup can find.
+        self.rescue_files: list[str] = []
         # Digests this manifest once held for a row that was re-moved with new data:
         # an export made before the re-move is stale, not foreign.
         self.superseded: dict[str, dict[str, list[str]]] = {t: {} for t, _ in TABLES}
@@ -870,6 +875,13 @@ class Manifest:
         }
         self.bookmark_attempts = list(attempts)
         self.recovery_exports = list(exports)
+        rescue = data.get("rescue_files", [])
+        if not isinstance(rescue, list) or not all(
+            isinstance(n, str) and n == Path(n).name and n.startswith(RETURNED_PREFIX)
+            for n in rescue
+        ):
+            raise Refused("the manifest is unreadable; resolve it by hand.")
+        self.rescue_files = list(rescue)
         self.run_id = run_id if isinstance(run_id, str) else self.run_id
         open_flag = data.get("purge_open", False)
         if not isinstance(open_flag, bool):
@@ -922,6 +934,7 @@ class Manifest:
                 "bookmarks": self.bookmarks,
                 "bookmark_attempts": self.bookmark_attempts,
                 "recovery_exports": self.recovery_exports,
+                "rescue_files": self.rescue_files,
                 "superseded": self.superseded,
                 "run_id": self.run_id,
                 "purge_open": self.purge_open,
@@ -1566,6 +1579,9 @@ def current_exported_rows(
             key = str(item["row"].get("id"))
             if m.digests[item["table"]].get(key) == item["digest"]:
                 current[(item["table"], key)] = item["row"]
+    # A row the database handed back changed is newer than any export of it.
+    for _name, table, row in registered_rescue_rows(work, m):
+        current[(table, str(row.get("id")))] = row
     return current
 
 
@@ -1622,6 +1638,9 @@ def recover_from_exports(
         for table, _ in TABLES:
             w.execute(args.source, command=f"DROP TRIGGER IF EXISTS {FROZEN[table][0]}")
         code = restore_from_exports(w, args, work, m)
+        rescued = finish_rescue_rows(w, args, work, m)
+        if rescued:
+            print(f"{rescued} changed row(s) from rescue files kept and consumed")
     except BaseException as exc:  # noqa: BLE001 - re-raised below, after the re-freeze
         failure = exc
     finally:
@@ -1715,22 +1734,92 @@ def purge_chunks(
                 require_frozen(w, args.source)
 
 
-RETURNED_PREFIX = "lead-returned-"
-
-
-def save_returned_row(work: Path, table: str, row: dict[str, Any]) -> Path:
+def save_returned_row(
+    work: Path, name: str, m: Manifest, table: str, row: dict[str, Any]
+) -> Path:
     """Write a row the database handed back changed to its own private file (mode
-    600, whole or absent, fsynced) in the checked work directory. This is the first
-    thing done with such a row: until it is on disk it exists only in memory, because
-    the DELETE that removed it from SOURCE has already been applied."""
-    name = f"{RETURNED_PREFIX}{secrets.token_hex(8)}.json"
-    body = json.dumps({"table": table, "digest": digest(table, row), "row": row})
+    600, whole or absent, fsynced) in the checked work directory, bound to this
+    manifest's run. Until it is on disk the row exists only in memory, because the
+    DELETE that removed it from SOURCE has already been applied."""
+    body = json.dumps(
+        {
+            "version": 1,
+            "run_id": m.run_id,
+            "table": table,
+            "digest": digest(table, row),
+            "row": row,
+        }
+    )
     dfd = os.open(work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         write_private(dfd, name, body)
     finally:
         os.close(dfd)
     return work / name
+
+
+def read_rescue_file(work: Path, name: str, m: Manifest) -> tuple[str, dict[str, Any]]:
+    """(table, row) of a registered rescue file, validated. Errors carry no value."""
+    if name != Path(name).name or not name.startswith(RETURNED_PREFIX):
+        raise Refused("the manifest names an invalid rescue file.")
+    try:
+        fd = os.open(work / name, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise Refused("a rescue file cannot be opened.") from exc
+    with os.fdopen(fd, "r", encoding="utf-8") as fh:
+        st = os.fstat(fh.fileno())
+        if (
+            not stat.S_ISREG(st.st_mode)
+            or st.st_uid != os.getuid()
+            or st.st_nlink != 1
+            or stat.S_IMODE(st.st_mode) != 0o600
+        ):
+            raise Refused("a rescue file is not a private regular file.")
+        try:
+            data = json.load(fh)
+        except ValueError as exc:
+            raise Refused("a rescue file is unreadable.") from exc
+    table = data.get("table") if isinstance(data, dict) else None
+    row = data.get("row") if isinstance(data, dict) else None
+    if (
+        not isinstance(data, dict)
+        or data.get("version") != 1
+        or data.get("run_id") != m.run_id
+        or table not in COLUMNS
+        or not isinstance(row, dict)
+        or data.get("digest") != digest(str(table), row)
+    ):
+        raise Refused("a rescue file does not match this manifest.")
+    return str(table), row
+
+
+def consume_rescue(work: Path, m: Manifest, name: str) -> None:
+    """The row is safe elsewhere: remove the file, then the registration. In this
+    order a crash leaves a registered name with no file, which is harmless."""
+    try:
+        os.unlink(work / name)
+    except FileNotFoundError:
+        pass
+    if name in m.rescue_files:
+        m.rescue_files.remove(name)
+        m.save()
+
+
+def registered_rescue_rows(
+    work: Path, m: Manifest
+) -> list[tuple[str, str, dict[str, Any]]]:
+    """(name, table, row) of every registered rescue file that exists. A registered
+    name whose file is gone is skipped (a crash between registering and writing)."""
+    found: list[tuple[str, str, dict[str, Any]]] = []
+    for name in m.rescue_files:
+        try:
+            table, row = read_rescue_file(work, name, m)
+        except FileNotFoundError:
+            continue
+        found.append((name, table, row))
+    return found
 
 
 def keep_changed_rows(
@@ -1745,11 +1834,14 @@ def keep_changed_rows(
     """A DELETE matches without the personal columns, so the row it removed can differ
     from the copied one there (changed after it was read). The database handed that
     version back, and it is the only copy. Order, so that nothing is lost:
-    1. write it to a private file of its own (before anything that can fail);
+    1. register a private file name in the manifest (durable), then write the row to
+       that file (mode 600, fsynced);
     2. write it to DEST through a private file and read it back;
     3. record it in the manifest and in a recovery export;
-    only then does it count as deleted. A failure after step 1 raises VerifyRequired
-    naming the file (never a value): the row is in that file, nothing else is lost."""
+    4. only then remove the file and its registration, and count the row as deleted.
+    A crash at any step leaves the row in the file, in DEST or in both, and the file
+    is registered, so `--recover-from-export` consumes it and cleanup finds it. A
+    failure after step 1 raises VerifyRequired naming the file (never a value)."""
     # Only a row that DIFFERS from the copied one gets its own private file: a matching
     # row is identical to what the recovery export, written before the first DELETE,
     # already holds, so saving it again would only add personal data on disk.
@@ -1758,14 +1850,14 @@ def keep_changed_rows(
             table, sent
         ):
             continue
+        name = f"{RETURNED_PREFIX}{secrets.token_hex(8)}.json"
+        saved: Path | None = None
         try:
-            saved = save_returned_row(work, table, r)
+            m.rescue_files.append(name)
+            m.save()  # registered before the file exists
+            saved = save_returned_row(work, name, m, table, r)
         except (Failed, Refused, OSError, UnicodeError):
-            raise VerifyRequired(
-                "a row changed after it was read was deleted from the source and could "
-                "not be saved: run --verify, then recover from the Time Travel "
-                "bookmark before anything else."
-            ) from None
+            saved = None  # the row is still in memory: try DEST before giving up
         try:
             run_file(w, args.dest, work, upsert_sql(table, [r]))
             back_dest = by_ids(w, args.dest, table, [r.get("id")])
@@ -1776,14 +1868,48 @@ def keep_changed_rows(
             item = {"table": table, "digest": digest(table, r), "row": r}
             write_recovery_export(w, args, work, m, [item])
         except (Failed, Refused, OSError, UnicodeError):
+            if saved is None:
+                raise VerifyRequired(
+                    "a row changed after it was read was deleted from the source and "
+                    "could not be saved anywhere: run --verify, then recover from "
+                    "the Time Travel bookmark before anything else."
+                ) from None
             raise VerifyRequired(
                 "a row changed after it was read was deleted from the source and could "
                 f"not be kept in the destination. It is saved in {saved} (mode 600, "
-                "holds personal data): restore it by hand, run --verify, and delete "
-                "the file afterwards."
+                "holds personal data) and registered in the manifest: run "
+                "--recover-from-export, which consumes it."
             ) from None
+        try:
+            consume_rescue(work, m, name)
+        except (Refused, OSError):
+            pass  # the row is safe in DEST and the export; the file stays registered
         sent.clear()
         sent.update(r)
+
+
+def finish_rescue_rows(
+    w: Wrangler, args: argparse.Namespace, work: Path, m: Manifest
+) -> int:
+    """Recovery: every registered rescue file goes to DEST (read back), is recorded in
+    the manifest, then is consumed. A row that cannot be kept stays registered."""
+    done = 0
+    for name, table, row in registered_rescue_rows(work, m):
+        run_file(w, args.dest, work, upsert_sql(table, [row]))
+        if missing_from(
+            by_ids(w, args.dest, table, [row.get("id")]), [row], COLUMNS[table]
+        ):
+            raise Failed("a rescued row could not be kept in the destination")
+        m.record(table, row)
+        m.save()
+        consume_rescue(work, m, name)
+        done += 1
+    # A name whose file never got written is no longer needed.
+    for name in list(m.rescue_files):
+        if not (work / name).exists():
+            m.rescue_files.remove(name)
+            m.save()
+    return done
 
 
 def acknowledge_deleted(

@@ -2812,6 +2812,128 @@ def test_a_delete_statement_carries_nothing_derived_from_a_personal_column() -> 
     assert "length(" not in one and "email IS" not in one and "country IS" not in one
 
 
+class Crash(BaseException):
+    """A simulated SIGKILL or power loss: nothing in the tool catches it."""
+
+
+def crash_after(mod: Any, name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make function `name` run, then crash right after it returns. For the export
+    writer only the call that keeps a changed row counts (it is given the rows)."""
+    real = getattr(mod, name)
+
+    def wrapper(*a: Any, **k: Any) -> Any:
+        out = real(*a, **k)
+        if name != "write_recovery_export" or len(a) > 4 or "rows" in k:
+            raise Crash
+        return out
+
+    monkeypatch.setattr(mod, name, wrapper)
+
+
+def crash_in_record(mod: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Crash when the changed row is recorded (after its write to DEST)."""
+    real = mod.Manifest.record
+
+    def record(self: Any, table: str, row: dict[str, Any]) -> None:
+        if row.get("email") == "changed@example.test":
+            raise Crash
+        real(self, table, row)
+
+    monkeypatch.setattr(mod.Manifest, "record", record)
+
+
+def crash_before_export(mod: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Crash after the manifest saved the changed row, before its export is written."""
+    real = mod.write_recovery_export
+
+    def wrapper(*a: Any, **k: Any) -> Any:
+        if len(a) > 4 or "rows" in k:
+            raise Crash
+        return real(*a, **k)
+
+    monkeypatch.setattr(mod, "write_recovery_export", wrapper)
+
+
+def dest_email(env: dict[str, str], lead_number: int) -> str | None:
+    with closing(sqlite3.connect(env["STUB_DEST"])) as db:
+        row = db.execute(
+            "SELECT email FROM leads WHERE id = ?", (format(lead_number, "032x"),)
+        ).fetchone()
+    return None if row is None else str(row[0])
+
+
+@pytest.mark.parametrize(
+    "stage", ["rescue-written", "dest-written", "manifest-saved", "export-written"]
+)
+def test_a_crash_after_each_stage_of_keeping_a_changed_row_loses_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    env = make(tmp_path)
+    env["STUB_INJECT"] = "email"  # the address changes right before its DELETE
+    work = workdir(tmp_path)
+    assert run(env, work, "--freeze").returncode == 0
+    mod = load_with_env(env, monkeypatch)
+    # Each boundary is a crash the tool cannot catch, right after that stage.
+    if stage == "rescue-written":
+        crash_after(mod, "save_returned_row", monkeypatch)
+    elif stage == "dest-written":
+        crash_in_record(mod, monkeypatch)  # record() follows the dest write and read-back
+    elif stage == "manifest-saved":
+        crash_before_export(mod, monkeypatch)
+    else:
+        crash_after(mod, "write_recovery_export", monkeypatch)
+    with pytest.raises(Crash):
+        mod.main(main_args(work, "--purge"))
+    monkeypatch.undo()
+    # The rescue file is registered durably, the changed row is on disk.
+    manifest = saved_manifest(work)
+    names = [p.name for p in work.iterdir() if p.name.startswith("lead-returned-")]
+    assert names and set(names) <= set(manifest["rescue_files"]), stage
+    # Recovery consumes it: the changed row is back in SOURCE and in DEST, the file
+    # and its registration are gone, and the freeze is in place again.
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    r = run(env, work, "--recover-from-export")
+    assert r.returncode == 0, (stage, r.stderr)
+    assert [p for p in work.iterdir() if p.name.startswith("lead-returned-")] == []
+    assert saved_manifest(work)["rescue_files"] == []
+    assert dest_email(env, 2) == "changed@example.test", stage
+    with closing(sqlite3.connect(env["STUB_SRC"])) as db:
+        got = db.execute(
+            "SELECT email FROM leads WHERE id = ?", (format(2, "032x"),)
+        ).fetchone()
+    assert got == ("changed@example.test",), stage
+    assert frozen_names(env) == {"leads_frozen", "kit_events_frozen"}
+
+
+def test_a_rescue_file_that_could_not_be_written_still_reaches_dest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env = make(tmp_path)
+    env["STUB_INJECT"] = "email"
+    work = workdir(tmp_path)
+    assert run(env, work, "--freeze").returncode == 0
+    mod = load_with_env(env, monkeypatch)
+
+    def no_space(*_a: Any, **_k: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(mod, "save_returned_row", no_space)
+    assert mod.main(main_args(work, "--purge")) == 0
+    assert dest_email(env, 2) == "changed@example.test"
+    assert saved_manifest(work)["rescue_files"] == []
+    assert [p for p in work.iterdir() if p.name.startswith("lead-returned-")] == []
+
+
+def test_the_normal_path_consumes_its_rescue_file(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    env["STUB_INJECT"] = "email"
+    work = workdir(tmp_path)
+    assert purge(env, work).returncode == 0
+    assert saved_manifest(work)["rescue_files"] == []
+    assert [p for p in work.iterdir() if p.name.startswith("lead-returned-")] == []
+
+
 def frozen_names(env: dict[str, str]) -> set[str]:
     with closing(sqlite3.connect(env["STUB_SRC"])) as db:
         return {

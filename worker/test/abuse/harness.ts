@@ -101,6 +101,7 @@ export type AbuseEnv = Record<string, unknown> & { DB: D1Database; KIT: { get: R
 export function makeEnv(over: Record<string, unknown> = {}): AbuseEnv {
   return {
     DB: testEnv.DB,
+    LEADS_DB: testEnv.LEADS_DB, // leads and kit events live in their own database (issue #772)
     SITE_HOST: HOST,
     KIT: kv(),
     GATE_LIMITER: limiter(),
@@ -185,9 +186,12 @@ export async function send(request: Request, env: AbuseEnv = makeEnv()): Promise
 
 export async function resetState(): Promise<void> {
   resetEventCapCache();
+  await testEnv.LEADS_DB.batch([
+    testEnv.LEADS_DB.prepare("DELETE FROM kit_events"),
+    testEnv.LEADS_DB.prepare("DELETE FROM leads"),
+    testEnv.LEADS_DB.prepare("DELETE FROM kit_meta"),
+  ]);
   await testEnv.DB.batch([
-    testEnv.DB.prepare("DELETE FROM kit_events"),
-    testEnv.DB.prepare("DELETE FROM leads"),
     testEnv.DB.prepare("DELETE FROM counters"),
     testEnv.DB.prepare("DELETE FROM kit_meta"),
     testEnv.DB.prepare("DELETE FROM alert_quota"),
@@ -196,7 +200,8 @@ export async function resetState(): Promise<void> {
 }
 
 export async function count(table: string, where = ""): Promise<number> {
-  return (await testEnv.DB.prepare(`SELECT COUNT(*) AS n FROM ${table} ${where}`).first<{ n: number }>())!.n;
+  const db = table === "leads" || table === "kit_events" ? testEnv.LEADS_DB : testEnv.DB;
+  return (await db.prepare(`SELECT COUNT(*) AS n FROM ${table} ${where}`).first<{ n: number }>())!.n;
 }
 
 export function setCookieOf(res: Response): string | null {
@@ -256,33 +261,35 @@ export function goodClaims(over: Record<string, unknown> = {}): Record<string, u
 
 export async function insertLead(id = LEAD_ID, email = EMAIL, sessionFloorMs: number | null = null): Promise<void> {
   const t = Date.now() - 86_400_000;
-  await testEnv.DB.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source, session_floor_ts) VALUES (?1, ?2, ?3, ?3, 'gate', ?4)")
+  await testEnv.LEADS_DB.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source, session_floor_ts) VALUES (?1, ?2, ?3, ?3, 'gate', ?4)")
     .bind(id, email, t, sessionFloorMs)
     .run();
 }
 
-/** A DB handle that counts every statement prepared through it (to prove a refusal touched nothing). */
-export function countingDb(): { db: D1Database; sql: string[] } {
+/** DB handles that count every statement prepared through them (to prove a refusal touched nothing):
+ *  the analytics database and the leads database share one log. */
+export function countingDb(): { db: D1Database; leads: D1Database; sql: string[] } {
   const sql: string[] = [];
-  const db = new Proxy(testEnv.DB, {
-    get(target, prop) {
-      if (prop === "prepare") {
-        return (q: string) => {
-          sql.push(q);
-          return target.prepare(q);
-        };
-      }
-      if (prop === "batch") {
-        return (stmts: D1PreparedStatement[]) => {
-          sql.push(`batch:${stmts.length}`);
-          return target.batch(stmts);
-        };
-      }
-      const v = Reflect.get(target, prop) as unknown;
-      return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
-    },
-  });
-  return { db: db as D1Database, sql };
+  const wrap = (real: D1Database): D1Database =>
+    new Proxy(real, {
+      get(target, prop) {
+        if (prop === "prepare") {
+          return (q: string) => {
+            sql.push(q);
+            return target.prepare(q);
+          };
+        }
+        if (prop === "batch") {
+          return (stmts: D1PreparedStatement[]) => {
+            sql.push(`batch:${stmts.length}`);
+            return target.batch(stmts);
+          };
+        }
+        const v = Reflect.get(target, prop) as unknown;
+        return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+      },
+    }) as D1Database;
+  return { db: wrap(testEnv.DB), leads: wrap(testEnv.LEADS_DB), sql };
 }
 
 /** Capture everything written to the console while `fn` runs. */
