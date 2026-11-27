@@ -1826,9 +1826,8 @@ class Rescue:
         rename), so it holds the old content or the new, never half."""
         dfd = os.open(self.work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
-            write_private(
-                dfd, self.name, _rescue_body(self.m, self.table, self.ids, [*self.rows, row])
-            )
+            body = _rescue_body(self.m, self.table, self.ids, [*self.rows, row])
+            write_private(dfd, self.name, body)
             self.rows.append(row)
             self.seen = self._stat(dfd)
         finally:
@@ -1973,7 +1972,8 @@ def check_rescue_accounting(
     for rec in records:
         if rec.consumed or rec.table not in present:
             continue
-        have = {str(r.get("id")) for r in by_ids(w, args.source, rec.table, list(rec.ids))}
+        found = by_ids(w, args.source, rec.table, list(rec.ids))
+        have = {str(r.get("id")) for r in found}
         carried = {str(r.get("id")) for r in rec.rows}
         for ident in rec.ids:
             if ident not in have and ident not in carried:

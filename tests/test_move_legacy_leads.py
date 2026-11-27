@@ -2862,7 +2862,9 @@ def dest_email(env: dict[str, str], lead_number: int) -> str | None:
     return None if row is None else str(row[0])
 
 
-def crash_before(mod: Any, owner: Any, name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+def crash_before(
+    mod: Any, owner: Any, name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Crash right BEFORE `owner.name` runs (its first call that matters)."""
 
     def wrapper(*_a: Any, **_k: Any) -> Any:
@@ -2915,7 +2917,8 @@ def crash_run(
 
         monkeypatch.setattr(mod.Rescue, "add", add_then_crash)
     elif stage == "dest-written":
-        crash_in_record(mod, monkeypatch)  # record() follows the dest write and read-back
+        # record() follows the dest write and its read-back
+        crash_in_record(mod, monkeypatch)
     elif stage == "manifest-saved":
         crash_before_export(mod, monkeypatch)
     else:
@@ -3034,7 +3037,8 @@ def _rescue_fixture(tmp_path: Path, mod: Any) -> tuple[Any, Any]:
     m = mod.Manifest(tmp_path, "src", "dst", uid, uid)
     m.save = lambda: None
     rescue = mod.open_rescue(tmp_path, m, "leads", ["a" * 32])
-    rescue.add({c: None for c in mod.COLUMNS["leads"]} | {"id": "a" * 32, "email": "c@example.test"})
+    row = {c: None for c in mod.COLUMNS["leads"]}
+    rescue.add(row | {"id": "a" * 32, "email": "c@example.test"})
     return m, rescue
 
 
