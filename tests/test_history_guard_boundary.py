@@ -329,7 +329,7 @@ SHELL_VARIABLE = re.compile(r"\$\{?([A-Z][A-Z0-9_]*)\}?")
 
 
 def workflow_inputs() -> set[str]:
-    """Every context path, step env name and shell variable the workflow reads."""
+    """The context paths, step env names and shell variables the parser finds."""
     found: set[str] = set()
     data = workflow()
     for text in strings(data):
@@ -383,7 +383,7 @@ def inventory_text() -> str:
 
 
 def listed() -> set[str]:
-    """Every backticked name in the first column of the inventory table."""
+    """The backticked names in the first column of the inventory table."""
     names: set[str] = set()
     for row in inventory_text().splitlines():
         if row.startswith("| `"):
@@ -541,7 +541,7 @@ def test_the_head_is_checked_out_as_data_after_the_trusted_copies() -> None:
     pr_checkout = steps[head]["with"]
     assert pr_checkout["ref"] == "${{ github.event.pull_request.head.sha }}"
     assert pr_checkout["path"] == "pr"
-    # Nothing runs from the head's folder: the only executed path is the trusted dir.
+    # No step run text names the head's folder as a program (pattern check only).
     for step in steps:
         run = step.get("run", "")
         assert "pr/scripts" not in run
@@ -690,7 +690,7 @@ def test_the_trust_step_stops_a_bad_release_pair_before_any_output(
 def test_the_sparse_base_checkout_holds_what_the_guard_needs_to_run(
     tmp_path: Path,
 ) -> None:
-    """The installed folder must hold every script the guard and wrapper call."""
+    """The installed folder must hold the scripts the guard and wrapper name."""
     base = stage_trusted_tree(tmp_path, with_release=False)
     guard_text = GUARD_PY.read_text(encoding="utf-8")
     wrapper = (TEMPLATE / "scripts" / "verify-history-rewrite.sh").read_text("utf-8")
@@ -710,7 +710,7 @@ def test_the_sparse_base_checkout_holds_what_the_guard_needs_to_run(
 # network or leak a token: no static check can (a split string, an alias or an
 # indirect command always gets past a scanner). What it does:
 #
-# * STEP_TABLE and EXECUTED_FILES are CHANGE DETECTORS. Every step of the
+# * STEP_TABLE and EXECUTED_FILES are CHANGE DETECTORS. Each step of the
 #   workflow, and the files its steps name (the guard script and the two
 #   shell scripts), is pinned by SHA-256. A change to any of them, or a new job
 #   or step, fails a test that NAMES the step or file, so it cannot pass by
@@ -1130,7 +1130,7 @@ def test_heuristic_the_script_scan_bites_on_each_common_mutation(
     assert any(expect in p for p in problems), (expect, problems)
 
 
-# Every file the job executes from the base commit, pinned by SHA-256 of its
+# The files the workflow's steps name, pinned by SHA-256 of their
 # bytes (paths relative to the template). A change fails a test that names it.
 EXECUTED_FILES: dict[str, str] = {
     "scripts/history-guard.py": (
@@ -1174,7 +1174,7 @@ NOT_EXECUTED: dict[str, str] = {
     ),
     ".github/workflows/history-guard.yml": (
         "interpreted by Actions, not run by the job: its bytes are pinned in "
-        "WORKFLOW_FILE_DIGESTS and every step in STEP_TABLE"
+        "WORKFLOW_FILE_DIGESTS and each step in STEP_TABLE"
     ),
 }
 
@@ -1282,7 +1282,7 @@ def sparse_paths(data: dict[Any, Any]) -> list[str]:
 
 
 def execution_coverage_problems(data: dict[Any, Any]) -> list[str]:
-    """Every file the job checks out or names in a step must be pinned
+    """A file the job checks out or names in a step must be pinned
     (EXECUTED_FILES) or listed with a reason (NOT_EXECUTED)."""
     known = set(EXECUTED_FILES) | set(NOT_EXECUTED)
     found = [f"{p}: in both tables" for p in set(EXECUTED_FILES) & set(NOT_EXECUTED)]
@@ -1416,7 +1416,9 @@ def pinned_callee_problems(root: Path = TEMPLATE) -> list[str]:
     return found
 
 
-def test_the_pinned_scripts_name_only_pinned_callees_and_run_nothing_dynamic() -> None:
+def test_the_pinned_scripts_name_only_pinned_callees_and_run_no_recognised_dynamic_form() -> (
+    None
+):
     assert pinned_callee_problems() == []
 
 
