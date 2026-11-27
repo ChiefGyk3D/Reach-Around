@@ -1107,9 +1107,9 @@ def test_exported_sql_is_never_executed(tmp_path: Path) -> None:
 
 
 # A python3 stand-in for the verifier and the dump check. It runs the real
-# program, but first makes the sqlite3 module unimportable and every way of
-# starting another process raise (leaving a note), so a script that runs the
-# dump through Python sqlite3, a subprocess, a shell or an exec goes red.
+# program, but first watches these routes and leaves a note on each use: the
+# Python sqlite3 import, subprocess.Popen and a fixed list of os process calls
+# (system, exec*, posix_spawn*, spawn*). Other routes are not covered here.
 PY_GUARD = """#!{python}
 import os, runpy, sys
 LOG = {log!r}
@@ -1145,12 +1145,13 @@ else:
 
 
 def test_a_passing_export_is_read_never_executed(tmp_path: Path) -> None:
-    """Isolates the property. The export passes verification and holds a plain
-    statement (a CREATE INDEX, which the dump check lets through) that would
-    leave a mark in the database if anything ran it. Every route to running it
-    is closed or watched: no sqlite3 or sqlite program on PATH, no Python
-    sqlite3 module and no process started by the verifier or the dump check, and
-    wrangler is only asked to export and to run listing and count queries."""
+    """Regression coverage for the never-executed property, not proof for every
+    possible route. The export passes verification and holds a plain statement
+    (a CREATE INDEX, which the dump check lets through) that would leave a mark
+    in the database if it ran. The monitored routes: the Python sqlite3 import,
+    selected os process calls, subprocess.Popen, sqlite3 and sqlite spies on
+    PATH, and wrangler, which may only export and run listing and count
+    queries (no d1 execute of the file)."""
     env = make(tmp_path)
     spy_dir = tmp_path / "spy"
     spy_dir.mkdir()
