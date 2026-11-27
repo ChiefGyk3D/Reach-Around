@@ -506,15 +506,18 @@ new metric names today, and `FediverseEntry` already carries the fields.
 
 ## 14. INFERRED items
 
-- Mastodon `lookup` works without a token on default configurations (existing provider behavior;
-  docs say a token is needed). Settled by the slice 1 probe.
-- Bluesky `getAuthorFeed` parameter names, limits and filter values and the `reason` shape (lexicon
-  not fetched); the AppView limit is unpublished; the public host's cache lag.
+- Mastodon `lookup` works without a token on other instances and default configurations (existing
+  provider behavior; docs say a token is needed). The 2026-11-26 probe saw it work on the owner's
+  instance only (see the verified block below).
+- Bluesky `getAuthorFeed` parameter names, limits and filter values and the `reason` type shape
+  beyond its presence (lexicon not fetched); the AppView limit is unpublished; the public host's
+  cache lag.
 - Pixelfed token requirement (summary of the route file, `dev` branch), its field names and its
   throttle values.
 - Pleroma, Akkoma and GoToSocial behavior for every endpoint and filter.
 - Each instance's own terms; Bluesky has no separate developer policy.
-- That `account_id` alone is enough for the Mastodon statuses endpoint without a prior lookup.
+- That `exclude_reblogs` and `exclude_replies` filter the Mastodon statuses: the 2026-11-26 page held
+  no boosts and no replies to others, so the filter effect was not seen.
 - That `unlisted` posts are returned to unauthenticated reads (they are counted if returned).
 - Bluesky provider (#922): the owner-run live probe must confirm each INFERRED shape the parser
   relies on. Until it does, any other shape ends the read as `bad_shape`, never a zero.
@@ -525,12 +528,42 @@ new metric names today, and `FediverseEntry` already carries the fields.
     resolved profile DID (not the requested handle) and a 13 character TID key.
   - The profile DID form: `did:plc:` plus 24 lowercase base32 characters (INFERRED from the
     did:plc method specification, not read live), or a `did:web` id.
-  - The `Date` response header on every response (a missing or unreadable one is `clock_skew`).
   - The `filter=posts_no_replies` value of `getAuthorFeed`.
   - The `reason` type name of a pin (`app.bsky.feed.defs#reasonPin`) and of a repost.
   - The 100-entry page limit (the provider asks for 50 per page).
+  - Whether a DID actor is accepted in place of a handle.
 - Bluesky pages read through a mirror because the official host redirected to `bsky.network` and
   returned no text to the fetcher on 2026-11-26.
+
+**Verified by a live probe on 2026-11-26 (Bluesky).** The owner ran `scripts/fediverse-probe.py`
+once: three public GET requests, no login. Observed (VERIFIED, one run, the owner's Bluesky account):
+
+- The profile request returned 200, and its response carried a `Date` header.
+- The author feed returned a list of 50 items. Each item carried `likeCount`, `repostCount`,
+  `replyCount`, `quoteCount` and `indexedAt`. Exactly one entry had a `reason` field.
+- A pagination cursor was present.
+- The response header names were `cache-control`, `content-length`, `content-type` and `date`,
+  plus 18 other headers.
+
+Not checked by the probe (still INFERRED above): the reply object shape, the post uri form, the
+profile DID form, the pin reason type name, whether a DID actor is accepted, and the 100-entry page
+limit.
+
+**Verified by a live probe on 2026-11-26 (Mastodon).** The same probe, once, with three public GET
+requests and no login, against the owner's account on the owner's Mastodon instance (VERIFIED):
+
+- The account lookup returned 200 with a usable numeric account id.
+- The statuses request returned 200 with a list of 40 items. Each item carried `replies_count`,
+  `reblogs_count`, `favourites_count`, `created_at`, `visibility`, `in_reply_to_account_id` and
+  `reblog`. All 40 were `public`.
+- The page held 0 boosts and 0 replies to others, although the request set `exclude_reblogs` and
+  `exclude_replies`. The probe does not show that those flags filter anything.
+- A statuses request by account id alone, with no prior lookup, returned 200.
+- The response headers included `date`, `link`, `x-ratelimit-limit`, `x-ratelimit-remaining` and
+  `x-ratelimit-reset`.
+
+Not checked by the probe (still INFERRED above): behavior on other server software (Pleroma, Akkoma,
+GoToSocial), a closed instance returning 401, and unlisted visibility handling.
 
 ## 15. Sources
 
