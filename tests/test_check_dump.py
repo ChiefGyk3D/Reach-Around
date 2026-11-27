@@ -1279,7 +1279,8 @@ def test_no_delete_statement_is_accepted(line: str, tmp_path: Path) -> None:
 
 def test_the_formerly_accepted_canonical_delete_is_refused(tmp_path: Path) -> None:
     # The old SKIP_OTHER prefix "DELETE FROM" accepted exactly this shape.
-    r = run(SCHEMA_DUMP + GOOD_ROW + "DELETE FROM view_events;\n", tmp_path=tmp_path)
+    dump = SCHEMA_DUMP + GOOD_ROW + "DELETE FROM view_events;\n"  # noqa: S608 - synthetic
+    r = run(dump, tmp_path=tmp_path)
     assert r.returncode == 1, r.stdout + r.stderr
     assert "unexpected statement" in r.stdout
 
