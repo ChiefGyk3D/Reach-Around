@@ -2417,7 +2417,10 @@ def restore_unfrozen(env: dict[str, str], work: Path) -> None:
         db.execute("DROP TRIGGER IF EXISTS leads_frozen")
         db.execute("DROP TRIGGER IF EXISTS kit_events_frozen")
         db.commit()
-    assert run(env, work, "--restore-from-export").returncode == 0
+    # A delete whose answer was lost left a row accounted for nowhere: the owner
+    # accepts that explicitly (a changed row of that instant would be in Time Travel).
+    flags = ("--restore-from-export", "--accept-unaccounted-rows")
+    assert run(env, work, *flags).returncode == 0
     assert run(env, work, "--freeze").returncode == 0
 
 
@@ -2481,6 +2484,22 @@ def test_a_purge_gate_survives_a_lost_delete_answer_until_verified(
     assert run(env, work, "--verify").returncode == 1
     restore_unfrozen(env, work)  # unaccounted delete
     assert run(env, work, "--purge").returncode == 0
+
+
+def test_a_lost_delete_answer_is_not_restored_without_the_explicit_acceptance(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    env["MOVE_BATCH"] = "1"
+    env["STUB_DELETE_THEN_FAIL"] = "1"
+    work = workdir(tmp_path)
+    assert purge(env, work).returncode == 5
+    del env["STUB_DELETE_THEN_FAIL"]
+    before = src_rows(env)
+    refused = run(env, work, "--restore-from-export")
+    assert refused.returncode == 5 and "Time Travel" in refused.stderr
+    assert src_rows(env) == before  # nothing restored without the acceptance
+    assert run(env, work, "--accept-unaccounted-rows").returncode == 2  # wrong mode
 
 
 def test_resume_compares_event_ids_as_numbers_not_text(tmp_path: Path) -> None:

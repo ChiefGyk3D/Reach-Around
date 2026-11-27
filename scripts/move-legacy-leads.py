@@ -1984,7 +1984,9 @@ def check_rescue_accounting(
         carried = {str(r.get("id")) for r in rec.rows}
         for ident in rec.ids:
             if ident not in have and ident not in carried:
-                if (rec.table, ident) not in acked:
+                if (rec.table, ident) not in acked and not getattr(
+                    args, "accept_unaccounted_rows", False
+                ):
                     raise _unrecoverable()
     return records
 
@@ -2314,7 +2316,21 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help="--purge only: every writer is off (kill switches, old Workers)",
     )
+    parser.add_argument(
+        "--accept-unaccounted-rows",
+        action="store_true",
+        help="--restore-from-export or --recover-from-export only: a delete call's "
+        "answer was lost, so a row it removed may exist only in Time Travel if it "
+        "changed in that very instant; restore the exported rows anyway",
+    )
     args = parser.parse_args(argv)
+    if args.accept_unaccounted_rows and not (
+        args.restore_from_export or args.recover_from_export
+    ):
+        parser.error(
+            "--accept-unaccounted-rows is only for --restore-from-export or "
+            "--recover-from-export"
+        )
     if args.locked_window_confirmed and not args.purge:
         parser.error("--locked-window-confirmed is only for --purge")
     if args.restart_copy and not (args.copy or args.purge):

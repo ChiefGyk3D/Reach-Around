@@ -505,7 +505,7 @@ records a deleted set: a row goes into it only when the tool's own delete call s
 database returned that row in the statement's `RETURNING` result (keyed by attempt, table, id and row digest, no
 address). Verification accepts a moved row that is absent from analytics only if it is in that set
 and a recovery export holds it, so a row removed by anything else is reported by count. A delete call whose outcome was never
-known stays unaccounted. To reconcile it, restore the exported rows with the steps under Recovery
+known stays unaccounted. Because the lost answer leaves a row accounted for nowhere (a row that changed in that very instant would exist only in Time Travel), `--restore-from-export` and `--recover-from-export` refuse it unless you add `--accept-unaccounted-rows`. To reconcile it, restore the exported rows with the steps under Recovery
 below and run `--purge` again: the tool then deletes them itself and records them.
 
 Concurrent runs. Every mode takes an exclusive lock on `.move-run.lock` in the work directory

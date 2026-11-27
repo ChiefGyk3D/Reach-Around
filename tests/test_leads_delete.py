@@ -2949,8 +2949,10 @@ class TestLegacyDatabase:
         code, out, err = self._legacy(capsys, export, legacy_id=LEADS_UUID)
         assert code == 2 and out == "" and "--file" not in err
         # (c) the database says it is the leads database, or says nothing
-        for role in ("leads", None):
-            _legacy_fake(role)
+        for role in ("leads", "none"):
+            _legacy_fake(None if role == "none" else role)
+            if role == "none":  # an empty table: the row is missing
+                fake.dbs[LEGACY_DB].execute("CREATE TABLE db_identity (role TEXT)")
             code, out, err = self._legacy(capsys, export)
             assert code == 2 and out == "" and "--file" not in err, role
         # (d) ids are required with --yes
