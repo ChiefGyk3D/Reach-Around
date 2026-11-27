@@ -2808,7 +2808,8 @@ def test_a_delete_statement_carries_nothing_derived_from_a_personal_column() -> 
     (one,) = mod.delete_statements("leads", [short], guard)
     (two,) = mod.delete_statements("leads", [long], guard)
     assert one == two  # no value, length or null-ness of email or country is in it
-    assert "length(" not in one and "email" not in one and "country" not in one
+    # (the RETURNING list names the columns; no condition on them is sent)
+    assert "length(" not in one and "email IS" not in one and "country IS" not in one
 
 
 def frozen_names(env: dict[str, str]) -> set[str]:
