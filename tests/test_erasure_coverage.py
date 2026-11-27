@@ -122,9 +122,6 @@ LITERAL_DEFAULT = re.compile(
     re.IGNORECASE,
 )
 LISTING_SQL = "SELECT name FROM sqlite_master WHERE type = 'table'"
-# The second read-only call the backup makes: which migrations are applied.
-MIGRATIONS_SQL = "SELECT name FROM d1_migrations"
-BACKUP_READ_SQL = {LISTING_SQL, MIGRATIONS_SQL}
 
 
 # --- the schema, from a real SQLite -------------------------------------------
@@ -1165,10 +1162,9 @@ def backup_call_violations(
     for argv in calls:
         if argv[:2] == ["d1", "execute"]:
             sql = argv[argv.index("--command") + 1] if "--command" in argv else ""
-            if sql not in BACKUP_READ_SQL:
+            if sql != LISTING_SQL:
                 found.append(
-                    "backup ran a query other than the table listing or the"
-                    f" applied-migrations read: {sql[:40]}"
+                    f"backup ran a query other than the table listing: {sql[:40]}"
                 )
         elif argv[:2] == ["d1", "export"]:
             tables = [a.split("=", 1)[1] for a in argv if a.startswith("--table=")]

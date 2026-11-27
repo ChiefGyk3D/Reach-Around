@@ -151,38 +151,33 @@ secret.
    the whole database at one moment (verified, Time Travel page).
 
    Expected: `done: N tables written to <BACKUPS>/d1-<UTC timestamp>`. The
-   script keeps an inventory that names, for each expected table, the
-   migration that creates it, and it reads which migrations the database has
-   applied (`SELECT name FROM d1_migrations`, a read-only call). That record
-   shows which migration files ran, not that the schema matches them (SQL can
-   be run out of band), so every table that exists is exported whatever the
-   record says, and the record decides one thing only: a table that is
-   missing. If its migration is recorded the run fails (exit 1, the table
-   names are printed, nothing is kept), because the copy would be incomplete.
-   If its migration is not recorded the script treats it as an older schema
-   and lists it as `skipped (not in this database)` with the migration name.
-   When no migration is recorded at all, every expected table is required. The
-   record is trusted only when it is a prefix of the script's ordered
-   migration list: if a migration is recorded, every migration before it is
-   recorded too. It is also not trusted when it is inconsistent (a
-   recorded name the script does not know, for example after a rename or from
-   another version, a name recorded twice, an empty or blank name, more than
-   10000 rows, or a gap: a later migration is recorded while an earlier one is
-   not, as after a deleted history row): a
-   `notice` names the entries (at most ten, then `... and K more`), and every
-   expected table that is missing fails the run. A table
-   that exists although its migration is not recorded is exported and reported
-   as a `notice` (names only). Names read from the database are printed with
-   every character outside letters, digits, `_`, `.` and `-` replaced by `?`
-   and cut at 80 characters, so they cannot alter a terminal or a log. A table
-   in the database that the script does not know (from a newer migration, or
-   made by hand) fails the run before any export and is named: add it to the
-   script's lists. SQLite's own `sqlite_*` tables and Cloudflare's reserved
-   `_cf_KV` are the only tables accepted without an export. If the applied
-   migrations cannot be read, the run fails instead of guessing. A
-   listed table name that holds a line break is refused for the same reason.
+   script keeps an inventory of the tables it expects, and every one of them is
+   always required. If the database lacks any of them, the run fails before
+   any export (exit 1): it names the missing tables (at most ten, then
+   `... and K more`), keeps nothing, and tells you to apply the migrations
+   first. This is deliberate. A database that lacks a current table is either
+   an older schema that is not migrated yet or has lost data, and the script
+   cannot tell which: the migration history is stored in the same database, so
+   it can be damaged or edited and never excuses a missing table. A backup must
+   never silently omit data, so run `npx wrangler d1 migrations apply
+   <DATABASE> --remote` (after your own backup or Time Travel bookmark from step
+   1) and run the backup again. The script makes one read-only query, the table
+   listing, plus one export per table; it does not read the migration history
+   (that history is itself exported, in `d1_migrations`). Names read from the
+   database are printed with every character outside letters, digits, `_`, `.`
+   and `-` replaced by `?` and cut at 80 characters, so they cannot alter a
+   terminal or a log, and every list printed from the database is cut at ten
+   names, then `... and K more`. A table in the database that the script does
+   not know (from a newer migration, or made by hand) fails the run before any
+   export and is named: add it to the script's lists. SQLite's own `sqlite_*`
+   tables and Cloudflare's reserved `_cf_KV` are the only tables accepted
+   without an export. A listed table name that holds a line break, a carriage
+   return or a NUL is refused for the same reason (the names are compared as
+   whole lines).
    The script needs bash 4.0 or newer and refuses (exit 2) on an older one
-   (macOS ships 3.2; install a newer bash). Each wrangler call is stopped after 120 seconds
+   (macOS ships 3.2; install a newer bash). The check reads the shell's own
+   read-only version array, not a variable the environment can set; whoever
+   controls the script's environment already controls the whole run. Each wrangler call is stopped after 120 seconds
    (`BACKUP_TIMEOUT=300` raises it, to at most 900). A running export blocks
    other requests to the database while it runs (verified, Cloudflare import
    and export page, last updated 2026-04-21, read 2026-11-09), so do not run it

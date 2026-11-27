@@ -21,20 +21,20 @@ from test_check_dump import schema_sql
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "backup-d1.sh"
+LISTING_SQL = "SELECT name FROM sqlite_master WHERE type = 'table'"
 
 STUB = """#!{python}
 import json, os, sqlite3, sys, time
 args = sys.argv[1:]
 if os.environ.get("STUB_HANG"):
     time.sleep(30)
+log = os.environ.get("STUB_TRACE")
 db = sqlite3.connect(os.environ["STUB_DB"])
 if args[:2] == ["d1", "execute"]:
     sql = args[args.index("--command") + 1]
-    if "d1_migrations" in sql and os.environ.get("STUB_FAIL_MIGRATIONS"):
-        sys.exit(1)
-    if "d1_migrations" in sql and os.environ.get("STUB_BAD_MIGRATIONS"):
-        print("not json")
-        sys.exit(0)
+    if log:
+        with open(log, "a") as fh:
+            fh.write("execute: " + sql + "\\n")
     cur = db.execute(sql)
     cols = [c[0] for c in cur.description]
     rows = [dict(zip(cols, r)) for r in cur.fetchall()]
@@ -47,6 +47,9 @@ if args[:2] == ["d1", "execute"]:
 elif args[:2] == ["d1", "export"]:
     table = [a for a in args if a.startswith("--table=")][0].split("=", 1)[1]
     out = [a for a in args if a.startswith("--output=")][0].split("=", 1)[1]
+    if log:
+        with open(log, "a") as fh:
+            fh.write("export: " + table + "\\n")
     if os.environ.get("STUB_FAIL") == table:
         sys.exit(1)
     schema = db.execute(
@@ -304,8 +307,7 @@ def test_a_long_table_listing_never_skips_a_table_that_exists(tmp_path: Path) ->
     d = dest(tmp_path)
     r = run(env, "reach-db", str(d), "--apply")
     assert r.returncode == 0, r.stderr
-    assert "skipped (not in this database): view_daily" not in r.stdout
-    assert "skipped (not in this database): click_events" not in r.stdout
+    assert "missing" not in r.stderr
     (out,) = list(d.iterdir())
     assert (out / "view_daily.sql").exists()
     assert (out / "click_events.sql").exists()
@@ -331,71 +333,6 @@ def test_row_ids_above_two_to_the_24th_do_not_fail_the_check(tmp_path: Path) -> 
     r = run(env, "reach-db", str(d), "--apply")
     assert r.returncode == 0, r.stderr
     assert len(list(d.iterdir())) == 1
-
-
-def _make_older_than_0013(env: dict[str, str]) -> None:
-    """A database that never applied migration 0013: no alert tables, and the
-    migration is not recorded. Like a real older database, the record is a clean
-    prefix: 0013 and every later migration are not recorded."""
-    with closing(sqlite3.connect(env["STUB_DB"])) as db:
-        db.execute("DROP TABLE alert_quota")
-        db.execute("DROP TABLE alert_dedup")
-        db.execute("DELETE FROM d1_migrations WHERE name >= '0013'")
-        db.commit()
-
-
-def test_an_older_schema_missing_a_table_still_backs_up(tmp_path: Path) -> None:
-    env = make(tmp_path)
-    _make_older_than_0013(env)
-    d = dest(tmp_path)
-    r = run(env, "reach-db", str(d), "--apply")
-    assert r.returncode == 0, r.stderr
-    assert (
-        "skipped (not in this database): alert_quota (migration 0013_alerts.sql"
-        " is not applied)" in r.stdout
-    )
-    (out,) = list(d.iterdir())
-    assert not (out / "alert_quota.sql").exists()
-    assert (out / "view_daily.sql").exists()
-
-
-def test_a_table_whose_migration_is_applied_must_exist(tmp_path: Path) -> None:
-    """Migration 0013 IS recorded as applied, so a missing alert table is lost
-    data, not an old schema: the run fails and keeps nothing."""
-    env = make(tmp_path)
-    with closing(sqlite3.connect(env["STUB_DB"])) as db:
-        db.execute("DROP TABLE alert_quota")
-        db.commit()
-    d = dest(tmp_path)
-    r = run(env, "reach-db", str(d), "--apply")
-    assert r.returncode == 1
-    assert "required table(s) missing" in r.stderr
-    assert "alert_quota" in r.stderr
-    assert "done:" not in r.stdout
-    assert list(d.iterdir()) == []
-
-
-@pytest.mark.parametrize("breakage", ["no-table", "no-query-answer", "bad-answer"])
-def test_unreadable_applied_migrations_fail_closed(
-    tmp_path: Path, breakage: str
-) -> None:
-    """Without the migration record the script cannot tell which tables must
-    exist, so it stops instead of guessing."""
-    env = make(tmp_path)
-    if breakage == "no-table":
-        with closing(sqlite3.connect(env["STUB_DB"])) as db:
-            db.execute("DROP TABLE d1_migrations")
-            db.commit()
-    elif breakage == "no-query-answer":
-        env["STUB_FAIL_MIGRATIONS"] = "1"
-    else:
-        env["STUB_BAD_MIGRATIONS"] = "1"
-    d = dest(tmp_path)
-    r = run(env, "reach-db", str(d), "--apply")
-    assert r.returncode == 1
-    assert "applied migrations" in r.stderr
-    assert "done:" not in r.stdout
-    assert list(d.iterdir()) == []
 
 
 def test_both_views_are_part_of_the_backup(tmp_path: Path) -> None:
@@ -435,35 +372,87 @@ def _guard_block() -> str:
     return text[begin:end]
 
 
+def _sh_is_bash() -> bool:
+    """True when /bin/sh is itself bash (then a forged version cannot show the
+    difference: bash resets the variable at startup)."""
+    r = subprocess.run(  # noqa: S603 - fixed argv
+        ["/bin/sh", "-c", "echo ${BASH_VERSION:-no}"],
+        capture_output=True,
+        text=True,
+        env={"PATH": "/usr/bin:/bin"},
+        timeout=30,
+        check=False,
+    )
+    return r.stdout.strip() != "no"
+
+
 def test_the_script_refuses_a_bash_older_than_four() -> None:
     text = SCRIPT.read_text()
     assert "bash 4.0" in text
     assert "bash 4.0" in (ROOT / "docs" / "backup-restore.md").read_text()
     guard = _guard_block()
-    # POSIX syntax only: no arrays, no [[ ]], no ${..[..]}.
-    assert "[[" not in guard
-    assert not re.search(r"\$\{[A-Za-z_]+\[", guard)
+    code = [line for line in guard.splitlines() if not line.startswith("#")]
+    # POSIX syntax only: no [[ ]]; an array only inside the one eval string that
+    # a non-bash shell fails in a subshell.
+    assert not any("[[" in line for line in code)
+    for line in code:
+        if "eval" not in line:
+            assert not re.search(r"\$\{[A-Za-z_]+\[", line), line
+    # The version is read from the shell's own read-only array, never from the
+    # BASH_VERSION variable that an environment can set.
+    assert "BASH_VERSINFO" in guard
+    assert not any("BASH_VERSION" in line for line in code)
 
 
-@pytest.mark.parametrize(
-    ("version", "code"), [("3.2.57(1)-release", 2), ("", 2), ("5.2.0(1)", 0)]
-)
-def test_the_guard_runs_first_on_a_posix_shell(version: str, code: int) -> None:
-    """The guard block, run by a plain POSIX shell (dash where sh is dash) with a
-    faked BASH_VERSION: it exits 2 for an old or missing bash and falls through
-    for bash 4 or newer. Residual: a real bash 3.2 is not available here."""
-    shell = "/bin/sh"
+@pytest.mark.parametrize("version", ["3.2.57(1)-release", "", "5.2.0(1)-release"])
+def test_the_guard_does_not_trust_a_forged_bash_version(version: str) -> None:
+    """The guard block, run by a plain POSIX shell with a forged BASH_VERSION
+    (an environment can set it): a shell that is not bash exits 2 with the bash
+    message whatever the variable says. Residual: a real bash 3.2 is not
+    available here."""
+    if _sh_is_bash():
+        pytest.skip("/bin/sh is bash here")
     r = subprocess.run(  # noqa: S603 - fixed argv, synthetic input
-        [shell, "-c", _guard_block() + "\nexit 0\n"],
+        ["/bin/sh", "-c", _guard_block() + "\nexit 0\n"],
         capture_output=True,
         text=True,
         env={"PATH": "/usr/bin:/bin", "BASH_VERSION": version},
         timeout=30,
         check=False,
     )
-    assert r.returncode == code, r.stderr
-    if code == 2:
-        assert "bash 4.0 or newer is required" in r.stderr
+    assert r.returncode == 2, r.stderr
+    assert "bash 4.0 or newer is required" in r.stderr
+
+
+@pytest.mark.parametrize("version", ["3.2.57(1)-release", ""])
+def test_the_guard_passes_a_real_bash_whatever_the_variable_says(version: str) -> None:
+    r = subprocess.run(  # noqa: S603 - fixed argv, synthetic input
+        ["/usr/bin/bash", "-c", _guard_block() + "\nexit 0\n"],
+        capture_output=True,
+        text=True,
+        env={"PATH": "/usr/bin:/bin", "BASH_VERSION": version},
+        timeout=30,
+        check=False,
+    )
+    assert r.returncode == 0, r.stderr
+
+
+def test_running_the_script_under_sh_with_a_forged_version_is_refused() -> None:
+    """`BASH_VERSION=5.2 sh scripts/backup-d1.sh`: a non-bash sh gets the bash
+    diagnostic (exit 2), not a shell syntax error from bash-only syntax."""
+    if _sh_is_bash():
+        pytest.skip("/bin/sh is bash here")
+    r = subprocess.run(  # noqa: S603
+        ["/bin/sh", str(SCRIPT)],
+        capture_output=True,
+        text=True,
+        env={"PATH": "/usr/bin:/bin", "BASH_VERSION": "5.2.0(1)-release"},
+        timeout=30,
+        check=False,
+    )
+    assert r.returncode == 2, r.stderr
+    assert "bash 4.0 or newer is required" in r.stderr
+    assert "yntax error" not in r.stderr
 
 
 def test_running_the_script_under_sh_gets_the_bash_diagnostic_or_usage() -> None:
@@ -527,32 +516,145 @@ def _script_array(name: str) -> list[str]:
     return m.group(1).split()
 
 
-def test_a_missing_required_table_fails_the_run(tmp_path: Path) -> None:
-    env = make(tmp_path)
+def _log(env: dict[str, str], tmp_path: Path) -> Path:
+    log = tmp_path / "stub.log"
+    env["STUB_TRACE"] = str(log)
+    return log
+
+
+def _older_history(env: dict[str, str]) -> None:
+    """An older migration record: 0013 and everything after it is not recorded."""
     with closing(sqlite3.connect(env["STUB_DB"])) as db:
-        db.execute("DROP TABLE view_daily")
+        db.execute("DELETE FROM d1_migrations WHERE name >= '0013'")
+        db.commit()
+
+
+@pytest.mark.parametrize("history", ["intact", "older"])
+@pytest.mark.parametrize(
+    "table",
+    [
+        "alert_quota",
+        "alert_dedup",
+        "analytics_coverage",
+        "view_hour_daily",
+        "view_city_daily",
+        "view_daily",
+        "click_events",
+        "click_landing_state",
+        "kit_meta",
+        "d1_migrations",
+    ],
+)
+def test_a_database_missing_any_inventory_table_fails_before_any_export(
+    tmp_path: Path, table: str, history: str
+) -> None:
+    """Every inventory table is always required, whatever the migration record in
+    the same database says (it can be damaged or edited): the run fails with exit
+    1, names the table, and exports nothing."""
+    env = make(tmp_path)
+    log = _log(env, tmp_path)
+    if history == "older" and table != "d1_migrations":
+        _older_history(env)
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        db.execute(f"DROP TABLE {table}")  # noqa: S608 - fixed names
         db.commit()
     d = dest(tmp_path)
     r = run(env, "reach-db", str(d), "--apply")
     assert r.returncode == 1
     assert "required table(s) missing" in r.stderr
-    assert "view_daily" in r.stderr
+    assert table in r.stderr
+    assert "apply the migrations first" in r.stderr
+    assert "done:" not in r.stdout
+    assert "skipped" not in r.stdout
+    assert list(d.iterdir()) == []
+    assert "export:" not in log.read_text()
+
+
+def test_a_truncated_migration_history_does_not_excuse_a_missing_table(
+    tmp_path: Path,
+) -> None:
+    """The record is cut from its end and the matching table is dropped: the
+    remaining record is a clean prefix, which must not make the table optional."""
+    env = make(tmp_path)
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        db.execute("DELETE FROM d1_migrations WHERE name >= '0019_view_city_daily.sql'")
+        db.execute("DROP TABLE view_city_daily")
+        db.commit()
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    assert r.returncode == 1
+    assert "view_city_daily" in r.stderr
     assert "done:" not in r.stdout
     assert list(d.iterdir()) == []
 
 
-def test_tables_of_an_unapplied_migration_are_skipped_with_a_notice(
+def test_an_older_schema_fails_with_a_clear_message(tmp_path: Path) -> None:
+    """A database that never applied migration 0013 (no alert tables, record cut
+    before it): not a partial success, a failure that says what to do."""
+    env = make(tmp_path)
+    _older_history(env)
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        db.execute("DROP TABLE alert_quota")
+        db.execute("DROP TABLE alert_dedup")
+        db.commit()
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    assert r.returncode == 1
+    assert "alert_quota" in r.stderr
+    assert "alert_dedup" in r.stderr
+    assert "older schema" in r.stderr
+    assert "apply the migrations first" in r.stderr
+    assert "done:" not in r.stdout
+    assert list(d.iterdir()) == []
+
+
+def test_the_full_inventory_passes_whatever_the_migration_record_holds(
     tmp_path: Path,
 ) -> None:
-    """0013 is not recorded and its tables are absent: success with a notice.
-    The same absence with 0013 recorded is the failing case above."""
+    """The record plays no part: every table exists, so the run succeeds with an
+    empty, cut or odd record."""
     env = make(tmp_path)
-    _make_older_than_0013(env)
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        db.execute("DELETE FROM d1_migrations")
+        db.execute("INSERT INTO d1_migrations (name) VALUES ('')")
+        db.execute("INSERT INTO d1_migrations (name) VALUES ('unknown_file.sql')")
+        db.commit()
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    assert r.returncode == 0, r.stderr
+    (out,) = list(d.iterdir())
+    for table in _script_array("tables"):
+        assert (out / f"{table}.sql").exists(), table
+
+
+def test_the_run_makes_only_the_table_listing_query(tmp_path: Path) -> None:
+    """One read-only query (the table listing) plus one export per table: the
+    migration history is never read."""
+    env = make(tmp_path)
+    log = _log(env, tmp_path)
     r = run(env, "reach-db", str(dest(tmp_path)), "--apply")
     assert r.returncode == 0, r.stderr
-    assert "skipped (not in this database): alert_quota" in r.stdout
-    assert "skipped (not in this database): alert_dedup" in r.stdout
-    assert "0013_alerts.sql is not applied" in r.stdout
+    lines = log.read_text().splitlines()
+    assert [ln for ln in lines if ln.startswith("execute:")] == [
+        f"execute: {LISTING_SQL}"
+    ]
+    exports = [ln for ln in lines if ln.startswith("export:")]
+    assert len(exports) == len(_script_array("tables"))
+
+
+def test_a_long_missing_list_is_bounded(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    inventory = _script_array("tables")
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        for table in inventory[:12]:
+            db.execute(f"DROP TABLE {table}")  # noqa: S608 - fixed names
+        db.commit()
+    r = run(env, "reach-db", str(dest(tmp_path)), "--apply")
+    assert r.returncode == 1
+    assert inventory[9] in r.stderr
+    assert inventory[10] not in r.stderr
+    assert "... and 2 more" in r.stderr
+    assert len(r.stderr) < 2000
 
 
 def test_a_table_name_with_a_line_break_is_refused(tmp_path: Path) -> None:
@@ -570,45 +672,46 @@ def test_a_table_name_with_a_line_break_is_refused(tmp_path: Path) -> None:
     assert list(d.iterdir()) == []
 
 
-def _migration_tables(tmp_path: Path) -> dict[str, str]:
-    """table -> the migration file that first created it, derived by running the
-    migrations one at a time."""
-    introduced: dict[str, str] = {}
+def test_a_table_name_with_a_carriage_return_is_refused(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        db.execute('CREATE TABLE "zz\ryy" (a)')
+        db.commit()
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    assert r.returncode == 1
+    assert "invalid table name" in r.stderr
+    assert list(d.iterdir()) == []
+
+
+def _migration_tables(tmp_path: Path) -> set[str]:
+    """Every table the migrations create, run in order."""
+    names: set[str] = set()
     with closing(sqlite3.connect(tmp_path / "m.sqlite")) as db:
         for f in sorted((ROOT / "worker" / "migrations").glob("*.sql")):
             db.executescript(schema_sql(f.read_text()))
-            for (name,) in db.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            ):
-                if not name.startswith("sqlite_"):
-                    introduced.setdefault(name, f.name)
-    return introduced
+        for (name,) in db.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ):
+            if not name.startswith("sqlite_"):
+                names.add(name)
+    return names
 
 
 def test_the_inventory_matches_the_migrations(tmp_path: Path) -> None:
-    """The script's table -> introducing migration map must equal the one derived
-    from the migrations, table for table. A new table, a moved table or a changed
-    map fails here; so does a table that is in neither the map nor the
-    never-exported list."""
+    """Every table the migrations create is in the script's `tables` or in its
+    `never_exported`, and nothing else is (wrangler's own d1_migrations table
+    comes from wrangler, not from a migration). A new migration table fails here
+    until the inventory is updated."""
     derived = _migration_tables(tmp_path)
-    # Created by wrangler itself, not by a migration.
-    derived["d1_migrations"] = "wrangler"
+    derived.add("d1_migrations")
     never = {"leads", "kit_events", "visitor_seen", "view_events"}
     tables = set(_script_array("tables"))
-    mapping: dict[str, str] = {}
-    for entry in _script_array("introduced_by"):
-        table, _, migration = entry.partition(":")
-        assert table not in mapping, f"{table} appears twice in introduced_by"
-        mapping[table] = migration
-    assert "optional_tables" not in SCRIPT.read_text()
-    assert set(mapping) == tables, "introduced_by and tables list different tables"
+    assert len(tables) == len(_script_array("tables")), "a table is listed twice"
     assert not (tables & never)
-    assert {t: m for t, m in derived.items() if t not in never} == mapping
-    assert set(derived) == tables | never
+    assert derived == tables | never
     # The two aggregate views are exported on purpose (#932, owner decision).
     assert {"view_hour_daily", "view_city_daily"} <= tables
-    for m in mapping.values():
-        assert m == "wrangler" or (ROOT / "worker" / "migrations" / m).is_file()
 
 
 def test_a_populated_table_outside_the_inventory_fails_the_run(
@@ -617,6 +720,7 @@ def test_a_populated_table_outside_the_inventory_fails_the_run(
     """An existing table the script does not know would be silently left out of
     the backup: the run fails before any export and names it (not its rows)."""
     env = make(tmp_path)
+    log = _log(env, tmp_path)
     with closing(sqlite3.connect(env["STUB_DB"])) as db:
         db.execute("CREATE TABLE emergency_data (id INTEGER PRIMARY KEY, payload TEXT)")
         db.execute("INSERT INTO emergency_data VALUES (1, 'only-copy-marker')")
@@ -628,6 +732,26 @@ def test_a_populated_table_outside_the_inventory_fails_the_run(
     assert "only-copy-marker" not in r.stdout + r.stderr
     assert "done:" not in r.stdout
     assert "skipped" not in r.stdout
+    assert list(d.iterdir()) == []
+    assert "export:" not in log.read_text()
+
+
+def test_a_long_unexpected_table_list_is_bounded(tmp_path: Path) -> None:
+    """A hostile or damaged database with hundreds of unknown tables cannot flood
+    the diagnostic: ten names, then the count of the rest."""
+    env = make(tmp_path)
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        for i in range(500):
+            db.execute(f'CREATE TABLE "unk_{i:04d}" (a)')
+        db.commit()
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    assert r.returncode == 1
+    assert "unk_0000" in r.stderr
+    assert "unk_0009" in r.stderr
+    assert "unk_0010" not in r.stderr
+    assert "... and 490 more" in r.stderr
+    assert len(r.stderr) < 2000
     assert list(d.iterdir()) == []
 
 
@@ -670,100 +794,6 @@ def test_the_never_exported_tables_are_accepted_when_present(tmp_path: Path) -> 
     assert run(env, "reach-db", str(dest(tmp_path)), "--apply").returncode == 0
 
 
-def test_an_existing_table_is_exported_even_if_its_migration_is_not_recorded(
-    tmp_path: Path,
-) -> None:
-    env = make(tmp_path)
-    with closing(sqlite3.connect(env["STUB_DB"])) as db:
-        db.execute("DELETE FROM d1_migrations WHERE name >= '0013'")
-        db.commit()
-    d = dest(tmp_path)
-    r = run(env, "reach-db", str(d), "--apply")
-    assert r.returncode == 0, r.stderr
-    (out,) = list(d.iterdir())
-    assert (out / "alert_quota.sql").exists()
-    assert (out / "alert_dedup.sql").exists()
-    assert "notice: table(s) exist although their migration is not recorded" in r.stderr
-    assert "alert_quota(0013_alerts.sql)" in r.stderr
-
-
-def test_a_recorded_migration_the_script_does_not_know_is_a_notice(
-    tmp_path: Path,
-) -> None:
-    env = make(tmp_path)
-    with closing(sqlite3.connect(env["STUB_DB"])) as db:
-        db.execute("INSERT INTO d1_migrations (name) VALUES ('0013_alerts_old.sql')")
-        db.commit()
-    r = run(env, "reach-db", str(dest(tmp_path)), "--apply")
-    assert r.returncode == 0, r.stderr
-    assert "notice: recorded migration(s) this script does not know" in r.stderr
-    assert "0013_alerts_old.sql" in r.stderr
-
-
-def _rename_recorded_0013(env: dict[str, str]) -> None:
-    """The record holds a renamed 0013 and its two tables are gone."""
-    with closing(sqlite3.connect(env["STUB_DB"])) as db:
-        db.execute("DELETE FROM d1_migrations WHERE name = '0013_alerts.sql'")
-        db.execute("INSERT INTO d1_migrations (name) VALUES ('0013_alerts_old.sql')")
-        db.execute("DROP TABLE alert_quota")
-        db.execute("DROP TABLE alert_dedup")
-        db.commit()
-
-
-def test_an_unknown_recorded_migration_does_not_excuse_a_missing_table(
-    tmp_path: Path,
-) -> None:
-    """The record cannot be trusted when it holds a name the script does not
-    know: the alert tables look like an older schema but may be lost data."""
-    env = make(tmp_path)
-    _rename_recorded_0013(env)
-    d = dest(tmp_path)
-    r = run(env, "reach-db", str(d), "--apply")
-    assert r.returncode == 1
-    assert "0013_alerts_old.sql" in r.stderr
-    assert "required table(s) missing" in r.stderr
-    assert "alert_quota" in r.stderr
-    assert "alert_dedup" in r.stderr
-    assert "done:" not in r.stdout
-    assert list(d.iterdir()) == []
-
-
-def test_a_clean_record_with_an_unrecorded_migration_still_skips(
-    tmp_path: Path,
-) -> None:
-    env = make(tmp_path)
-    _make_older_than_0013(env)
-    r = run(env, "reach-db", str(dest(tmp_path)), "--apply")
-    assert r.returncode == 0, r.stderr
-    assert "does not know" not in r.stderr
-    assert "skipped (not in this database): alert_quota" in r.stdout
-
-
-def test_a_duplicate_recorded_migration_makes_every_table_required(
-    tmp_path: Path,
-) -> None:
-    env = make(tmp_path)
-    with closing(sqlite3.connect(env["STUB_DB"])) as db:
-        db.execute("DROP TABLE d1_migrations")
-        db.execute(
-            "CREATE TABLE d1_migrations (id INTEGER, name TEXT,"
-            " applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"
-        )
-        for f in sorted((ROOT / "worker" / "migrations").glob("*.sql")):
-            if f.name != "0013_alerts.sql":
-                db.execute("INSERT INTO d1_migrations (name) VALUES (?)", (f.name,))
-        db.execute("INSERT INTO d1_migrations (name) VALUES ('0001_click_events.sql')")
-        db.execute("DROP TABLE alert_quota")
-        db.execute("DROP TABLE alert_dedup")
-        db.commit()
-    d = dest(tmp_path)
-    r = run(env, "reach-db", str(d), "--apply")
-    assert r.returncode == 1
-    assert "recorded more than once" in r.stderr
-    assert "required table(s) missing" in r.stderr
-    assert list(d.iterdir()) == []
-
-
 def _assert_clean(text: str) -> None:
     for ch in text:
         assert ch == "\n" or (0x20 <= ord(ch) < 0x7F), repr(ch)
@@ -785,18 +815,6 @@ def test_database_names_are_sanitized_before_they_are_printed(
     _assert_clean(r.stderr + r.stdout)
 
 
-def test_a_hostile_recorded_migration_name_is_sanitized(tmp_path: Path) -> None:
-    env = make(tmp_path)
-    with closing(sqlite3.connect(env["STUB_DB"])) as db:
-        db.execute("INSERT INTO d1_migrations (name) VALUES (?)", (f"m{HOSTILE}",))
-        db.execute("DROP TABLE alert_quota")
-        db.commit()
-    r = run(env, "reach-db", str(dest(tmp_path)), "--apply")
-    assert r.returncode == 1
-    assert "mev??2Jil?????z" in r.stderr
-    _assert_clean(r.stderr + r.stdout)
-
-
 def test_a_very_long_database_name_is_truncated(tmp_path: Path) -> None:
     env = make(tmp_path)
     with closing(sqlite3.connect(env["STUB_DB"])) as db:
@@ -808,162 +826,18 @@ def test_a_very_long_database_name_is_truncated(tmp_path: Path) -> None:
     assert "a" * 81 not in r.stderr
 
 
-def test_an_empty_migration_record_makes_every_table_required(
-    tmp_path: Path,
-) -> None:
-    """A database never migrated through wrangler: nothing recorded cannot mean
-    "older schema", so a missing table fails the run."""
-    env = make(tmp_path)
-    with closing(sqlite3.connect(env["STUB_DB"])) as db:
-        db.execute("DELETE FROM d1_migrations")
-        db.execute("DROP TABLE alert_quota")
-        db.commit()
-    d = dest(tmp_path)
-    r = run(env, "reach-db", str(d), "--apply")
-    assert r.returncode == 1
-    assert "no applied migration is recorded" in r.stderr
-    assert "required table(s) missing" in r.stderr
-    assert "alert_quota" in r.stderr
-    assert list(d.iterdir()) == []
-
-
-def _migration_names() -> list[str]:
-    return sorted(p.name for p in (ROOT / "worker" / "migrations").glob("*.sql"))
-
-
-def test_a_deleted_history_row_makes_every_table_required(tmp_path: Path) -> None:
-    """0013 is missing from the record while 0014 and later are recorded: not a
-    prefix, so the missing alert tables cannot be called an older schema."""
-    env = make(tmp_path)
-    with closing(sqlite3.connect(env["STUB_DB"])) as db:
-        db.execute("DELETE FROM d1_migrations WHERE name = '0013_alerts.sql'")
-        db.execute("DROP TABLE alert_quota")
-        db.execute("DROP TABLE alert_dedup")
-        db.commit()
-    d = dest(tmp_path)
-    r = run(env, "reach-db", str(d), "--apply")
-    assert r.returncode == 1
-    assert "not a prefix of the migration history" in r.stderr
-    assert "0013_alerts.sql" in r.stderr
-    assert "required table(s) missing" in r.stderr
-    assert "alert_quota" in r.stderr
-    assert "done:" not in r.stdout
-    assert list(d.iterdir()) == []
-
-
-def test_a_gap_in_the_record_with_every_table_present_still_backs_up(
-    tmp_path: Path,
-) -> None:
-    """The record is only distrusted, not an error by itself: nothing is lost."""
-    env = make(tmp_path)
-    with closing(sqlite3.connect(env["STUB_DB"])) as db:
-        db.execute("DELETE FROM d1_migrations WHERE name = '0013_alerts.sql'")
-        db.commit()
-    r = run(env, "reach-db", str(dest(tmp_path)), "--apply")
-    assert r.returncode == 0, r.stderr
-    assert "not a prefix of the migration history" in r.stderr
-
-
-@pytest.mark.parametrize("keep", [0, 1, 5, 9, 12, 16])
-def test_a_clean_prefix_of_the_history_is_trusted(tmp_path: Path, keep: int) -> None:
-    """The first `keep` migrations are recorded (a database at that version):
-    the tables of the later ones may be absent. The full record is the
-    existing tests' case."""
-    env = make(tmp_path)
-    names = _migration_names()
-    with closing(sqlite3.connect(env["STUB_DB"])) as db:
-        db.execute("DELETE FROM d1_migrations")
-        for n in names[: keep + 1]:
-            db.execute("INSERT INTO d1_migrations (name) VALUES (?)", (n,))
-        db.execute("DROP TABLE alert_quota")
-        db.execute("DROP TABLE alert_dedup")
-        db.commit()
-    r = run(env, "reach-db", str(dest(tmp_path)), "--apply")
-    if names[keep] >= "0013_alerts.sql":
-        # 0013 itself is recorded: its missing tables are lost data.
-        assert (r.returncode == 1) == ("0013_alerts.sql" in names[: keep + 1])
-    else:
-        assert r.returncode == 0, r.stderr
-        assert "not a prefix" not in r.stderr
-
-
-@pytest.mark.parametrize("blank", ["", "   "])
-def test_an_empty_migration_name_makes_the_record_untrusted(
-    tmp_path: Path, blank: str
-) -> None:
-    """Otherwise a clean prefix plus an ignored blank row would excuse the
-    missing alert tables."""
-    env = make(tmp_path)
-    _make_older_than_0013(env)
-    with closing(sqlite3.connect(env["STUB_DB"])) as db:
-        db.execute("INSERT INTO d1_migrations (name) VALUES (?)", (blank,))
-        db.commit()
-    d = dest(tmp_path)
-    r = run(env, "reach-db", str(d), "--apply")
-    assert r.returncode == 1
-    assert "empty migration name(s) recorded" in r.stderr
-    assert "required table(s) missing" in r.stderr
-    assert "alert_quota" in r.stderr
-    assert list(d.iterdir()) == []
-
-
-def test_a_very_large_record_is_handled_and_the_notice_is_bounded(
-    tmp_path: Path,
-) -> None:
-    env = make(tmp_path)
-    with closing(sqlite3.connect(env["STUB_DB"])) as db:
-        db.executemany(
-            "INSERT INTO d1_migrations (name) VALUES (?)",
-            [(f"x{i:05d}.sql",) for i in range(5000)],
-        )
-        db.execute("DROP TABLE alert_quota")
-        db.commit()
-    r = run(env, "reach-db", str(dest(tmp_path)), "--apply")
-    assert r.returncode == 1
-    assert "x00000.sql" in r.stderr
-    assert "x00009.sql" in r.stderr
-    assert "x00010.sql" not in r.stderr
-    assert "... and 4990 more" in r.stderr
-    assert "required table(s) missing" in r.stderr
-    assert len(r.stderr) < 2000
-
-
-def test_a_record_over_the_row_limit_is_untrusted(tmp_path: Path) -> None:
-    env = make(tmp_path)
-    with closing(sqlite3.connect(env["STUB_DB"])) as db:
-        db.executemany(
-            "INSERT INTO d1_migrations (name) VALUES (?)",
-            [(f"x{i:05d}.sql",) for i in range(10000)],
-        )
-        db.execute("DROP TABLE alert_quota")
-        db.commit()
-    r = run(env, "reach-db", str(dest(tmp_path)), "--apply")
-    assert r.returncode == 1
-    assert "more than 10000 migrations are recorded" in r.stderr
-    assert "required table(s) missing" in r.stderr
-    assert len(r.stderr) < 2000
-
-
-def test_the_migrations_list_is_in_order() -> None:
-    """The prefix rule reads this list as the history order."""
-    assert _script_array("migrations") == _migration_names()
-
-
 def test_the_lists_in_the_script_match_the_repository_and_each_other() -> None:
-    migration_files = {p.name for p in (ROOT / "worker" / "migrations").glob("*.sql")}
-    assert set(_script_array("migrations")) == migration_files
-    assert len(_script_array("migrations")) == len(migration_files)
-    for entry in _script_array("introduced_by"):
-        migration = entry.partition(":")[2]
-        assert migration == "wrangler" or migration in migration_files
+    text = SCRIPT.read_text()
     assert _script_array("never_exported") == [
         "leads",
         "kit_events",
         "visitor_seen",
         "view_events",
     ]
-    assert "never exported: leads, kit_events, visitor_seen, view_events" in (
-        SCRIPT.read_text()
-    )
+    assert "never exported: leads, kit_events, visitor_seen, view_events" in text
     assert _script_array("ignored_tables") == ["_cf_KV"]
-    assert "sqlite_*) return 0" in SCRIPT.read_text()
+    assert "sqlite_*) return 0" in text
+    # No migration-record logic: nothing the database says may excuse a table.
+    for gone in ("introduced_by", "trust_record", "optional_tables", "is_applied"):
+        assert gone not in text, gone
+    assert "SELECT name FROM d1_migrations" not in text
