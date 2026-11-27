@@ -13,3 +13,6 @@
   row, so the purge now sends each DELETE as its own `--command` and records
   only rows that statement returned, and `leads delete` prints its read-back as
   a separate `--command` instead of a statement in the file.
+  The purge no longer puts any personal value on a command line: a DELETE matches
+  by id and non-personal columns and the returned row is compared by digest; a
+  row whose address changed meanwhile is kept in the leads database.

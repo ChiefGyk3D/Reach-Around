@@ -96,10 +96,14 @@ passes only if DEST also holds no lead row (nothing was ever moved).
 
 Privacy. A DELETE is sent through its own `--command` call, because only that
 shape returns the rows a statement removed (a `--file` run returns one summary row
-and nothing else, on real D1, checked 2026-11-27). The statement holds the row's
-columns, so the address is on wrangler's command line for the length of that call,
-visible to other local users of the machine in the process list: run the purge on a
-machine only you can log in to. Inserts still go through a file. Rows are held in
+and nothing else, on real D1, checked 2026-11-27). No personal value is ever on a
+command line (the process list is readable by other local users): the statement
+matches the row by its id and its non-personal columns (the email and country are
+left out), and the database hands the removed row back, which is compared by its
+full digest here. A row whose address changed after it was read comes back
+different: it is written to DEST through a private file, read back, recorded in the
+manifest and in its own recovery export, and only then counted as deleted, so
+nothing is lost. Inserts and upserts go through a file. Rows are held in
 memory one chunk at a time and in one file inside a fresh
 directory made under WORKDIR (an existing directory you own, mode 700, outside any git
 work tree, no symlink or group/other writable parent). The directory is opened by
@@ -515,6 +519,12 @@ def upsert_sql(table: str, rows: list[dict[str, Any]]) -> str:
     )
 
 
+# Columns that identify a person. Their values never go on a command line (the process
+# list is readable by other local users): a DELETE matches on the other columns and the
+# row the database returns is compared by its full digest in Python.
+PII_COLUMNS = frozenset({"email", "country"})
+
+
 def where(columns: tuple[str, ...], row: dict[str, Any]) -> str:
     """Match a row by id and every column (IS, so a NULL column matches NULL)."""
     return " AND ".join(f"{c} IS {literal(row.get(c))}" for c in columns)
@@ -550,9 +560,8 @@ def delete_statements(table: str, rows: list[dict[str, Any]], guard: str) -> lis
             " AND NOT EXISTS (SELECT 1 FROM kit_events e WHERE e.lead_id = leads.id)"
             f" AND {guard}{back}"
         )
-    return [
-        f"DELETE FROM {table} WHERE " + where(COLUMNS[table], r) + tail for r in rows
-    ]
+    cols = tuple(c for c in COLUMNS[table] if c not in PII_COLUMNS)
+    return [f"DELETE FROM {table} WHERE " + where(cols, r) + tail for r in rows]
 
 
 def same_file(a: os.stat_result, b: os.stat_result) -> bool:
@@ -1462,10 +1471,18 @@ def validate_export(data: object, m: Manifest) -> list[dict[str, Any]]:
 
 
 def write_recovery_export(
-    w: Wrangler, args: argparse.Namespace, work: Path, m: Manifest
+    w: Wrangler,
+    args: argparse.Namespace,
+    work: Path,
+    m: Manifest,
+    rows: list[dict[str, Any]] | None = None,
 ) -> Path:
-    """Create, fsync and re-read a private export before any DELETE is sent."""
-    rows = recovery_rows(w, args.source, m)
+    """Create, fsync and re-read a private export before any DELETE is sent.
+
+    `rows` is given only for a row the database handed back changed (see
+    keep_changed_rows); otherwise the export lists every eligible SOURCE row."""
+    if rows is None:
+        rows = recovery_rows(w, args.source, m)
     timestamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     name = f"{EXPORT_PREFIX}{timestamp}-{secrets.token_hex(6)}.json"
     body = json.dumps(
@@ -1690,8 +1707,38 @@ def purge_chunks(
                         progress.unknown += 1  # it may have reached the database
                         raise
                     progress.sent += 1
+                    keep_changed_rows(w, args, work, m, table, row, back)
                     acknowledge_deleted(table, [row], back, m, progress)
                 require_frozen(w, args.source)
+
+
+def keep_changed_rows(
+    w: Wrangler,
+    args: argparse.Namespace,
+    work: Path,
+    m: Manifest,
+    table: str,
+    sent: dict[str, Any],
+    back: list[dict[str, Any]],
+) -> None:
+    """A DELETE matches without the personal columns, so the row it removed can differ
+    from the copied one there (changed after it was read). The database handed that
+    version back: write it to DEST (through a private file, never a command line),
+    read it back, record it, and only then let it count as deleted. Nothing is lost."""
+    for r in back:
+        if str(r.get("id")) != str(sent.get("id")) or digest(table, r) == digest(
+            table, sent
+        ):
+            continue
+        run_file(w, args.dest, work, upsert_sql(table, [r]))
+        if missing_from(by_ids(w, args.dest, table, [r.get("id")]), [r], COLUMNS[table]):
+            raise Failed("a changed row could not be kept in the destination")
+        m.record(table, r)
+        m.save()
+        item = {"table": table, "digest": digest(table, r), "row": r}
+        write_recovery_export(w, args, work, m, [item])  # an export holds it too
+        sent.clear()
+        sent.update(r)
 
 
 def acknowledge_deleted(

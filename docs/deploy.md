@@ -586,9 +586,11 @@ A multi-statement `--file` run answers with one block whose `results` hold a sin
 (database size, rows read, rows written, queries executed) and no per-statement rows, so nothing
 could be recorded from a file run. The tool therefore sends every DELETE as its own `--command` call
 (inserts, which need no returned rows, still go through a file) and never reads rows from a `--file`
-run. Because the statement is on wrangler's command line, the address of the row is visible to other
-local users in the process list for the length of the call: run the purge on a machine only you can
-log in to. The tool fails closed: if the database refuses the clause, the delete fails and the run
+run. No personal value goes on a command line (it would show in the process list to other local users): the DELETE
+matches a row by its id and its non-personal columns, leaving out the email and country, and the removed row that
+the database returns is compared by its full digest. If the address changed after the tool read the row, the
+returned version differs: the tool writes it to the leads database through a private file, reads it back,
+records it in the manifest and in its own recovery export, and only then counts it as deleted. The tool fails closed: if the database refuses the clause, the delete fails and the run
 needs `--verify`; if no rows come back, nothing is recorded and the final verification reports the
 rows as unaccounted.
 

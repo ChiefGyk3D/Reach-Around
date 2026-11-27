@@ -83,6 +83,15 @@ if os.environ.get("CRASH_AT") and writes:
     if n + 1 == int(os.environ["CRASH_AT"]):
         sys.exit(1)
 if writes:
+    target = "DELETE FROM leads WHERE id IS '" + format(2, "032x") + "'"
+    if os.environ.get("STUB_INJECT") == "email" and sql.startswith(target):
+        # An older Worker changes the address after the tool read the row.
+        db.execute(
+            "UPDATE leads SET email = 'changed@example.test' WHERE id = '"
+            + format(2, "032x")
+            + "'"
+        )
+        db.commit()
     if log and name == "analytics-db" and "DELETE FROM" in sql:
         open(log, "a").write("delete-file\\n" if is_file else "delete\\n")
     inject = os.environ.get("STUB_INJECT")
@@ -2677,6 +2686,89 @@ def test_delete_sql_is_one_statement_per_row() -> None:
     for stmt, row in zip(out, rows, strict=True):
         assert stmt.count("DELETE FROM") == 1 and stmt.endswith(";")
         assert row["id"] in stmt
+
+
+# ---- no row data on a command line (security finding, #772) -----------------------
+
+SPY = """#!{python}
+import os, sys
+with open(os.environ["ARGV_LOG"], "a") as fh:
+    fh.write(repr(sys.argv[1:]) + "\\n")
+os.execv(os.environ["STUB_REAL"], [os.environ["STUB_REAL"], *sys.argv[1:]])
+"""
+PII = ("@example.test", "'US'", "person")
+
+
+def spy_env(tmp_path: Path, env: dict[str, str]) -> Path:
+    """Route wrangler through a wrapper that records every argument it is given."""
+    wrapper = tmp_path / "argv-spy"
+    wrapper.write_text(SPY.format(python=sys.executable))
+    wrapper.chmod(0o700)
+    env["STUB_REAL"] = env["WRANGLER"]
+    env["WRANGLER"] = str(wrapper)
+    env["ARGV_LOG"] = str(tmp_path / "argv.log")
+    return Path(env["ARGV_LOG"])
+
+
+def assert_clean(argv_log: Path, *outputs: str) -> None:
+    text = argv_log.read_text() if argv_log.exists() else ""
+    for needle in PII:
+        assert needle not in text, needle
+        for out in outputs:
+            assert needle not in out, needle
+
+
+def test_no_row_value_reaches_a_command_line_in_any_mode(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    log = spy_env(tmp_path, env)
+    work = workdir(tmp_path)
+    outs = []
+    for flags in (("--freeze",), ("--copy",)):
+        r = run(env, work, *flags)
+        assert r.returncode == 0, r.stderr
+        outs += [r.stdout, r.stderr]
+    r = purge(env, work)
+    assert r.returncode == 0, r.stderr
+    outs += [r.stdout, r.stderr]
+    r = run(env, work, "--verify")
+    outs += [r.stdout, r.stderr]
+    r = run(env, work, "--recover-from-export")
+    assert r.returncode == 0, r.stderr
+    outs += [r.stdout, r.stderr]
+    assert "DELETE FROM" in log.read_text()  # the spy saw the deletes
+    assert_clean(log, *outs)
+
+
+@pytest.mark.parametrize("failure", ["STUB_DELETE_THEN_FAIL", "STUB_FAIL_FILE"])
+def test_no_row_value_reaches_a_command_line_when_a_call_fails(
+    tmp_path: Path, failure: str
+) -> None:
+    env = make(tmp_path)
+    log = spy_env(tmp_path, env)
+    env[failure] = "1"
+    work = workdir(tmp_path)
+    r = purge(env, work)
+    assert r.returncode != 0
+    assert_clean(log, r.stdout, r.stderr)
+
+
+def test_a_row_changed_after_it_was_read_is_kept_in_dest_not_lost(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    log = spy_env(tmp_path, env)
+    env["STUB_INJECT"] = "email"  # the address changes right before its DELETE
+    work = workdir(tmp_path)
+    r = purge(env, work)
+    assert r.returncode == 0, r.stderr
+    assert src_rows(env) == 0
+    with closing(sqlite3.connect(env["STUB_DEST"])) as db:
+        got = db.execute(
+            "SELECT email FROM leads WHERE id = ?", (format(2, "032x"),)
+        ).fetchone()
+    assert got == ("changed@example.test",)  # the deleted version came back and was kept
+    assert "changed@example.test" not in log.read_text()
+    assert run(env, work, "--verify").returncode == 0
 
 
 def frozen_names(env: dict[str, str]) -> set[str]:
