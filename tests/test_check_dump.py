@@ -92,8 +92,14 @@ def test_the_schema_loader_never_hands_sqlite_deeply_nested_sql() -> None:
     assert cols[:3] == ["id", "email", "created_ts"]
 
 
+SQLITE_SEQUENCE_DELETE = 'DELETE FROM "sqlite_sequence";'
+
+
 def dump_lines(db: sqlite3.Connection) -> list[str]:
-    return [ln for ln in db.iterdump() if not ln.startswith("DELETE FROM")]
+    # Drop only the one line iterdump adds; any other DELETE stays and fails.
+    lines = [ln for ln in db.iterdump() if ln != SQLITE_SEQUENCE_DELETE]
+    assert not [ln for ln in lines if ln.upper().startswith("DELETE")]
+    return lines
 
 
 def schema_dump() -> str:
@@ -1240,6 +1246,8 @@ def test_lookalike_and_adjacent_pragma_forms_are_refused(
 # #962: a `wrangler d1 export` holds a PRAGMA line, CREATE TABLE, CREATE INDEX and
 # one INSERT per row (verified 2026-11-27 in scripts/backup-d1.sh). It never holds
 # a DELETE, so no DELETE form is accepted: a restore of it would erase rows.
+# The cases below are general malformed-SQL coverage; the focused test after them
+# holds the one canonical form the old prefix rule accepted.
 @pytest.mark.parametrize(
     "line",
     [
@@ -1265,5 +1273,19 @@ def test_lookalike_and_adjacent_pragma_forms_are_refused(
 )
 def test_no_delete_statement_is_accepted(line: str, tmp_path: Path) -> None:
     r = run(SCHEMA_DUMP + GOOD_ROW + line + "\n", tmp_path=tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "unexpected statement" in r.stdout
+
+
+def test_the_formerly_accepted_canonical_delete_is_refused(tmp_path: Path) -> None:
+    # The old SKIP_OTHER prefix "DELETE FROM" accepted exactly this shape.
+    r = run(SCHEMA_DUMP + GOOD_ROW + "DELETE FROM view_events;\n", tmp_path=tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "unexpected statement" in r.stdout
+
+
+def test_a_cte_prefixed_delete_is_refused(tmp_path: Path) -> None:
+    stmt = "WITH x AS (SELECT 1) DELETE FROM view_events;\n"
+    r = run(SCHEMA_DUMP + GOOD_ROW + stmt, tmp_path=tmp_path)
     assert r.returncode == 1, r.stdout + r.stderr
     assert "unexpected statement" in r.stdout
