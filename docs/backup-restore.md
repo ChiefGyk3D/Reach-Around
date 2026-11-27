@@ -39,6 +39,14 @@ tables, `analytics_coverage` (24 letters per day saying whether the Worker was
 collecting; no counts and no visitor data) and `d1_migrations` (the list of migrations already applied, which a
 rebuilt database needs so that "apply migrations" only runs newer ones).
 
+The script checks each export. Every table's row count must be the same before
+and after the exports, so a write during the run fails it (exit 1): pause both
+write routes and run again. Each file's rows are then counted by reading it line
+by line (nothing in it is executed, size limits apply, `BACKUP_MAX_BYTES` sets
+the per-file one) and must equal that count. Residual (inferred, not verified:
+D1 gives no snapshot across separate queries): a write that replaces rows and
+leaves every count equal during the run is not seen.
+
 **Country in `click_events`.** The Worker now writes no country there, but the
 column still exists and rows written before migration 0010 and the new Worker
 can still hold one. The export copies the table as it is, so an old backup can

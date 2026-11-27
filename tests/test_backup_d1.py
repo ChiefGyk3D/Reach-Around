@@ -40,6 +40,7 @@ if args[:2] == ["d1", "execute"]:
     if os.environ.get("STUB_BAD_ANSWER") and listing_q(sql):
         print(os.environ["STUB_BAD_ANSWER"])
         sys.exit(0)
+    envelope = os.environ.get("STUB_ENVELOPE")
     cur = db.execute(sql)
     cols = [c[0] for c in cur.description]
     rows = [dict(zip(cols, r)) for r in cur.fetchall()]
@@ -48,6 +49,17 @@ if args[:2] == ["d1", "execute"]:
         # Synthetic system-table names (the script accepts sqlite_*) to make the
         # listing larger than a pipe buffer.
         rows += [{{"name": f"sqlite_pad_{{i:04d}}_" + "x" * 1000}} for i in range(300)]
+    if envelope and listing:
+        good = {{"results": rows, "success": True}}
+        answer = {{
+            "failed": [{{"results": rows, "success": False}}],
+            "no-success": [{{"results": rows}}],
+            "two-results": [good, {{"results": [], "success": True}}],
+            "bare-failed": {{"results": rows, "success": False}},
+            "bad-name": [{{"results": rows + [{{"name": 5}}], "success": True}}],
+        }}[envelope]
+        print(json.dumps(answer))
+        sys.exit(0)
     print(json.dumps([{{"results": rows, "success": True}}]))
 elif args[:2] == ["d1", "export"]:
     table = [a for a in args if a.startswith("--table=")][0].split("=", 1)[1]
@@ -68,6 +80,15 @@ elif args[:2] == ["d1", "export"]:
     if os.environ.get("STUB_REPLACE") == table:
         # The table is replaced after its export (a race with the listing).
         db.execute(f'ALTER TABLE "{{table}}" ADD COLUMN raced TEXT')
+        db.commit()
+    if os.environ.get("STUB_APPEND"):
+        with open(out, "a") as fh:
+            fh.write(os.environ["STUB_APPEND"] + "\\n")
+    if os.environ.get("STUB_BIG_LINE"):
+        with open(out, "a") as fh:
+            fh.write("-- " + "x" * 2000000 + "\\n")
+    if os.environ.get("STUB_DELETE_AFTER") == table:
+        db.execute(f'DELETE FROM "{{table}}"')
         db.commit()
     if os.environ.get("STUB_GROW") == table:
         db.execute(
@@ -884,7 +905,7 @@ def test_a_truncated_export_is_caught(tmp_path: Path) -> None:
     r = run(env, "reach-db", str(d), "--apply")
     _fails_before_keeping(r, d)
     assert "view_daily" in r.stderr
-    assert "incomplete" in r.stderr
+    assert "does not match" in r.stderr
 
 
 def test_a_table_replaced_during_the_run_fails(tmp_path: Path) -> None:
@@ -898,30 +919,93 @@ def test_a_table_replaced_during_the_run_fails(tmp_path: Path) -> None:
     assert "changed while the export ran" in r.stderr
 
 
-def test_a_growing_table_within_the_counts_still_passes(tmp_path: Path) -> None:
-    """A row added during the run lies between the before and after counts."""
+def test_a_write_during_the_run_fails_and_asks_for_a_rerun(tmp_path: Path) -> None:
+    """The before and after counts must be equal: a row added while the export
+    runs fails the run (no range is accepted) and keeps nothing."""
     env = make(tmp_path)
     env["STUB_GROW"] = "view_hour_daily"
     d = dest(tmp_path)
     r = run(env, "reach-db", str(d), "--apply")
-    assert r.returncode == 0, r.stderr
+    _fails_before_keeping(r, d)
+    assert "changed during the run" in r.stderr
+    assert "view_hour_daily" in r.stderr
+
+
+def test_a_truncated_export_with_a_matching_delete_still_fails(
+    tmp_path: Path,
+) -> None:
+    """The review's case: the export lost a row and a live delete made the after
+    count match it. Equal before and after counts are required, so it fails."""
+    env = make(tmp_path)
+    env["STUB_TRUNCATE"] = "view_daily"
+    env["STUB_DELETE_AFTER"] = "view_daily"
+    d = dest(tmp_path)
+    _fails_before_keeping(run(env, "reach-db", str(d), "--apply"), d)
+
+
+def test_exported_sql_is_never_executed(tmp_path: Path) -> None:
+    """A file that holds ATTACH (or anything else) is only counted, never run."""
+    env = make(tmp_path)
+    marker = tmp_path / "probe.db"
+    env["STUB_APPEND"] = f"ATTACH DATABASE '{marker}' AS probe;"
+    d = dest(tmp_path)
+    run(env, "reach-db", str(d), "--apply")
+    assert not marker.exists()
+    assert "sqlite3" not in SCRIPT.read_text()
+
+
+def test_an_oversized_line_or_file_fails_closed(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    env["STUB_BIG_LINE"] = "1"
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    _fails_before_keeping(r, d)
+    assert "too large" in r.stderr
+    env.pop("STUB_BIG_LINE")
+    env["BACKUP_MAX_BYTES"] = "100"
+    d2 = dest_second(tmp_path)
+    r2 = run(env, "reach-db", str(d2), "--apply")
+    assert r2.returncode == 1
+    assert "too large" in r2.stderr
 
 
 @pytest.mark.parametrize(
-    "answer",
+    "line",
     [
-        "not json",
-        "[]",
-        '[{"results": [], "success": false}]',
-        '[{"results": [{"name": "view_daily"}]}]',
-        '[{"results": [{"name": "view_daily"}], "success": true},'
-        ' {"results": [], "success": true}]',
-        '{"error": "boom"}',
-        '[{"results": "x", "success": true}]',
-        '[{"results": [{"name": 5}], "success": true}]',
+        'INSERT INTO "view_daily" VALUES(1);\nINSERT INTO "view_daily" VALUES(2',
+        "INSERT INTO view_daily VALUES(1)",
     ],
 )
-def test_a_listing_that_is_not_one_successful_result_is_not_trusted(
+def test_an_insert_shape_it_cannot_count_fails_closed(
+    tmp_path: Path, line: str
+) -> None:
+    env = make(tmp_path)
+    env["STUB_APPEND"] = line
+    d = dest(tmp_path)
+    _fails_before_keeping(run(env, "reach-db", str(d), "--apply"), d)
+
+
+@pytest.mark.parametrize(
+    "mode", ["failed", "no-success", "two-results", "bare-failed", "bad-name"]
+)
+def test_an_invalid_envelope_around_a_complete_listing_is_not_trusted(
+    tmp_path: Path, mode: str
+) -> None:
+    """Each answer holds every required table: only the envelope is wrong. The
+    run must fail at the listing, before any count query or export."""
+    env = make(tmp_path)
+    env["STUB_ENVELOPE"] = mode
+    log = _log(env, tmp_path)
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    _fails_before_keeping(r, d)
+    assert "unexpected answer" in r.stderr
+    lines = log.read_text().splitlines()
+    assert lines == [f"execute: {LISTING_SQL}"]
+
+
+@pytest.mark.parametrize("answer", ["not json", "[]", '{"error": "boom"}'])
+def test_a_listing_that_is_not_json_results_is_not_trusted(
     tmp_path: Path, answer: str
 ) -> None:
     env = make(tmp_path)

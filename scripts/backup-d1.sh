@@ -30,11 +30,14 @@
 # The run makes read-only queries (the table listing with each table's definition,
 # once before and once after the exports, and a row count of every table, once
 # before and once after) plus the exports. An answer that is not a single
-# successful result is never trusted. After each export the file is loaded into a
-# scratch in-memory SQLite database and its row count must lie between the counts
-# taken before and after (an export that is cut short fails); and if the listing
-# after the exports differs from the first one (a table was dropped, replaced or
-# changed during the run) the run fails. Every
+# successful result is never trusted. Every table's count must be the same before
+# and after the exports (a write during the run fails it: rerun, ideally with the
+# write routes paused), and each export file's row count, counted by reading it
+# line by line (single-row INSERT lines only, size limits, nothing executed), must
+# equal that count, so an export cut short fails. If the listing after the
+# exports differs from the first (a table dropped, replaced or changed) the run
+# fails. Residual (inferred, not verified: D1 gives no snapshot across separate
+# queries): a write that replaces rows and leaves every count equal is not seen. Every
 # table in the `tables` list below is ALWAYS required: if the database lacks any
 # of them the run fails (exit 1) before any export and names the missing tables
 # (at most 10, then "... and K more"). A database that lacks a current table (an
@@ -410,14 +413,21 @@ if [ "$fingerprint_before" != "$fingerprint_after" ]; then
   exit 1
 fi
 
-# Every file must be a complete dump: load it into a scratch in-memory database
-# and compare its row count with the two database counts (names and verdicts
-# only; no value is printed).
-if ! python3 -I - "$out" "${exported[@]}" <<'PY'
-import sqlite3, sys
+# The database must not have changed while the exports ran: every table's count
+# before and after must be equal (a write means rerun, exit 1). Then each file's
+# row count must equal that count. The files are only READ, line by line, with a
+# size limit per file (BACKUP_MAX_BYTES, default 1 GiB) and per line (1 MiB); no
+# exported SQL is ever executed. Only lines that start with INSERT INTO <table>
+# are counted, and such a line must be a single-row statement on one line (it
+# ends with ");"): any shape that cannot be counted fails closed. Names and
+# verdicts only are printed, never a value.
+if ! BACKUP_MAX_BYTES="${BACKUP_MAX_BYTES:-1073741824}" python3 -I - "$out" "${exported[@]}" <<'PY'
+import os, re, sys
 
 out = sys.argv[1]
 tables = sys.argv[2:]
+max_bytes = int(os.environ["BACKUP_MAX_BYTES"])
+max_line = 1 << 20
 
 def read(name):
     counts = {}
@@ -427,31 +437,55 @@ def read(name):
             counts[t] = int(n)
     return counts
 
+def say(msg, names):
+    shown = " ".join(names[:10])
+    more = f" ... and {len(names) - 10} more" if len(names) > 10 else ""
+    sys.stderr.write(f"error: {msg}: {shown}{more}\n")
+
 before, after = read(".counts-before"), read(".counts-after")
-bad = []
+changed = [t for t in tables if before.get(t) != after.get(t)]
+if changed:
+    say("rows changed during the run (rerun it, ideally with the write routes paused)", changed)
+    sys.exit(1)
+
+big, odd, wrong = [], [], []
 for t in tables:
-    try:
-        if t not in before or t not in after:
-            raise ValueError(t)
-        with open(f"{out}/{t}.sql") as fh:
-            sql = fh.read()
-        db = sqlite3.connect(":memory:")
-        db.executescript(sql)
-        got = db.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0]
-        db.close()
-        if not min(before[t], after[t]) <= got <= max(before[t], after[t]):
-            raise ValueError(t)
-    except (sqlite3.Error, ValueError, OSError):
-        bad.append(t)
-if bad:
-    sys.stderr.write(
-        "error: export incomplete or changed during the run: " + " ".join(bad[:10])
-        + (f" ... and {len(bad) - 10} more" if len(bad) > 10 else "") + "\n"
-    )
+    path = f"{out}/{t}.sql"
+    if os.path.getsize(path) > max_bytes:
+        big.append(t)
+        continue
+    start = re.compile(rb'^INSERT INTO ("?)' + re.escape(t.encode()) + rb'\1[ (]')
+    n = 0
+    with open(path, "rb") as fh:
+        while True:
+            line = fh.readline(max_line + 1)
+            if not line:
+                break
+            if len(line) > max_line:
+                big.append(t)
+                break
+            if start.match(line):
+                if not line.rstrip(b"\r\n").endswith(b");") or b"VALUES" not in line:
+                    odd.append(t)
+                    break
+                n += 1
+        else:
+            pass
+    if t in big or t in odd:
+        continue
+    if n != before[t]:
+        wrong.append(t)
+if big:
+    say("export too large to check", big)
+if odd:
+    say("export holds an INSERT shape that cannot be counted", odd)
+if wrong:
+    say("export row count does not match the database", wrong)
+if big or odd or wrong:
     sys.exit(1)
 PY
 then
-  echo "error: an export does not match the database row counts; removed" >&2
+  echo "error: the export could not be verified; removed" >&2
   exit 1
 fi
 rm -f -- "$out/.counts-before" "$out/.counts-after"
