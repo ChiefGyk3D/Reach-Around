@@ -2792,7 +2792,7 @@ def test_a_changed_row_survives_in_a_private_file_when_keeping_it_fails(
     assert len(saved) == 1
     assert stat.S_IMODE(saved[0].stat().st_mode) == 0o600
     data = json.loads(saved[0].read_text())
-    assert data["row"]["email"] == "changed@example.test"  # the only copy is kept
+    assert data["rows"][0]["row"]["email"] == "changed@example.test"  # the only copy
     assert str(saved[0]) in r.stderr  # the path is named
     for out in (r.stdout, r.stderr, log.read_text()):
         assert "changed@example.test" not in out
@@ -2862,23 +2862,60 @@ def dest_email(env: dict[str, str], lead_number: int) -> str | None:
     return None if row is None else str(row[0])
 
 
-@pytest.mark.parametrize(
-    "stage", ["rescue-written", "dest-written", "manifest-saved", "export-written"]
-)
-def test_a_crash_after_each_stage_of_keeping_a_changed_row_loses_nothing(
+def crash_before(mod: Any, owner: Any, name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Crash right BEFORE `owner.name` runs (its first call that matters)."""
+
+    def wrapper(*_a: Any, **_k: Any) -> Any:
+        raise Crash
+
+    monkeypatch.setattr(owner, name, wrapper)
+
+
+def rescue_names(work: Path) -> list[str]:
+    return sorted(p.name for p in work.iterdir() if p.name.startswith("lead-returned-"))
+
+
+def src_email(env: dict[str, str], lead_number: int) -> str | None:
+    with closing(sqlite3.connect(env["STUB_SRC"])) as db:
+        row = db.execute(
+            "SELECT email FROM leads WHERE id = ?", (format(lead_number, "032x"),)
+        ).fetchone()
+    return None if row is None else str(row[0])
+
+
+def crash_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
-) -> None:
+) -> tuple[dict[str, str], Path]:
+    """Purge with the address of lead 2 changed right before its DELETE, crashing at
+    `stage`; returns the env and the work directory."""
     env = make(tmp_path)
-    env["STUB_INJECT"] = "email"  # the address changes right before its DELETE
+    env["STUB_INJECT"] = "email"
     work = workdir(tmp_path)
     assert run(env, work, "--freeze").returncode == 0
     mod = load_with_env(env, monkeypatch)
-    # Each boundary is a crash the tool cannot catch, right after that stage.
-    if stage == "rescue-written":
-        crash_after(mod, "save_returned_row", monkeypatch)
+    if stage == "precreated":
+        # the leads chunk's rescue file exists and is registered, no DELETE sent yet
+        real_open = mod.open_rescue
+
+        def after_open(w: Path, m: Any, table: str, ids: list[str]) -> Any:
+            rescue = real_open(w, m, table, ids)
+            if table == "leads":
+                raise Crash
+            return rescue
+
+        monkeypatch.setattr(mod, "open_rescue", after_open)
+    elif stage == "deleted-not-filled":
+        crash_before(mod, mod.Rescue, "add", monkeypatch)
+    elif stage == "filled":
+        real_add = mod.Rescue.add
+
+        def add_then_crash(self: Any, row: dict[str, Any]) -> None:
+            real_add(self, row)
+            raise Crash
+
+        monkeypatch.setattr(mod.Rescue, "add", add_then_crash)
     elif stage == "dest-written":
-        # record() follows the dest write and its read-back
-        crash_in_record(mod, monkeypatch)
+        crash_in_record(mod, monkeypatch)  # record() follows the dest write and read-back
     elif stage == "manifest-saved":
         crash_before_export(mod, monkeypatch)
     else:
@@ -2886,25 +2923,82 @@ def test_a_crash_after_each_stage_of_keeping_a_changed_row_loses_nothing(
     with pytest.raises(Crash):
         mod.main(main_args(work, "--purge"))
     monkeypatch.undo()
-    # The rescue file is registered durably, the changed row is on disk.
-    manifest = saved_manifest(work)
-    names = [p.name for p in work.iterdir() if p.name.startswith("lead-returned-")]
-    assert names and set(names) <= set(manifest["rescue_files"]), stage
+    return env, work
+
+
+@pytest.mark.parametrize(
+    "stage", ["filled", "dest-written", "manifest-saved", "export-written"]
+)
+def test_a_crash_after_each_stage_of_keeping_a_changed_row_loses_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    env, work = crash_run(tmp_path, monkeypatch, stage)
+    # The rescue file exists, is registered and holds (or DEST holds) the row.
+    names = rescue_names(work)
+    assert len(names) == 1, stage
+    assert saved_manifest(work)["rescue_files"] == names, stage
     # Recovery consumes it: the changed row is back in SOURCE and in DEST, the file
     # and its registration are gone, and the freeze is in place again.
-    for k, v in env.items():
-        monkeypatch.setenv(k, v)
     r = run(env, work, "--recover-from-export")
     assert r.returncode == 0, (stage, r.stderr)
-    assert [p for p in work.iterdir() if p.name.startswith("lead-returned-")] == []
+    assert rescue_names(work) == []
     assert saved_manifest(work)["rescue_files"] == []
     assert dest_email(env, 2) == "changed@example.test", stage
-    with closing(sqlite3.connect(env["STUB_SRC"])) as db:
-        got = db.execute(
-            "SELECT email FROM leads WHERE id = ?", (format(2, "032x"),)
-        ).fetchone()
-    assert got == ("changed@example.test",), stage
+    assert src_email(env, 2) == "changed@example.test", stage
     assert frozen_names(env) == {"leads_frozen", "kit_events_frozen"}
+
+
+def test_a_crash_after_the_rescue_file_is_created_and_before_the_delete_is_clean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env, work = crash_run(tmp_path, monkeypatch, "precreated")
+    # Boundary: the file existed and was registered BEFORE any DELETE of its chunk.
+    names = rescue_names(work)
+    assert len(names) == 1 and saved_manifest(work)["rescue_files"] == names
+    assert json.loads((work / names[0]).read_text())["rows"] == []
+    assert src_email(env, 2) == "person2@example.test"  # nothing of that chunk deleted
+    # The source rows of the chunk are still there, so the DELETE never happened: the
+    # empty file is removed and unregistered.
+    r = run(env, work, "--recover-from-export")
+    assert r.returncode == 0, r.stderr
+    assert rescue_names(work) == [] and saved_manifest(work)["rescue_files"] == []
+    assert src_email(env, 2) == "person2@example.test"
+
+
+def test_a_row_deleted_and_not_yet_filled_is_unrecoverable_and_nothing_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env, work = crash_run(tmp_path, monkeypatch, "deleted-not-filled")
+    names = rescue_names(work)
+    assert len(names) == 1 and saved_manifest(work)["rescue_files"] == names
+    assert src_email(env, 2) is None  # the DELETE ran; the changed row is in no file
+    before = src_rows(env)
+    r = run(env, work, "--recover-from-export")
+    assert r.returncode == 5, (r.returncode, r.stderr)
+    assert "Time Travel" in r.stderr
+    # Refused: nothing restored (a stale export is not put back), nothing unregistered.
+    assert src_rows(env) == before and src_email(env, 2) is None
+    assert rescue_names(work) == names
+    assert saved_manifest(work)["rescue_files"] == names
+    assert "changed@example.test" not in r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("damage", ["missing", "empty"])
+def test_a_registered_rescue_file_that_is_missing_or_empty_refuses_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str
+) -> None:
+    env, work = crash_run(tmp_path, monkeypatch, "filled")
+    (name,) = rescue_names(work)
+    if damage == "missing":
+        (work / name).unlink()
+    else:
+        (work / name).write_text("")
+    before = src_rows(env)
+    r = run(env, work, "--recover-from-export")
+    assert r.returncode == 5, (damage, r.returncode, r.stderr)
+    assert "Time Travel" in r.stderr
+    assert src_rows(env) == before  # no stale export was restored
+    assert saved_manifest(work)["rescue_files"] == [name]  # never unregistered
 
 
 def test_a_rescue_file_that_could_not_be_written_still_reaches_dest(
@@ -2919,11 +3013,11 @@ def test_a_rescue_file_that_could_not_be_written_still_reaches_dest(
     def no_space(*_a: Any, **_k: Any) -> None:
         raise OSError("disk full")
 
-    monkeypatch.setattr(mod, "save_returned_row", no_space)
+    monkeypatch.setattr(mod.Rescue, "add", no_space)
     assert mod.main(main_args(work, "--purge")) == 0
     assert dest_email(env, 2) == "changed@example.test"
     assert saved_manifest(work)["rescue_files"] == []
-    assert [p for p in work.iterdir() if p.name.startswith("lead-returned-")] == []
+    assert rescue_names(work) == []
 
 
 def test_the_normal_path_consumes_its_rescue_file(tmp_path: Path) -> None:
@@ -2932,29 +3026,57 @@ def test_the_normal_path_consumes_its_rescue_file(tmp_path: Path) -> None:
     work = workdir(tmp_path)
     assert purge(env, work).returncode == 0
     assert saved_manifest(work)["rescue_files"] == []
-    assert [p for p in work.iterdir() if p.name.startswith("lead-returned-")] == []
+    assert rescue_names(work) == []
+
+
+def _rescue_fixture(tmp_path: Path, mod: Any) -> tuple[Any, Any]:
+    uid = str(uuid.uuid4())
+    m = mod.Manifest(tmp_path, "src", "dst", uid, uid)
+    m.save = lambda: None
+    rescue = mod.open_rescue(tmp_path, m, "leads", ["a" * 32])
+    rescue.add({c: None for c in mod.COLUMNS["leads"]} | {"id": "a" * 32, "email": "c@example.test"})
+    return m, rescue
 
 
 def test_consuming_a_rescue_file_overwrites_it_before_removing_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     mod = load_script()
-    name = "lead-returned-" + "ab" * 8 + ".json"
-    (tmp_path / name).write_text('{"row": {"email": "changed@example.test"}}')
-    saved: list[int] = []
-    m = SimpleNamespace(rescue_files=[name], save=lambda: saved.append(1))
+    m, rescue = _rescue_fixture(tmp_path, mod)
     seen: list[bytes] = []
     real_unlink = os.unlink
 
     def spy(path: Any, *a: Any, **k: Any) -> None:
-        seen.append(Path(path).read_bytes())  # what is on disk at removal time
+        with open(Path(tmp_path) / path, "rb") as fh:
+            seen.append(fh.read())  # what is on disk at removal time
         real_unlink(path, *a, **k)
 
     monkeypatch.setattr(mod.os, "unlink", spy)
-    mod.consume_rescue(tmp_path, m, name)
-    assert not (tmp_path / name).exists()
-    assert m.rescue_files == [] and saved == [1]
-    assert seen and set(seen[0]) == {0}  # zeros, never the row
+    rescue.consume()
+    assert not (tmp_path / rescue.name).exists()
+    assert m.rescue_files == []
+    assert seen and b"c@example.test" not in seen[0] and b"consumed" in seen[0]
+
+
+@pytest.mark.parametrize("attack", ["hard-link", "inode-swap"])
+def test_consuming_refuses_a_file_that_changed_since_it_was_checked(
+    tmp_path: Path, attack: str
+) -> None:
+    mod = load_script()
+    m, rescue = _rescue_fixture(tmp_path, mod)
+    path = tmp_path / rescue.name
+    if attack == "hard-link":
+        os.link(path, tmp_path / "second-name")  # a second link to the same inode
+    else:
+        other = tmp_path / "other"
+        other.write_text(path.read_text())
+        other.chmod(0o600)
+        os.replace(other, path)  # a different inode under the same name
+    before = path.read_bytes()
+    with pytest.raises(mod.Refused):
+        rescue.consume()
+    assert path.read_bytes() == before  # kept, not overwritten
+    assert m.rescue_files == [rescue.name]  # and still registered
 
 
 def frozen_names(env: dict[str, str]) -> set[str]:

@@ -2863,9 +2863,13 @@ class TestLegacyDatabase:
         _legacy_fake()
 
     def _legacy(
-        self, capsys: pytest.CaptureFixture[str], export: Path, *extra: str
+        self,
+        capsys: pytest.CaptureFixture[str],
+        export: Path,
+        *extra: str,
+        legacy_id: str = LEGACY_UUID,
     ) -> tuple[int, str, str]:
-        ids = ["--legacy-database-id", LEGACY_UUID, "--leads-database-id", LEADS_UUID]
+        ids = ["--legacy-database-id", legacy_id, "--leads-database-id", LEADS_UUID]
         return run(
             capsys,
             "--input",
@@ -2877,7 +2881,7 @@ class TestLegacyDatabase:
             "--confirm-legacy",
             LEGACY_DB,
             "--yes",
-            *[a for a in ids if a not in extra],
+            *ids,
             *extra,
         )
 
@@ -2942,9 +2946,7 @@ class TestLegacyDatabase:
         assert code == 2 and out == "" and "--file" not in err
         fake.points.pop(LEGACY_DB)
         # (b) the ids are equal: the same database under two names
-        code, out, err = self._legacy(
-            capsys, export, "--legacy-database-id", LEADS_UUID
-        )
+        code, out, err = self._legacy(capsys, export, legacy_id=LEADS_UUID)
         assert code == 2 and out == "" and "--file" not in err
         # (c) the database says it is the leads database, or says nothing
         for role in ("leads", None):
