@@ -335,11 +335,12 @@ def test_row_ids_above_two_to_the_24th_do_not_fail_the_check(tmp_path: Path) -> 
 
 def _make_older_than_0013(env: dict[str, str]) -> None:
     """A database that never applied migration 0013: no alert tables, and the
-    migration is not recorded."""
+    migration is not recorded. Like a real older database, the record is a clean
+    prefix: 0013 and every later migration are not recorded."""
     with closing(sqlite3.connect(env["STUB_DB"])) as db:
         db.execute("DROP TABLE alert_quota")
         db.execute("DROP TABLE alert_dedup")
-        db.execute("DELETE FROM d1_migrations WHERE name = '0013_alerts.sql'")
+        db.execute("DELETE FROM d1_migrations WHERE name >= '0013'")
         db.commit()
 
 
@@ -674,7 +675,7 @@ def test_an_existing_table_is_exported_even_if_its_migration_is_not_recorded(
 ) -> None:
     env = make(tmp_path)
     with closing(sqlite3.connect(env["STUB_DB"])) as db:
-        db.execute("DELETE FROM d1_migrations WHERE name = '0013_alerts.sql'")
+        db.execute("DELETE FROM d1_migrations WHERE name >= '0013'")
         db.commit()
     d = dest(tmp_path)
     r = run(env, "reach-db", str(d), "--apply")
@@ -824,6 +825,128 @@ def test_an_empty_migration_record_makes_every_table_required(
     assert "required table(s) missing" in r.stderr
     assert "alert_quota" in r.stderr
     assert list(d.iterdir()) == []
+
+
+def _migration_names() -> list[str]:
+    return sorted(p.name for p in (ROOT / "worker" / "migrations").glob("*.sql"))
+
+
+def test_a_deleted_history_row_makes_every_table_required(tmp_path: Path) -> None:
+    """0013 is missing from the record while 0014 and later are recorded: not a
+    prefix, so the missing alert tables cannot be called an older schema."""
+    env = make(tmp_path)
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        db.execute("DELETE FROM d1_migrations WHERE name = '0013_alerts.sql'")
+        db.execute("DROP TABLE alert_quota")
+        db.execute("DROP TABLE alert_dedup")
+        db.commit()
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    assert r.returncode == 1
+    assert "not a prefix of the migration history" in r.stderr
+    assert "0013_alerts.sql" in r.stderr
+    assert "required table(s) missing" in r.stderr
+    assert "alert_quota" in r.stderr
+    assert "done:" not in r.stdout
+    assert list(d.iterdir()) == []
+
+
+def test_a_gap_in_the_record_with_every_table_present_still_backs_up(
+    tmp_path: Path,
+) -> None:
+    """The record is only distrusted, not an error by itself: nothing is lost."""
+    env = make(tmp_path)
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        db.execute("DELETE FROM d1_migrations WHERE name = '0013_alerts.sql'")
+        db.commit()
+    r = run(env, "reach-db", str(dest(tmp_path)), "--apply")
+    assert r.returncode == 0, r.stderr
+    assert "not a prefix of the migration history" in r.stderr
+
+
+@pytest.mark.parametrize("keep", [0, 1, 5, 9, 12, 16])
+def test_a_clean_prefix_of_the_history_is_trusted(tmp_path: Path, keep: int) -> None:
+    """The first `keep` migrations are recorded (a database at that version):
+    the tables of the later ones may be absent. The full record is the
+    existing tests' case."""
+    env = make(tmp_path)
+    names = _migration_names()
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        db.execute("DELETE FROM d1_migrations")
+        for n in names[: keep + 1]:
+            db.execute("INSERT INTO d1_migrations (name) VALUES (?)", (n,))
+        db.execute("DROP TABLE alert_quota")
+        db.execute("DROP TABLE alert_dedup")
+        db.commit()
+    r = run(env, "reach-db", str(dest(tmp_path)), "--apply")
+    if names[keep] >= "0013_alerts.sql":
+        # 0013 itself is recorded: its missing tables are lost data.
+        assert (r.returncode == 1) == ("0013_alerts.sql" in names[: keep + 1])
+    else:
+        assert r.returncode == 0, r.stderr
+        assert "not a prefix" not in r.stderr
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_an_empty_migration_name_makes_the_record_untrusted(
+    tmp_path: Path, blank: str
+) -> None:
+    """Otherwise a clean prefix plus an ignored blank row would excuse the
+    missing alert tables."""
+    env = make(tmp_path)
+    _make_older_than_0013(env)
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        db.execute("INSERT INTO d1_migrations (name) VALUES (?)", (blank,))
+        db.commit()
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    assert r.returncode == 1
+    assert "empty migration name(s) recorded" in r.stderr
+    assert "required table(s) missing" in r.stderr
+    assert "alert_quota" in r.stderr
+    assert list(d.iterdir()) == []
+
+
+def test_a_very_large_record_is_handled_and_the_notice_is_bounded(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        db.executemany(
+            "INSERT INTO d1_migrations (name) VALUES (?)",
+            [(f"x{i:05d}.sql",) for i in range(5000)],
+        )
+        db.execute("DROP TABLE alert_quota")
+        db.commit()
+    r = run(env, "reach-db", str(dest(tmp_path)), "--apply")
+    assert r.returncode == 1
+    assert "x00000.sql" in r.stderr
+    assert "x00009.sql" in r.stderr
+    assert "x00010.sql" not in r.stderr
+    assert "... and 4990 more" in r.stderr
+    assert "required table(s) missing" in r.stderr
+    assert len(r.stderr) < 2000
+
+
+def test_a_record_over_the_row_limit_is_untrusted(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        db.executemany(
+            "INSERT INTO d1_migrations (name) VALUES (?)",
+            [(f"x{i:05d}.sql",) for i in range(10000)],
+        )
+        db.execute("DROP TABLE alert_quota")
+        db.commit()
+    r = run(env, "reach-db", str(dest(tmp_path)), "--apply")
+    assert r.returncode == 1
+    assert "more than 10000 migrations are recorded" in r.stderr
+    assert "required table(s) missing" in r.stderr
+    assert len(r.stderr) < 2000
+
+
+def test_the_migrations_list_is_in_order() -> None:
+    """The prefix rule reads this list as the history order."""
+    assert _script_array("migrations") == _migration_names()
 
 
 def test_the_lists_in_the_script_match_the_repository_and_each_other() -> None:

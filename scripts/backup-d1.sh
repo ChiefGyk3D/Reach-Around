@@ -33,9 +33,14 @@
 # be changed out of band), so it is used for one decision only: whether a table
 # that is MISSING is an older schema (its migration is not recorded: skipped with
 # a notice) or lost data (recorded: the run fails). A table that EXISTS is always
-# exported, whatever the record says. If the record is inconsistent (a name this
-# script does not know, a duplicate, or empty) it is not trusted at all: every
-# expected table is then required. A table in the database that this script
+# exported, whatever the record says. The record is trusted only when it is a
+# PREFIX of the `migrations` list below (the repository's migration files in
+# order): if migration k is recorded, every migration before k is recorded too.
+# Anything else is not trusted at all, and every expected table is then
+# required: a name this script does not know, a duplicate, an empty or blank
+# name, an empty record, more than 10000 rows, or a gap (a deleted history row:
+# a later migration is recorded while an earlier one is not). Notices list at
+# most 10 names, then "... and K more". A table in the database that this script
 # does not know (not in the lists below) fails the run before any export, so a
 # new or hand-made table is never silently left out of a backup. Names read from
 # the database are sanitized before they are printed.
@@ -104,8 +109,10 @@ introduced_by=(
   view_rollup_log:0006_page_view_rollups.sql
 )
 
-# Every migration file of the repository (worker/migrations), used to name a
-# recorded migration this script does not know. A test keeps it equal to the folder.
+# Every migration file of the repository (worker/migrations) IN ORDER, used to
+# name a recorded migration this script does not know and to check that the
+# applied record is a prefix of this list. A test keeps it equal to the folder,
+# in sorted order (the numbering has gaps; the list holds the files that exist).
 migrations=(
   0001_click_events.sql 0005_page_views.sql 0006_page_view_rollups.sql
   0007_rollup_max_id.sql 0008_sites.sql 0009_kit.sql 0010_click_source.sql
@@ -227,14 +234,24 @@ import json, sys
 what = sys.argv[1]
 data = json.load(sys.stdin)
 rows = data[0]["results"] if isinstance(data, list) else data["results"]
+if what == "migration":
+    # Bound what the shell has to hold: one row more than the limit is enough
+    # for it to see the record is too long.
+    rows = rows[: int(sys.argv[2]) + 1]
 for r in rows:
     name = r["name"]
     if not isinstance(name, str) or any(c in name for c in "\r\n\0"):
         sys.stderr.write("error: invalid " + what + " name in the listing\n")
         sys.exit(1)
+    if what == "migration" and not name.strip():
+        # An empty or blank name is a damaged record: a marker line, never dropped.
+        name = "(empty)"
     print(name)
-' "$1"
+' "$1" "${2:-0}"
 }
+
+# A migration record longer than this is not trusted (no real record comes close).
+max_record=10000
 
 # Which of our tables exist in this database.
 listing=$(timeout "$limit" "${wrangler[@]}" d1 execute "$db" --remote --json \
@@ -255,7 +272,7 @@ applied_json=$(timeout "$limit" "${wrangler[@]}" d1 execute "$db" --remote --jso
   echo "error: could not read the applied migrations (d1_migrations); not guessing which tables must exist" >&2
   exit 1
 }
-applied=$(printf '%s' "$applied_json" | names_of migration) || {
+applied=$(printf '%s' "$applied_json" | names_of migration "$max_record") || {
   echo "error: unexpected answer from the database (applied migrations)" >&2
   exit 1
 }
@@ -280,6 +297,21 @@ safe_list() {
   printf '%s' "$out"
 }
 
+# Same, for a diagnostic: at most max_listed names, then "... and K more".
+max_listed=10
+safe_list_bounded() {
+  local out="" n shown=0
+  for n in "$@"; do
+    if [ "$shown" -ge "$max_listed" ]; then
+      out="$out ... and $(($# - shown)) more"
+      break
+    fi
+    out="${out:+$out }$(safe "$n")"
+    shown=$((shown + 1))
+  done
+  printf '%s' "$out"
+}
+
 # Plain string matching, not `printf | grep -q`: under pipefail grep -q exits at
 # its first match, the writer can then die of SIGPIPE, and the whole pipeline
 # reports failure, so a table that exists would be skipped without an error.
@@ -291,11 +323,11 @@ is_listed() {
   esac
 }
 
+# Recorded migrations as a set (filled once, further down): a lookup is constant
+# time, whatever the size of the record.
+declare -A recorded_set=()
 is_applied() {
-  case "$nl$applied$nl" in
-  *"$nl$1$nl"*) return 0 ;;
-  *) return 1 ;;
-  esac
+  [ -n "${recorded_set[$1]:-}" ]
 }
 
 # The migration that introduced a table; empty when the inventory has no entry.
@@ -366,27 +398,69 @@ fi
 
 # The migration record is history, not proof of the schema. Say loudly where it
 # disagrees with the repository or with the tables (names only; no decision here).
+#
+# One pass over the record, linear in its size (associative arrays, no nested
+# search). A record is trusted only when it is exactly a PREFIX of the ordered
+# `migrations` list: no unknown name, no duplicate, no empty name, no more than
+# max_record rows, and no gap (a migration recorded while an earlier one is not,
+# for example a deleted history row). Anything else fails closed: every expected
+# table is required.
+declare -A migration_index=()
+declare -A seen_recorded=()
+for i in "${!migrations[@]}"; do
+  migration_index["k:${migrations[$i]}"]=$i
+done
 unknown_recorded=()
 duplicate_recorded=()
-seen_recorded=()
-while IFS= read -r t; do
-  [ -n "$t" ] || continue
-  is_in "$t" "${migrations[@]}" || unknown_recorded+=("$t")
-  if is_in "$t" "${seen_recorded[@]+"${seen_recorded[@]}"}"; then
-    duplicate_recorded+=("$t")
+empty_recorded=0
+highest=-1
+if [ -n "$applied" ]; then
+  rows_recorded=$(printf '%s\n' "$applied" | wc -l)
+  if [ "$rows_recorded" -gt "$max_record" ]; then
+    trust_record=0
+    echo "notice: more than $max_record migrations are recorded; the record is not trusted, treating every expected table as required" >&2
   else
-    seen_recorded+=("$t")
+    while IFS= read -r t; do
+      if [ "$t" = "(empty)" ]; then
+        empty_recorded=$((empty_recorded + 1))
+      elif [ -z "${migration_index["k:$t"]+x}" ]; then
+        # The "k:" prefix keeps a hostile name (such as @ or *) from being read
+        # as a special subscript.
+        unknown_recorded+=("$t")
+      elif [ -n "${seen_recorded[$t]:-}" ]; then
+        duplicate_recorded+=("$t")
+      else
+        seen_recorded[$t]=1
+        recorded_set[$t]=1
+        [ "${migration_index["k:$t"]}" -le "$highest" ] || highest="${migration_index["k:$t"]}"
+      fi
+    done <<<"$applied"
   fi
-done <<<"$applied"
-# A record that holds a name this script does not know (or a duplicate) cannot be
-# trusted to say which tables may be absent: fail closed, require every table.
+fi
+# A record that holds a name this script does not know, an empty name or a
+# duplicate cannot be trusted to say which tables may be absent: fail closed.
 if [ "${#unknown_recorded[@]}" -gt 0 ]; then
   trust_record=0
-  echo "notice: recorded migration(s) this script does not know (renamed, renumbered or from another version?): $(safe_list "${unknown_recorded[@]}"); treating every expected table as required" >&2
+  echo "notice: recorded migration(s) this script does not know (renamed, renumbered or from another version?): $(safe_list_bounded "${unknown_recorded[@]}"); treating every expected table as required" >&2
 fi
 if [ "${#duplicate_recorded[@]}" -gt 0 ]; then
   trust_record=0
-  echo "notice: migration(s) recorded more than once: $(safe_list "${duplicate_recorded[@]}"); treating every expected table as required" >&2
+  echo "notice: migration(s) recorded more than once: $(safe_list_bounded "${duplicate_recorded[@]}"); treating every expected table as required" >&2
+fi
+if [ "$empty_recorded" -gt 0 ]; then
+  trust_record=0
+  echo "notice: $empty_recorded empty migration name(s) recorded; treating every expected table as required" >&2
+fi
+# Prefix rule: every migration before the latest recorded one must be recorded
+# too. A gap means history rows were removed, so a missing table can no longer be
+# told apart from an older schema.
+gap_recorded=()
+for ((i = 0; i < highest; i++)); do
+  [ -n "${seen_recorded[${migrations[$i]}]:-}" ] || gap_recorded+=("${migrations[$i]}")
+done
+if [ "${#gap_recorded[@]}" -gt 0 ]; then
+  trust_record=0
+  echo "notice: migration(s) not recorded although a later one is: $(safe_list_bounded "${gap_recorded[@]}"); the record is not a prefix of the migration history, treating every expected table as required" >&2
 fi
 unrecorded_present=()
 if [ "$trust_record" -eq 1 ]; then

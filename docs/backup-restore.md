@@ -162,10 +162,15 @@ secret.
    If its migration is not recorded the script treats it as an older schema
    and lists it as `skipped (not in this database)` with the migration name.
    When no migration is recorded at all, every expected table is required. The
-   same holds when the record is inconsistent (a recorded name the script does
-   not know, for example after a rename or from another version, or a name
-   recorded twice): the record is then not trusted, a `notice` names the
-   entries, and every expected table that is missing fails the run. A table
+   record is trusted only when it is a prefix of the script's ordered
+   migration list: if a migration is recorded, every migration before it is
+   recorded too. It is also not trusted when it is inconsistent (a
+   recorded name the script does not know, for example after a rename or from
+   another version, a name recorded twice, an empty or blank name, more than
+   10000 rows, or a gap: a later migration is recorded while an earlier one is
+   not, as after a deleted history row): a
+   `notice` names the entries (at most ten, then `... and K more`), and every
+   expected table that is missing fails the run. A table
    that exists although its migration is not recorded is exported and reported
    as a `notice` (names only). Names read from the database are printed with
    every character outside letters, digits, `_`, `.` and `-` replaced by `?`
