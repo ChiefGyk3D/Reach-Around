@@ -799,6 +799,8 @@ def test_the_run_makes_only_listing_and_count_queries(tmp_path: Path) -> None:
     assert r.returncode == 0, r.stderr
     lines = log.read_text().splitlines()
     queries = [ln for ln in lines if ln.startswith("execute:")]
+    # The first query asks the database who it is (#772): only 'analytics' is exported.
+    assert queries.pop(0) == "execute: SELECT role FROM db_identity ORDER BY role"
     assert len(queries) == 4
     assert queries[0] == queries[3] == f"execute: {LISTING_SQL}"
     assert queries[1] == queries[2]
@@ -808,7 +810,7 @@ def test_the_run_makes_only_listing_and_count_queries(tmp_path: Path) -> None:
     # Order: listing, counts, every export, counts, listing.
     kinds = [ln.split(":")[0] for ln in lines]
     first, last = kinds.index("export"), len(kinds) - 1 - kinds[::-1].index("export")
-    assert kinds[:first] == ["execute", "execute"]
+    assert kinds[:first] == ["execute", "execute", "execute"]  # identity, listing, counts
     assert kinds[last + 1 :] == ["execute", "execute"]
     exports = [ln for ln in lines if ln.startswith("export:")]
     assert len(exports) == len(_script_array("tables"))
@@ -1189,7 +1191,10 @@ def test_an_invalid_envelope_around_a_complete_listing_is_not_trusted(
     _fails_before_keeping(r, d)
     assert "unexpected answer" in r.stderr
     lines = log.read_text().splitlines()
-    assert lines == [f"execute: {LISTING_SQL}"]
+    assert lines == [
+        "execute: SELECT role FROM db_identity ORDER BY role",
+        f"execute: {LISTING_SQL}",
+    ]
 
 
 @pytest.mark.parametrize("answer", ["not json", "[]", '{"error": "boom"}'])
