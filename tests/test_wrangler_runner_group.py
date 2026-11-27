@@ -56,6 +56,15 @@ def _wait_dead(pid: int, seconds: float = 8.0) -> bool:
     return not _alive(pid)
 
 
+def _kill_leftover(pid: int) -> None:
+    """Kill a leftover of a failed run by its pid. The process may exit between a
+    liveness check and the kill (#958), so one that is already gone is fine."""
+    try:
+        os.kill(pid, 9)
+    except ProcessLookupError:
+        pass
+
+
 @pytest.fixture
 def child(tmp_path: Path) -> tuple[list[str], Path]:
     script = tmp_path / "child.py"
@@ -98,8 +107,22 @@ def test_a_grandchild_is_killed_with_the_child_on_the_cap_or_the_time_limit(
     finally:
         if grand is None:
             grand = _grandchild(pidfile)
-        if grand is not None and _alive(grand):
-            os.kill(grand, 9)  # a leftover of a failed run, killed by its pid
+        if grand is not None:
+            _kill_leftover(grand)
+
+
+def test_killing_a_leftover_that_already_exited_is_fine() -> None:
+    """#958: the cleanup raced the grandchild's exit and raised ProcessLookupError.
+    A reaped child has a pid that no longer exists; the cleanup must tolerate it."""
+    gone = _reaped_pid()
+    _kill_leftover(gone)
+    assert not _alive(gone)
+
+
+def _reaped_pid() -> int:
+    proc = subprocess.Popen([sys.executable, "-I", "-c", "pass"])  # noqa: S603 - harmless
+    proc.wait()
+    return proc.pid
 
 
 def test_outside_the_leads_tests_plain_node_still_starts() -> None:
