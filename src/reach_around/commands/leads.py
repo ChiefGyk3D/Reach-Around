@@ -1726,9 +1726,7 @@ def _run_delete_legacy(args: argparse.Namespace) -> int:
         or args.legacy_database_id is not None
         or args.leads_database_id is not None
     ) and not args.yes:
-        print(
-            "error: --wrangler and the database ids need --yes", file=sys.stderr
-        )
+        print("error: --wrangler and the database ids need --yes", file=sys.stderr)
         return EXIT_USAGE
     try:
         database = _legacy_database(args.legacy_database, args.confirm_legacy)

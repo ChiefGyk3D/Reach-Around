@@ -1896,8 +1896,15 @@ def consume_rescue(
 
 
 class RescueRecord:
-    def __init__(self, name: str, table: str, ids: list[str], rows: list[Any],
-                 seen: tuple[int, int], consumed: bool) -> None:
+    def __init__(
+        self,
+        name: str,
+        table: str,
+        ids: list[str],
+        rows: list[Any],
+        seen: tuple[int, int],
+        consumed: bool,
+    ) -> None:
         self.name, self.table, self.ids, self.rows = name, table, ids, rows
         self.seen, self.consumed = seen, consumed
 

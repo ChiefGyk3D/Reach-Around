@@ -84,7 +84,7 @@ def run_block(
     ra.write_text(FAKE_REACH_AROUND.format(**fmt))
     ra.chmod(0o700)
     sleep = bindir / "sleep"
-    sleep.write_text("#!/bin/sh\necho sleep >> \"$CALL_LOG\"\n")
+    sleep.write_text('#!/bin/sh\necho sleep >> "$CALL_LOG"\n')
     sleep.chmod(0o700)
     script = tmp_path / "block.sh"
     script.write_text(block(), encoding="utf-8")
