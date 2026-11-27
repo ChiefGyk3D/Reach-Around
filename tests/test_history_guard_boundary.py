@@ -125,9 +125,7 @@ def test_every_shipped_file_under_the_guarded_paths_has_an_owner() -> None:
     """Walk the real template tree: the owned set is exactly the guarded set."""
     rules = example_rules()
     found = {
-        p.relative_to(TEMPLATE).as_posix()
-        for p in TEMPLATE.rglob("*")
-        if p.is_file()
+        p.relative_to(TEMPLATE).as_posix() for p in TEMPLATE.rglob("*") if p.is_file()
     }
     assert ".github/workflows/history-guard.yml" in found
     owned_set = {p for p in found if owned(p, rules)}
@@ -205,7 +203,10 @@ def strings(node: Any) -> Iterator[str]:
 
 
 EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.S)
-CONTEXT_PATH = re.compile(r"(?<![\w.'\"])[A-Za-z_][\w-]*(?:\.[\w*-]+)+|(?<![\w.'\"])[A-Za-z_]\w*(?![\w(.'\"])")
+CONTEXT_PATH = re.compile(
+    r"(?<![\w.'\"])[A-Za-z_][\w-]*(?:\.[\w*-]+)+"
+    r"|(?<![\w.'\"])[A-Za-z_]\w*(?![\w(.'\"])"
+)
 SHELL_VARIABLE = re.compile(r"\$\{?([A-Z][A-Z0-9_]*)\}?")
 
 
@@ -543,9 +544,10 @@ def test_the_sparse_base_checkout_holds_what_the_guard_needs_to_run(
     base = stage_trusted_tree(tmp_path, with_release=False)
     guard_text = GUARD_PY.read_text(encoding="utf-8")
     wrapper = (TEMPLATE / "scripts" / "verify-history-rewrite.sh").read_text("utf-8")
-    needed = {
-        m for m in re.findall(r"scripts/[\w.-]+", guard_text + wrapper)
-    } | {"scripts/history-guard.py", "scripts/verify-history-rewrite.sh"}
+    needed = {m for m in re.findall(r"scripts/[\w.-]+", guard_text + wrapper)} | {
+        "scripts/history-guard.py",
+        "scripts/verify-history-rewrite.sh",
+    }
     for rel in needed:
         if (TEMPLATE / rel).is_file():
             assert (base / rel).is_file(), f"{rel} is not in the base checkout"
