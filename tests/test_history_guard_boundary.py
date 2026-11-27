@@ -1,20 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
 """Offline coverage checks and change detectors for the history guard (#926).
 
-Three things, each run on the real shipped files. None of them shows that GitHub
-enforces anything or that the job cannot reach the network.
+Each check runs on the real shipped files. None of them shows that GitHub
+enforces anything or that the job cannot reach the network. The README section
+"What the offline tests cover" has a CLAIMS table and a KNOWN GAPS list that
+say exactly what each test backs; keep them in step with this file.
 
 1. CODEOWNERS PATTERN COVERAGE: a small matcher with GitHub's rule (the last
-   matching pattern wins) is run over the real template tree and over the paths
-   a rewrite touches. It checks that the shipped file's patterns cover the guard
-   files. Enforcement is shown only by the owner's live gates in the template
-   README; activation stays blocked until they have been observed.
-2. The README inventory lists every input name the workflow and its script
-   read (an exact, checked list of names; a stale row fails too).
-3. Change detectors (section 4): every workflow step and every executed file
-   is pinned by SHA-256, so any change fails a test that names it. These are
-   review triggers and best-effort heuristics; the real protection is
-   CODEOWNERS plus branch protection, shown by the owner's live gates.
+   matching pattern wins) is run over the shipped template tree and over the
+   paths named in PROTECTED and UNOWNED. Enforcement is shown only by the
+   owner's live gates in the template README.
+2. The README inventory lists the input names that this file's parsers find in
+   the workflow and in the guard script (a stale row fails too). Implicit
+   process inputs (PATH, tool configuration) are not found and not listed.
+3. Change detectors (section 4): the workflow file, its steps and the files its
+   steps name are pinned by SHA-256, so a change to one fails a test that names
+   it. They are review triggers and best-effort heuristics; the real protection
+   is CODEOWNERS plus branch protection, shown by the owner's live gates.
 """
 
 from __future__ import annotations
@@ -126,7 +128,7 @@ def trusted_sparse_paths() -> list[str]:
     return [ln.strip() for ln in lines if ln.strip()]
 
 
-# What a rewrite is decided by, from the README and the guard: all must be owned.
+# What a rewrite is decided by, from the README and the guard; each must be owned.
 PROTECTED = (
     ".github/history-approvers",
     ".github/CODEOWNERS",
@@ -174,7 +176,7 @@ def test_every_shipped_file_under_the_guarded_paths_has_an_owner() -> None:
         assert owned(workflow_file.relative_to(TEMPLATE).as_posix(), rules)
 
 
-def test_every_file_the_workflow_runs_from_the_base_is_owned() -> None:
+def test_the_sparse_checked_files_are_owned() -> None:
     rules = example_rules()
     sparse = trusted_sparse_paths()
     assert sparse
@@ -419,9 +421,12 @@ def test_the_inventory_names_no_input_that_nothing_reads() -> None:
     assert not stale, sorted(stale)
 
 
-def test_the_inventory_says_no_secrets_vars_inputs_or_artifacts() -> None:
+def test_the_workflow_has_no_explicit_secrets_vars_inputs_artifact_or_cache() -> None:
     text = " ".join(inventory_text().split())
-    assert "no `secrets`, no `vars`, no workflow `inputs`, no artifacts" in text
+    assert (
+        "no explicit reference to the `secrets`, `vars`, `inputs` or `env` contexts"
+        in text
+    )
     # ...and that is true of the workflow itself, read as parsed data.
     for token in workflow_inputs():
         assert token.split(".")[0] not in {"secrets", "vars", "inputs", "env"}, token
@@ -701,12 +706,12 @@ def test_the_sparse_base_checkout_holds_what_the_guard_needs_to_run(
 
 # --- 4. change detectors for the workflow and what it executes ---------------
 #
-# READ THIS FIRST. Nothing in this section proves the job cannot reach the
+# READ THIS FIRST. Nothing in this section shows that the job cannot reach the
 # network or leak a token: no static check can (a split string, an alias or an
 # indirect command always gets past a scanner). What it does:
 #
 # * STEP_TABLE and EXECUTED_FILES are CHANGE DETECTORS. Every step of the
-#   workflow, and every file the job executes (the guard script and the two
+#   workflow, and the files its steps name (the guard script and the two
 #   shell scripts), is pinned by SHA-256. A change to any of them, or a new job
 #   or step, fails a test that NAMES the step or file, so it cannot pass by
 #   accident. The table is a REVIEW TRIGGER, not an independent check: a pull
@@ -1297,19 +1302,189 @@ def execution_coverage_problems(data: dict[Any, Any]) -> list[str]:
     return found
 
 
-def test_sparse_checked_and_named_files_are_all_pinned_or_explained() -> None:
+def test_sparse_checked_and_step_named_files_are_pinned_or_explained() -> None:
     assert execution_coverage_problems(workflow()) == []
     for rel in (*EXECUTED_FILES, *NOT_EXECUTED):
         assert (TEMPLATE / rel).is_file(), rel
     assert set(sparse_paths(workflow())) == set(EXECUTED_FILES) | set(NOT_EXECUTED)
 
 
-def test_files_named_inside_the_executed_scripts_are_in_the_tables() -> None:
-    known = set(EXECUTED_FILES) | set(NOT_EXECUTED)
+# Callees: files a PINNED script names. They must be in EXECUTED_FILES, never
+# accepted from NOT_EXECUTED. Nested repository paths are supported. What is not
+# found (extensionless names, paths built at run time) is listed in the README
+# KNOWN GAPS; dynamic execution in a pinned script FAILS the test instead.
+CALLEE_TOKEN = re.compile(
+    r"(?:\$\{?\w+\}?/)?((?:[\w.-]+/)*[\w.-]+\.(?:sh|py|js|mjs|rb|pl))\b"
+)
+
+# Lines in a pinned shell script that run something chosen at run time, each
+# with the reason it is accepted. Anything else of that shape fails the test.
+DYNAMIC_ALLOWED: dict[tuple[str, str], str] = {
+    (
+        "scripts/verify-history-rewrite.sh",
+        'timeout 120 "$runtime" run --rm --network none --read-only --cap-drop ALL \\',
+    ): "the container runtime, picked from docker or podman earlier in the script",
+    (
+        "scripts/verify-history-rewrite.sh",
+        '"$image" counts history-compare "${args[@]}" || rc=$?',
+    ): "the image argument of the container run on the lines above it",
+}
+DYNAMIC_SHELL = re.compile(
+    r"(?:^|[;&|(]\s*)(?:eval|source)\b"
+    r"|^\.\s+\S"
+    r"|^(?:timeout\s+\d+\s+)?[\"']?\$\{?\w+"
+    r"|\b(?:bash|sh|zsh|dash|exec|xargs|python3?)\s+(?:-\S+\s+)*[\"']?\$"
+)
+
+
+def shell_code_lines(text: str) -> list[tuple[int, str]]:
+    return [
+        (number, line.strip())
+        for number, line in enumerate(text.splitlines(), 1)
+        if line.strip() and not line.strip().startswith("#")
+    ]
+
+
+def shell_callee_problems(rel: str, text: str) -> list[str]:
+    found: list[str] = []
+    for number, code in shell_code_lines(text):
+        if DYNAMIC_SHELL.search(code) and (rel, code) not in DYNAMIC_ALLOWED:
+            found.append(f"{rel}:{number}: dynamic execution: {code}")
+        for named in CALLEE_TOKEN.findall(code):
+            if "/" in named and named not in EXECUTED_FILES:
+                found.append(f"{rel}:{number}: callee {named} not in EXECUTED_FILES")
+    return found
+
+
+def python_callee_problems(rel: str, source: str) -> list[str]:
+    """Calls in a pinned Python script: fixed programs, and path chains such as
+    ``trusted / "scripts" / "x.sh"`` that resolve to an EXECUTED_FILES entry."""
+    tree = ast.parse(source)
+    found: list[str] = []
+
+    def chain(node: ast.AST) -> list[str] | None:
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            left, right = chain(node.left), chain(node.right)
+            if left is None or right is None:
+                return None
+            return left + right
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return [node.value]
+        return []  # a variable: contributes no constant part
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            parts = chain(node)
+            path = "/".join(parts or [])
+            if parts and path.endswith((".sh", ".py", ".js", ".rb", ".pl")):
+                if path not in EXECUTED_FILES:
+                    found.append(
+                        f"{rel}:{node.lineno}: callee {path} not in EXECUTED_FILES"
+                    )
+        elif isinstance(node, ast.Call):
+            name = ast.unparse(node.func)
+            if name in FORBIDDEN_CALLS or name in {"os.system", "os.popen"}:
+                found.append(f"{rel}:{node.lineno}: dynamic execution: {name}")
+            if name.startswith("subprocess."):
+                first = node.args[0] if node.args else None
+                elts = first.elts if isinstance(first, ast.List) else []
+                program = elts[0] if elts else None
+                if not (
+                    isinstance(program, ast.Constant)
+                    and program.value in {"git", "bash"}
+                ):
+                    found.append(
+                        f"{rel}:{node.lineno}: subprocess program is not fixed"
+                    )
+                elif program.value == "bash" and not (
+                    len(elts) > 1 and isinstance(elts[1], ast.Name)
+                ):
+                    found.append(
+                        f"{rel}:{node.lineno}: bash is not given a script variable"
+                    )
+    return found
+
+
+def pinned_callee_problems(root: Path = TEMPLATE) -> list[str]:
+    found: list[str] = []
     for rel in EXECUTED_FILES:
-        text = (TEMPLATE / rel).read_text(encoding="utf-8")
-        for named in re.findall(r"scripts/[\w.-]+\.(?:sh|py)", text):
-            assert named in known, f"{rel} names {named}"
+        text = (root / rel).read_text(encoding="utf-8")
+        if rel.endswith(".py"):
+            found += python_callee_problems(rel, text)
+        else:
+            found += shell_callee_problems(rel, text)
+    return found
+
+
+def test_the_pinned_scripts_name_only_pinned_callees_and_run_nothing_dynamic() -> None:
+    assert pinned_callee_problems() == []
+
+
+@pytest.mark.parametrize(
+    ("rel", "extra", "expect"),
+    [
+        (
+            "scripts/verify-history-rewrite.sh",
+            "bash scripts/lib/helper.sh",
+            "scripts/lib/helper.sh",
+        ),
+        (
+            "scripts/verify-history-rewrite.sh",
+            'bash "$here/scripts/lib/helper.sh"',
+            "scripts/lib/helper.sh",
+        ),
+        ("scripts/read-lock.sh", "python3 tools/x/y.py", "tools/x/y.py"),
+        ("scripts/read-lock.sh", 'eval "$thing"', "dynamic execution"),
+        ("scripts/read-lock.sh", 'source "$file"', "dynamic execution"),
+        ("scripts/read-lock.sh", '. "$file"', "dynamic execution"),
+        ("scripts/read-lock.sh", '"$cmd" --flag', "dynamic execution"),
+        ("scripts/read-lock.sh", 'bash "$a$b"', "dynamic execution"),
+    ],
+)
+def test_a_nested_or_dynamic_callee_in_a_pinned_shell_script_fails_naming_the_line(
+    rel: str, extra: str, expect: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    text = (TEMPLATE / rel).read_text(encoding="utf-8") + extra + "\n"
+    line = len(text.splitlines())
+    problems = shell_callee_problems(rel, text)
+    assert any(expect in p and f":{line}:" in p for p in problems), problems
+    # A callee listed as NOT_EXECUTED is still refused: only EXECUTED_FILES counts.
+    if "/" in expect and "dynamic" not in expect:
+        monkeypatch.setitem(NOT_EXECUTED, expect, "pretend data")
+        assert any(expect in p for p in shell_callee_problems(rel, text))
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "expect"),
+    [
+        (
+            '["bash", script, *args]',
+            '["bash", "-c", "echo hi", *args]',
+            "bash is not given a script variable",
+        ),
+        ('["bash", script, *args]', '["sh", script, *args]', "program is not fixed"),
+        (
+            'trusted / "scripts" / "verify-history-rewrite.sh"',
+            'trusted / "scripts" / "lib" / "helper.sh"',
+            "scripts/lib/helper.sh not in EXECUTED_FILES",
+        ),
+        (
+            "def env(",
+            "def env2(a):\n    return eval(a)\n\n\ndef env(",
+            "dynamic execution: eval",
+        ),
+    ],
+)
+def test_a_dynamic_or_unlisted_callee_in_the_guard_script_fails_naming_the_line(
+    old: str, new: str, expect: str
+) -> None:
+    source = (TEMPLATE / "scripts" / "history-guard.py").read_text(encoding="utf-8")
+    assert old in source, old
+    problems = python_callee_problems(
+        "scripts/history-guard.py", source.replace(old, new, 1)
+    )
+    assert any(expect in p and ":" in p for p in problems), problems
+    assert re.search(r":\d+:", problems[0])
 
 
 def test_a_new_sparse_or_named_file_outside_scripts_is_caught() -> None:
@@ -1361,12 +1536,12 @@ def test_a_foreign_or_traversing_path_is_not_accepted_as_an_inventoried_file(
     assert repository_path("$dir/scripts/read-lock.sh") == "scripts/read-lock.sh"
 
 
-def test_every_executed_file_matches_its_pinned_digest() -> None:
+def test_the_pinned_files_match_their_digests() -> None:
     assert executed_problems() == []
 
 
-def test_the_executed_file_table_covers_every_script_the_job_can_run() -> None:
-    """The scripts the workflow and the wrapper name are all in the table."""
+def test_the_files_named_in_steps_and_sparse_list_are_in_the_tables() -> None:
+    """Scripts named in the steps, the sparse list and the wrapper are in the table."""
     steps_text = " ".join(s.get("run", "") for s in all_steps())
     named = set(re.findall(r"scripts/[\w.-]+", steps_text))
     named |= {f"scripts/{n}" for n in SCRIPTS_RUN_BY_THE_JOB}
@@ -1409,6 +1584,38 @@ def test_removing_the_engine_rule_for_this_file_is_caught() -> None:
     assert len(kept) < len(lines), "the mutation changed nothing"
     assert owned(path, parse_codeowners(text))
     assert not owned(path, parse_codeowners("\n".join(kept)))
+
+
+def readme_claims_text() -> str:
+    readme = README.read_text(encoding="utf-8")
+    start = readme.index("**CLAIMS and KNOWN GAPS.**")
+    return readme[
+        start : readme.index("**Checklist before you list the first approver.**")
+    ]
+
+
+def test_every_test_named_in_the_readme_claims_table_exists() -> None:
+    names = set(re.findall(r"`(test_\w+)`", readme_claims_text()))
+    assert len(names) >= 10
+    defined = {
+        n.name
+        for n in ast.walk(ast.parse(Path(__file__).read_text(encoding="utf-8")))
+        if isinstance(n, ast.FunctionDef)
+    }
+    assert names <= defined, sorted(names - defined)
+
+
+def test_the_readme_lists_the_known_gaps() -> None:
+    text = " ".join(readme_claims_text().split())
+    for gap in (
+        "files that those scripts call in turn",
+        "extensionless",
+        "paths built at run time",
+        "PATH",
+        "git configuration",
+        "tool configuration",
+    ):
+        assert gap.lower() in text.lower(), gap
 
 
 def table_rows() -> str:

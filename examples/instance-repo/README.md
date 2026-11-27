@@ -510,51 +510,53 @@ repository's test `tests/test_history_guard_boundary.py` reads the shipped
 (read 2026-11-27: `*` does not cross `/`, the last matching pattern wins, an
 empty owner list un-owns a path; `!`, `[ ]` and backslash escapes are not
 supported by GitHub and are refused by the test). It checks CODEOWNERS PATTERN
-COVERAGE only: every file of the guard (the workflow, the approvers file,
-`scripts/`, `engine.lock`, `engine.release.json`, `history/redactions/` and the
-CODEOWNERS file itself) matches a rule with an owner, and the history file and
-`numbers.json` match none. It does not show that GitHub enforces anything.
-Enforcement (code-owner review required, administrators included, an author who
-cannot approve their own pull request) is proven only by your own live gates:
-the "You OBSERVED it block" item of the checklist below and the optional live
-gate G1. Until you have run them and seen the block, the boundary is UNVERIFIED
-and activation stays blocked.
+COVERAGE for the paths it names: the guard files it lists (the workflow, the
+approvers file, files under `scripts/`, `engine.lock`, `engine.release.json`,
+`history/redactions/` and the CODEOWNERS file itself, plus two synthetic nested
+paths) match a rule with an owner, and the history file and `numbers.json` match
+none. It does not show that GitHub enforces anything. Enforcement (code-owner
+review required, administrators included, an author who cannot approve their own
+pull request) is shown only by your own live gates: the "You OBSERVED it block"
+item of the checklist below and the optional live gate G1. Until you have run
+them and seen the block, the boundary is UNVERIFIED and activation stays blocked.
 
-**Trusted inputs the workflow reads.** This is the inventory of what
-`.github/workflows/history-guard.yml` and `scripts/history-guard.py` take in.
-`tests/test_history_guard_boundary.py` checks it in three ways, none of which
-is a security boundary:
+**Trusted inputs the workflow reads.** This is the inventory of the inputs that
+the test's parsers find in `.github/workflows/history-guard.yml` and
+`scripts/history-guard.py`. The tests are change detectors and heuristics, not a
+security boundary. The CLAIMS table and the KNOWN GAPS list below say exactly
+what each test backs and what it does not.
 
-- Names (checked, exact): every context path, step environment name and shell
-  variable the workflow reads, and every environment name the script reads, is
-  listed here, and no row lists something nothing reads.
-- Change detection (the real mechanism of the tests, a review trigger): every
-  step of the workflow and every file the job runs (the guard script,
-  `scripts/read-lock.sh` and `scripts/verify-history-rewrite.sh`) is pinned by
-  SHA-256, every other file the job checks out from the base commit is listed
-  with the reason it is not run (the engine lock and release manifest are
-  read as data, the workflow is interpreted by Actions), and an unexpected job fails the test. A changed, added or removed
-  step, pinned script or workflow file fails a test that names it, so a human
-  must update the table on purpose. The workflow file is pinned byte for byte, so
-  a change to its triggers, permissions, timeout, concurrency or any other
-  top-level field, or to a comment, fails too. The table is not an independent check: a pull request can update it
-  in the same change, so the file that holds it is owned in the engine
-  repository's CODEOWNERS and its update needs the maintainer's review.
+- Names: each context path, step environment name and shell variable the parser
+  finds in the workflow, and each environment name the script reads through
+  `env()`, `os.environ.get` or `os.getenv`, is listed here; no row lists a name
+  those parsers do not find. Implicit process inputs are not found (see KNOWN GAPS).
+- Change detection (a review trigger, not an independent check): the workflow
+  file (byte for byte), each of its steps, and the files its steps name (the
+  guard script, `scripts/read-lock.sh` and `scripts/verify-history-rewrite.sh`)
+  are pinned by SHA-256. The other files checked out from the base commit are
+  listed with the reason they are not run (the engine lock and release manifest
+  are read as data, the workflow is interpreted by Actions). A change to any of
+  them, a new job or a new step fails a test that names it, so a human must
+  update the table on purpose. A pull request can update the table in the same
+  change, so the file that holds it is owned in the engine repository's
+  CODEOWNERS and its update needs the maintainer's review.
 - Heuristic (best effort): a scan for common network commands and foreign hosts
-  in the workflow and shell scripts and a syntax-tree scan of the guard script.
+  in the workflow and shell scripts, and a syntax-tree scan of the guard script.
   It catches common mistakes and cannot prove the absence of network use; a
   split string, an alias or an indirect command gets past any such scan.
 
-The tests do not prove that a listed input is used safely at run time (that is
-the guard's own tests and the engine's compare), and they do not prove what the
+The tests do not show that a listed input is used safely at run time (that is
+the guard's own tests and the engine's compare), and they do not show what the
 job can reach. The protection is CODEOWNERS plus branch protection on `main`,
-which your own live gates exercise (the checklist below). Confining the job's network access at run
-time is tracked as a separate follow-up. The wrapper starts the engine image
-with the network off; the container runtime's own pull of that image is outside
-these tests.
+which your own live gates exercise (the checklist below). Confining the job's
+network access at run time is tracked as a separate follow-up. The wrapper
+starts the engine image with the network off; the container runtime's own pull
+of that image is outside these tests.
 
-Nothing outside this list is read by design: no `secrets`, no `vars`, no workflow `inputs`,
-no artifacts and no cache.
+The workflow has no explicit reference to the `secrets`, `vars`, `inputs` or
+`env` contexts, and no artifact upload, artifact download or cache step (the test
+checks exactly these names; it says nothing about GitHub's own contexts beyond
+the rows below).
 
 | Input | Where it comes from | Trust |
 | --- | --- | --- |
@@ -576,6 +578,40 @@ no artifacts and no cache.
 | `.github/history-approvers` | file of the BASE commit | trusted, read as a git object |
 | `history/social.jsonl`, `numbers.json`, one manifest under `history/redactions/` | files of the HEAD commit | untrusted data, never executed, checked by the engine |
 | `issues/{number}/events`, `issues/{number}/labels`, `actions/runs`, `pulls`, `git/ref/heads/main` | GitHub API of this repository | read-only calls |
+
+**CLAIMS and KNOWN GAPS.** Each claim the tests back, the tests that back it, and
+the gap that remains. A test name here must exist: a test checks that.
+
+| Claim | Tests | Known gap |
+| --- | --- | --- |
+| The listed guard paths match a CODEOWNERS rule with an owner; the history file and `numbers.json` match none | `test_the_example_owns_every_protected_path_and_not_the_history_file`, `test_every_shipped_file_under_the_guarded_paths_has_an_owner`, `test_the_sparse_checked_files_are_owned` | Only the listed and shipped paths; GitHub enforcement is not tested |
+| The matcher follows the documented GitHub cases and refuses unsupported syntax | `test_the_matcher_conforms_to_the_documented_cases`, `test_unsupported_syntax_is_refused_not_skipped` | A bare name matching only itself is a strict reading, unverified against GitHub |
+| The coverage check names a path whose rules were removed | `test_the_coverage_check_names_a_path_whose_rules_were_removed`, `test_the_coverage_check_names_a_history_file_that_became_owned` | Mutations of the shipped file only |
+| The input names the parsers find in the workflow and script are listed, and no listed name is unread | `test_the_workflow_reads_no_input_that_the_inventory_leaves_out`, `test_the_script_reads_no_input_that_the_inventory_leaves_out`, `test_the_inventory_names_no_input_that_nothing_reads` | Implicit process inputs are not found |
+| The workflow has no explicit `secrets`, `vars`, `inputs` or `env` reference and no artifact or cache step | `test_the_workflow_has_no_explicit_secrets_vars_inputs_artifact_or_cache` | Only those names |
+| The job list and every step match the pinned table | `test_the_workflow_matches_the_pinned_step_table`, `test_a_new_step_and_a_second_job_are_caught` | A pull request can update the table; review trigger only |
+| The workflow file is pinned byte for byte | `test_the_workflow_file_matches_its_pinned_digest`, `test_a_top_level_workflow_change_fails_the_file_digest_and_names_it` | Same: review trigger only |
+| The three scripts the steps name are pinned by SHA-256 | `test_the_pinned_files_match_their_digests`, `test_a_changed_executed_file_fails_and_names_it` | Same: review trigger only |
+| Files in the sparse list and paths named in steps are in the tables, matched exactly | `test_sparse_checked_and_step_named_files_are_pinned_or_explained`, `test_a_foreign_or_traversing_path_is_not_accepted_as_an_inventoried_file` | Only the syntactic forms the token pattern finds |
+| The pinned scripts name only pinned callees and run nothing dynamic (outside a short reasoned allow list) | `test_the_pinned_scripts_name_only_pinned_callees_and_run_nothing_dynamic`, `test_a_nested_or_dynamic_callee_in_a_pinned_shell_script_fails_naming_the_line`, `test_a_dynamic_or_unlisted_callee_in_the_guard_script_fails_naming_the_line` | See the gaps below |
+| Common network commands and foreign hosts are caught (heuristic) | `test_heuristic_the_script_scan_finds_no_common_network_mistake`, `test_heuristic_the_shell_scan_finds_no_common_network_mistake` | Cannot show the absence of network use |
+| The trust step installs read-only base copies and stops on a bad release pair | `test_the_trust_step_installs_read_only_base_copies_not_the_pull_request`, `test_the_trust_step_stops_a_bad_release_pair_before_any_output` | Run with a jq stand-in, not GitHub's runner |
+| Updating the pinned tables needs the maintainer's review | `test_the_table_and_this_file_are_owned_in_the_engine_codeowners` | Depends on branch protection of the engine repository |
+
+KNOWN GAPS, one line each (the tests do not cover these):
+
+- Files that those scripts call in turn are found only when named as a literal
+  path ending in a script extension; the callee of a callee is not followed.
+- Extensionless scripts are not discovered.
+- Paths built at run time are not resolved; in a pinned script they fail the
+  test when they take a recognised dynamic form, and other forms are not found.
+- Implicit process inputs are not inventoried: `PATH` and command lookup, git
+  configuration, container runtime configuration and other tool configuration
+  files, and the environment the runner provides.
+- Network use is not proven absent (heuristic scans only); runtime egress
+  confinement is a separate follow-up.
+- GitHub's own behavior (CODEOWNERS enforcement, which workflow revision runs for
+  a pull request that edits it) is shown only by your live gates.
 
 **Checklist before you list the first approver.** `.github/history-approvers`
 ships empty so that nothing is accepted. Complete all of these first, in order:
