@@ -166,7 +166,10 @@ def test_show_refuses_an_export_that_is_not_one_block_per_call(
         "two-blocks-in-events": (one, blocks([event(ID_A, "view")], [])),
         "leads-where-events-go": (one, blocks([lead(ID_A, ADDR)])),
         "events-where-leads-go": (ev, blocks([event(ID_A, "view")])),
-        "events-in-leads": (blocks([lead(ID_A, ADDR), event(ID_A, "view")]), blocks([])),
+        "events-in-leads": (
+            blocks([lead(ID_A, ADDR), event(ID_A, "view")]),
+            blocks([]),
+        ),
         "bare-rows": ([lead(ID_A, ADDR)], blocks([])),
         "summary-row": (
             blocks([{"Total queries executed": 1, "Rows read": 1}]),
@@ -417,7 +420,7 @@ def test_existing_delete_still_rejects_the_richer_export(
 ) -> None:
     """Delete keeps its strict id/email contract: event rows are refused."""
     monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
-    code = cli(["leads", "delete", "--input", str(export), "--email", "-"])
+    code = cli(["leads", "delete", "--input", str(events_of(export)), "--email", "-"])
     assert code == 2
     assert ADDR not in capsys.readouterr().err
 
