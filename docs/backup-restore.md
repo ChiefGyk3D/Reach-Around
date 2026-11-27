@@ -30,7 +30,10 @@ config ([deploy.md](deploy.md) has the rollbacks).
 ## What a database backup contains, and what it leaves out
 
 `scripts/backup-d1.sh` exports one file per table, with its schema and rows:
-the click and view aggregate tables, the seal and rollup logs, `click_events`
+the click and view aggregate tables (including the hour-of-day table
+`view_hour_daily` and the city table `view_city_daily`, which holds daily view
+counts by city and is empty unless a site sets `GEO_LEVEL=city`), the seal and
+rollup logs, `click_events`
 (a source label; see the country note below), the counters, the alert quota
 tables, `analytics_coverage` (24 letters per day saying whether the Worker was
 collecting; no counts and no visitor data) and `d1_migrations` (the list of migrations already applied, which a
@@ -147,9 +150,34 @@ secret.
    from step 1 is the other point-in-time anchor, because Time Travel restores
    the whole database at one moment (verified, Time Travel page).
 
-   Expected: `done: N tables written to <BACKUPS>/d1-<UTC timestamp>`. Tables
-   an older database does not have are listed as `skipped (not in this
-   database)`. Each wrangler call is stopped after 120 seconds
+   Expected: `done: N tables written to <BACKUPS>/d1-<UTC timestamp>`. The
+   script keeps an inventory of the tables it expects, and every one of them is
+   always required. If the database lacks any of them, the run fails before
+   any export (exit 1): it names the missing tables (at most ten, then
+   `... and K more`), keeps nothing, and tells you to apply the migrations
+   first. This is deliberate. A database that lacks a current table is either
+   an older schema that is not migrated yet or has lost data, and the script
+   cannot tell which: the migration history is stored in the same database, so
+   it can be damaged or edited and never excuses a missing table. A backup must
+   never silently omit data, so run `npx wrangler d1 migrations apply
+   <DATABASE> --remote` (after your own backup or Time Travel bookmark from step
+   1) and run the backup again. The script makes one read-only query, the table
+   listing, plus one export per table; it does not read the migration history
+   (that history is itself exported, in `d1_migrations`). Names read from the
+   database are printed with every character outside letters, digits, `_`, `.`
+   and `-` replaced by `?` and cut at 80 characters, so they cannot alter a
+   terminal or a log, and every list printed from the database is cut at ten
+   names, then `... and K more`. A table in the database that the script does
+   not know (from a newer migration, or made by hand) fails the run before any
+   export and is named: add it to the script's lists. SQLite's own `sqlite_*`
+   tables and Cloudflare's reserved `_cf_KV` are the only tables accepted
+   without an export. A listed table name that holds a line break, a carriage
+   return or a NUL is refused for the same reason (the names are compared as
+   whole lines).
+   The script needs bash 4.0 or newer and refuses (exit 2) on an older one
+   (macOS ships 3.2; install a newer bash). The check reads the shell's own
+   read-only version array, not a variable the environment can set; whoever
+   controls the script's environment already controls the whole run. Each wrangler call is stopped after 120 seconds
    (`BACKUP_TIMEOUT=300` raises it, to at most 900). A running export blocks
    other requests to the database while it runs (verified, Cloudflare import
    and export page, last updated 2026-04-21, read 2026-11-09), so do not run it
