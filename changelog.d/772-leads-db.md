@@ -16,3 +16,9 @@
   The purge no longer puts any personal value on a command line: a DELETE matches
   by id and non-personal columns and the returned row is compared by digest; a
   row whose address changed meanwhile is kept in the leads database.
+  Round 16: the legacy erasure mode now proves the database identity (name and id
+  agree, not the leads database, says analytics) before it prints a command; the
+  documented legacy block accepts the tool's exit 10 and applies the SQL before it
+  cleans up (a test runs it); each delete chunk gets a pre-created, registered rescue
+  file and recovery refuses (Time Travel) when one is missing or a deleted row is
+  unaccounted for.
