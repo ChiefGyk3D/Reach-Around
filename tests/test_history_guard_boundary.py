@@ -1,19 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The history guard's boundary, proved offline (issue #926, follows #619).
+"""Offline coverage checks and change detectors for the history guard (#926).
 
-Three things, each tested on the real shipped files:
+Three things, each run on the real shipped files. None of them shows that GitHub
+enforces anything or that the job cannot reach the network.
 
-1. The shipped CODEOWNERS example covers what it must. A small matcher with
-   GitHub's rule (the last matching pattern wins) is run over the real template
-   tree and over the paths a rewrite touches. This proves the file's coverage,
-   not that GitHub enforces it: the live check in the template README is an
-   owner step and activation stays blocked until it has been observed.
+1. CODEOWNERS PATTERN COVERAGE: a small matcher with GitHub's rule (the last
+   matching pattern wins) is run over the real template tree and over the paths
+   a rewrite touches. It checks that the shipped file's patterns cover the guard
+   files. Enforcement is shown only by the owner's live gates in the template
+   README; activation stays blocked until they have been observed.
 2. The README inventory lists every input name the workflow and its script
    read (an exact, checked list of names; a stale row fails too).
 3. Change detectors (section 4): every workflow step and every executed file
    is pinned by SHA-256, so any change fails a test that names it. These are
-   review triggers and best-effort heuristics, NOT a proof that the job cannot
-   reach the network; the real protection is CODEOWNERS plus branch protection.
+   review triggers and best-effort heuristics; the real protection is
+   CODEOWNERS plus branch protection, shown by the owner's live gates.
 """
 
 from __future__ import annotations
@@ -268,8 +269,8 @@ def test_the_coverage_check_passes_on_the_shipped_file() -> None:
 
 @pytest.mark.parametrize("lost", PROTECTED)
 def test_the_coverage_check_names_a_path_whose_rules_were_removed(lost: str) -> None:
-    # Revert proof on the real check: drop every LINE of the shipped file that
-    # covers the path, run the same validator, and it must name that path.
+    # Mutation of the shipped file content: drop every LINE that covers the
+    # path, run the same validator, and it must name exactly that path.
     lines = CODEOWNERS.read_text(encoding="utf-8").splitlines()
     kept = [
         ln
@@ -278,9 +279,10 @@ def test_the_coverage_check_names_a_path_whose_rules_were_removed(lost: str) -> 
         or not ln.strip()
         or not pattern_regex(ln.split()[0]).match(lost)
     ]
-    assert len(kept) < len(lines)
+    assert len(kept) < len(lines), "the mutation changed nothing"
+    assert f"{lost}: not owned" not in coverage_problems("\n".join(lines))
     problems = coverage_problems("\n".join(kept))
-    assert [p for p in problems if p.startswith(f"{lost}:")], problems
+    assert f"{lost}: not owned" in problems, problems
 
 
 @pytest.mark.parametrize("path", UNOWNED)
@@ -715,7 +717,8 @@ def test_the_sparse_base_checkout_holds_what_the_guard_needs_to_run(
 #   best-effort HEURISTIC: they catch common mistakes and cannot prove the
 #   absence of network use.
 # * The real protection is CODEOWNERS plus branch protection on main (the
-#   boundary the README's live check exercises). Runtime egress confinement of
+#   enforcement the owner's live gates in the README exercise). Runtime egress
+#   confinement of
 #   the job is a separate follow-up.
 #
 # TO CHANGE THE WORKFLOW OR A PINNED SCRIPT ON PURPOSE: make the change, run
@@ -1154,6 +1157,92 @@ def executed_problems(root: Path = TEMPLATE) -> list[str]:
     return found
 
 
+# Files the workflow checks out from the base commit that are NOT executed,
+# each with the reason. A sparse-checked file must be in EXECUTED_FILES or here.
+NOT_EXECUTED: dict[str, str] = {
+    "engine.lock": (
+        "read as data by read-lock.sh (parsed, never sourced); an engine bump "
+        "changes it on purpose and is reviewed through CODEOWNERS"
+    ),
+    "engine.release.json": (
+        "read as data by read-lock.sh with jq, never executed; bumped with the lock"
+    ),
+    ".github/workflows/history-guard.yml": (
+        "the workflow itself: every step is pinned in STEP_TABLE and the job "
+        "compares the running copy with the base copy"
+    ),
+}
+
+SCRIPT_TOKEN = re.compile(r"[\w./$-]+\.(?:sh|py|js|mjs|rb|pl)\b")
+
+
+def sparse_paths(data: dict[Any, Any]) -> list[str]:
+    found: list[str] = []
+    for job in data["jobs"].values():
+        for step in job.get("steps", []):
+            block = step.get("with", {}).get("sparse-checkout", "")
+            found += [ln.strip() for ln in block.splitlines() if ln.strip()]
+    return found
+
+
+def execution_coverage_problems(data: dict[Any, Any]) -> list[str]:
+    """Every file the job checks out or names in a step must be pinned
+    (EXECUTED_FILES) or listed with a reason (NOT_EXECUTED)."""
+    known = set(EXECUTED_FILES) | set(NOT_EXECUTED)
+    found = [f"{p}: in both tables" for p in set(EXECUTED_FILES) & set(NOT_EXECUTED)]
+    found += [
+        f"{p}: NOT_EXECUTED without a reason"
+        for p, r in NOT_EXECUTED.items()
+        if not r.strip()
+    ]
+    for path in sparse_paths(data):
+        if path not in known:
+            found.append(f"{path}: sparse-checked but in neither table")
+    for job in data["jobs"].values():
+        for step in job.get("steps", []):
+            for token in SCRIPT_TOKEN.findall(step.get("run", "")):
+                if not any(token.endswith(k) for k in known):
+                    found.append(f"{token}: named in a step but in neither table")
+    return found
+
+
+def test_sparse_checked_and_named_files_are_all_pinned_or_explained() -> None:
+    assert execution_coverage_problems(workflow()) == []
+    for rel in (*EXECUTED_FILES, *NOT_EXECUTED):
+        assert (TEMPLATE / rel).is_file(), rel
+    assert set(sparse_paths(workflow())) == set(EXECUTED_FILES) | set(NOT_EXECUTED)
+
+
+def test_files_named_inside_the_executed_scripts_are_in_the_tables() -> None:
+    known = set(EXECUTED_FILES) | set(NOT_EXECUTED)
+    for rel in EXECUTED_FILES:
+        text = (TEMPLATE / rel).read_text(encoding="utf-8")
+        for named in re.findall(r"scripts/[\w.-]+\.(?:sh|py)", text):
+            assert named in known, f"{rel} names {named}"
+
+
+def test_a_new_sparse_or_named_file_outside_scripts_is_caught() -> None:
+    def add_sparse(data: dict[Any, Any]) -> None:
+        step = data["jobs"]["history-guard"]["steps"][0]
+        step["with"]["sparse-checkout"] += (
+            "\n.github/actions/helper/run.sh\nREADME.md\n"
+        )
+
+    problems = execution_coverage_problems(mutated(add_sparse))
+    assert (
+        ".github/actions/helper/run.sh: sparse-checked but in neither table" in problems
+    )
+    assert "README.md: sparse-checked but in neither table" in problems
+
+    def add_call(data: dict[Any, Any]) -> None:
+        data["jobs"]["history-guard"]["steps"][3]["run"] += "\nbash tools/extra.sh\n"
+
+    assert any(
+        "tools/extra.sh: named in a step" in p
+        for p in execution_coverage_problems(mutated(add_call))
+    )
+
+
 def test_every_executed_file_matches_its_pinned_digest() -> None:
     assert executed_problems() == []
 
@@ -1196,10 +1285,12 @@ def test_the_table_and_this_file_are_owned_in_the_engine_codeowners() -> None:
 
 def test_removing_the_engine_rule_for_this_file_is_caught() -> None:
     text = (ROOT / ".github" / "CODEOWNERS").read_text("utf-8")
-    kept = "\n".join(
-        ln for ln in text.splitlines() if "test_history_guard_boundary" not in ln
-    )
-    assert not owned("tests/test_history_guard_boundary.py", parse_codeowners(kept))
+    path = "tests/test_history_guard_boundary.py"
+    lines = text.splitlines()
+    kept = [ln for ln in lines if "test_history_guard_boundary" not in ln]
+    assert len(kept) < len(lines), "the mutation changed nothing"
+    assert owned(path, parse_codeowners(text))
+    assert not owned(path, parse_codeowners("\n".join(kept)))
 
 
 def table_rows() -> str:
