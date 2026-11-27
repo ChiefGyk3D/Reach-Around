@@ -2766,7 +2766,8 @@ def test_a_row_changed_after_it_was_read_is_kept_in_dest_not_lost(
         got = db.execute(
             "SELECT email FROM leads WHERE id = ?", (format(2, "032x"),)
         ).fetchone()
-    assert got == ("changed@example.test",)  # the deleted version came back and was kept
+    # the deleted version came back and was kept
+    assert got == ("changed@example.test",)
     assert "changed@example.test" not in log.read_text()
     assert run(env, work, "--verify").returncode == 0
 

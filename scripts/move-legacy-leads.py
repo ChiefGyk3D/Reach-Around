@@ -1731,7 +1731,8 @@ def keep_changed_rows(
         ):
             continue
         run_file(w, args.dest, work, upsert_sql(table, [r]))
-        if missing_from(by_ids(w, args.dest, table, [r.get("id")]), [r], COLUMNS[table]):
+        back_dest = by_ids(w, args.dest, table, [r.get("id")])
+        if missing_from(back_dest, [r], COLUMNS[table]):
             raise Failed("a changed row could not be kept in the destination")
         m.record(table, r)
         m.save()
