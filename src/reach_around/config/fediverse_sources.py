@@ -31,7 +31,16 @@ class BlueskyFediverseSource(_Base):
     """One Bluesky account: a handle or a DID, checked by the provider itself."""
 
     kind: Literal["bluesky"]
-    actor: str
+    # The schema keywords below only mirror what the run-time check accepts (a
+    # superset: they reject no value that check accepts); the check stays the
+    # authority. A handle, ``did:plc:`` and ``did:web:`` use only these characters.
+    actor: str = Field(
+        json_schema_extra={
+            "minLength": 1,
+            "maxLength": 512,
+            "pattern": "^[A-Za-z0-9:._%~-]+$",
+        }
+    )
 
     @field_validator("actor")
     @classmethod
@@ -50,9 +59,25 @@ class MastodonFediverseSource(_Base):
     """
 
     kind: Literal["mastodon"]
-    host: str
-    acct: str
-    account_id: StrictStr | StrictInt | None = None
+    # Schema keywords are a superset of the run-time checks (see the Bluesky model).
+    host: str = Field(
+        json_schema_extra={
+            "minLength": 1,
+            "maxLength": 253,
+            "pattern": "^[a-z0-9_.-]+$",
+        }
+    )
+    acct: str = Field(
+        json_schema_extra={
+            "minLength": 1,
+            "maxLength": 30,
+            "pattern": "^[A-Za-z0-9_](?:[A-Za-z0-9_.-]{0,28}[A-Za-z0-9_])?$",
+        }
+    )
+    account_id: StrictStr | StrictInt | None = Field(
+        default=None,
+        json_schema_extra={"maxLength": 20, "pattern": "^(?:0|[1-9][0-9]{0,19})$"},
+    )
 
     @field_validator("host")
     @classmethod

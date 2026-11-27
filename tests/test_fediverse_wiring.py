@@ -9,6 +9,7 @@ and the sleep are injected, and every handle, DID and host is a synthetic exampl
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -42,7 +43,8 @@ from reach_around.counts.fediverse_store import (
     required_endpoints,
     snapshot_path,
 )
-from reach_around.counts.history import read_history
+from reach_around.counts.files import write_atomic
+from reach_around.counts.history import HistoryError, read_history
 
 NOW = datetime(2026, 11, 26, 12, 0, 0, tzinfo=UTC)
 TODAY = date(2026, 11, 26)
@@ -600,3 +602,436 @@ def test_the_egress_check_command_exit_codes(
         == 3
     )
     assert run_egress_check(config, tmp_path / "nope.txt") == 2
+
+
+# --- one unit: the snapshot, history, numbers and status (Daybreak F1, F2) -------
+
+
+class Writes:
+    """A fake for ``write_atomic`` that fails chosen writes and counts the rest.
+
+    Writes are named by file: ``snapshot`` (the staged copy of the snapshot file),
+    ``numbers`` and ``status``; ``fail`` gets that name and how many writes of it
+    came before.
+    """
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, fail: Any = None) -> None:
+        self.real = write_atomic
+        self.fail = fail
+        self.seen: dict[str, int] = {}
+        monkeypatch.setattr(counts_cmd, "write_atomic", self)
+
+    def __call__(self, path: Path, text: str, **kwargs: Any) -> None:
+        name = (
+            "snapshot"
+            if path.name.endswith(".staged") or path.name.endswith("fediverse.json")
+            else path.name.removesuffix(".json").removeprefix("numbers.")
+        )
+        before = self.seen.get(name, 0)
+        self.seen[name] = before + 1
+        if self.fail is not None and self.fail(name, before):
+            raise OSError(28, "No space left on device")
+        self.real(path, text, **kwargs)
+
+
+def tree(root: Path) -> dict[str, bytes]:
+    """Every file of the instance folder by relative name (stray temp files too)."""
+    return {
+        str(p.relative_to(root)): p.read_bytes()
+        for p in sorted(root.rglob("*"))
+        if p.is_file() and p.name not in ("site.yaml", ".lock")
+    }
+
+
+def second_day(root: Path, likes: int) -> int:
+    page = {"feed": [bsky_post(0, NOW - timedelta(days=1), likes)]}
+    date_next = DATE_OK  # the same day: history keeps the first value of a day
+    transport = FakeTransport(
+        {
+            PROFILE: reply(
+                {"did": DID, "followersCount": 400, "postsCount": 90},
+                headers=date_next,
+            ),
+            FEED: reply(page, headers=date_next),
+            "https://social.example/": reply({"error": "down"}, status=503),
+        }
+    )
+    return run_refresh(
+        root / "site.yaml",
+        None,
+        None,
+        False,
+        env={},
+        transport=transport,
+        now=lambda: NOW,
+    )
+
+
+def committed(root: Path) -> object:
+    return json.loads((root / "numbers.status.json").read_text())["committed"]
+
+
+def test_a_failed_numbers_write_leaves_the_prior_snapshot_byte_for_byte(
+    instance: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert refresh(instance, good_transport()) == 3
+    snap = instance / "numbers.fediverse.json"
+    before = snap.read_bytes()
+    numbers_before = (instance / "numbers.json").read_bytes()
+    Writes(monkeypatch, lambda name, n: name == "numbers")
+    assert second_day(instance, likes=77) == 1  # the write failed
+    assert snap.read_bytes() == before
+    assert (instance / "numbers.json").read_bytes() == numbers_before
+    assert not [p for p in tree(instance) if p.endswith((".staged", ".tmp"))]
+    assert committed(instance) is False  # never claims the run
+    # a later run settles everything: the snapshot is the new one, history has one
+    # row per metric and day (the earlier attempt's rows are not doubled)
+    monkeypatch.undo()
+    monkeypatch.setattr(counts_cmd, "default_sleep", lambda seconds: None)
+    assert second_day(instance, likes=77) == 3
+    assert load_snapshots(snap)["bluesky"]["interactions"] == [
+        {"boosts": 1, "favorites": 77, "replies": 2}
+    ]
+    records = read_history(instance / "history" / "social.jsonl").records
+    keys = [(r.platform, r.metric, r.as_of_utc[:10]) for r in records]
+    assert len(keys) == len(set(keys))
+    assert {r.value for r in records if r.metric == "favorites_30d"} == {9}
+    assert committed(instance) is True
+
+
+def test_a_failed_snapshot_stage_changes_nothing(
+    instance: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert refresh(instance, good_transport()) == 3
+    before = tree(instance)
+    Writes(monkeypatch, lambda name, n: name == "snapshot")
+    assert second_day(instance, likes=77) == 1
+    assert tree(instance) == before  # snapshot, history, numbers and status alike
+
+
+def test_a_failed_history_append_changes_nothing(
+    instance: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert refresh(instance, good_transport()) == 3
+    before = tree(instance)
+
+    def refuse(*args: Any, **kwargs: Any) -> int:
+        raise HistoryError("disk")
+
+    monkeypatch.setattr(counts_cmd, "append_records", refuse)
+    assert second_day(instance, likes=77) == 1
+    after = tree(instance)
+    # the pending note may differ; the four files that matter do not
+    for name in (
+        "numbers.fediverse.json",
+        "numbers.json",
+        "numbers.status.json",
+        "history/social.jsonl",
+    ):
+        assert after[name] == before[name]
+    assert not [p for p in after if p.endswith(".staged")]
+
+
+def test_a_failed_snapshot_rename_keeps_the_old_snapshot_and_no_commit_claim(
+    instance: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert refresh(instance, good_transport()) == 3
+    snap = instance / "numbers.fediverse.json"
+    before = snap.read_bytes()
+    real_replace = os.replace
+
+    def replace(src: str, dst: str, **kwargs: Any) -> None:
+        if dst == snap.name and src.endswith(".staged"):
+            raise OSError(5, "I/O error")
+        real_replace(src, dst, **kwargs)
+
+    monkeypatch.setattr("reach_around.counts.files.os.replace", replace)
+    assert second_day(instance, likes=77) == 1
+    assert snap.read_bytes() == before
+    assert not [p for p in tree(instance) if p.endswith((".staged", ".tmp"))]
+    assert committed(instance) is False
+
+
+def test_the_status_says_committed_only_after_every_write_landed(
+    instance: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    writes = Writes(monkeypatch)
+    assert refresh(instance, good_transport()) == 3
+    assert writes.seen == {"snapshot": 1, "status": 2, "numbers": 1}
+    assert committed(instance) is True
+    # the closing status write fails: the data landed, the status stays honest
+    monkeypatch.undo()
+    monkeypatch.setattr(counts_cmd, "default_sleep", lambda seconds: None)
+    Writes(monkeypatch, lambda name, n: name == "status" and n == 1)
+    assert second_day(instance, likes=77) == 1
+    assert committed(instance) is False
+    assert load_snapshots(instance / "numbers.fediverse.json")["bluesky"][
+        "interactions"
+    ] == [{"boosts": 1, "favorites": 77, "replies": 2}]
+
+
+def test_no_status_claims_a_commit_when_every_later_status_write_fails(
+    instance: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert refresh(instance, good_transport()) == 3
+    Writes(
+        monkeypatch,
+        lambda name, n: name == "numbers" or (name == "status" and n >= 1),
+    )
+    assert second_day(instance, likes=77) == 1
+    assert committed(instance) is False  # written false before the data, never true
+
+
+# --- the schema says what it can (Daybreak F3) -------------------------------------
+
+
+def test_the_schema_carries_the_constraints_it_can_express() -> None:
+    import re
+
+    from reach_around.schema import build_schema
+
+    defs = build_schema()["$defs"]
+    listing = defs["NumbersConfig"]["properties"]["fediverse"]
+    assert listing["minItems"] == 1 and listing["maxItems"] == 2
+    assert listing["uniqueItems"] is True
+    actor = defs["BlueskyFediverseSource"]["properties"]["actor"]
+    host = defs["MastodonFediverseSource"]["properties"]["host"]
+    acct = defs["MastodonFediverseSource"]["properties"]["acct"]
+    ident = defs["MastodonFediverseSource"]["properties"]["account_id"]
+    for prop in (actor, host, acct, ident):
+        assert prop["maxLength"] and prop["pattern"]
+    # whatever the run-time checks accept, the schema accepts too
+    accepted = {
+        "actor": ["alice.example.com", DID, "did:web:example.com%3A8080:u:alice"],
+        "host": ["social.example", "xn--mnchen-3ya.example", "a-b.c-d.example"],
+        "acct": ["a", "alice", "a.b-c_d", "_x_", "a" * 30],
+        "id": ["0", "109", "9" * 20],
+    }
+    for value in accepted["actor"]:
+        BlueskyFediverseSource(kind="bluesky", actor=value)
+        assert re.fullmatch(actor["pattern"], value) and len(value) <= 512
+    for value in accepted["host"]:
+        assert re.fullmatch(host["pattern"], value) and len(value) <= 253
+    for value in accepted["acct"]:
+        assert re.fullmatch(acct["pattern"], value) and len(value) <= 30
+    for value in accepted["id"]:
+        assert re.fullmatch(ident["pattern"], value)
+    # and it refuses what is plainly wrong, as the run-time checks do
+    for value in ("@alice", "a b", "https://x", "a/b", ""):
+        assert not re.fullmatch(actor["pattern"], value)
+    for value in ("Social.Example", "a b", "x:443", "x/y", "a@b"):
+        assert not re.fullmatch(host["pattern"], value)
+    for value in ("@a", "a b", ".a", "a.", "a" * 31, ""):
+        assert not (re.fullmatch(acct["pattern"], value) and len(value) <= 30)
+    for value in ("01", "-1", "1" * 21, "1.5", ""):
+        assert not re.fullmatch(ident["pattern"], value)
+
+
+# --- the full claims behind the security tests (Daybreak F4) -----------------------
+
+
+IDENTIFYING = (
+    "alice",
+    DID,
+    "social.example",
+    "example.com",
+    "at://",
+    "http",
+    "hello",
+    "friend",
+    "3jt4w2fyy4s",
+    "createdAt",
+    "indexedAt",
+    "2026-11-25",  # a post's own date
+    ".000Z",  # a post's timestamp
+    "author",
+    "handle",
+)
+
+
+def test_no_identifying_string_reaches_any_file_the_run_writes(
+    instance: Path,
+) -> None:
+    assert refresh(instance, good_transport()) == 3
+    files = tree(instance)
+    assert "numbers.fediverse.json" in files and "history/social.jsonl" in files
+    for name, data in files.items():
+        if name == "site.yaml":
+            continue
+        text = data.decode("utf-8")
+        for token in IDENTIFYING:
+            assert token not in text, (name, token)
+    body = json.loads(files["numbers.fediverse.json"])
+    assert set(body) == {"version", "platforms"}
+    snapshot = body["platforms"]["bluesky"]
+    assert set(snapshot) == {
+        "platform",
+        "as_of",
+        "complete",
+        "followers",
+        "posts",
+        "interactions",
+    }
+    assert all(
+        set(row) == {"boosts", "favorites", "replies"}
+        for row in snapshot["interactions"]
+    )
+
+
+HOSTILE_ROW = {"boosts": 1, "favorites": 2, "replies": 3}
+
+
+def hostile_files() -> dict[str, str]:
+    good = stored_snapshot()
+
+    def doc(platforms: object, **root: object) -> str:
+        return json.dumps({"version": 1, "platforms": platforms, **root})
+
+    deep: object = 1
+    for _ in range(2000):
+        deep = [deep]
+    out = {
+        "snapshot_identity": doc({"bluesky": {**good, "uri": "at://x/y/z"}}),
+        "row_text": doc(
+            {"bluesky": {**good, "interactions": [{**HOSTILE_ROW, "text": "hi"}]}}
+        ),
+        "row_time": doc(
+            {
+                "bluesky": {
+                    **good,
+                    "interactions": [{**HOSTILE_ROW, "createdAt": "2026-11-25"}],
+                }
+            }
+        ),
+        "future_date": doc({"bluesky": {**good, "as_of": "2999-01-01"}}),
+        "old_date": doc({"bluesky": {**good, "as_of": "1900-01-01"}}),
+        "deep_nesting": doc({"bluesky": {**good, "interactions": deep}}),
+        "not_a_mapping": doc(["bluesky"]),
+        "wrong_version": json.dumps({"version": 2, "platforms": {"bluesky": good}}),
+        "padding": json.dumps({"version": 1, "platforms": {}, "pad": "x" * 600_000}),
+        "unknown_platform": doc(
+            {"pixelfed": good, "bluesky": {**good, "platform": "x"}}
+        ),
+        "incomplete": doc({"bluesky": {**good, "complete": False}}),
+        "damaged": '{"version": 1, "platforms": {"bluesky": ',
+    }
+    return out
+
+
+@pytest.mark.parametrize("name", sorted(hostile_files()))
+def test_a_hostile_snapshot_file_never_reaches_the_kit_page(
+    tmp_path: Path, name: str
+) -> None:
+    path = snapshot_path(tmp_path / "numbers.json")
+    path.write_text(hostile_files()[name], encoding="utf-8")
+    base = kit_config()
+    assert base.kit is not None
+    kept = feed_kit(base, tmp_path / "site.yaml", None, TODAY)
+    assert kept.kit is not None
+    # the hand-kept entry is exactly what it was, and nothing is labeled collected
+    assert kept.kit.fediverse == base.kit.fediverse
+    assert not any(e.collected for e in kept.kit.fediverse)
+    labels = {m.trust.label for m in fediverse_measures(kept.kit.fediverse) if m.trust}
+    assert labels == {"hand-kept"}
+    # and nothing it carried is in the rendered model of the kit block
+    assert "alice" not in kept.kit.model_dump_json()
+    assert "x" * 100 not in kept.kit.model_dump_json()
+
+
+def test_a_valid_entry_survives_next_to_an_unexpected_platform(tmp_path: Path) -> None:
+    good = stored_snapshot()
+    path = snapshot_path(tmp_path / "numbers.json")
+    path.write_text(
+        json.dumps({"version": 1, "platforms": {"bluesky": good, "pixelfed": good}}),
+        encoding="utf-8",
+    )
+    assert set(load_snapshots(path)) == {"bluesky"}
+    # a stray key at the root is never read: nothing of it reaches the result
+    path.write_text(
+        json.dumps(
+            {"version": 1, "platforms": {"bluesky": good}, "handle": "alice.example"}
+        ),
+        encoding="utf-8",
+    )
+    assert "alice" not in json.dumps(load_snapshots(path))
+
+
+def test_the_collected_flag_cannot_be_set_from_config_by_any_path(
+    tmp_path: Path,
+) -> None:
+    from reach_around.config.fediverse import FediverseEntry
+
+    entry: dict[str, Any] = {
+        "platform": "bluesky",
+        "profile_url": "https://bsky.example/profile/typed",
+        "as_of": "2026-10-01",
+    }
+    for flag in ("collected", "_collected"):
+        hostile = {**entry, flag: True}
+        with pytest.raises(ValidationError):
+            FediverseEntry.model_validate(hostile)
+        with pytest.raises(ValidationError):
+            FediverseEntry.model_validate_json(json.dumps(hostile))
+        with pytest.raises(ValidationError):
+            FediverseEntry(**hostile)
+        kit = kit_doc()
+        kit["fediverse"] = [hostile]
+        with pytest.raises(ValidationError):
+            KitConfig.model_validate(kit)
+    plain = FediverseEntry.model_validate(entry)
+    assert plain.collected is False
+    # a copy, a dump and a re-read never turn the flag on either
+    assert plain.model_copy(update={"show_mean": True}).collected is False
+    assert "collected" not in plain.model_dump()
+    assert "_collected" not in plain.model_dump_json()
+    collected = apply_collected(kit_config(), write_snapshot(tmp_path), TODAY)
+    assert collected.kit is not None and collected.kit.fediverse[0].collected
+    dumped = collected.kit.fediverse[0].model_dump(mode="json")
+    assert "collected" not in dumped and "_collected" not in dumped
+    assert FediverseEntry.model_validate(dumped).collected is False
+    assert (
+        FediverseEntry.model_validate_json(
+            collected.kit.fediverse[0].model_dump_json()
+        ).collected
+        is False
+    )
+
+
+def test_dry_run_and_egress_check_never_print_the_account(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    secret_acct, secret_actor = "zorblat", "quuxer.example.com"
+    config = write_config(
+        tmp_path,
+        "version: 1\n"
+        "creator: {name: Example Creator}\n"
+        "tabs:\n  - id: start\n    title: Start\n    blocks:\n"
+        "      - {id: one, title: One, url: 'https://example.com/1'}\n"
+        "numbers:\n  fediverse:\n"
+        f"    - {{kind: bluesky, actor: {secret_actor}}}\n"
+        f"    - {{kind: mastodon, host: social.example, acct: {secret_acct}, "
+        "account_id: '4242'}\n",
+    )
+    transport = good_transport()
+    assert run_refresh(config, None, None, True, env={}, transport=transport) == 0
+    assert transport.calls == []
+    allowed = tmp_path / "allowed.txt"
+    for text in ("public.api.bsky.app:443\nsocial.example:443\n", "x:443\n", ""):
+        allowed.write_text(text)
+        run_egress_check(config, allowed)
+        main(
+            [
+                "counts",
+                "egress-check",
+                "--config",
+                str(config),
+                "--allowed",
+                str(allowed),
+            ]
+        )
+    run_egress_check(config, tmp_path / "missing.txt")
+    seen = capsys.readouterr()
+    shown = seen.out + seen.err
+    assert "social.example:443" in shown and "public.api.bsky.app:443" in shown
+    for name in (secret_acct, secret_actor, "zorblat", "quuxer", "4242"):
+        assert name not in shown

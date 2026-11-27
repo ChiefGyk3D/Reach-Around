@@ -64,8 +64,10 @@ from reach_around.counts.files import (
     LockBusy,
     LockLost,
     Paths,
+    StagedFile,
     dump_numbers,
     plan_paths,
+    stage_file,
     utc_stamp,
     write_atomic,
     write_new_atomic,
@@ -485,6 +487,15 @@ def _settle_history(paths: Paths, nonce: str) -> None:
         pass  # a stale note only makes the next run compare its values
 
 
+def _discard(staged: StagedFile | None) -> None:
+    """Remove a staged snapshot that will not be committed (never raises)."""
+    if staged is not None:
+        try:
+            staged.discard()
+        except OSError:
+            pass  # a stray dot file is harmless; the snapshot itself is untouched
+
+
 def _write_failed(exc: Exception) -> None:
     reason = exc.strerror if isinstance(exc, OSError) else str(exc)
     print(f"error: cannot write the result files: {reason}", file=sys.stderr)
@@ -667,6 +678,27 @@ def _cycle(
     )
     for failure in insight_failures:
         print(f"{failure.platform}: insights error ({failure.word})", file=sys.stderr)
+    # A run that read a fediverse snapshot is ONE unit (#940). The order is: stage
+    # the snapshot beside its file (nothing in place), append history (the pending
+    # note covers a later failure), write the status as ``committed: false``,
+    # write the numbers file, rename the snapshot into place, settle the pending
+    # note, and only then write the status as ``committed: true``. A failure at
+    # any step before the rename leaves the old snapshot byte for byte and a
+    # status that never claims the commit; the staged copy is removed. The one
+    # step after the numbers write is a rename in the same folder; if even that
+    # fails the status stays ``committed: false`` and the old snapshot stays, so
+    # the kit never shows data from a run that did not finish.
+    staged_snapshot: StagedFile | None = None
+    if fediverse_file is not None and fed.snapshots:
+        try:
+            staged_snapshot = stage_file(
+                fediverse_file,
+                dump_snapshots({**load_snapshots(fediverse_file), **fed.snapshots}),
+                write_atomic,
+            )
+        except (OSError, ConfigError) as exc:
+            _write_failed(exc)
+            return EXIT_WRITE
     if history is not None and changed:
         # History goes first: if it cannot be written, the status and numbers
         # files are left exactly as they were. Only values that were fetched and
@@ -732,9 +764,11 @@ def _cycle(
             )
             fetched = staged.records
         except OSError as exc:
+            _discard(staged_snapshot)
             _write_failed(exc)
             return EXIT_WRITE
         except HistoryError as exc:
+            _discard(staged_snapshot)
             print(
                 f"error: history not written, nothing else was changed: {exc}",
                 file=sys.stderr,
@@ -743,6 +777,7 @@ def _cycle(
         try:
             kept = append_records(history, fetched, now=stamp, skip_days=True)
         except HistoryError as exc:
+            _discard(staged_snapshot)
             _withdraw(paths, history, staged, exc)
             print(
                 f"error: history not written, nothing else was changed: {exc}",
@@ -755,34 +790,47 @@ def _cycle(
         _retention_checks(history, stamp, retention)
     previous_status = load_status(paths.status)
     reported = outcomes + fed.outcomes
+    # Legacy order (no snapshot in this run): status first as ``committed: true``,
+    # rewritten as false if the numbers write fails. A run with a snapshot follows
+    # the unit order described above: false first, true last.
     try:
         write_atomic(
-            paths.status, render_status(previous_status, reported, stamp, True)
+            paths.status,
+            render_status(previous_status, reported, stamp, staged_snapshot is None),
         )
     except (OSError, ConfigError) as exc:
+        _discard(staged_snapshot)
         _write_failed(exc)
         return EXIT_WRITE
     if changed:
         try:
-            if fediverse_file is not None and fed.snapshots:
-                # The stored snapshots of platforms that failed this run stay.
-                write_atomic(
-                    fediverse_file,
-                    dump_snapshots({**load_snapshots(fediverse_file), **fed.snapshots}),
-                )
             write_atomic(paths.target, dump_numbers(numbers))
+            if staged_snapshot is not None:
+                # The stored snapshots of platforms that failed this run stay
+                # (they were merged when staging).
+                staged_snapshot.commit()
         except (OSError, ConfigError) as exc:
-            try:
-                write_atomic(
-                    paths.status,
-                    render_status(previous_status, reported, stamp, False),
-                )
-            except (OSError, ConfigError):
-                pass  # the numbers file is untouched either way
+            _discard(staged_snapshot)
+            if staged_snapshot is None:
+                try:
+                    write_atomic(
+                        paths.status,
+                        render_status(previous_status, reported, stamp, False),
+                    )
+                except (OSError, ConfigError):
+                    pass  # the numbers file is untouched either way
             _write_failed(exc)
             return EXIT_WRITE
         if staged is not None:
             _settle_history(paths, staged.nonce)
+    if staged_snapshot is not None:
+        try:
+            write_atomic(
+                paths.status, render_status(previous_status, reported, stamp, True)
+            )
+        except (OSError, ConfigError) as exc:
+            _write_failed(exc)  # the status keeps saying ``committed: false``
+            return EXIT_WRITE
     failed = any(outcome.status == "error" for outcome in reported) or bool(
         insight_failures
     )

@@ -348,8 +348,13 @@ class NumbersConfig(BaseModel):
     sources: list[Source] = Field(default_factory=list, max_length=MAX_SOURCES)
     # The fediverse collector (#940): public post counts of one Bluesky and one
     # Mastodon-API account. Daily only; no token; the account is config only.
+    # Schema only: at least one entry when the key is present, and no repeated
+    # entry. "At most one source per kind" is a run-time check that a list schema
+    # cannot express (see docs/config.md); the validator below stays the authority.
     fediverse: list[FediverseSource] = Field(
-        default_factory=list, max_length=MAX_FEDIVERSE_SOURCES
+        default_factory=list,
+        max_length=MAX_FEDIVERSE_SOURCES,
+        json_schema_extra={"minItems": 1, "uniqueItems": True},
     )
     # Per-platform stale limit in days for hand-kept numbers (default 30). The
     # key is a platform slug; a number older than its limit is stale.

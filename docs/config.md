@@ -1856,7 +1856,15 @@ numbers:
 | `acct` | Mastodon: the local user name, without `@` and without the instance part |
 | `account_id` | Mastodon, optional: the numeric account id |
 
-Unknown keys are refused, so a token cannot be written here. What a run does:
+Unknown keys are refused, so a token cannot be written here. The generated
+[`site.schema.json`](site.schema.json) carries what a schema can say: the `kind`
+discriminator, `minItems` 1, `maxItems` 2, `uniqueItems`, and length and character
+limits on `actor`, `host`, `acct` and `account_id`. These checks are runtime-only and
+an editor that validates against the schema does not see them: at most one source of
+each `kind` (two Bluesky entries with different actors pass the schema), and the full
+syntax of a Bluesky handle or DID and of a Mastodon host (no IP address, no
+`localhost`, label and DID rules). `reach-around` always applies the runtime checks.
+What a run does:
 
 - A source that is read in full writes its snapshot to `numbers.fediverse.json`
   (beside the numbers file; `--out` renames it as `<name>.fediverse.json`) and one

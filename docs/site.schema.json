@@ -304,6 +304,9 @@
       "description": "One Bluesky account: a handle or a DID, checked by the provider itself.",
       "properties": {
         "actor": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9:._%~-]+$",
           "title": "Actor",
           "type": "string"
         },
@@ -2536,13 +2539,21 @@
             }
           ],
           "default": null,
+          "maxLength": 20,
+          "pattern": "^(?:0|[1-9][0-9]{0,19})$",
           "title": "Account Id"
         },
         "acct": {
+          "maxLength": 30,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_](?:[A-Za-z0-9_.-]{0,28}[A-Za-z0-9_])?$",
           "title": "Acct",
           "type": "string"
         },
         "host": {
+          "maxLength": 253,
+          "minLength": 1,
+          "pattern": "^[a-z0-9_.-]+$",
           "title": "Host",
           "type": "string"
         },
@@ -2650,8 +2661,10 @@
             ]
           },
           "maxItems": 2,
+          "minItems": 1,
           "title": "Fediverse",
-          "type": "array"
+          "type": "array",
+          "uniqueItems": true
         },
         "history_file": {
           "anyOf": [
