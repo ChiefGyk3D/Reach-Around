@@ -1894,11 +1894,10 @@ fediverse_commit.py`. Three bounds apply:
   of 512 KiB, the numbers limit of 256 KiB). A snapshot, numbers file or staged
   copy over its limit, and more than eight staged copies, leave the unit pending:
   the status says `committed: false`, the run exits 1 and names `UnitFileTooLarge`.
-  Remove the oversized or surplus file by hand (staged copies are the dot files
-  ending `.staged` or `.tmp` beside the snapshot), then run again. Looking for
-  staged copies is bounded as well: the folder walk stops at the ninth staged copy or
-  after 10,000 entries, keeps nothing more, and fails the same way (the files stay as
-  evidence).
+  Looking for staged copies is bounded as well: the folder walk stops at the ninth
+  staged copy or after 10,000 directory entries, keeps nothing more, and fails the
+  same way. The word is the same for every one of these causes, so read the folder to
+  tell them apart (see the next section).
 - A unit note that cannot be parsed is moved to `.numbers.json.unit.bad` (an older
   `.bad` file is replaced). That run prints `unit_note_quarantined` and keeps the
   status false; the next run proceeds normally. The `.bad` file is only evidence:
@@ -1911,6 +1910,38 @@ fediverse_commit.py`. Three bounds apply:
   transaction that was kept aside and put back after a later transaction produced
   byte-identical snapshot and numbers files and crashed before its numbers write is
   accepted as that transaction's proof.
+
+Recovering from `UnitFileTooLarge`. The word means one fixed thing: recovery found
+more than it is allowed to examine, so it stopped and did not guess. The causes are
+a snapshot, numbers file or staged copy over its size limit; more than 8 staged
+copies; or more than 10,000 entries of any kind (files, folders, links) in the
+output folder. When it stops, every file is kept as evidence, nothing is deleted or
+rewritten, the status file says `committed: false` and the run exits 1. Nothing is
+lost: the stored snapshot, history and numbers file are as the last good run left
+them. Examples below use the default names (`numbers.json`,
+`numbers.fediverse.json`); with `--out NAME` the names follow it.
+
+1. Stop any other refresh of this output and `cd` to the output folder (the folder
+   that holds the numbers file).
+2. Count the entries: `ls -A | wc -l`. If it is over 10,000, move the unrelated
+   files and folders to another place until at most 10,000 remain (move them, do
+   not delete what you cannot name). The output folder should hold only the numbers
+   file, the status file and the dot files below.
+3. List the leftovers: `ls -A | grep -E '^\.{1,2}numbers\.fediverse\.json\.[0-9a-f]{16}\.(staged|tmp)'`.
+   If there are more than 8, or any is over 512 KiB, remove them. These are the only
+   files safe to delete by hand: dot files named `.numbers.fediverse.json.` plus 16
+   hex digits plus `.staged` or `.tmp` (a `.tmp` copy of a staged file adds a second
+   16 hex group before `.tmp`). They are copies of a run that never committed, and
+   the next run would remove them itself.
+4. Never delete or edit `numbers.json`, `numbers.fediverse.json` or the unit note
+   `.numbers.json.unit` to clear this word; the next run settles the note itself. If
+   the snapshot (over 512 KiB) or the numbers file (over 256 KiB) is the oversized
+   one, this program did not write it: restore it from your backup or version
+   control, then continue. The only other file you may remove is
+   `.numbers.json.unit.bad`.
+5. Run `reach-around counts refresh` again. Confirm recovery: the run exits 0 and
+   the status file says `committed: true`. If it still names `UnitFileTooLarge`,
+   repeat steps 2 to 4; the cause was not all gone.
 
 The build feeds [`kit.fediverse`](kit.md#the-fediverse-block) from the snapshots.
 
