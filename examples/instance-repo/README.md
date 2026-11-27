@@ -504,6 +504,57 @@ never replace the code-owner review:
 - The running-copy comparison at the start of the job.
 - The label, the 24 hour age and the detective job summary.
 
+**Offline check and live check of the CODEOWNERS boundary.** Offline, the
+engine repository's test `tests/test_history_guard_boundary.py` reads the
+shipped `.github/CODEOWNERS` with GitHub's rule that the last matching pattern
+wins, and proves that every file of the guard (the workflow, the approvers
+file, `scripts/`, `engine.lock`, `engine.release.json`, `history/redactions/`
+and the CODEOWNERS file itself) has an owner and that the history file and
+`numbers.json` have none. That proves the file's coverage, not that GitHub
+enforces it. The live check is an owner step and proves the enforcement. Run it
+on this repository before you add any approver login and record what you saw.
+Until step 4 blocks, the boundary is UNVERIFIED and activation stays blocked.
+
+1. Replace `OWNER-LOGIN` with the review account and merge the file to `main`.
+2. Ask GitHub whether it reads the file without errors (UNVERIFIED until run:
+   `gh api repos/OWNER/REPO/codeowners/errors`; expect an empty list).
+3. From the authoring account, open a pull request that changes one comment line
+   in `.github/workflows/history-guard.yml`. The pull request page must list the
+   code owner as a required reviewer.
+4. With every other check green, read the merge state (UNVERIFIED until run:
+   `gh pr view NUMBER --json reviewDecision,mergeStateStatus`). It must show a
+   review still required and a blocked merge. Try the merge as the author and
+   as an administrator: both must be refused (administrators are included).
+5. Approve as the independent code owner, push one more commit, and confirm the
+   approval is dismissed and the merge is blocked again (stale approvals and
+   most recent reviewable push). Close the pull request without merging.
+
+**Trusted inputs the workflow reads.** This is the complete inventory of what
+`.github/workflows/history-guard.yml` and `scripts/history-guard.py` take in.
+The same test file parses both and fails when one of them reads an input that
+is not listed here. Nothing outside this list is read: no `secrets`, no `vars`,
+no workflow `inputs`, no artifacts, no cache, and no network address except the
+GitHub API of this repository.
+
+| Input | Where it comes from | Trust |
+| --- | --- | --- |
+| `github.event.pull_request.base.sha` | event payload | commit id the job pins; the base is trusted code |
+| `github.event.pull_request.head.sha` | event payload | the head is only ever data |
+| `github.event.pull_request.number` | event payload | a number, used in API paths and the run group |
+| `github.event.pull_request.head.repo.full_name` | event payload | compared with this repository: same repository only |
+| `github.event.pull_request.head.ref` | event payload | branch name, through `env`, must match `redact/` |
+| `github.event.pull_request.created_at` | event payload | a date, the day written into the compare |
+| `github.repository` | context | this repository |
+| `github.token` | context | read-only token (`contents`, `pull-requests`, `actions`) |
+| `github.workflow_ref` | context | must name this workflow file |
+| `steps.trust.outputs.dir` | an earlier step | the read-only folder of base copies |
+| `REPO`, `PR_NUMBER`, `GH_TOKEN`, `HEAD_SHA`, `BASE_SHA`, `HEAD_REPO`, `HEAD_REF`, `PR_CREATED_AT`, `TRUSTED`, `WORKFLOW_REF` | environment of the steps | set only from the rows above |
+| `RUNNER_TEMP`, `GITHUB_OUTPUT`, `GITHUB_STEP_SUMMARY` | runner environment | scratch folder and result files of the job |
+| `scripts/read-lock.sh`, `scripts/verify-history-rewrite.sh`, `scripts/history-guard.py`, `engine.lock`, `engine.release.json`, `.github/workflows/history-guard.yml` | files of the BASE commit | trusted, sparse checkout, executed |
+| `.github/history-approvers` | file of the BASE commit | trusted, read as a git object |
+| `history/social.jsonl`, `numbers.json`, one manifest under `history/redactions/` | files of the HEAD commit | untrusted data, never executed, checked by the engine |
+| `issues/{number}/events`, `issues/{number}/labels`, `actions/runs`, `pulls`, `git/ref/heads/main` | GitHub API of this repository | read-only calls |
+
 **Checklist before you list the first approver.** `.github/history-approvers`
 ships empty so that nothing is accepted. Complete all of these first, in order:
 
