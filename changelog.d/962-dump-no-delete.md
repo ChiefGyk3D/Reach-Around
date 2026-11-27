@@ -1,0 +1,1 @@
+- Backup verifier (#962): `scripts/check-dump.py` no longer accepts a statement that starts with `DELETE FROM`. A D1 export holds a PRAGMA line, CREATE TABLE, CREATE INDEX and INSERT rows only, never a DELETE, so any DELETE now fails as an unexpected statement.

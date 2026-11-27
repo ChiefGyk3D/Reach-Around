@@ -1229,3 +1229,35 @@ def test_lookalike_and_adjacent_pragma_forms_are_refused(
 ) -> None:
     r = run(SCHEMA_DUMP + GOOD_ROW + line + "\n", tmp_path=tmp_path)
     assert r.returncode == 1, r.stdout + r.stderr
+
+
+# #962: a `wrangler d1 export` holds a PRAGMA line, CREATE TABLE, CREATE INDEX and
+# one INSERT per row (verified 2026-11-27 in scripts/backup-d1.sh). It never holds
+# a DELETE, so no DELETE form is accepted: a restore of it would erase rows.
+@pytest.mark.parametrize(
+    "line",
+    [
+        'DELETE FROM "view_events";',
+        "DELETE FROM view_events WHERE 1=1;",
+        "delete from view_events;",
+        "Delete From view_events;",
+        "DELETE\tFROM view_events;",
+        "DELETE\nFROM view_events;",
+        "DELETE   FROM   view_events;",
+        "DELETE FROM sqlite_sequence;",
+        "-- harmless\nDELETE FROM view_events;",
+        "/* harmless */ DELETE FROM view_events;",
+        "DELETE/**/FROM view_events;",
+        "DELETE FROM view_events",
+        "\N{FULLWIDTH LATIN CAPITAL LETTER D}ELETE FROM view_events;",
+        "DELETE\N{NO-BREAK SPACE}FROM view_events;",
+        "DELETE\N{IDEOGRAPHIC SPACE}FROM view_events;",
+        "DELETE FROM\N{NO-BREAK SPACE}view_events;",
+        "DELETE FR\N{GREEK CAPITAL LETTER OMICRON}M view_events;",
+        "DELETE FROM view_events;\nDELETE FROM view_events;",
+    ],
+)
+def test_no_delete_statement_is_accepted(line: str, tmp_path: Path) -> None:
+    r = run(SCHEMA_DUMP + GOOD_ROW + line + "\n", tmp_path=tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "unexpected statement" in r.stdout
