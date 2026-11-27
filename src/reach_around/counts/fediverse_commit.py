@@ -49,7 +49,11 @@ start of a run belongs to a run that is no longer there):
 8. Reads are bounded: the digests of the snapshot, the numbers file and every
    staged copy are streamed in fixed chunks and capped (``file_digest``); a file
    over its limit leaves the unit pending with the fixed word ``UnitFileTooLarge``,
-   and at most ``MAX_STAGED_CANDIDATES`` staged copies are examined.
+   and at most ``MAX_STAGED_CANDIDATES`` staged copies are examined. Discovery is
+   bounded too (``find_stale``): it stops at the ninth matching plain file or after
+   ``MAX_DIR_ENTRIES`` directory entries, keeps nothing more, and raises
+   ``UnitFileTooLarge`` (recovery then leaves the status false and the files in
+   place as evidence).
 9. A unit note that cannot be parsed is moved, after the status demotion, to
    ``.numbers.json.unit.bad`` (``quarantine_unit``; an older ``.bad`` is replaced);
    that run reports ``unit_note_quarantined`` and keeps the status false, and the
@@ -142,15 +146,19 @@ class UnitFileTooLarge(OSError):
 
 # The most staged candidates ``abandon_unit`` examines; more leave the unit pending.
 MAX_STAGED_CANDIDATES = 8
+# The most directory entries ``find_stale`` looks at (names only) before it gives up.
+MAX_DIR_ENTRIES = 10_000
 _CHUNK = 64 * 1024
 
 
 def file_digest(path: Path, limit: int) -> str | None:
     """sha256 of the file's bytes, ``None`` when it is absent or unreadable.
 
-    The file is streamed in fixed chunks and never read past ``limit`` bytes: the
-    size is checked before the read and the count again during it. A file over
-    ``limit`` (or one that is not a regular file) raises ``UnitFileTooLarge``."""
+    The file is streamed in fixed chunks and never read past ``limit + 1`` bytes:
+    the size is checked before the read, and each read asks for at most the bytes
+    that remain up to ``limit + 1`` (so a file that grows during the hash is caught
+    by the extra byte). A file over ``limit`` (or one that is not a regular file)
+    raises ``UnitFileTooLarge``."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
     except OSError:
@@ -161,7 +169,7 @@ def file_digest(path: Path, limit: int) -> str | None:
             raise UnitFileTooLarge("unit file over its limit")
         digest = hashlib.sha256()
         total = 0
-        while chunk := os.read(fd, _CHUNK):
+        while chunk := os.read(fd, min(_CHUNK, limit + 1 - total)):
             total += len(chunk)
             if total > limit:
                 raise UnitFileTooLarge("unit file over its limit")
@@ -351,21 +359,31 @@ def find_stale(snapshot: Path) -> list[Path]:
     Only plain files whose name is exactly one this module's writers make
     (``.<name>.<16 hex>.staged`` or ``.tmp``, or the temp copy of a staged file)
     are listed. A link, a folder or the committed snapshot itself never is.
-    Raises ``OSError`` if the folder cannot be read.
+    Raises ``OSError`` if the folder cannot be read, and ``UnitFileTooLarge``
+    (nothing is returned) at the ``MAX_STAGED_CANDIDATES + 1``-th matching file or
+    after ``MAX_DIR_ENTRIES`` entries: the walk stops there.
     """
     pattern = re.compile(
         rf"\.{{1,2}}{re.escape(snapshot.name)}\.[0-9a-f]{{16}}\.(?:staged|tmp)"
         r"(?:\.[0-9a-f]{16}\.tmp)?"
     )
     found: list[Path] = []
-    for entry in snapshot.parent.iterdir():
-        if entry.name == snapshot.name or not pattern.fullmatch(entry.name):
-            continue
-        try:
-            if stat.S_ISREG(entry.lstat().st_mode):
-                found.append(entry)
-        except FileNotFoundError:
-            continue
+    seen = 0
+    with os.scandir(snapshot.parent) as entries:
+        for entry in entries:
+            seen += 1
+            if seen > MAX_DIR_ENTRIES:
+                raise UnitFileTooLarge("too many directory entries")
+            if entry.name == snapshot.name or not pattern.fullmatch(entry.name):
+                continue
+            try:
+                regular = entry.is_file(follow_symlinks=False)
+            except OSError:
+                continue
+            if regular:
+                if len(found) >= MAX_STAGED_CANDIDATES:
+                    raise UnitFileTooLarge("too many staged candidates")
+                found.append(snapshot.parent / entry.name)
     return found
 
 

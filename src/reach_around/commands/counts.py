@@ -53,6 +53,7 @@ from reach_around.counts.fediverse_commit import (
     SAME_DAY_KEPT,
     SNAPSHOT_IN_FUTURE,
     UNIT_NOTE_QUARANTINED,
+    UnitFileTooLarge,
     UnitNote,
     abandon_unit,
     day_conflicts,
@@ -595,18 +596,26 @@ def _recover(
     failure, ``None`` otherwise.
     """
     try:
-        stale = find_stale(fediverse_file)
+        overflow: UnitFileTooLarge | None = None
+        try:
+            stale = find_stale(fediverse_file)
+        except UnitFileTooLarge as exc:
+            stale, overflow = [], exc  # too many to examine: fail closed below
         try:
             missing, late, agree = _unit_state(
                 paths, history, fediverse_file, stamp, run_id
             )
         except (OSError, HistoryError, ConfigError):
             missing, late, agree = [], [], False  # an unreadable part is not complete
-        if not agree and status_committed(paths.status) is True:
+        if (not agree or overflow is not None) and status_committed(
+            paths.status
+        ) is True:
             write_atomic(
                 paths.status,
                 render_status(load_status(paths.status), [], stamp, False),
             )
+        if overflow is not None:
+            raise overflow  # status is false; every file stays as evidence
         # After the demotion above: a note of a transaction that never crossed
         # the commit point (its proposed snapshot is not the committed one, or its
         # staged copy is still here) is removed, so it cannot block the status.

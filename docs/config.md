@@ -1895,7 +1895,10 @@ fediverse_commit.py`. Three bounds apply:
   copy over its limit, and more than eight staged copies, leave the unit pending:
   the status says `committed: false`, the run exits 1 and names `UnitFileTooLarge`.
   Remove the oversized or surplus file by hand (staged copies are the dot files
-  ending `.staged` or `.tmp` beside the snapshot), then run again.
+  ending `.staged` or `.tmp` beside the snapshot), then run again. Looking for
+  staged copies is bounded as well: the folder walk stops at the ninth staged copy or
+  after 10,000 entries, keeps nothing more, and fails the same way (the files stay as
+  evidence).
 - A unit note that cannot be parsed is moved to `.numbers.json.unit.bad` (an older
   `.bad` file is replaced). That run prints `unit_note_quarantined` and keeps the
   status false; the next run proceeds normally. The `.bad` file is only evidence:

@@ -9,17 +9,22 @@ note cannot be made to settle by an ordinary path.
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from reach_around.config.numbers import MAX_NUMBERS_BYTES
 from reach_around.counts.fediverse_commit import (
+    MAX_DIR_ENTRIES,
     MAX_STAGED_CANDIDATES,
     UnitFileTooLarge,
     UnitNote,
     bad_unit_path,
     file_digest,
+    find_stale,
+    quarantine_unit,
     unit_path,
     unit_pending,
     write_unit,
@@ -212,9 +217,141 @@ def test_a_note_that_is_a_link_is_not_moved(tmp_path: Path) -> None:
     target = root / "elsewhere.txt"
     target.write_text("{")
     unit_path(numbers).symlink_to(target)
+    assert quarantine_unit(numbers) is False  # documented: a link is left alone
     assert run_failing(root, 1) != 0
     assert unit_path(numbers).is_symlink()
+    assert unit_path(numbers).readlink() == target
     assert not bad_unit_path(numbers).exists()
+    assert not bad_unit_path(numbers).is_symlink()
     assert target.read_text() == "{"
     assert committed(root) is False
     assert "elsewhere.txt" in tree(root)
+    # The same bytes as a plain file ARE moved: the function does act, so the
+    # link case above is a real refusal and not an absent feature.
+    unit_path(numbers).unlink()
+    unit_path(numbers).write_text("{")
+    assert quarantine_unit(numbers) is True
+    assert bad_unit_path(numbers).read_text() == "{"
+    assert not unit_path(numbers).exists()
+
+
+class _Scan:
+    """Counts the directory entries a scan yields."""
+
+    def __init__(self, real: Any, counter: list[int]) -> None:
+        self._real, self._counter = real, counter
+
+    def __enter__(self) -> _Scan:
+        self._real.__enter__()
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        self._real.__exit__(*args)
+
+    def __iter__(self) -> _Scan:
+        return self
+
+    def __next__(self) -> Any:
+        entry = next(self._real)
+        self._counter[0] += 1
+        return entry
+
+
+def counted_scan(m: pytest.MonkeyPatch) -> list[int]:
+    counter = [0]
+    real = os.scandir
+
+    def scandir(path: Any) -> _Scan:
+        return _Scan(real(path), counter)
+
+    m.setattr("reach_around.counts.fediverse_commit.os.scandir", scandir)
+    return counter
+
+
+def test_discovery_stops_early_at_the_staged_candidate_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snap = tmp_path / "numbers.fediverse.json"
+    snap.write_text("{}")
+    for i in range(5000):
+        (tmp_path / f".numbers.fediverse.json.{i:016x}.staged").write_text("x")
+    others = 1  # the snapshot itself
+    with monkeypatch.context() as m:
+        seen = counted_scan(m)
+        with pytest.raises(UnitFileTooLarge):
+            find_stale(snap)
+    # At most the cap plus one matches, and nothing beyond what was needed.
+    assert seen[0] <= MAX_STAGED_CANDIDATES + 1 + others
+    assert len(list(tmp_path.iterdir())) == 5001  # nothing was removed
+
+
+def test_discovery_gives_up_after_the_entry_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snap = tmp_path / "numbers.fediverse.json"
+    snap.write_text("{}")
+    for i in range(MAX_DIR_ENTRIES + 100):
+        (tmp_path / f"n{i}").write_text("")
+    with monkeypatch.context() as m:
+        seen = counted_scan(m)
+        with pytest.raises(UnitFileTooLarge):
+            find_stale(snap)
+    assert seen[0] == MAX_DIR_ENTRIES + 1  # stopped at the cap, not the end
+
+
+def test_a_discovery_overflow_demotes_a_true_status_and_keeps_every_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = make(tmp_path / "root", CONFIG_FED_ONLY)
+    assert day_one(root) == 3
+    assert committed(root) is True
+    extra = [
+        root / f".numbers.fediverse.json.{i:016x}.tmp"
+        for i in range(MAX_STAGED_CANDIDATES + 1)
+    ]
+    for path in extra:
+        path.write_text("x")
+    capsys.readouterr()
+    assert run_failing(root, 1) == 1
+    assert WORD in capsys.readouterr().err
+    assert committed(root) is False  # fail closed
+    assert all(p.exists() for p in extra)  # evidence kept
+
+
+def test_a_normal_folder_still_lists_its_stale_files(tmp_path: Path) -> None:
+    snap = tmp_path / "numbers.fediverse.json"
+    snap.write_text("{}")
+    names = [f".numbers.fediverse.json.{i:016x}.staged" for i in range(8)]
+    for name in names:
+        (tmp_path / name).write_text("x")
+    (tmp_path / "other.txt").write_text("x")
+    assert sorted(p.name for p in find_stale(snap)) == sorted(names)
+
+
+def test_growth_during_hashing_is_caught_and_never_read_past_limit_plus_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The size looked fine at fstat time (50 bytes) but the file is bigger when
+    read: the read asks for no more than ``limit + 1`` bytes in total."""
+    path = tmp_path / "grows"
+    path.write_bytes(b"a" * 5000)
+    real_fstat, real_read = os.fstat, os.read
+    asked: list[int] = []
+
+    class Small:
+        def __init__(self, info: os.stat_result) -> None:
+            self.st_mode, self.st_size = info.st_mode, 50
+
+    def fstat(fd: int) -> Any:
+        return Small(real_fstat(fd))
+
+    def read(fd: int, n: int) -> bytes:
+        asked.append(n)
+        return real_read(fd, n)
+
+    with monkeypatch.context() as m:
+        m.setattr("reach_around.counts.fediverse_commit.os.fstat", fstat)
+        m.setattr("reach_around.counts.fediverse_commit.os.read", read)
+        with pytest.raises(UnitFileTooLarge):
+            file_digest(path, 100)
+    assert sum(asked) <= 101
