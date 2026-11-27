@@ -1655,6 +1655,149 @@ Your reply to the person is due within one month of the request.
 """
 
 
+# The legacy copy (#772): installations that collected leads before the leads database
+# existed still hold the lead tables in the analytics database until the one-time
+# move purged them. Erasing a person means erasing that copy too. The legacy run is
+# its own explicit mode: the owner names the legacy database AND types it a second
+# time, so a typo or a wrong paste never points the tool at a database by accident.
+# It deletes from exactly these two tables (the table list is explicit, never read
+# from the database) and nothing else.
+LEGACY_TABLES = ("leads", "kit_events")
+
+
+def _legacy_database(name: str, confirm: str | None) -> str:
+    """The legacy analytics database, only if named twice, valid, and not the leads
+    database."""
+    database = _checked_database(name)
+    if database == LEADS_DATABASE:
+        raise LeadsError(
+            f"--legacy-database must not be {LEADS_DATABASE}: the leads database "
+            "is erased by the normal run"
+        )
+    if confirm != database:
+        raise LeadsError(
+            "--confirm-legacy NAME is required and must repeat --legacy-database "
+            "exactly: you are about to erase from the legacy analytics database. "
+            "Nothing was printed or changed"
+        )
+    return database
+
+
+def _run_delete_legacy(args: argparse.Namespace) -> int:
+    """`leads delete` for the legacy copy of a lead in the analytics database.
+
+    Same guards as the normal run: the address on stdin only, an id that the export
+    itself assigned to that address, SQL that pairs the id with the address (in the
+    file, never on a command line), a separate id-only read-back command, and exit
+    10 for "checks passed, nothing erased" (there is no --finish here: the alert
+    hashes are cleared by the normal run's --finish, and the read-back below is
+    the proof for this copy)."""
+    if args.legacy_database is None:
+        print(
+            "error: --confirm-legacy needs --legacy-database NAME", file=sys.stderr
+        )
+        return EXIT_USAGE
+    if (
+        args.database is not None
+        or args.alerts_database is not None
+        or args.alerts_database_id is not None
+        or args.leads_database_id is not None
+        or args.finish
+    ):
+        print(
+            "error: --legacy-database is its own run: it takes no --database, "
+            "--alerts-database, database id or --finish (run the normal erasure "
+            "for the leads database separately)",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    if args.sql_out is not None and not args.yes:
+        print("error: --sql-out needs --yes", file=sys.stderr)
+        return EXIT_USAGE
+    if args.sql_out is not None and os.fspath(args.sql_out).startswith("-"):
+        print(
+            "error: --sql-out must not start with '-' (it could be read as an "
+            "option); give a path such as ./delete-lead.sql",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    if args.wrangler is not None and not args.yes:
+        print("error: --wrangler needs --yes", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        database = _legacy_database(args.legacy_database, args.confirm_legacy)
+        email = _address(args.email)
+        leads = load_leads(args.input)
+    except LeadsError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    print(
+        f"legacy database: {database} {DATABASE_NOTE}; erasing from its "
+        f"{' and '.join(LEGACY_TABLES)} tables only",
+        file=sys.stderr,
+    )
+    ids = [lead_id for lead_id, stored in leads if stored == email]
+    if not ids:
+        print("no lead matches the supplied address; nothing to delete", file=sys.stderr)
+        return EXIT_NO_MATCH
+    if len(ids) > 1:
+        print(
+            f"error: {len(ids)} leads match the supplied address; expected one. "
+            "The export looks wrong; nothing printed",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    if not args.yes:
+        print(
+            f"dry run: 1 lead matches {mask_email(email)} in the legacy copy. It "
+            "would be deleted with its kit events. Nothing was changed and "
+            "nothing was requested, so this exit 0 is not an erasure. Re-run "
+            "with --yes to print the SQL."
+        )
+        return EXIT_OK
+    try:
+        if (ids[0], email) not in leads:
+            raise LeadsError("internal: the matched id is not in the export")
+        statements = _sql(ids[0], email)
+        wrangler = _resolve_wrangler(args.wrangler)
+    except LeadsError as exc:  # pragma: no cover - guarded by load_leads
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    text = "\n".join(statements) + "\n"
+    target = args.sql_out if args.sql_out is not None else "delete-lead-legacy.sql"
+    if args.sql_out is not None:
+        try:
+            _write_private(args.sql_out, text)
+        except LeadsError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+    quoted = shlex.quote(os.fspath(target))
+    shown = os.path.relpath(wrangler, os.path.realpath(REPO_ROOT))
+    where = (
+        f"The SQL is in {quoted} (new file, mode 0600). "
+        if args.sql_out is not None
+        else "The SQL is on stdout; prefer --sql-out. "
+    )
+    print(
+        f"checks passed (exit {EXIT_CHECKED}) for the LEGACY copy: NOTHING HAS BEEN "
+        f"REMOVED YET. {where}It holds the address, so delete it afterward. It "
+        "deletes only a row that still pairs that id with that address. Apply it "
+        f"to the legacy database {database} only, then read it back with the second "
+        "command (the id only, no address): 0 and 0 means no remaining rows at "
+        "this moment, not proof of completed erasure (no transaction in a file; an "
+        "event can arrive after the read); run the file again after a wait until two "
+        "consecutive reads show 0 and 0. The alert hashes are cleared by the normal "
+        "run's --finish, not here:\n"
+        f"{shlex.quote(shown)} d1 execute {database} --remote --file {quoted}\n"
+        f"{shlex.quote(shown)} d1 execute {database} --remote --json --command "
+        f"{shlex.quote(_read_back(ids[0]))}",
+        file=sys.stderr,
+    )
+    if args.sql_out is None:
+        sys.stdout.write(text)
+    return EXIT_CHECKED
+
+
 def run_delete(args: argparse.Namespace) -> int:
     if args.checklist:
         if (
@@ -1669,6 +1812,8 @@ def run_delete(args: argparse.Namespace) -> int:
             or args.leads_database_id is not None
             or args.wrangler is not None
             or args.finish
+            or args.legacy_database is not None
+            or args.confirm_legacy is not None
         ):
             print(
                 "error: --checklist prints a fixed list and takes no other option",
@@ -1689,6 +1834,8 @@ def run_delete(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return EXIT_USAGE
+    if args.legacy_database is not None or args.confirm_legacy is not None:
+        return _run_delete_legacy(args)
     if args.sql_out is not None and not args.yes:
         print("error: --sql-out needs --yes", file=sys.stderr)
         return EXIT_USAGE
@@ -1952,6 +2099,20 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         metavar="NAME",
         help=f"required: the database the export came from; only "
         f"{LEADS_DATABASE} is accepted (your attestation, not proof)",
+    )
+    delete.add_argument(
+        "--legacy-database",
+        default=None,
+        metavar="NAME",
+        help="erase the legacy copy of a lead from this analytics database (its "
+        "leads and kit_events tables only); its own run, with --confirm-legacy and "
+        "--yes, never together with --database or --finish",
+    )
+    delete.add_argument(
+        "--confirm-legacy",
+        default=None,
+        metavar="NAME",
+        help="repeat the --legacy-database name exactly, to confirm it",
     )
     delete.add_argument(
         "--alerts-database",
