@@ -136,6 +136,10 @@ if [ -L "$numbers" ]; then
   echo "error: numbers.json must not be a symbolic link" >&2
   exit 2
 fi
+if [ -e "$numbers" ] && [ ! -f "$numbers" ]; then
+  echo "error: numbers.json must be a regular file" >&2
+  exit 2
+fi
 if [ -f "$numbers" ]; then cp "$numbers" "$workdir/numbers.json"; fi
 
 # The fediverse snapshot (beside numbers.json). The engine reads the committed
@@ -144,6 +148,10 @@ if [ -f "$numbers" ]; then cp "$numbers" "$workdir/numbers.json"; fi
 fediverse="$here/numbers.fediverse.json"
 if [ -L "$fediverse" ]; then
   echo "error: numbers.fediverse.json must not be a symbolic link" >&2
+  exit 2
+fi
+if [ -e "$fediverse" ] && [ ! -f "$fediverse" ]; then
+  echo "error: numbers.fediverse.json must be a regular file" >&2
   exit 2
 fi
 if [ -f "$fediverse" ]; then cp "$fediverse" "$workdir/numbers.fediverse.json"; fi
@@ -378,7 +386,14 @@ if [ -n "$staged_history" ]; then
   }
   staged_history=""
 fi
+# Recheck right before a move: a destination that became a folder would take the
+# staged file inside it and the move would still succeed.
+dest_ok() { [ ! -e "$1" ] && [ ! -L "$1" ] || { [ -f "$1" ] && [ ! -L "$1" ]; }; }
 if [ -n "$staged_fediverse" ]; then
+  dest_ok "$fediverse" || {
+    echo "refresh-counts: numbers.fediverse.json is not a regular file any more; nothing was overwritten." >&2
+    exit 1
+  }
   mv -f "$staged_fediverse" "$fediverse" || {
     echo "refresh-counts: numbers.fediverse.json could not be installed; run the refresh again." >&2
     exit 1
@@ -386,6 +401,10 @@ if [ -n "$staged_fediverse" ]; then
   staged_fediverse=""
 fi
 if [ -n "$staged_numbers" ]; then
+  dest_ok "$numbers" || {
+    echo "refresh-counts: numbers.json is not a regular file any more; nothing was overwritten." >&2
+    exit 1
+  }
   mv -f "$staged_numbers" "$numbers" || {
     echo "refresh-counts: numbers.json could not be installed after the history file was; run the refresh again." >&2
     exit 1

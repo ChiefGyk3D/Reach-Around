@@ -57,7 +57,12 @@ def check(root: str) -> None:
             if seen > MAX_ENTRIES:
                 raise Bad("the artifact holds too many entries")
             path = f"{rel}/{entry.name}" if rel else entry.name
-            mode = os.lstat(entry.path).st_mode
+            try:
+                mode = os.lstat(entry.path).st_mode
+            except OSError:
+                raise Bad(
+                    f"an entry changed while it was read (entry {seen})"
+                ) from None
             if stat.S_ISLNK(mode):
                 raise Bad("the artifact must not hold links")
             if stat.S_ISDIR(mode):

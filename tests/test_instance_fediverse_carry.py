@@ -475,6 +475,26 @@ def test_an_engine_output_that_is_not_a_regular_file_fails_the_refresh(
     assert not (root / "numbers.json").exists()
 
 
+@pytest.mark.parametrize("name", [NAME, "numbers.json"])
+@pytest.mark.parametrize("kind", ["dir", "fifo"])
+def test_a_repository_folder_or_fifo_where_a_file_belongs_fails_the_refresh(
+    name: str, kind: str, tmp_path: Path
+) -> None:
+    root, env = _fixture(tmp_path)
+    (root / "numbers.json").unlink(missing_ok=True)
+    if kind == "dir":
+        (root / name).mkdir()
+    else:
+        os.mkfifo(root / name)
+    r = _refresh(root, env, tmp_path, FAKE_SNAPSHOT=json.dumps(GOOD))
+    assert r.returncode == 2, r.stderr
+    assert "must be a regular file" in r.stderr
+    if kind == "dir":
+        assert list((root / name).iterdir()) == []  # nothing moved inside
+    other = "numbers.json" if name == NAME else NAME
+    assert not (root / other).exists()
+
+
 def test_a_symbolic_link_snapshot_in_the_repository_is_refused(tmp_path: Path) -> None:
     root, env = _fixture(tmp_path)
     target = tmp_path / "t.json"
@@ -591,8 +611,75 @@ def test_the_artifact_check_refuses_everything_else(
     done = _artifact(_tree(tmp_path / "a", files))
     assert done.returncode == 1
     assert "refused" in done.stderr
-    # A name from the artifact is never echoed (it could carry a command).
-    assert "::error::x" not in done.stderr + done.stdout
+
+
+HOSTILE = [
+    "evil\n::error::boom",
+    "ünï-‮-name",
+    "L" * 200,
+    "$(id);`id`|x&y",
+    "-rf",
+    "::set-output name=x::y",
+]
+
+
+def _kinds(root: Path, name: str) -> list[Path]:
+    """One tree per way the check can refuse, each holding the hostile name."""
+    trees = [_tree(root / "file", ["numbers.json", name])]
+    b = _tree(root / "dir", ["numbers.json"])
+    (b / name).mkdir()
+    trees.append(b)
+    c = _tree(root / "link", ["numbers.json"])
+    (c / name).symlink_to(c / "numbers.json")
+    trees.append(c)
+    d = _tree(root / "fifo", ["numbers.json"])
+    os.mkfifo(d / name)
+    trees.append(d)
+    e = _tree(root / "nested", ["numbers.json", "history/social.jsonl"])
+    (e / "history" / name).write_text("{}", encoding="utf-8")
+    trees.append(e)
+    f = _tree(root / "deep", ["numbers.json"])
+    (f / "history").mkdir()
+    (f / "history" / name).mkdir()
+    trees.append(f)
+    return trees
+
+
+@pytest.mark.parametrize("name", HOSTILE)
+def test_no_refusal_ever_echoes_a_name_from_the_artifact(
+    name: str, tmp_path: Path
+) -> None:
+    for tree in _kinds(tmp_path, name):
+        done = _artifact(tree)
+        text = done.stdout + done.stderr
+        assert done.returncode == 1, tree.name
+        for part in (name, *[p for p in name.split("\n") if p]):
+            assert part not in text, (tree.name, part)
+        assert "::" not in text
+
+
+@pytest.mark.parametrize("name", HOSTILE)
+def test_a_race_while_reading_the_artifact_never_echoes_a_name(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = importlib.util.spec_from_file_location("check_artifact_tpl", ARTIFACT)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    root = _tree(tmp_path / "a", ["numbers.json", name])
+    real = os.lstat
+
+    def racing(path: Any, *a: Any, **k: Any) -> Any:
+        if str(path) != str(root):
+            raise FileNotFoundError(2, "gone", str(path))
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(mod.os, "lstat", racing)
+    with pytest.raises(mod.Bad) as caught:
+        mod.check(str(root))
+    assert name not in str(caught.value) and "gone" not in str(caught.value)
+    monkeypatch.setattr(mod.sys, "argv", ["check-artifact.py", str(root)])
+    assert mod.main() == 1
 
 
 def test_the_artifact_check_refuses_links_and_special_files(tmp_path: Path) -> None:
