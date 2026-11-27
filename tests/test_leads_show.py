@@ -360,7 +360,7 @@ def test_show_abbreviated_flag_reads_the_value_as_a_path_not_an_address(
         )
     captured = capsys.readouterr()
     assert info.value.code == 2
-    assert "unrecognized arguments" in captured.err
+    assert "invalid command line" in captured.err
     assert ADDR not in captured.out + captured.err
 
 

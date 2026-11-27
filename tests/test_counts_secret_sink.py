@@ -593,7 +593,7 @@ def test_argv_cannot_carry_the_api_token(
     with pytest.raises(SystemExit) as caught:
         main(refresh_args(site, "--token-sink", "doppler", "--doppler-token", "x"))
     assert caught.value.code == 2
-    assert "unrecognized arguments" in capsys.readouterr().err
+    assert "invalid command line" in capsys.readouterr().err
 
 
 def test_token_can_come_from_stdin(
@@ -671,7 +671,7 @@ def test_cli_exposes_no_destination_option(
         with pytest.raises(SystemExit) as caught:
             main(refresh_args(site, "--token-sink", "doppler", flag, "http://x"))
         assert caught.value.code == 2
-        assert "unrecognized arguments" in capsys.readouterr().err
+        assert "invalid command line" in capsys.readouterr().err
     sink_env(monkeypatch)
     monkeypatch.setenv("REACH_AROUND_DOPPLER_BASE_URL", "http://127.0.0.1:1")
     monkeypatch.setenv("REACH_AROUND_DOPPLER_URL", "http://127.0.0.1:1")

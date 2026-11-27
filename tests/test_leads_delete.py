@@ -2886,7 +2886,7 @@ def test_leads_delete_refuses_an_abbreviated_option(
     assert info.value.code == 2
     captured = capsys.readouterr()
     assert captured.out == "" and ADDR not in captured.err
-    assert "unrecognized arguments" in captured.err, flag
+    assert "invalid command line" in captured.err, flag
 
 
 class TestLegacyDatabase:

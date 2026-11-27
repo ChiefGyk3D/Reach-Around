@@ -9,6 +9,7 @@ import json
 import math
 import os
 import pkgutil
+import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -49,7 +50,21 @@ def _idle_minutes(text: str) -> float:
     return value
 
 
-_ECHOING = ("unrecognized arguments:", "ambiguous option:", "invalid choice:")
+# The argparse messages that are built only from OUR option table (the names a parser
+# defines), never from the command line text. Everything else (unrecognized arguments,
+# an invalid choice, an ignored explicit argument, an invalid value, an ambiguous
+# option, ...) repeats what the user typed and is replaced by one fixed message.
+# Fail closed: a message not matching here is never printed.
+_SAFE_ERRORS = (
+    re.compile(r"the following arguments are required: [A-Za-z0-9_,/ .-]+"),
+    re.compile(r"argument [A-Za-z0-9_,/ .-]+: expected (one|at least one) argument"),
+    re.compile(r"argument [A-Za-z0-9_,/ .-]+: expected \d+ arguments?"),
+    re.compile(r"one of the arguments [A-Za-z0-9_,/ .-]+ is required"),
+    re.compile(
+        r"argument [A-Za-z0-9_,/ .-]+: not allowed with argument [A-Za-z0-9_,/ .-]+"
+    ),
+)
+_GENERIC_ERROR = "invalid command line: see --help"
 
 
 class _Parser(argparse.ArgumentParser):
@@ -58,17 +73,17 @@ class _Parser(argparse.ArgumentParser):
 
     Abbreviations are off for all of them: argparse would take `--ye` for `--yes`, and
     a destructive or private flag must be typed in full. And argparse echoes the
-    offending text in several errors (unrecognized arguments, an ambiguous option, an
-    invalid choice, an invalid value), so a mistyped `--email-f ADDRESS` would put an
-    address on stderr, where it can reach a log: those messages never repeat the text."""
+    offending text in many errors, so a mistyped `--email-f ADDRESS` or `--yes=ADDRESS`
+    would put an address on stderr, where it can reach a log: only the messages that
+    name our own options are printed, every other one is the same fixed text."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         kwargs.setdefault("allow_abbrev", False)
         super().__init__(*args, **kwargs)
 
     def error(self, message: str) -> NoReturn:
-        if any(marker in message for marker in _ECHOING) or " value: " in message:
-            message = "unrecognized arguments or invalid value (the text is not repeated)"
+        if not any(p.fullmatch(message) for p in _SAFE_ERRORS):
+            message = _GENERIC_ERROR
         super().error(message)
 
 

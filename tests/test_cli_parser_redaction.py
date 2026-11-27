@@ -60,3 +60,57 @@ def test_abbreviation_is_off_for_every_subcommand() -> None:
             if isinstance(choices, dict):
                 stack.extend(v for v in choices.values() if hasattr(v, "allow_abbrev"))
     assert seen > 5
+
+
+def _subparsers() -> list[list[str]]:
+    """The command path of the top-level parser and of EVERY subparser."""
+    from reach_around.cli import _parser
+
+    paths: list[list[str]] = []
+
+    def walk(parser: object, path: list[str]) -> None:
+        paths.append(path)
+        for action in getattr(parser, "_actions", []):
+            choices = getattr(action, "choices", None)
+            if isinstance(choices, dict) and path is not None:
+                for name, sub in choices.items():
+                    if hasattr(sub, "_actions"):
+                        walk(sub, [*path, str(name)])
+
+    walk(_parser(), [])
+    return paths
+
+
+HOSTILE = [
+    ["--yes={a}"],
+    ["--finish={a}"],
+    ["--email={a}"],
+    ["--{a}"],
+    ["--ye={a}"],
+    ["--email-f={a}"],
+    ["{a}"],
+    ["{a}", "{a}"],
+    ["--email", "{a}", "--email", "{a}"],
+    ["--yes", "--yes={a}"],
+    ["-{a}"],
+    ["--{a}={a}"],
+]
+
+
+@pytest.mark.parametrize("path", _subparsers(), ids=lambda p: " ".join(p) or "top")
+@pytest.mark.parametrize("shape", HOSTILE, ids=lambda s: " ".join(s))
+def test_no_parse_error_on_any_parser_repeats_the_value(
+    capsys: pytest.CaptureFixture[str], path: list[str], shape: list[str]
+) -> None:
+    """Parsing only (nothing is executed). Where the argv is an error, it exits 2 and
+    neither stdout nor stderr (usage line included) holds any part of the value."""
+    from reach_around.cli import _parser
+
+    argv = [*path, *[part.format(a=ADDR) for part in shape]]
+    try:
+        _parser().parse_args(argv)
+    except SystemExit as exc:
+        assert exc.code == 2
+    captured = capsys.readouterr()
+    for text in (captured.out, captured.err):
+        assert "partner" not in text and "example.test" not in text, argv
