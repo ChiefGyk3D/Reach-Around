@@ -9,3 +9,7 @@
   and the documented trust limits were hardened and clarified.
   The cutover procedure now keeps its run lock file permanently and always
   re-freezes during recovery.
+  Checked on real D1 (wrangler 4.162.0): a `--file` run returns only a summary
+  row, so the purge now sends each DELETE as its own `--command` and records
+  only rows that statement returned, and `leads delete` prints its read-back as
+  a separate `--command` instead of a statement in the file.

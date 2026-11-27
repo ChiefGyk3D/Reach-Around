@@ -6,6 +6,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
@@ -198,12 +199,20 @@ class TestYes:
             # the lead is gone, and the read-back counts both tables.
             f"DELETE FROM kit_events WHERE lead_id = '{ID_A}' AND NOT EXISTS "  # noqa: S608
             f"(SELECT 1 FROM leads WHERE id = '{ID_A}');",
+        ]
+        assert statements == expected
+        # D1 returns no rows for a file run (one summary row only, wrangler 4.162.0,
+        # checked 2026-11-27), so the read-back is not in the file: the tool prints it
+        # as a separate --command, with the id and never the address.
+        assert "leads_remaining" not in out
+        read_back = (
             f"SELECT (SELECT COUNT(*) FROM leads WHERE id = '{ID_A}') "  # noqa: S608
             "AS leads_remaining, "
             f"(SELECT COUNT(*) FROM kit_events WHERE lead_id = '{ID_A}') "  # noqa: S608
-            "AS events_remaining;",
-        ]
-        assert statements == expected
+            "AS events_remaining;"
+        )
+        tokens = shlex.split(err[err.rindex("npx wrangler d1 execute") :])
+        assert tokens[-3:-1] == ["--json", "--command"] and tokens[-1] == read_back
         assert ID_B not in out
         assert "partner" not in err and "example.test" not in err
         # Fixed message: no form of the address reaches stderr (it can be logged).

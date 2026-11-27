@@ -94,7 +94,13 @@ and by digest of every column: none missing, none different, none extra (run it 
 the gate is enabled, while DEST holds nothing but the moved rows). With no manifest it
 passes only if DEST also holds no lead row (nothing was ever moved).
 
-Privacy. Rows are held in memory one chunk at a time and in one file inside a fresh
+Privacy. A DELETE is sent through its own `--command` call, because only that
+shape returns the rows a statement removed (a `--file` run returns one summary row
+and nothing else, on real D1, checked 2026-11-27). The statement holds the row's
+columns, so the address is on wrangler's command line for the length of that call,
+visible to other local users of the machine in the process list: run the purge on a
+machine only you can log in to. Inserts still go through a file. Rows are held in
+memory one chunk at a time and in one file inside a fresh
 directory made under WORKDIR (an existing directory you own, mode 700, outside any git
 work tree, no symlink or group/other writable parent). The directory is opened by
 descriptor and checked (owner, mode 700, same inode as its path), the file is created
@@ -375,7 +381,6 @@ class Wrangler:
     def __init__(self) -> None:
         self.cmd = shlex.split(os.environ.get("WRANGLER", "npx wrangler"))
         self.limit = timeout_seconds()
-        self.file_rows: list[dict[str, Any]] = []
 
     def call(self, args: list[str]) -> str:
         """Run one bounded wrangler command and return its stdout (never printed).
@@ -417,16 +422,16 @@ class Wrangler:
         except ValueError as exc:
             raise Failed("unexpected answer from the database") from exc
         rows: list[dict[str, Any]] = []
-        every: list[dict[str, Any]] = []
         for block in data if isinstance(data, list) else [data]:
             if not isinstance(block, dict) or block.get("success") is False:
                 raise Failed("the database refused a statement")
             rows = block.get("results", rows)
-            got = block.get("results")
-            if isinstance(got, list):
-                every.extend(r for r in got if isinstance(r, dict))
         if file is not None:
-            self.file_rows = every  # what every statement of a file returned
+            # A `--file` run answers with one block holding one summary row (database
+            # size, rows read, rows written, queries executed), never the rows of a
+            # statement (wrangler 4.162.0 on real D1, checked 2026-11-27). That row is
+            # not data: a file run returns no rows.
+            return []
         return rows
 
 
@@ -532,11 +537,12 @@ def guard_sql(tables: set[str]) -> str:
     )
 
 
-def delete_sql(table: str, rows: list[dict[str, Any]], guard: str) -> str:
-    """Delete exactly the verified rows; a lead goes only with no event left.
+def delete_statements(table: str, rows: list[dict[str, Any]], guard: str) -> list[str]:
+    """One DELETE per verified row; a lead goes only with no event left.
 
     Each statement returns the rows it deleted (RETURNING), which is the only evidence
-    the tool accepts that its own statement removed a row."""
+    the tool accepts that its own statement removed a row. Every statement is sent
+    through its own `--command` call: a `--file` run returns no per-statement rows."""
     back = " RETURNING " + ", ".join(COLUMNS[table]) + ";"
     tail = f" AND {guard}{back}"
     if table == "leads":
@@ -544,13 +550,9 @@ def delete_sql(table: str, rows: list[dict[str, Any]], guard: str) -> str:
             " AND NOT EXISTS (SELECT 1 FROM kit_events e WHERE e.lead_id = leads.id)"
             f" AND {guard}{back}"
         )
-    return (
-        "\n".join(
-            f"DELETE FROM {table} WHERE " + where(COLUMNS[table], r) + tail
-            for r in rows
-        )
-        + "\n"
-    )
+    return [
+        f"DELETE FROM {table} WHERE " + where(COLUMNS[table], r) + tail for r in rows
+    ]
 
 
 def same_file(a: os.stat_result, b: os.stat_result) -> bool:
@@ -1679,14 +1681,16 @@ def purge_chunks(
             if known:
                 require_frozen(w, args.source)
                 confirm_dest(w, args.dest, table, known, m)
-                w.file_rows = []
-                try:
-                    run_file(w, args.source, work, delete_sql(table, known, guard))
-                except Failed:
-                    progress.unknown += 1  # it may have reached the database
-                    raise
-                progress.sent += 1
-                acknowledge_deleted(table, known, w.file_rows, m, progress)
+                for row, statement in zip(
+                    known, delete_statements(table, known, guard), strict=True
+                ):
+                    try:
+                        back = w.execute(args.source, command=statement)
+                    except Failed:
+                        progress.unknown += 1  # it may have reached the database
+                        raise
+                    progress.sent += 1
+                    acknowledge_deleted(table, [row], back, m, progress)
                 require_frozen(w, args.source)
 
 

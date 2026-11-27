@@ -386,13 +386,14 @@ _STATEMENTS = (
     # gone; it never touches the events of a lead that still exists.
     "DELETE FROM kit_events WHERE lead_id = '<ID>' AND NOT EXISTS "
     "(SELECT 1 FROM leads WHERE id = '<ID>');",
-    "-- read-back: 0 and 0 means no remaining rows AT THIS MOMENT, not proof of "
-    "completed erasure (no transaction in a file; an event can arrive after "
-    "the read). Run this file again after a wait until two consecutive runs "
-    "read 0 and 0. leads_remaining 1 means the id does not belong to that "
-    "address in this database and nothing was deleted",
+)
+# The read-back is NOT in the file: `d1 execute --file` returns one summary row and no
+# per-statement rows (wrangler 4.162.0 on real D1, checked 2026-11-27), so a SELECT in
+# the file would show nothing. It runs as its own `--command`, whose one block holds the
+# row. It names the id only, never the address.
+_READ_BACK = (
     "SELECT (SELECT COUNT(*) FROM leads WHERE id = '<ID>') AS leads_remaining, "
-    "(SELECT COUNT(*) FROM kit_events WHERE lead_id = '<ID>') AS events_remaining;",
+    "(SELECT COUNT(*) FROM kit_events WHERE lead_id = '<ID>') AS events_remaining;"
 )
 _SQL_EMAIL = re.compile(r"[a-z0-9_+.@-]{6,254}")
 
@@ -407,6 +408,13 @@ def _sql(lead_id: str, email: str) -> list[str]:
     return [
         line.replace("<ID>", lead_id).replace("<EMAIL>", email) for line in _STATEMENTS
     ]
+
+
+def _read_back(lead_id: str) -> str:
+    """The one-statement read-back for ``--command`` (the id is already validated)."""
+    if not _ID.fullmatch(lead_id):
+        raise LeadsError("internal: refusing to build SQL from a non-id value")
+    return _READ_BACK.replace("<ID>", lead_id)
 
 
 def _address(arg: str) -> str:
@@ -647,12 +655,16 @@ def run_delete(args: argparse.Namespace) -> int:
         f"1 lead matches. {where}It holds the address, so delete it afterward. "
         "It deletes only a row in the live database that still pairs that id "
         f"with that address. Apply it to the leads database {database} only. "
-        "Reading 0 and 0 means no remaining rows at this moment; it is not proof "
-        "of completed erasure, because D1 offers no transaction in a file and "
-        "an event can arrive after the read. Run the file again after a wait "
-        "until two consecutive runs read 0 and 0 (leads_remaining 1 means "
-        "nothing was deleted):\n"
-        f"npx wrangler d1 execute {database} --remote --file {quoted}",
+        "The file shows no result rows (D1 returns only a summary for a file). "
+        "After each run, read the result with the second command, which holds the "
+        "id and not the address. Reading 0 and 0 means no remaining rows at this "
+        "moment; it is not proof of completed erasure, because D1 offers no "
+        "transaction in a file and an event can arrive after the read. Run the "
+        "file again after a wait until two consecutive reads show 0 and 0 "
+        "(leads_remaining 1 means nothing was deleted):\n"
+        f"npx wrangler d1 execute {database} --remote --file {quoted}\n"
+        f"npx wrangler d1 execute {database} --remote --json --command "
+        f"{shlex.quote(_read_back(ids[0]))}",
         file=sys.stderr,
     )
     if args.sql_out is None:

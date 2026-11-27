@@ -579,12 +579,18 @@ checksum written to the change record) to compare before `--purge` and `--verify
 
 Delete accounting. Each DELETE statement asks the database to return the rows it removed
 (`DELETE ... RETURNING`), and only returned rows are recorded as deleted by this tool; a row that is
-merely absent afterwards is unknown. D1's documentation read on 2026-11-25 does not mention `RETURNING`
-(it describes D1 as SQLite-compatible), so this is inferred, not documented, and it is unverified how the
-tool's `--file` runs report each statement's rows. The tool fails closed: if the database refuses the
-clause, the delete fails and the run needs `--verify`; if no rows come back, nothing is recorded and the
-final verification reports the rows as unaccounted. Try one statement with `RETURNING` on a scratch D1
-database before a real cutover.
+merely absent afterwards is unknown. Checked on real D1 (wrangler 4.162.0, 2026-11-27, synthetic
+data): a single statement sent with `--command` and `--json` answers with one result block whose
+`results` hold the deleted rows (one row on a match, none when nothing matched), so `RETURNING` works.
+A multi-statement `--file` run answers with one block whose `results` hold a single summary row
+(database size, rows read, rows written, queries executed) and no per-statement rows, so nothing
+could be recorded from a file run. The tool therefore sends every DELETE as its own `--command` call
+(inserts, which need no returned rows, still go through a file) and never reads rows from a `--file`
+run. Because the statement is on wrangler's command line, the address of the row is visible to other
+local users in the process list for the length of the call: run the purge on a machine only you can
+log in to. The tool fails closed: if the database refuses the clause, the delete fails and the run
+needs `--verify`; if no rows come back, nothing is recorded and the final verification reports the
+rows as unaccounted.
 
 Time Travel is the last-resort full-loss option. The command the tool prints is `npx wrangler d1
 time-travel restore <ANALYTICS DATABASE> --bookmark=<BOOKMARK>`. Restoring a bookmark rolls back

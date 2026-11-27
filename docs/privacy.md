@@ -272,14 +272,20 @@ Ctrl-C. Run it as one block from your project directory. The steps inside are:
    already exists or whose last component is a symlink; give it a path inside
    the private directory. Do not use a shell `>` redirect for this file.
 4. Apply it, wait a minute, apply it again (it is safe to repeat, and its
-   cleanup statement removes events left for a lead that is gone). Each run's
-   last statement shows two numbers, `leads_remaining` and `events_remaining`.
-   Treat the erasure as done only after two consecutive runs both read `0` and
-   `0`, and say in your reply that this is a point-in-time check: D1 offers no
+   cleanup statement removes events left for a lead that is gone). A file run
+   shows no result rows: D1 answers a `--file` run with one summary row
+   (database size, rows read, rows written, queries executed), never the rows
+   of a statement (wrangler 4.162.0 on real D1, checked 2026-11-27). So the
+   read-back is a separate command, printed by the tool with the id and never
+   the address: run it after each file run. It is one `--command` statement and
+   prints one result block with two numbers, `leads_remaining` and
+   `events_remaining`. Treat the erasure as done only after two consecutive
+   reads, a minute apart and each after a file run, both show `0` and `0`, and
+   say in your reply that this is a point-in-time check: D1 offers no
    transaction in a file and the Worker can write an event after the read.
    `leads_remaining` 1 means the id did not belong to that address in the live
    database (a stale or wrong export): nothing was deleted, stop and re-export.
-   `events_remaining` above 0 means events remain; run the block again. Whether
+   `events_remaining` above 0 means events remain; run the file again. Whether
    the tables read here are every place the Worker stores lead data is
    unverified against the full schema.
 
@@ -306,6 +312,11 @@ Ctrl-C. Run it as one block from your project directory. The steps inside are:
   npx wrangler d1 execute reach-around-leads --remote --file "$WORK/delete-lead.sql"
 )
 ```
+
+The tool's message printed before the first file run holds the read-back
+command (`--json --command`, the id only). Copy it from the terminal and run it
+once after the block ends and once a minute later; it needs no file, so it still
+works after the block has removed the work directory.
 
 The subshell ends the shell variables (`ADDR`) with it, so nothing is left to
 unset. A kill signal that cannot be trapped (`kill -9`, a power loss) skips the

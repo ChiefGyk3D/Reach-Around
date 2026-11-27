@@ -67,18 +67,24 @@ path = os.environ[paths[name]]
 db = sqlite3.connect(path)
 db.execute("PRAGMA foreign_keys = ON")
 blocks = None
-if os.environ.get("STUB_FAIL_FILE") and any(a.startswith("--file=") for a in args):
+is_file = any(a.startswith("--file=") for a in args)
+if is_file:
+    sql = open([a for a in args if a.startswith("--file=")][0].split("=", 1)[1]).read()
+else:
+    sql = args[args.index("--command") + 1]
+# A statement that changes rows: a statement file, or one DELETE through --command.
+writes = is_file or sql.lstrip().startswith("DELETE FROM")
+if os.environ.get("STUB_FAIL_FILE") and writes:
     sys.exit(1)
-if os.environ.get("CRASH_AT") and any(a.startswith("--file=") for a in args):
+if os.environ.get("CRASH_AT") and writes:
     counter = os.environ["STUB_COUNTER"]
     n = int(open(counter).read()) if os.path.exists(counter) else 0
     open(counter, "w").write(str(n + 1))
     if n + 1 == int(os.environ["CRASH_AT"]):
         sys.exit(1)
-if any(a.startswith("--file=") for a in args):
-    sql = open([a for a in args if a.startswith("--file=")][0].split("=", 1)[1]).read()
+if writes:
     if log and name == "analytics-db" and "DELETE FROM" in sql:
-        open(log, "a").write("delete\\n")
+        open(log, "a").write("delete-file\\n" if is_file else "delete\\n")
     inject = os.environ.get("STUB_INJECT")
     done = db.execute("SELECT 1 FROM leads WHERE id = '" + "f" * 32 + "'").fetchone()
     if inject and name == "analytics-db" and "DELETE FROM" in sql and not done:
@@ -110,34 +116,39 @@ if any(a.startswith("--file=") for a in args):
                 + "'"
             )
         db.commit()
-    if "RETURNING" in sql:  # one block per statement, like the real file run
-        blocks, pending = [], ""
-        for line in sql.splitlines(keepends=True):
-            pending += line
-            if not sqlite3.complete_statement(pending):
-                continue
-            if os.environ.get("STUB_OTHER_CLIENT") and name == "analytics-db":
-                # Another client removes the rows; this statement matches nothing.
-                db.execute("DELETE FROM " + pending.split()[2] + " WHERE 1")
-                got, cols = [], []
-            else:
-                cur = db.execute(pending)
-                cols = [c[0] for c in cur.description or []]
-                got = cur.fetchall()
-            blocks.append(
-                {{"results": [dict(zip(cols, r)) for r in got], "success": True}}
-            )
-            pending = ""
-        db.commit()
-    else:
+    if is_file:
+        # Real wrangler 4.162.0 (remote, owner's check 2026-11-27): ONE block whose
+        # results hold a single summary row, never the rows of any statement.
         db.executescript(sql)
         db.commit()
+        blocks = [
+            {{
+                "results": [
+                    {{
+                        "Total queries executed": sql.count(";"),
+                        "Rows read": 0,
+                        "Rows written": 0,
+                        "Database size (MB)": "0.05",
+                    }}
+                ],
+                "success": True,
+            }}
+        ]
+    elif os.environ.get("STUB_OTHER_CLIENT") and name == "analytics-db":
+        # Another client removes the rows; this statement matches nothing.
+        db.execute("DELETE FROM " + sql.split()[2] + " WHERE 1")
+        db.commit()
+        blocks = [{{"results": [], "success": True}}]
+    else:  # one DELETE ... RETURNING: its own block holds the rows it removed
+        cur = db.execute(sql)
+        cols = [c[0] for c in cur.description or []]
+        got = cur.fetchall()
+        db.commit()
+        blocks = [{{"results": [dict(zip(cols, r)) for r in got], "success": True}}]
     lost = os.environ.get("STUB_DELETE_THEN_FAIL")
     if lost and name == "analytics-db" and "DELETE FROM" in sql:
         sys.exit(1)  # applied, but the caller never hears it
-    rows = []
 else:
-    sql = args[args.index("--command") + 1]
     cur = db.execute(sql)
     rows = []
     if cur.description:
@@ -989,24 +1000,25 @@ def test_a_dest_row_altered_between_chunks_stops_the_purge_there(
     work = workdir(tmp_path)
     assert run(env, work, "--freeze").returncode == 0
     mod = load_with_env(env, monkeypatch)
-    real = mod.run_file
-    deletes = []
+    real = mod.Wrangler.execute
+    deletes: list[str] = []
 
-    def spy(w: Any, db: str, wd: Path, sql: str) -> None:
-        real(w, db, wd, sql)
-        if db == "analytics-db" and sql.startswith("DELETE"):
-            deletes.append(sql)
-            if len(deletes) == 1:  # after the first delete chunk: alter a later row
+    def spy(self: Any, db: str, *, command: str | None = None, file: Any = None) -> Any:
+        out = real(self, db, command=command, file=file)
+        if db == "analytics-db" and (command or "").startswith("DELETE"):
+            deletes.append(command or "")
+            if len(deletes) == 2:  # after the first chunk (2 rows): alter a later row
                 dest_exec(
                     env,
                     "UPDATE kit_events SET ts = ts + 1 WHERE lead_id = '"
                     + format(4, "032x")
                     + "'",
                 )
+        return out
 
-    monkeypatch.setattr(mod, "run_file", spy)
+    monkeypatch.setattr(mod.Wrangler, "execute", spy)
     assert mod.main(main_args(work, "--purge")) == 4  # partial, safe to resume
-    assert len(deletes) == 1  # no delete was sent after the change
+    assert len(deletes) == 2  # no delete was sent after the change
     assert count(env["STUB_SRC"], "kit_events") == 2  # the second chunk survives
     assert count(env["STUB_SRC"], "leads") == 4
 
@@ -1026,10 +1038,11 @@ def test_the_freeze_removed_just_before_the_delete_deletes_nothing(
 def test_the_freeze_is_inside_every_delete_statement() -> None:
     mod = load_script()
     guard = mod.guard_sql({"leads", "kit_events"})
-    sql = mod.delete_sql("leads", [{"id": "a" * 32}], guard)
+    (sql,) = mod.delete_statements("leads", [{"id": "a" * 32}], guard)
     assert sql.count(guard) == 1 and "sqlite_master" in sql
     assert "leads_frozen" in guard and "kit_events_frozen" in guard
-    assert "sqlite_master" in mod.delete_sql("kit_events", [{"id": 1}], guard)
+    (events,) = mod.delete_statements("kit_events", [{"id": 1}], guard)
+    assert "sqlite_master" in events
 
 
 @pytest.mark.parametrize(
@@ -1860,7 +1873,7 @@ def test_an_export_made_before_a_row_was_re_moved_is_stale_not_foreign(
 HOLD = """#!{python}
 import os, sys
 args = sys.argv[1:]
-text = " ".join(args[:2])
+text = " ".join(args)
 for a in args:
     if a.startswith("--file="):
         text += open(a.split("=", 1)[1]).read()
@@ -2600,8 +2613,70 @@ def test_every_delete_statement_asks_for_the_deleted_rows_back() -> None:
     mod = load_script()
     guard = mod.guard_sql({"leads", "kit_events"})
     for table, row in (("leads", {"id": "a" * 32}), ("kit_events", {"id": 1})):
-        sql = mod.delete_sql(table, [row], guard)
-        assert sql.rstrip().endswith("RETURNING " + ", ".join(mod.COLUMNS[table]) + ";")
+        (sql,) = mod.delete_statements(table, [row], guard)
+        assert sql.endswith("RETURNING " + ", ".join(mod.COLUMNS[table]) + ";")
+
+
+# ---- wrangler 4.162.0 shapes, owner's check on real D1 (2026-11-27) ----------------
+# `--command` of one statement: ONE block, `results` holds the rows a RETURNING gave.
+# `--file` of several statements: ONE block whose `results` hold a single summary row
+# (Database size (MB), Rows read, Rows written, Total queries executed) and no
+# per-statement results. The tool must take deleted rows only from the first shape.
+
+
+def test_purge_sends_each_delete_as_its_own_command_and_records_the_rows(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    env["STUB_LOG"] = str(tmp_path / "calls.log")
+    work = workdir(tmp_path)
+    total = src_rows(env)
+    assert purge(env, work).returncode == 0
+    calls = (tmp_path / "calls.log").read_text().split()
+    assert "delete-file" not in calls  # a --file run returns no RETURNING rows
+    assert calls.count("delete") == total  # one --command per verified row
+    kept = [row for rows_ in saved_manifest(work)["deleted"].values() for row in rows_]
+    assert len(kept) == total  # every one is acknowledged by its own statement
+
+
+def test_a_file_run_summary_row_is_not_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = load_script()
+    summary = [
+        {
+            "results": [
+                {
+                    "Database size (MB)": "0.05",
+                    "Rows read": 4,
+                    "Rows written": 4,
+                    "Total queries executed": 2,
+                }
+            ],
+            "success": True,
+            "meta": {},
+        }
+    ]
+    w = mod.Wrangler()
+    monkeypatch.setattr(w, "call", lambda _args: json.dumps(summary))
+    assert w.execute("db", file=tmp_path / "x.sql") == []
+    assert not hasattr(w, "file_rows")
+    one = [{"results": [{"id": 1}], "success": True, "meta": {}}]
+    monkeypatch.setattr(w, "call", lambda _args: json.dumps(one))
+    assert w.execute("db", command="DELETE FROM t WHERE id = 1 RETURNING id;") == [
+        {"id": 1}
+    ]
+
+
+def test_delete_sql_is_one_statement_per_row() -> None:
+    mod = load_script()
+    guard = mod.guard_sql({"leads", "kit_events"})
+    rows = [{"id": "a" * 32}, {"id": "b" * 32}]
+    out = mod.delete_statements("leads", rows, guard)
+    assert len(out) == 2
+    for stmt, row in zip(out, rows, strict=True):
+        assert stmt.count("DELETE FROM") == 1 and stmt.endswith(";")
+        assert row["id"] in stmt
 
 
 def frozen_names(env: dict[str, str]) -> set[str]:

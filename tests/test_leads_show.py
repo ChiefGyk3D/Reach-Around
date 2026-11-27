@@ -599,6 +599,32 @@ def _sqlite_with(rows: list[tuple[str, str]], events: list[str]) -> sqlite3.Conn
     return conn
 
 
+def _read_back_command(err: str) -> str:
+    """The separate read-back statement the tool prints for ``--command`` (stderr)."""
+    line = err[err.rindex("npx wrangler d1 execute") :]
+    assert "--json --command" in line
+    tokens = shlex.split(line)
+    assert tokens[:7] == [
+        "npx",
+        "wrangler",
+        "d1",
+        "execute",
+        "reach-around-leads",
+        "--remote",
+        "--json",
+    ]
+    assert tokens[7] == "--command" and len(tokens) == 9
+    return tokens[8]
+
+
+def _with_read_back(captured: Any) -> str:
+    """The printed SQL file followed by the read-back command, so the sqlite checks
+    can run both. The file itself holds no SELECT: D1 returns no rows for a file."""
+    out, err = captured
+    assert "leads_remaining" not in out
+    return out + _read_back_command(err) + "\n"
+
+
 def _statements(sql: str) -> list[str]:
     out = []
     for statement in [s for s in sql.split(";\n") if s.strip()]:
@@ -636,7 +662,7 @@ def test_delete_sql_deletes_only_the_row_that_still_pairs_the_id_and_address(
     forged = write(tmp_path / "forged.json", blocks([{"id": ID_A, "email": ADDR}]))
     monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
     code = cli(["leads", "delete", "--input", str(forged), "--email", "-", "--yes"])
-    sql = capsys.readouterr().out
+    sql = _with_read_back(capsys.readouterr())
     assert code == 0
     live = _sqlite_with([(ID_A, "someone-else@example.test")], [ID_A, ID_A])
     remaining = _apply(live, sql)
@@ -660,7 +686,7 @@ def _printed_sql(
     path = write(tmp_path / "ok.json", blocks([{"id": ID_A, "email": ADDR}]))
     monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
     assert cli(["leads", "delete", "--input", str(path), "--email", "-", "--yes"]) == 0
-    return capsys.readouterr().out
+    return _with_read_back(capsys.readouterr())
 
 
 def test_the_read_back_is_not_zero_when_only_the_lead_row_was_deleted(
@@ -780,7 +806,7 @@ def test_the_printed_apply_command_is_shell_safe_for_any_file_name(
     target = tmp_path / name
     assert _delete_to(monkeypatch, delete_export, target) == 0
     err = capsys.readouterr().err
-    command = err[err.index("npx wrangler") :]
+    command = err[err.index("npx wrangler") : err.rindex("\nnpx wrangler d1 execute")]
     tokens = shlex.split(command)
     assert tokens == [
         "npx",
