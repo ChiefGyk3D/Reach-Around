@@ -42,7 +42,8 @@ def _idle_minutes(text: str) -> float:
     try:
         value = float(text)
     except ValueError:
-        raise argparse.ArgumentTypeError(f"not a number: {text!r}") from None
+        # A fixed message: the typed text is never repeated (it could be anything).
+        raise argparse.ArgumentTypeError("not a number") from None
     if not math.isfinite(value) or not 0 < value <= MAX_IDLE_SECONDS / 60:
         raise argparse.ArgumentTypeError(
             f"must be above 0 and at most {MAX_IDLE_SECONDS / 60:g} minutes"

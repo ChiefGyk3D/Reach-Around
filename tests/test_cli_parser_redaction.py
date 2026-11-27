@@ -94,6 +94,9 @@ HOSTILE = [
     ["--yes", "--yes={a}"],
     ["-{a}"],
     ["--{a}={a}"],
+    ["--idle-minutes={a}"],
+    ["--idle-minutes", "{a}"],
+    ["--idle-minutes", "{a}", "--yes={a}"],
 ]
 
 
@@ -114,3 +117,14 @@ def test_no_parse_error_on_any_parser_repeats_the_value(
     captured = capsys.readouterr()
     for text in (captured.out, captured.err):
         assert "partner" not in text and "example.test" not in text, argv
+
+
+def test_a_custom_type_function_never_repeats_the_text() -> None:
+    import argparse
+
+    from reach_around.cli import _idle_minutes
+
+    for text in (ADDR, "nan", "-5", "999999999"):
+        with pytest.raises(argparse.ArgumentTypeError) as info:
+            _idle_minutes(text)
+        assert text not in str(info.value) and "example.test" not in str(info.value)
