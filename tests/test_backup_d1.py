@@ -60,6 +60,14 @@ if args[:2] == ["d1", "execute"]:
         }}[envelope]
         print(json.dumps(answer))
         sys.exit(0)
+    count_mode = os.environ.get("STUB_COUNT_MODE")
+    if count_mode and sql.startswith("SELECT '"):
+        if count_mode == "duplicate":
+            rows = rows + [{{"name": rows[0]["name"], "n": 1000000}}]
+        elif count_mode == "extra":
+            rows = rows + [{{"name": "leads", "n": 1}}]
+        elif count_mode == "missing":
+            rows = rows[1:]
     print(json.dumps([{{"results": rows, "success": True}}]))
 elif args[:2] == ["d1", "export"]:
     table = [a for a in args if a.startswith("--table=")][0].split("=", 1)[1]
@@ -965,14 +973,58 @@ def test_an_export_with_more_rows_than_the_database_ever_held_fails(
 
 
 def test_exported_sql_is_never_executed(tmp_path: Path) -> None:
-    """A file that holds ATTACH (or anything else) is only counted, never run."""
+    """A file that holds ATTACH (or anything else) is never run. The run itself
+    also fails (the line is outside the export grammar) and removes the export."""
     env = make(tmp_path)
     marker = tmp_path / "probe.db"
     env["STUB_APPEND"] = f"ATTACH DATABASE '{marker}' AS probe;"
     d = dest(tmp_path)
-    run(env, "reach-db", str(d), "--apply")
+    r = run(env, "reach-db", str(d), "--apply")
     assert not marker.exists()
     assert "sqlite3" not in SCRIPT.read_text()
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "done:" not in r.stdout
+    assert "partial export was removed" in r.stderr
+    assert list(d.iterdir()) == []
+
+
+@pytest.mark.parametrize("mode", ["duplicate", "extra", "missing"])
+def test_a_count_answer_that_is_not_the_exact_table_set_is_not_trusted(
+    tmp_path: Path, mode: str
+) -> None:
+    """A duplicate row (last one would win), a table outside the inventory or a
+    missing table: the run fails at the counts, before any export."""
+    env = make(tmp_path)
+    env["STUB_COUNT_MODE"] = mode
+    log = _log(env, tmp_path)
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    _fails_before_keeping(r, d)
+    assert "could not count the rows" in r.stderr
+    assert "export:" not in log.read_text()
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'WITH x(v) AS (VALUES(1))\nINSERT INTO "view_daily" ("views") SELECT v FROM x;',
+        'WITH x(v) AS (SELECT 1) INSERT INTO "view_daily" ("views") SELECT v FROM x;',
+        'INSERT OR IGNORE INTO "view_daily" ("views") VALUES(1);',
+        'SELECT 1; INSERT INTO "view_daily" ("views") VALUES(1);',
+    ],
+)
+def test_the_shell_runs_the_verifier_and_a_cte_insert_fails_the_whole_run(
+    tmp_path: Path, line: str
+) -> None:
+    """End to end: the backup run itself fails, with the verifier's verdict, and
+    leaves nothing behind."""
+    env = make(tmp_path)
+    env["STUB_APPEND"] = line
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    _fails_before_keeping(r, d)
+    assert "cannot be counted" in r.stderr
+    assert "could not be verified" in r.stderr
 
 
 def test_an_oversized_line_or_file_fails_closed(tmp_path: Path) -> None:

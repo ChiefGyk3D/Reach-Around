@@ -55,6 +55,14 @@ INSERT, a NUL byte, bad UTF-8, an unbalanced quote) fails the run. Residual
 one row and adding another during the run, which leaves the counts level, is not
 seen.
 
+Limit: when a table grows during the run, the row count cannot prove that every
+row that existed before the run is in the export (an omitted old row could be
+hidden by a new one); the count range proves the number of rows only. D1's own
+documentation says a running export blocks other requests to the database, which
+suggests the export is one consistent snapshot, but that is inferred, not
+documented. `BACKUP_MAX_BYTES` is one budget shared by all the export files of a
+run.
+
 **Country in `click_events`.** The Worker now writes no country there, but the
 column still exists and rows written before migration 0010 and the new Worker
 can still hold one. The export copies the table as it is, so an old backup can

@@ -38,7 +38,13 @@
 # the two, so an export cut short fails. If the listing after the exports differs
 # from the first (a table dropped, replaced or changed) the run fails. Residual
 # (inferred, not verified: D1 gives no snapshot across separate queries): a delete
-# plus an insert that leaves the counts level is not seen. Every
+# plus an insert that leaves the counts level is not seen. LIMIT: when a table
+# grows during the run, the row COUNT cannot prove that every row that existed
+# before is in the export (an omitted old row can be hidden by a new one); the
+# count range proves cardinality only. D1's documentation says a running export
+# blocks other requests to the database, which suggests one consistent snapshot,
+# but that is INFERRED, not documented. BACKUP_MAX_BYTES is one budget for all
+# export files of the run. Every
 # table in the `tables` list below is ALWAYS required: if the database lacks any
 # of them the run fails (exit 1) before any export and names the missing tables
 # (at most 10, then "... and K more"). A database that lacks a current table (an
@@ -234,6 +240,8 @@ def bad(msg):
     sys.exit(1)
 
 mode = sys.argv[1]
+expected = set(sys.argv[2:])  # counts: exactly these tables, once each
+seen = set()
 try:
     data = json.load(sys.stdin)
 except ValueError:
@@ -258,6 +266,11 @@ for r in rows:
         n = r.get("n")
         if type(n) is not int or n < 0:
             bad("invalid row count in the answer")
+        if name in seen:
+            bad("duplicate table in the row counts")
+        if name not in expected:
+            bad("unexpected table in the row counts")
+        seen.add(name)
         print(name, n)
     elif mode == "fingerprint":
         sql = r.get("sql")
@@ -266,10 +279,12 @@ for r in rows:
         pairs.append([name, sql])
     else:
         print(name)
+if mode == "counts" and seen != expected:
+    bad("the row counts do not cover exactly the expected tables")
 if mode == "fingerprint":
     pairs.sort(key=lambda p: (p[0], p[1] or ""))
     print(hashlib.sha256(json.dumps(pairs).encode()).hexdigest())
-' "$1"
+' "$@"
 }
 
 list_tables() {
@@ -384,7 +399,7 @@ for t in "${tables[@]}"; do
 done
 count_tables() {
   timeout "$limit" "${wrangler[@]}" d1 execute "$db" --remote --json \
-    --command "$count_sql" 2>/dev/null | parse_answer counts
+    --command "$count_sql" 2>/dev/null | parse_answer counts "${tables[@]}"
 }
 count_tables >"$out/.counts-before" || {
   echo "error: could not count the rows before the export" >&2
@@ -451,9 +466,20 @@ import os, re, stat, sys
 out = sys.argv[1]
 tables = sys.argv[2:]
 max_bytes = int(os.environ["BACKUP_MAX_BYTES"])
+# One budget for the whole run: every byte read from every export file counts.
+budget = [max_bytes]
 max_line = 1 << 20
 TOKEN = re.compile(r"""['"();]""")
 INSERTISH = re.compile(r"(?is)\s*(insert|replace)\b")
+# An INSERT or REPLACE word outside quotes anywhere else (a CTE-prefixed insert,
+# INSERT OR ..., a statement that does not start with it) fails closed. Only the
+# trigger event words of the allowlisted guard triggers are let through.
+DML = re.compile(r"(?i)\b(insert|replace)\b")
+TRIGGER_EVENT = re.compile(r"(?i)\b(before|after|of)\s+insert\s+on\b")
+
+
+def has_dml(text):
+    return bool(DML.search(TRIGGER_EVENT.sub(" ", text)))
 
 
 def read(name):
@@ -485,17 +511,17 @@ def scan(path, table):
         st = os.fstat(fh.fileno())
         if not stat.S_ISREG(st.st_mode):
             return "odd", 0
-        if st.st_size > max_bytes:
+        if st.st_size > budget[0]:
             return "big", 0
-        total = n = 0
+        n = 0
         sq = dq = False
         stmt = None  # [depth, tuples, head] while inside a counted statement
         while True:
             raw = fh.readline(max_line + 1)
             if not raw:
                 break
-            total += len(raw)
-            if total > max_bytes or len(raw) > max_line:
+            budget[0] -= len(raw)
+            if budget[0] < 0 or len(raw) > max_line:
                 return "big", 0
             if b"\0" in raw:
                 return "odd", 0
@@ -519,6 +545,8 @@ def scan(path, table):
                 if dq:
                     dq = ch != '"'
                     continue
+                if stmt is None and has_dml(seg):
+                    return "odd", 0
                 if stmt is not None and stmt[0] == 0:
                     stmt[2] += seg
                 if ch in "'\"":
@@ -550,6 +578,8 @@ def scan(path, table):
                 # newline inside a value is escaped): a statement that is still
                 # open at the end of its line is outside the grammar.
                 if stmt is not None:
+                    return "odd", 0
+                if not (sq or dq) and has_dml(text[pos:]):
                     return "odd", 0
         if sq or dq or stmt is not None:
             return "odd", 0
