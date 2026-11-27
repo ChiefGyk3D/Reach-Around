@@ -22,8 +22,20 @@ from reach_around.net.fetch import FetchError, fetch_json_view
 
 NOW = datetime(2026, 11, 26, 12, 0, 0, tzinfo=UTC)
 ACTOR = "alice.example.com"
-DID = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"
-OTHER = "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb"
+# #922 round 8: realistic identifier shapes (EXAMPLE shapes only, not real accounts):
+# a did:plc of 24 lowercase base32 characters, 13-character TID record keys and
+# a bafyrei... content id, so a happy path cannot pass on toy values alone.
+DID = "did:plc:ewvi7nxzyoun6zhxrhs64oiz"
+OTHER = "did:plc:k6acu4chiwknqhhgdmcqbvcz"
+CID = "bafyreigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"
+_B32 = "234567abcdefghijklmnopqrstuvwxyz"
+
+
+def tid(n: int) -> str:
+    """A 13 character TID-shaped record key, distinct for each n (0 to 1023)."""
+    return "3jt4w2fyy4s" + _B32[n // 32] + _B32[n % 32]
+
+
 DATE_OK = {"date": "Thu, 26 Nov 2026 12:00:00 GMT"}
 PROFILE = "https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile"
 FEED = "https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed"
@@ -46,7 +58,7 @@ def post(
 ) -> dict[str, Any]:
     return {
         "post": {
-            "uri": f"at://{did}/app.bsky.feed.post/p{n}",
+            "uri": f"at://{did}/app.bsky.feed.post/{tid(n)}",
             "author": {"did": did, "handle": "alice.example.com"},
             "record": {"text": "hello @friend", "createdAt": stamp(when)},
             "likeCount": likes,
@@ -383,8 +395,8 @@ def test_an_object_reply_marker_is_a_skipped_reply_and_a_missing_one_is_original
 
 def ref(n: int = 1, **over: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
-        "uri": f"at://{OTHER}/app.bsky.feed.post/r{n}",
-        "cid": "bafyreiabcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrs",
+        "uri": f"at://{OTHER}/app.bsky.feed.post/{tid(900 + n)}",
+        "cid": CID,
     }
     base.update(over)
     return base
@@ -780,7 +792,7 @@ def test_hostile_extra_keys_and_text_never_reach_a_row_or_the_snapshot() -> None
     assert rows_of(read) == [(0, 2, 0)]
     snap = bsky.build_snapshot(read, as_of=date(2026, 11, 26))
     blob = repr(read) + json.dumps(snap)
-    for leaked in (sentinel, "bob@", "203.0.113", "carol", "p1", DID, "at://"):
+    for leaked in (sentinel, "bob@", "203.0.113", "carol", tid(1), DID, "at://"):
         assert leaked not in blob
 
 
@@ -822,6 +834,82 @@ def test_a_malformed_or_authorless_entry_is_incomplete_never_absence(
     snap = bsky.build_snapshot(read, as_of=date(2026, 11, 26), prior=prior)
     assert snap is not None and snap["complete"] is False
     assert snap["interactions"] == [{"boosts": 1, "favorites": 2, "replies": 3}]
+
+
+_BAD_PLC = [
+    "did:plc:x",
+    "did:plc:" + "a" * 23,
+    "did:plc:" + "a" * 25,
+    "did:plc:" + "A" * 24,
+    "did:plc:EWVI7NXZYOUN6ZHXRHS64OIZ",
+    "did:plc:ewvi0nxzyoun6zhxrhs64oiz",  # 0 is outside base32
+    "did:plc:ewvi1nxzyoun6zhxrhs64oiz",
+    "did:plc:ewvi8nxzyoun6zhxrhs64oiz",
+    "did:plc:ewvi9nxzyoun6zhxrhs64oiz",
+    "did:plc:ewvi7nxzyoun6zhxrhs64oi-",
+    "did:plc:ewvi7nxzyoun6zhxrhs64oi.",
+    "did:plc:ewvi7nxzyoun6zhxrhs64oiz:",  # a trailing colon segment
+    "did:plc:ewvi7nxzyoun6zhxrhs64oiz:extra",
+    "did:plc:ewvi7nxzyoun6zhxrhs6:4oiz",
+    "did:plc:ewvi7nxzyoun6zhxrhs64oiz\n",
+    "did:plc:ewvi7nxzyoun6zhxrhs64oiz ",
+    "did:plc:",
+]
+
+
+@pytest.mark.parametrize("bad_did", _BAD_PLC)
+def test_a_malformed_did_plc_profile_never_gives_a_verified_zero(bad_did: str) -> None:
+    # #922 round 7: {"did": "did:plc:x"} plus an empty feed read as a complete zero.
+    read = run(Pages([feed_page([])], prof=profile(did=bad_did)))
+    assert not read.complete and read.reason == "bad_shape"
+    assert isinstance(read.rows, NotProvided)
+    assert bsky.history_aggregates(read) is None
+
+
+@pytest.mark.parametrize("bad_did", _BAD_PLC)
+def test_a_malformed_did_plc_author_is_incomplete_not_a_foreign_skip(
+    bad_did: str,
+) -> None:
+    # Unequal to the profile DID is a clean skip only when the author DID is valid.
+    odd = post(1, NOW - timedelta(days=1), likes=500)
+    odd["post"]["author"]["did"] = bad_did
+    read = run(Pages([feed_page([odd])]))
+    assert not read.complete and read.reason == "bad_shape"
+    assert isinstance(read.rows, NotProvided)
+
+
+@pytest.mark.parametrize("bad_did", _BAD_PLC)
+def test_a_malformed_did_plc_as_an_actor_is_refused(bad_did: str) -> None:
+    with pytest.raises(ValueError):
+        bsky.check_actor(bad_did)
+
+
+@pytest.mark.parametrize("bad_did", _BAD_PLC[:-1])
+def test_a_malformed_did_plc_in_a_uri_or_reply_reference_is_incomplete(
+    bad_did: str,
+) -> None:
+    own = post(1, NOW - timedelta(days=1), likes=5)
+    own["post"]["uri"] = f"at://{bad_did}/app.bsky.feed.post/{tid(1)}"
+    assert run(Pages([feed_page([own])])).reason == "bad_shape"
+    reply_item = post(2, NOW - timedelta(days=1), likes=5)
+    reply_item["reply"] = {
+        "root": ref(1, uri=f"at://{bad_did}/app.bsky.feed.post/{tid(7)}"),
+        "parent": ref(2),
+    }
+    assert run(Pages([feed_page([reply_item])])).reason == "bad_shape"
+
+
+def test_realistic_identifiers_are_read_as_a_complete_count() -> None:
+    # A real-shaped did:plc, 13 character TID keys, an at:// uri and a bafyrei cid.
+    assert len(DID) == len("did:plc:") + 24 and len(tid(1)) == 13
+    mine = post(1, NOW - timedelta(days=1), likes=9, reposts=2)
+    mine["post"]["cid"] = CID
+    stranger = post(2, NOW - timedelta(days=1), did=OTHER, likes=600)
+    replied = post(3, NOW - timedelta(days=1), likes=70)
+    replied["reply"] = good_reply()
+    read = run(Pages([feed_page([mine, stranger, replied])]))
+    assert read.complete and rows_of(read) == [(2, 9, 0)]
+    assert mine["post"]["uri"] == f"at://{DID}/app.bsky.feed.post/{tid(1)}"
 
 
 def test_a_foreign_author_with_a_valid_did_is_still_skipped_cleanly() -> None:
@@ -1014,6 +1102,7 @@ def test_a_small_clock_difference_is_fine() -> None:
         "a-b.example.co",
         "x.y",
         "did:plc:abcdefghijklmnopqrstuvwx",
+        DID,
         "did:web:example.com",
     ],
 )
@@ -1197,7 +1286,7 @@ def test_no_stored_structure_holds_the_actor_or_anything_identifying(
                 "did:",
                 "http",
                 "hello",
-                "p1",
+                tid(1),
             ):
                 assert needle not in text, (needle, text)
     for stored in (complete, partial, aggregates):
@@ -1411,8 +1500,8 @@ _BASE: dict[str, Any] = {
 @pytest.mark.parametrize(
     "leaf",
     [
-        "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/p1",
-        "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+        f"at://{DID}/app.bsky.feed.post/{tid(1)}",
+        DID,
         "alice.example.com",
         "https://bsky.app/profile/alice.example.com",
         "bafyreigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi",

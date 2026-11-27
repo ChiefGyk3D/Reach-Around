@@ -516,6 +516,19 @@ new metric names today, and `FediverseEntry` already carries the fields.
 - Each instance's own terms; Bluesky has no separate developer policy.
 - That `account_id` alone is enough for the Mastodon statuses endpoint without a prior lookup.
 - That `unlisted` posts are returned to unauthenticated reads (they are counted if returned).
+- Bluesky provider (#922): the owner-run live probe must confirm each INFERRED shape the parser
+  relies on. Until it does, any other shape ends the read as `bad_shape`, never a zero.
+  - The reply object: `feed[].reply` and `post.record.reply` carry `root` and `parent`, each with
+    `uri` and `cid`; a blocked or not-found parent in the feed view has a `uri` and a literal
+    `blocked` or `notFound` flag and no `cid`.
+  - The post uri form `at://<did>/app.bsky.feed.post/<tid>`, with the authority equal to the
+    resolved profile DID (not the requested handle) and a 13 character TID key.
+  - The profile DID form: `did:plc:` plus 24 lowercase base32 characters (INFERRED from the
+    did:plc method specification, not read live), or a `did:web` id.
+  - The `Date` response header on every response (a missing or unreadable one is `clock_skew`).
+  - The `filter=posts_no_replies` value of `getAuthorFeed`.
+  - The `reason` type name of a pin (`app.bsky.feed.defs#reasonPin`) and of a repost.
+  - The 100-entry page limit (the provider asks for 50 per page).
 - Bluesky pages read through a mirror because the official host redirected to `bsky.network` and
   returned no text to the fetcher on 2026-11-26.
 

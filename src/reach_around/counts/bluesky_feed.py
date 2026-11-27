@@ -89,7 +89,12 @@ _HANDLE = re.compile(rf"^(?:{_LABEL}\.)+[A-Za-z](?:[A-Za-z0-9-]{{0,61}}[A-Za-z0-
 _DID_WEB_SEGMENT = r"(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{2})+"
 _DID_WEB_HOST = r"[A-Za-z0-9.-]{1,253}"
 _DID_WEB_PORT = r"(?:%3[Aa]([0-9]{1,5}))?"
-_DID_PLC = re.compile(r"did:plc:[A-Za-z0-9._:-]{1,120}")
+# did:plc is ``did:plc:`` plus exactly 24 characters of lowercase base32
+# ([a-z2-7]), no other character and no further segment (INFERRED from the
+# did:plc method specification, github.com/did-method-plc/did-method-plc, not
+# read live; the owner-run probe confirms it). A DID that does not match is never
+# compared or trusted, so a malformed one cannot yield a verified zero.
+_DID_PLC = re.compile(r"did:plc:[a-z2-7]{24}")
 _DID_WEB = re.compile(
     rf"did:web:({_DID_WEB_HOST}){_DID_WEB_PORT}(?::{_DID_WEB_SEGMENT})*"
 )
