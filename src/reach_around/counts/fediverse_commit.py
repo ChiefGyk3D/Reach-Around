@@ -46,6 +46,25 @@ start of a run belongs to a run that is no longer there):
 7. Staged and temp files of this snapshot are removed at the start of a run
    (``find_stale``, ``remove_stale``), after the status says false; a committed
    snapshot is never touched.
+8. Reads are bounded: the digests of the snapshot, the numbers file and every
+   staged copy are streamed in fixed chunks and capped (``file_digest``); a file
+   over its limit leaves the unit pending with the fixed word ``UnitFileTooLarge``,
+   and at most ``MAX_STAGED_CANDIDATES`` staged copies are examined.
+9. A unit note that cannot be parsed is moved, after the status demotion, to
+   ``.numbers.json.unit.bad`` (``quarantine_unit``; an older ``.bad`` is replaced);
+   that run reports ``unit_note_quarantined`` and keeps the status false, and the
+   next good run proceeds. The ``.bad`` file may be deleted by hand at any time.
+
+Residual (explicit and bounded). The unit note proves crash consistency against
+this program's own crashes. It is not a defense against a writer that has write
+access to the output folder: such a writer can already replace the numbers file
+and the snapshot, which is inside the trust boundary of the single-writer
+``FileLock`` design. One case is named: a valid, settled note from an earlier
+transaction, kept aside and put back after a later transaction produced
+byte-identical snapshot and numbers files and crashed before its numbers write,
+is accepted as that transaction's proof, because the generation id is not bound
+into a committed artifact. Binding it would need a new field in the pinned
+snapshot and numbers schemas; that is deliberately not done.
 
 Crash table (what is on disk after the crash, and what the next run does):
 
@@ -90,6 +109,7 @@ from reach_around.config import ConfigError
 from reach_around.config.loader import _read
 from reach_around.config.numbers import MAX_NUMBERS_BYTES
 from reach_around.counts import bluesky_feed, mastodon_feed
+from reach_around.counts.fediverse_store import MAX_SNAPSHOT_BYTES
 from reach_around.counts.files import write_atomic
 from reach_around.counts.history import History, Record
 
@@ -97,6 +117,8 @@ SAME_DAY_KEPT = "same_day_kept"
 # The fixed word a run prints when a committed snapshot is dated after today (the
 # clock went backward): its rows cannot be appended yet, and the status says so.
 SNAPSHOT_IN_FUTURE = "snapshot_in_future"
+# The fixed word of a run that moved an unparsable unit note aside.
+UNIT_NOTE_QUARANTINED = "unit_note_quarantined"
 
 _SUMS = {
     "bluesky": bluesky_feed.snapshot_aggregates,
@@ -113,12 +135,44 @@ def new_generation() -> str:
     return secrets.token_hex(8)
 
 
-def file_digest(path: Path) -> str | None:
-    """sha256 of the file's bytes, ``None`` when it is absent or unreadable."""
+class UnitFileTooLarge(OSError):
+    """A file the unit check must hash is over its limit or not a regular file.
+    The unit stays pending (status false); nothing is read past the limit."""
+
+
+# The most staged candidates ``abandon_unit`` examines; more leave the unit pending.
+MAX_STAGED_CANDIDATES = 8
+_CHUNK = 64 * 1024
+
+
+def file_digest(path: Path, limit: int) -> str | None:
+    """sha256 of the file's bytes, ``None`` when it is absent or unreadable.
+
+    The file is streamed in fixed chunks and never read past ``limit`` bytes: the
+    size is checked before the read and the count again during it. A file over
+    ``limit`` (or one that is not a regular file) raises ``UnitFileTooLarge``."""
     try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
     except OSError:
         return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            raise UnitFileTooLarge("unit file over its limit")
+        digest = hashlib.sha256()
+        total = 0
+        while chunk := os.read(fd, _CHUNK):
+            total += len(chunk)
+            if total > limit:
+                raise UnitFileTooLarge("unit file over its limit")
+            digest.update(chunk)
+        return digest.hexdigest()
+    except UnitFileTooLarge:
+        raise
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
 
 
 @dataclass(frozen=True)
@@ -219,10 +273,15 @@ def unit_pending(numbers: Path, snapshot: Path) -> bool:
     record = read_unit(numbers)
     if record is None:
         return True
-    if file_digest(snapshot) != record.snapshot:
-        return True
-    if record.landed != record.generation or file_digest(numbers) != record.numbers:
-        return True
+    try:
+        if file_digest(snapshot, MAX_SNAPSHOT_BYTES) != record.snapshot:
+            return True
+        if record.landed != record.generation:
+            return True
+        if file_digest(numbers, MAX_NUMBERS_BYTES) != record.numbers:
+            return True
+    except UnitFileTooLarge:
+        return True  # an oversized file is never settled
     try:
         note.unlink()
     except FileNotFoundError:
@@ -238,17 +297,49 @@ def abandon_unit(numbers: Path, snapshot: Path, staged: Sequence[Path]) -> bool:
     Called first in recovery (``staged`` is what ``find_stale`` listed, about to
     be swept). The transaction did not commit when the committed snapshot is not
     the proposed one, or when a staged copy of the proposed one is still there.
-    Returns True when a note was removed. Raises ``OSError`` if it cannot be."""
+    Returns True when a note was removed. Raises ``OSError`` if it cannot be, and
+    ``UnitFileTooLarge`` (the note stays, the unit stays pending) when a file it
+    must hash is over its limit or more than ``MAX_STAGED_CANDIDATES`` staged
+    copies are there."""
     record = read_unit(numbers)
     if record is None:
         return False
-    never = file_digest(snapshot) != record.snapshot or any(
-        file_digest(path) == record.snapshot for path in staged
+    if len(staged) > MAX_STAGED_CANDIDATES:
+        raise UnitFileTooLarge("too many staged candidates")
+    never = file_digest(snapshot, MAX_SNAPSHOT_BYTES) != record.snapshot or any(
+        file_digest(path, MAX_SNAPSHOT_BYTES) == record.snapshot for path in staged
     )
     if not never:
         return False
     try:
         unit_path(numbers).unlink()
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def bad_unit_path(numbers: Path) -> Path:
+    """Where ``quarantine_unit`` moves a note that cannot be parsed."""
+    return numbers.with_name(f".{numbers.name}.unit.bad")
+
+
+def quarantine_unit(numbers: Path) -> bool:
+    """Move a unit note that ``read_unit`` cannot parse to ``bad_unit_path``.
+
+    Only a plain file is moved (a link or a folder is left alone and keeps
+    blocking). The rename replaces an older ``.bad`` file and never follows a
+    link. Returns True when a note was quarantined. Raises ``OSError`` if the
+    rename fails. The caller keeps the status false for that run."""
+    note = unit_path(numbers)
+    try:
+        if not stat.S_ISREG(note.lstat().st_mode):
+            return False
+    except OSError:
+        return False
+    if read_unit(numbers) is not None:
+        return False
+    try:
+        os.replace(note, bad_unit_path(numbers))
     except FileNotFoundError:
         return False
     return True

@@ -1885,6 +1885,30 @@ What a run does:
   `allowed-endpoints` value from `FILE` and exits 3 naming any `host:443` the
   configured sources need that is missing (exit 0 when all are listed).
 
+Recovery limits and the unit note. A refresh that reads a snapshot leaves a small
+transaction record, `.numbers.json.unit`, beside the numbers file until the numbers
+write landed. The design and crash table are in `src/reach_around/counts/
+fediverse_commit.py`. Three bounds apply:
+
+- Recovery reads files in fixed chunks and never past a limit (the snapshot limit
+  of 512 KiB, the numbers limit of 256 KiB). A snapshot, numbers file or staged
+  copy over its limit, and more than eight staged copies, leave the unit pending:
+  the status says `committed: false`, the run exits 1 and names `UnitFileTooLarge`.
+  Remove the oversized or surplus file by hand (staged copies are the dot files
+  ending `.staged` or `.tmp` beside the snapshot), then run again.
+- A unit note that cannot be parsed is moved to `.numbers.json.unit.bad` (an older
+  `.bad` file is replaced). That run prints `unit_note_quarantined` and keeps the
+  status false; the next run proceeds normally. The `.bad` file is only evidence:
+  delete it whenever you like. A note that is a link or a folder is not moved; delete
+  it by hand.
+- What the note proves. It gives crash consistency against this program's own
+  crashes. It is not a defense against someone with write access to the output
+  folder, who could already replace the numbers and snapshot files; refresh assumes a
+  single writer holding its lock. The named residual: a settled note from an earlier
+  transaction that was kept aside and put back after a later transaction produced
+  byte-identical snapshot and numbers files and crashed before its numbers write is
+  accepted as that transaction's proof.
+
 The build feeds [`kit.fediverse`](kit.md#the-fediverse-block) from the snapshots.
 
 ### The numbers file

@@ -52,6 +52,7 @@ from reach_around.counts.beacons import (
 from reach_around.counts.fediverse_commit import (
     SAME_DAY_KEPT,
     SNAPSHOT_IN_FUTURE,
+    UNIT_NOTE_QUARANTINED,
     UnitNote,
     abandon_unit,
     day_conflicts,
@@ -60,6 +61,7 @@ from reach_around.counts.fediverse_commit import (
     future_snapshots,
     mark_landed,
     new_generation,
+    quarantine_unit,
     remove_stale,
     rows_present,
     snapshot_rows,
@@ -776,11 +778,24 @@ def _cycle(
         return EXIT_USAGE
     stamp = now()
     run_id = new_run_id(stamp)
+    quarantined = False
     if fediverse_file is not None:
         # First, before any read: repair what an interrupted run left.
         repaired = _recover(paths, history, fediverse_file, stamp, run_id)
         if repaired is not None:
             return repaired
+        # After the demotion in ``_recover``: a note that cannot be parsed moves
+        # aside, and this run keeps the status false (the next good run settles).
+        try:
+            quarantined = quarantine_unit(paths.target)
+        except OSError as exc:
+            print(
+                f"error: the previous run could not be repaired: {type(exc).__name__}",
+                file=sys.stderr,
+            )
+            return EXIT_WRITE
+        if quarantined:
+            print(f"fediverse: {UNIT_NOTE_QUARANTINED}", file=sys.stderr)
     numbers, outcomes = refresh(
         sources,
         previous,
@@ -967,6 +982,7 @@ def _cycle(
     # attempt is never hidden by a later run that found nothing new to write.
     unit = fediverse_file is not None and (
         staged_snapshot is not None
+        or quarantined
         or not _unit_complete(paths, history, fediverse_file, stamp, run_id)
     )
     try:
@@ -1050,6 +1066,7 @@ def _cycle(
             _settle_history(paths, staged.nonce)
     if (
         unit
+        and not quarantined
         and fediverse_file is not None
         and _unit_complete(paths, history, fediverse_file, stamp, run_id)
     ):
