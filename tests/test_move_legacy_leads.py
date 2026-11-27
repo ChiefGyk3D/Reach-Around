@@ -2630,7 +2630,7 @@ def test_the_script_and_the_cli_parser_answer_the_same_hostile_command_lines(
     ]
     for shape in shapes:
         argv = [part.format(v="partner@example.test") for part in shape]
-        seen = []
+        seen: list[tuple[Any, str]] = []
         for cls in (mod._Parser, cli._Parser):
             try:
                 build(cls).parse_args(argv)
