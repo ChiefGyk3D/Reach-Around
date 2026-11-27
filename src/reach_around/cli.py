@@ -12,7 +12,7 @@ import pkgutil
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from jinja2 import TemplateError
 
@@ -49,14 +49,26 @@ def _idle_minutes(text: str) -> float:
     return value
 
 
+_ECHOING = ("unrecognized arguments:", "ambiguous option:", "invalid choice:")
+
+
 class _Parser(argparse.ArgumentParser):
-    """argparse echoes unrecognized arguments in its error. With abbreviations off, a
-    mistyped `--email-f ADDRESS` would put the address on stderr (it can reach a log),
-    so that one message never repeats the arguments."""
+    """The parser of the command line and, because subparsers take their class from
+    their parent, of every subcommand.
+
+    Abbreviations are off for all of them: argparse would take `--ye` for `--yes`, and
+    a destructive or private flag must be typed in full. And argparse echoes the
+    offending text in several errors (unrecognized arguments, an ambiguous option, an
+    invalid choice, an invalid value), so a mistyped `--email-f ADDRESS` would put an
+    address on stderr, where it can reach a log: those messages never repeat the text."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("allow_abbrev", False)
+        super().__init__(*args, **kwargs)
 
     def error(self, message: str) -> NoReturn:
-        if message.startswith("unrecognized arguments:"):
-            message = "unrecognized arguments (not repeated: they may hold a value)"
+        if any(marker in message for marker in _ECHOING) or " value: " in message:
+            message = "unrecognized arguments or invalid value (the text is not repeated)"
         super().error(message)
 
 
