@@ -316,6 +316,14 @@ def collect(
 
     def bounded_sleep(seconds: float) -> None:
         """A pause or a retry wait that would cross the deadline ends the run."""
+        # The terminal rate state outranks any wait or timeout: bad_shape, then
+        # rate_limited, then the deadline (#950).
+        if rate["bad"]:
+            ended.append("bad_shape")
+            raise _BudgetEnded
+        if rate["low"]:
+            ended.append("rate_limited")
+            raise _BudgetEnded
         if clock() + seconds >= deadline:
             ended.append("timeout")
             raise _BudgetEnded
@@ -361,10 +369,14 @@ def collect(
         except _BudgetEnded:
             raise _Stop(ended[0]) from None
         except FetchError as error:
-            if ended:  # the budget stopped a request: its own word, not a fetch one
-                raise _Stop(ended[0]) from None
+            # Rate state first (#950): a refused or ended retry on a low or bad
+            # answer keeps the rate reason, not server_error or timeout.
             if rate["bad"]:  # an error answer with a malformed rate header
                 raise _Stop("bad_shape") from None
+            if rate["low"]:
+                raise _Stop("rate_limited") from None
+            if ended:  # the budget stopped a request: its own word, not a fetch one
+                raise _Stop(ended[0]) from None
             raise _Stop(_reason_of(error, later_page=later_page)) from None
         if clock() >= deadline:  # nothing is accepted after the absolute deadline
             raise _Stop("timeout")

@@ -825,6 +825,66 @@ def test_a_low_rate_header_on_an_error_answer_stops_the_retry(value: str) -> Non
     assert len(p.transport.calls) == 2  # the lookup and one status try, no retry
 
 
+def _status_503(remaining: str, retry_after: str | None = "61") -> Any:
+    headers = {"x-ratelimit-remaining": remaining}
+    if retry_after is not None:
+        headers["retry-after"] = retry_after
+    return reply({}, status=503, headers=headers)
+
+
+def test_a_low_503_with_retry_after_is_rate_limited_without_a_sleep() -> None:
+    # #950: the low count outranks server_error, and no retry wait is taken.
+    p = Pages([[]], look=lookup())
+    p.transport.routes[STATUSES] = lambda r: _status_503("0")
+    sleeps: list[float] = []
+    read = run(p, sleeps=sleeps)
+    assert isinstance(read.rows, NotProvided) and read.reason == "rate_limited"
+    assert len(p.transport.calls) == 2  # the lookup and one status try
+    assert sleeps == [masto.PAUSE]  # only the pause before the statuses call
+
+
+def _near_deadline(header: str, retry_after: str | None) -> tuple[Any, list[float]]:
+    clock = Clock()
+    sleeps: list[float] = []
+
+    def sleep(s: float) -> None:
+        sleeps.append(s)
+        clock.sleep(s)
+
+    slow = Slow(lambda r: _status_503(header, retry_after), clock, [89.5])
+    read = masto.collect(
+        HOST,
+        ACCT,
+        now=NOW,
+        transport=slow,
+        sleep=sleep,
+        jitter=lambda: 0.0,
+        clock=clock,
+    )
+    assert len(slow.deadlines) == 1
+    return read, sleeps
+
+
+def test_a_low_header_near_the_deadline_is_rate_limited_without_a_sleep() -> None:
+    read, sleeps = _near_deadline("0", None)
+    assert read.reason == "rate_limited" and sleeps == []
+
+
+def test_a_bad_header_near_the_deadline_is_bad_shape_without_a_sleep() -> None:
+    read, sleeps = _near_deadline("x", None)
+    assert read.reason == "bad_shape" and sleeps == []
+
+
+def test_a_bad_header_outranks_a_low_one_on_an_error_answer() -> None:
+    headers = {"x-ratelimit-remaining": "9" * 600, "retry-after": "61"}
+    bad = reply({}, status=503, headers=headers)
+    p = Pages([[]], look=bad)
+    sleeps: list[float] = []
+    read = run(p, sleeps=sleeps)
+    assert read.reason == "bad_shape" and sleeps == []
+    assert len(p.transport.calls) == 1
+
+
 def test_a_low_rate_header_on_a_429_of_the_lookup_stops_the_retry() -> None:
     answers = iter(
         [
