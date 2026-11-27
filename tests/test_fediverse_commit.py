@@ -12,6 +12,7 @@ Hermetic: the fake transport stands in for the network, every name is synthetic.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import timedelta
@@ -29,10 +30,11 @@ from reach_around.counts.fediverse_commit import (
     snapshot_rows,
     status_committed,
     sweep_stale,
+    unit_path,
 )
 from reach_around.counts.fediverse_store import load_snapshots, snapshot_path
 from reach_around.counts.files import plan_paths, write_atomic
-from reach_around.counts.history import read_history
+from reach_around.counts.history import HistoryError, read_history
 from test_fediverse_wiring import (
     CONFIG,
     DID,
@@ -41,13 +43,16 @@ from test_fediverse_wiring import (
     PROFILE,
     bsky_post,
     committed,
+    frozen_clock,
     tree,
     write_config,
 )
 
-# Day one of every scenario here is three days before the shared test clock: a
-# history file is read against the real clock, so a run dated after it would
-# leave rows that read as "in the future".
+# The history clock is frozen by the shared ``frozen_clock`` fixture (fixed day
+# after every scenario), never the machine's date. Day one of every scenario is
+# three days before the shared test clock.
+SHARED_FIXTURES = (frozen_clock,)  # imported so that pytest finds it in this module
+pytestmark = pytest.mark.usefixtures("frozen_clock")
 BASE = NOW - timedelta(days=3)
 DAY_TWO = (BASE + timedelta(days=1)).strftime("%Y-%m-%d")
 
@@ -217,7 +222,9 @@ def test_a_crash_at_every_step_is_repaired_by_the_next_run(
     after, expected = state(real), state(oracle)
     assert after == expected  # snapshot, numbers, status, rows: the same state
     names = set(tree(real))
-    assert not [n for n in names if n.endswith((".staged", ".tmp", ".pending"))]
+    assert not [
+        n for n in names if n.endswith((".staged", ".tmp", ".pending", ".unit"))
+    ]
     rows = after["rows"]
     assert isinstance(rows, list) and len(rows) == len(set(rows))  # none doubled
     assert committed(real) is True
@@ -361,7 +368,10 @@ def test_the_rows_are_derived_from_the_snapshot_and_conflicts_are_named(
         ("bluesky", "replies_30d", 2),
     }
     assert all(r.as_of_utc == f"{BASE:%Y-%m-%d}T00:00:00Z" for r in rows)
-    assert snapshot_rows(snapshots, "r1", BASE.date() + timedelta(days=3)) == []
+    # Daybreak round 3 M2: the age of a snapshot never stops its rows (the old
+    # one-day limit is gone); only a snapshot dated after today is left out.
+    assert snapshot_rows(snapshots, "r1", BASE.date() + timedelta(days=3)) == rows
+    assert snapshot_rows(snapshots, "r1", BASE.date() - timedelta(days=1)) == []
     history = read_history(root / "history" / "social.jsonl")
     assert day_conflicts(history, rows) == set()
     changed = [r for r in rows if r.metric != "favorites_30d"] + [
@@ -452,3 +462,197 @@ def test_a_status_with_a_note_still_live_is_not_blessed_by_a_run_that_changed_no
     )
     assert code != 0
     assert status_committed(root / "numbers.status.json") is False
+
+
+# --- Daybreak round 3 ------------------------------------------------------------
+
+CONFIG_NO_HISTORY = CONFIG_BOTH.replace("  history_file: history/social.jsonl\n", "")
+
+
+def run_failing(root: Path, days: int) -> int:
+    """A run ``days`` UTC days after day one in which every source is down."""
+    moment = BASE + timedelta(days=days)
+    transport = FakeTransport(
+        {
+            "https://public.api.bsky.app/": reply({"error": "down"}, status=503),
+            "https://social.example/": reply({"error": "down"}, status=503),
+        }
+    )
+    return counts_cmd.run_refresh(
+        root / "site.yaml",
+        None,
+        None,
+        False,
+        env={},
+        transport=transport,
+        now=lambda: moment,
+    )
+
+
+def force_status(root: Path, value: bool) -> None:
+    """Put the lag a crash can leave into the status file: a claim of ``value``."""
+    path = root / "numbers.status.json"
+    data = json.loads(path.read_text())
+    data["committed"] = value
+    path.write_text(json.dumps(data))
+
+
+def favorites(root: Path) -> list[int]:
+    rows = read_history(root / "history" / "social.jsonl").records
+    return sorted(r.value for r in rows if r.metric == "favorites_30d")
+
+
+def test_a_crash_inside_recovery_cannot_keep_a_stale_true(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Daybreak round 3 M1: recovery wrote the status after it deleted the only
+    evidence. Here the process dies right after the evidence is removed."""
+    root = make(tmp_path / "root", CONFIG)
+    assert day_one(root) == 3
+    with monkeypatch.context() as m:
+        inject(m, "staged")
+        with pytest.raises(Crash):
+            second_day(root, likes=77)
+    assert committed(root) is True  # the lag the crash left
+    assert [n for n in tree(root) if n.endswith(".staged")]
+
+    def die(found: object) -> int:
+        raise Crash
+
+    with monkeypatch.context() as m:
+        m.setattr(counts_cmd, "remove_stale", die)
+        with pytest.raises(Crash):
+            second_day(root, likes=77)
+    assert committed(root) is False  # said before the first removal
+    assert run_failing(root, 1) != 0  # a later run with every source down
+    assert not [n for n in tree(root) if n.endswith((".staged", ".tmp"))]
+    assert second_day(root, likes=77) == 3
+    assert committed(root) is True
+
+
+def test_recovery_recomputes_the_status_from_the_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A status that says true while a row of the committed snapshot is missing is
+    corrected by recovery, never preserved."""
+    root = make(tmp_path / "root", CONFIG)
+    assert day_one(root) == 3
+    with monkeypatch.context() as m:
+        inject(m, "rename_after")  # committed, the fediverse rows not written
+        with pytest.raises(Crash):
+            second_day(root, likes=77)
+    force_status(root, True)  # a stale true
+    assert favorites(root) == [9]
+    paths = plan_paths(root / "site.yaml", None)
+    history = root / "history" / "social.jsonl"
+    stamp = BASE + timedelta(days=1)
+    snap = snapshot_path(paths.target)
+    assert counts_cmd._recover(paths, history, snap, stamp, "r1") is None
+    assert favorites(root) == [9, 77]  # the rows are repaired
+    assert committed(root) is False  # and recovery itself never says true
+
+
+# --- history recovery has no age limit (Daybreak round 3 M2) ----------------------
+
+
+def test_a_crash_on_day_n_is_repaired_by_a_run_on_day_n_plus_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = make(tmp_path / "root", CONFIG)
+    assert day_one(root) == 3
+    with monkeypatch.context() as m:
+        inject(m, "rename_after")  # day two committed, no row yet
+        with pytest.raises(Crash):
+            second_day(root, likes=77)
+    assert favorites(root) == [9]
+    assert run_at(root, 3, likes=55) == 3  # nothing ran on day three of the crash
+    assert favorites(root) == [9, 55, 77]  # day two's rows were not lost
+    days = {
+        r.as_of_utc[:10]
+        for r in read_history(root / "history" / "social.jsonl").records
+        if r.metric == "favorites_30d"
+    }
+    assert days == {(BASE + timedelta(days=n)).strftime("%Y-%m-%d") for n in (0, 1, 3)}
+    assert committed(root) is True
+
+
+def test_a_snapshot_dated_after_today_is_reported_and_never_blessed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The clock went backward: the rows cannot be appended yet (history rejects a
+    future time). The run says so with a fixed word and the status stays false."""
+    root = make(tmp_path / "root", CONFIG)
+    assert day_one(root) == 3
+    capsys.readouterr()
+    assert run_failing(root, -2) != 0
+    shown = capsys.readouterr()
+    assert "snapshot_in_future" in shown.err
+    assert committed(root) is False
+    assert run_at(root, 1, likes=77) == 3  # the day arrives: nothing is lost
+    assert committed(root) is True
+
+
+# --- a failed retry never blesses an incomplete unit (Daybreak round 3 M3) --------
+
+
+def test_a_failed_retry_after_a_lost_numbers_write_stays_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No history file: the snapshot is the only commit marker. The process dies
+    after the rename and before the numbers file; the retry has every source down."""
+    root = make(tmp_path / "root", CONFIG_NO_HISTORY)
+    assert day_one(root) == 3
+    numbers_before = (root / "numbers.json").read_bytes()
+    with monkeypatch.context() as m:
+        inject(m, "numbers_before")
+        with pytest.raises(Crash):
+            second_day(root, likes=77)
+    assert unit_path(root / "numbers.json").exists()  # the trace of the unit
+    assert run_failing(root, 1) != 0
+    assert (root / "numbers.json").read_bytes() == numbers_before
+    assert committed(root) is False  # the numbers of that run never landed
+    assert second_day(root, likes=77) == 3  # a run that writes the numbers file
+    assert committed(root) is True
+    assert not unit_path(root / "numbers.json").exists()
+
+
+def test_a_recovery_that_fails_after_the_rename_never_leaves_true(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = make(tmp_path / "root")
+    assert day_one(root) == 3
+    with monkeypatch.context() as m:
+        inject(m, "rename_after")  # committed; rows and numbers not written
+        with pytest.raises(Crash):
+            second_day(root, likes=77)
+    real = history_mod.append_records
+
+    def refuse(path: Path, rows: Any, **kwargs: Any) -> int:
+        if rows[0].metric != "followers":
+            raise HistoryError("disk")  # the derived rows fail in recovery
+        return real(path, rows, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr(counts_cmd, "append_records", refuse)
+        assert second_day(root, likes=77) == 1
+    assert committed(root) is False
+    assert run_failing(root, 1) != 0  # the retry repairs the rows, not the numbers
+    assert committed(root) is False
+    assert second_day(root, likes=77) == 3
+    assert committed(root) is True
+    rows = read_history(root / "history" / "social.jsonl").records
+    keys = [r.day_key for r in rows]
+    assert len(keys) == len(set(keys))  # none doubled
+
+
+def test_a_unit_note_whose_numbers_landed_is_settled(tmp_path: Path) -> None:
+    """A crash after the numbers write but before the note's removal: the digest
+    matches the numbers file, so the note counts as done."""
+    root = make(tmp_path / "root", CONFIG_NO_HISTORY)
+    assert day_one(root) == 3
+    numbers = root / "numbers.json"
+    digest = hashlib.sha256(numbers.read_bytes()).hexdigest()
+    unit_path(numbers).write_text(digest)
+    assert run_failing(root, 1) != 0
+    assert committed(root) is True
+    assert not unit_path(numbers).exists()

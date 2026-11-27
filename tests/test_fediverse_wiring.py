@@ -10,14 +10,15 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 import pytest
 from pydantic import ValidationError
 
 import reach_around.commands.counts as counts_cmd
+import reach_around.counts.history as history_mod
 from fakenet import FakeTransport, reply
 from kitpdfharness import kit_doc
 from reach_around.cli import main
@@ -48,6 +49,25 @@ from reach_around.counts.history import HistoryError, append_records, read_histo
 
 NOW = datetime(2026, 11, 26, 12, 0, 0, tzinfo=UTC)
 TODAY = date(2026, 11, 26)
+# History validates a row against its own clock ("not in the future"). Every test
+# here freezes that clock at a fixed day after all scenarios, so no test depends on
+# the real date (Daybreak round 3: it used to be the real clock plus a day).
+FROZEN = NOW + timedelta(days=30)
+
+
+class _FrozenDatetime(datetime):
+    @classmethod
+    def now(cls, tz: tzinfo | None = None) -> Self:
+        moment = FROZEN if tz is None else FROZEN.astimezone(tz)
+        return cls.fromtimestamp(moment.timestamp(), tz)
+
+
+@pytest.fixture(autouse=True)
+def frozen_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The history module reads its clock from here, never from the machine."""
+    monkeypatch.setattr(history_mod, "datetime", _FrozenDatetime)
+
+
 DID = "did:plc:ewvi7nxzyoun6zhxrhs64oiz"
 BSKY = {"kind": "bluesky", "actor": "alice.example.com"}
 MASTO = {"kind": "mastodon", "host": "social.example", "acct": "alice"}
@@ -693,6 +713,7 @@ def test_a_failed_numbers_write_after_the_commit_is_repaired_by_the_next_run(
     # a later run settles everything: history has one row per metric and day,
     # each day with the value of the snapshot committed that day
     monkeypatch.undo()
+    monkeypatch.setattr(history_mod, "datetime", _FrozenDatetime)  # undo took it
     monkeypatch.setattr(counts_cmd, "default_sleep", lambda seconds: None)
     assert second_day(instance, likes=77) == 3
     assert load_snapshots(snap)["bluesky"]["interactions"] == [
@@ -735,6 +756,7 @@ def test_a_failed_history_append_after_the_commit_is_repaired_by_the_next_run(
     assert committed(instance) is False
     assert not [p for p in tree(instance) if p.endswith((".staged", ".tmp"))]
     monkeypatch.undo()
+    monkeypatch.setattr(history_mod, "datetime", _FrozenDatetime)  # undo took it
     monkeypatch.setattr(counts_cmd, "default_sleep", lambda seconds: None)
     assert second_day(instance, likes=77) == 3
     rows = read_history(history).records
@@ -774,6 +796,7 @@ def test_the_status_says_committed_only_after_every_write_landed(
     assert committed(instance) is True
     # the closing status write fails: the data landed, the status stays honest
     monkeypatch.undo()
+    monkeypatch.setattr(history_mod, "datetime", _FrozenDatetime)  # undo took it
     monkeypatch.setattr(counts_cmd, "default_sleep", lambda seconds: None)
     Writes(monkeypatch, lambda name, n: name == "status" and n == 1)
     assert second_day(instance, likes=77) == 1
