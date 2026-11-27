@@ -7,6 +7,7 @@ import { getUnstoredSessionFloor, setSessionFloor, setUnstoredSessionFloor } fro
 import { mintUnstoredId } from "../../src/kit/unstored";
 import { COOKIE_NAME, signToken } from "../../src/kit/token";
 import { resetEventCapCache } from "../../src/kit/budgets";
+import { resetSeparationCache } from "../../src/kit/separation";
 import worker from "../../src/index";
 
 const HOST = "links.example.test";
@@ -78,6 +79,7 @@ function kv(page: string | null = `<!doctype html><title>kit</title><p>${CANARY}
 function baseEnv(over: Record<string, unknown> = {}): GateEnv {
   return {
     DB: testEnv.DB,
+    LEADS_DB: testEnv.LEADS_DB,
     SITE_HOST: HOST,
     KIT: kv(),
     GATE_LIMITER: limiter(),
@@ -127,8 +129,10 @@ async function post(o: Opts = {}, e: GateEnv = baseEnv(), f: Fake = fake(), nowM
   return { res, f };
 }
 
+/** Row count of a table in the database that owns it: leads and kit_events are in LEADS_DB (issue #772). */
 async function count(table: string): Promise<number> {
-  return (await testEnv.DB.prepare(`SELECT COUNT(*) AS n FROM ${table}`).first<{ n: number }>())!.n;
+  const db = table === "leads" || table === "kit_events" ? testEnv.LEADS_DB : testEnv.DB;
+  return (await db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).first<{ n: number }>())!.n;
 }
 
 function setCookie(res: Response): string | null {
@@ -140,6 +144,12 @@ function cookieHeader(res: Response): string {
 
 beforeEach(async () => {
   resetEventCapCache();
+  resetSeparationCache();
+  await testEnv.LEADS_DB.batch([
+    testEnv.LEADS_DB.prepare("DELETE FROM kit_events"),
+    testEnv.LEADS_DB.prepare("DELETE FROM leads"),
+    testEnv.LEADS_DB.prepare("DELETE FROM kit_meta"),
+  ]);
   await testEnv.DB.batch([
     testEnv.DB.prepare("DELETE FROM kit_events"),
     testEnv.DB.prepare("DELETE FROM leads"),
@@ -162,7 +172,7 @@ describe("POST /k/gate success", () => {
     const token = c.split("=")[1]!.split(";")[0]!;
     expect(res.headers.get("location")).not.toContain(token);
     expect(await res.text()).toBe("");
-    const lead = await testEnv.DB.prepare("SELECT email, source, country, verified_ts FROM leads").first<Record<string, unknown>>();
+    const lead = await testEnv.LEADS_DB.prepare("SELECT email, source, country, verified_ts FROM leads").first<Record<string, unknown>>();
     expect(lead).toEqual({ email: EMAIL, source: "gate", country: "US", verified_ts: null });
     expect(await count("kit_events")).toBe(1);
   });
@@ -207,7 +217,7 @@ describe("POST /k/gate success", () => {
   it("token claims: lead id, ttl from TOKEN_TTL_SECONDS, country", async () => {
     const { res } = await post({}, baseEnv({ TOKEN_TTL_SECONDS: "7200" }));
     expect(setCookie(res)).toContain("Max-Age=7200");
-    const lead = await testEnv.DB.prepare("SELECT id FROM leads").first<{ id: string }>();
+    const lead = await testEnv.LEADS_DB.prepare("SELECT id FROM leads").first<{ id: string }>();
     const v = await handleGate(req({ path: VIEW_ROUTE, method: "GET", cookie: cookieHeader(res) }), baseEnv(), { nowMs: T0 + 1000 });
     expect(v.status).toBe(200);
     expect(lead!.id).toHaveLength(32);
@@ -256,7 +266,156 @@ const FAILURES: { name: string; opts?: Opts; env?: () => GateEnv; f?: () => Fake
   { name: "missing KIT binding", env: () => baseEnv({ KIT: undefined }) },
   { name: "missing limiter binding", env: () => baseEnv({ GATE_LIMITER: undefined }) },
   { name: "missing VIEW_HASH_SECRET", env: () => baseEnv({ VIEW_HASH_SECRET: undefined }) },
+  { name: "missing LEADS_DB binding", env: () => baseEnv({ LEADS_DB: undefined }) },
+  { name: "LEADS_DB is not a database", env: () => baseEnv({ LEADS_DB: "reach-around-leads" }) },
+  { name: "LEADS_DB is the analytics database", env: () => baseEnv({ LEADS_DB: testEnv.DB }) },
 ];
+
+/**
+ * Counts separation proofs: every proof prepares the identity read once on LEADS_DB, so the number of
+ * those prepares is the number of proofs a request paid for (each proof is at most SEPARATION_QUERIES
+ * D1 queries).
+ */
+function proofCounter(): { env: Partial<GateEnv>; proofs: () => number } {
+  let n = 0;
+  const leads = new Proxy(testEnv.LEADS_DB, {
+    get(t, key) {
+      if (key === "prepare") {
+        return (q: string) => {
+          if (q.includes("FROM db_identity")) n++;
+          return t.prepare(q);
+        };
+      }
+      const v = Reflect.get(t, key, t);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  });
+  return { env: { LEADS_DB: leads } as unknown as Partial<GateEnv>, proofs: () => n };
+}
+
+describe("D1 query bound of the separation proof on the public routes (issue #772, round 3)", () => {
+  it("a new lead through the gate pays for at most 2 proofs, and only after the limiters", async () => {
+    const c = proofCounter();
+    const { res } = await post({}, baseEnv(c.env));
+    expect(res.headers.get("set-cookie")).not.toBeNull();
+    expect(c.proofs()).toBe(2); // after the limiters; right before the lead write
+  });
+
+  it("a returning lead through the gate pays for the early proof and the write proof", async () => {
+    const id = await seedLead({ id: "c".repeat(32) });
+    await testEnv.LEADS_DB.prepare("UPDATE leads SET email = ? WHERE id = ?").bind(EMAIL, id).run();
+    const c = proofCounter();
+    const { res } = await post({}, baseEnv(c.env));
+    expect(res.headers.get("set-cookie")).not.toBeNull();
+    expect(c.proofs()).toBe(2); // after the limiters, and right before the refresh write
+  });
+
+  it("a gate request stopped by a limiter or a bad form pays for no proof", async () => {
+    const c = proofCounter();
+    await post({}, baseEnv({ ...c.env, GATE_LIMITER: limiter(false) }));
+    expect(c.proofs()).toBe(0);
+    const bad = await post({ fields: "not a form" }, baseEnv(c.env));
+    expect(bad.res.status).toBe(303);
+    expect(c.proofs()).toBe(0);
+  });
+
+  it("the view route pays for 1 proof, right before the lead read, and 0 for an unstored token", async () => {
+    await seedLead();
+    const c = proofCounter();
+    const ok = await view({ cookie: await unlockCookieFor() }, baseEnv(c.env));
+    expect(ok.status).toBe(200);
+    expect(c.proofs()).toBe(1);
+    const none = proofCounter();
+    const unstored = await view({ cookie: await unlockCookieFor({ lid: await mintUnstoredId(KEY) }) }, baseEnv(none.env));
+    expect(unstored.status).toBe(200);
+    expect(none.proofs()).toBe(0);
+  });
+
+  it("the view route stopped by its limiter makes no proof", async () => {
+    await seedLead();
+    const c = proofCounter();
+    const res = await view({ cookie: await unlockCookieFor() }, baseEnv({ ...c.env, KIT_VIEW_LIMITER: limiter(false) }));
+    expect(res.status).toBe(303);
+    expect(c.proofs()).toBe(0);
+  });
+});
+
+describe("the leads database is separate (issue #772)", () => {
+  const analyticsLeads = async () =>
+    (await testEnv.DB.prepare("SELECT (SELECT COUNT(*) FROM leads) + (SELECT COUNT(*) FROM kit_events) AS n").first<{ n: number }>())!.n;
+
+  it("a stored lead and its unlock event are in LEADS_DB and nothing about them reaches the analytics database", async () => {
+    const { res } = await post();
+    expect(res.headers.get("set-cookie")).not.toBeNull();
+    expect(await count("leads")).toBe(1);
+    expect(await count("kit_events")).toBe(1);
+    expect(await analyticsLeads()).toBe(0);
+    const analytics = await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM counters WHERE key = 'newlead'").first<{ n: number }>();
+    expect(analytics!.n).toBe(1); // the daily new-lead unit is a counter, not lead data
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["the analytics database", testEnv.DB],
+  ])("with LEADS_DB %s the gate stores nothing anywhere and answers the usual retry redirect", async (_n, v) => {
+    const f = fake();
+    const { res } = await post({}, baseEnv({ LEADS_DB: v }), f);
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("/kit/retry/");
+    expect(res.headers.get("set-cookie")).toBeNull();
+    expect(await analyticsLeads()).toBe(0);
+    expect(await count("leads")).toBe(0);
+    expect(f.calls.filter((x) => x.url.includes("turnstile"))).toHaveLength(0); // refused before the vendor call
+  });
+
+  it("with LEADS_DB missing the view route refuses a cookie that was valid, and reads nothing from the analytics database", async () => {
+    const { res } = await post();
+    const ck = cookieHeader(res);
+    const lead = await testEnv.LEADS_DB.prepare("SELECT id FROM leads").first<{ id: string }>();
+    // The same lead row also sits in the analytics database (the wrong place): it must not be read.
+    await testEnv.DB.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?, 'legacy@example.com', 1, 1, 'gate')")
+      .bind(lead!.id)
+      .run();
+    const v = await handleGate(req({ path: VIEW_ROUTE, method: "GET", cookie: ck }), baseEnv({ LEADS_DB: undefined }), { nowMs: T0 + 1000 });
+    expect(v.status).toBe(303);
+    expect(v.headers.get("location")).toBe("/kit/");
+    // A legacy row left in analytics now closes the route on its own (separation.ts), so the row is
+    // removed before the cookie is expected to work again (this line and the reset were added with that check).
+    await testEnv.DB.prepare("DELETE FROM leads").run();
+    resetSeparationCache();
+    const ok = await handleGate(req({ path: VIEW_ROUTE, method: "GET", cookie: ck }), baseEnv(), { nowMs: T0 + 1000 });
+    expect(ok.status).toBe(200);
+    await testEnv.DB.prepare("DELETE FROM leads").run();
+  });
+
+  it("a lead row left in the analytics database closes the view route for a cookie that was working", async () => {
+    const { res } = await post();
+    const ck = cookieHeader(res);
+    expect((await view({ cookie: ck })).status).toBe(200);
+    await testEnv.DB.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?, 'legacy@example.com', 1, 1, 'gate')")
+      .bind("e".repeat(32))
+      .run();
+    resetSeparationCache();
+    const closed = await view({ cookie: ck });
+    expect(closed.status).toBe(303);
+    expect(await closed.text()).not.toContain(CANARY);
+    await testEnv.DB.prepare("DELETE FROM leads").run();
+    resetSeparationCache();
+    expect((await view({ cookie: ck })).status).toBe(200);
+  });
+
+  // Since the separation proof, a lead row in analytics refuses the route before any lookup; the answer
+  // (303) is the same as when the lead is simply not found in LEADS_DB.
+  it("a lead that exists only in the analytics database does not unlock the view route", async () => {
+    const id = "d".repeat(32);
+    await testEnv.DB.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?, 'legacy@example.com', 1, 1, 'gate')")
+      .bind(id)
+      .run();
+    const res = await view({ cookie: await unlockCookieFor({ lid: id }) });
+    expect(res.status).toBe(303);
+    await testEnv.DB.prepare("DELETE FROM leads").run();
+  });
+});
 
 describe("gate routes: refusals, limits and session rules", () => {
   for (const c of FAILURES) {
@@ -548,7 +707,7 @@ describe("gate routes: refusals, limits and session rules", () => {
 
   it("an existing lead that passes the gate again after its floor gets a working new cookie", async () => {
     const id = await seedLead({ id: "c".repeat(32), floor: T0 - 5000 });
-    await testEnv.DB.prepare("UPDATE leads SET email = ? WHERE id = ?").bind(EMAIL, id).run();
+    await testEnv.LEADS_DB.prepare("UPDATE leads SET email = ? WHERE id = ?").bind(EMAIL, id).run();
     const { res } = await post();
     expect(res.headers.get("set-cookie")).not.toBeNull();
     expect((await view({ cookie: cookieHeader(res) })).status).toBe(200);
@@ -578,7 +737,7 @@ async function unlockCookieFor(over: { lid?: string; iat?: number; exp?: number;
 }
 async function seedLead(over: { id?: string; floor?: number | null } = {}): Promise<string> {
   const id = over.id ?? "a".repeat(32);
-  await testEnv.DB.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source, session_floor_ts) VALUES (?, ?, 1, 1, 'gate', ?)")
+  await testEnv.LEADS_DB.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source, session_floor_ts) VALUES (?, ?, 1, 1, 'gate', ?)")
     .bind(id, "seed@example.com", over.floor ?? null)
     .run();
   return id;
@@ -631,7 +790,7 @@ describe("GET /k/view (gated content)", () => {
   it("a cookie for a lead deleted after issue is refused", async () => {
     const id = await seedLead();
     const ck = await unlockCookieFor({ lid: id });
-    await testEnv.DB.prepare("DELETE FROM leads WHERE id = ?").bind(id).run();
+    await testEnv.LEADS_DB.prepare("DELETE FROM leads WHERE id = ?").bind(id).run();
     expect((await view({ cookie: ck })).status).toBe(303);
   });
 
@@ -776,7 +935,7 @@ describe("per-client limits do not spend shared budgets", () => {
 
   it("a cookie below its lead's session floor never changes the shared view counter", async () => {
     const id = await seedLead();
-    await setSessionFloor(testEnv.DB, id, T0);
+    await setSessionFloor(testEnv.LEADS_DB, id, T0);
     expect((await view({ cookie: await unlockCookieFor({ iat: NOW_SEC - 1 }) })).status).toBe(303);
     expect(await viewSpent()).toBe(0);
   });
@@ -792,7 +951,7 @@ describe("per-client limits do not spend shared budgets", () => {
 
   it("a cookie whose lead was deleted never changes the shared view counter", async () => {
     const id = await seedLead();
-    await testEnv.DB.prepare("DELETE FROM leads WHERE id = ?").bind(id).run();
+    await testEnv.LEADS_DB.prepare("DELETE FROM leads WHERE id = ?").bind(id).run();
     expect((await view({ cookie: await unlockCookieFor({ iat: NOW_SEC + 1 }) })).status).toBe(303);
     expect(await viewSpent()).toBe(0);
   });
@@ -872,7 +1031,7 @@ function payloadOf(res: Response): { lid: string } {
 
 describe("lead cap: the answer does not depend on whether the address is stored", () => {
   async function atCap(): Promise<GateEnv> {
-    await testEnv.DB.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?, ?, 1, 1, 'gate')")
+    await testEnv.LEADS_DB.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?, ?, 1, 1, 'gate')")
       .bind("e".repeat(32), EMAIL)
       .run();
     return baseEnv({ MAX_LEADS: "1" });
@@ -1007,7 +1166,7 @@ describe("lead cap: the answer does not depend on whether the address is stored"
   // An ambiguous failure: the database commits the insert and then the call throws. The unit must be
   // KEPT (stricter admission), so the day's counter is never below the rows created.
   it("when the insert commits but the call throws, the daily unit is kept and the cap cannot be exceeded", async () => {
-    const real = testEnv.DB;
+    const real = testEnv.LEADS_DB;
     const faulty = new Proxy(real, {
       get(t, p) {
         if (p === "prepare") {
@@ -1035,7 +1194,7 @@ describe("lead cap: the answer does not depend on whether the address is stored"
         return typeof v === "function" ? v.bind(t) : v;
       },
     });
-    const e = baseEnv({ DB: faulty });
+    const e = baseEnv({ LEADS_DB: faulty });
     const extra = { newLeadsPerDay: 3 };
     for (let round = 0; round < 2; round++) {
       for (let i = 0; i < 6; i++) {
@@ -1105,8 +1264,8 @@ describe("Turnstile single use across UTC midnight", () => {
 describe("session floor writer", () => {
   it("setSessionFloor writes milliseconds, and /k/view honors it", async () => {
     const id = await seedLead();
-    await setSessionFloor(testEnv.DB, id, T0);
-    const row = await testEnv.DB.prepare("SELECT session_floor_ts AS f FROM leads WHERE id = ?").bind(id).first<{ f: number }>();
+    await setSessionFloor(testEnv.LEADS_DB, id, T0);
+    const row = await testEnv.LEADS_DB.prepare("SELECT session_floor_ts AS f FROM leads WHERE id = ?").bind(id).first<{ f: number }>();
     expect(row!.f).toBe(T0);
     expect(row!.f).toBeGreaterThan(1e12); // milliseconds, not seconds
     expect((await view({ cookie: await unlockCookieFor({ iat: NOW_SEC }) })).status).toBe(303);
@@ -1115,16 +1274,16 @@ describe("session floor writer", () => {
   });
   it("refuses a non-finite time", async () => {
     const id = await seedLead();
-    await expect(setSessionFloor(testEnv.DB, id, Number.NaN)).rejects.toThrow(RangeError);
+    await expect(setSessionFloor(testEnv.LEADS_DB, id, Number.NaN)).rejects.toThrow(RangeError);
   });
   it("setSessionFloor only moves forward: an older value never lowers the floor", async () => {
     const id = await seedLead();
-    await setSessionFloor(testEnv.DB, id, T0);
-    await setSessionFloor(testEnv.DB, id, T0 - 60_000);
-    const row = await testEnv.DB.prepare("SELECT session_floor_ts AS f FROM leads WHERE id = ?").bind(id).first<{ f: number }>();
+    await setSessionFloor(testEnv.LEADS_DB, id, T0);
+    await setSessionFloor(testEnv.LEADS_DB, id, T0 - 60_000);
+    const row = await testEnv.LEADS_DB.prepare("SELECT session_floor_ts AS f FROM leads WHERE id = ?").bind(id).first<{ f: number }>();
     expect(row!.f).toBe(T0);
-    await setSessionFloor(testEnv.DB, id, T0 + 5_000); // a newer one still raises it (the guard is not a freeze)
-    const up = await testEnv.DB.prepare("SELECT session_floor_ts AS f FROM leads WHERE id = ?").bind(id).first<{ f: number }>();
+    await setSessionFloor(testEnv.LEADS_DB, id, T0 + 5_000); // a newer one still raises it (the guard is not a freeze)
+    const up = await testEnv.LEADS_DB.prepare("SELECT session_floor_ts AS f FROM leads WHERE id = ?").bind(id).first<{ f: number }>();
     expect(up!.f).toBe(T0 + 5_000);
   });
   it("setUnstoredSessionFloor only moves forward: an older value never lowers the floor", async () => {
@@ -1137,8 +1296,8 @@ describe("session floor writer", () => {
 });
 
 /** A D1 whose statements matching `bad` throw when run: a read error on one table. */
-function failingOn(bad: RegExp): D1Database {
-  return new Proxy(testEnv.DB, {
+function failingOn(bad: RegExp, base: D1Database = testEnv.DB): D1Database {
+  return new Proxy(base, {
     get(t, p) {
       if (p === "prepare") {
         return (q: string) => {
@@ -1155,7 +1314,7 @@ function failingOn(bad: RegExp): D1Database {
 describe("/k/view fails closed when the database cannot be read", () => {
   it("a failing lead lookup gives the fixed redirect and no page", async () => {
     await seedLead();
-    const e = baseEnv({ DB: failingOn(/FROM leads/) });
+    const e = baseEnv({ LEADS_DB: failingOn(/FROM leads/, testEnv.LEADS_DB) });
     const res = await view({ cookie: await unlockCookieFor() }, e);
     expect(res.status).toBe(303);
     expect(res.headers.get("location")).toBe("/kit/");
@@ -1194,7 +1353,7 @@ describe("challenge time freshness", () => {
 
 describe("alerts and key rotation", () => {
   it("a notify that throws releases the day's claim", async () => {
-    await testEnv.DB.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?, ?, 1, 1, 'gate')")
+    await testEnv.LEADS_DB.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?, ?, 1, 1, 'gate')")
       .bind("e".repeat(32), EMAIL)
       .run();
     const e = baseEnv({ MAX_LEADS: "1" });

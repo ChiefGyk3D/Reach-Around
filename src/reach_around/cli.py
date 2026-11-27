@@ -9,9 +9,11 @@ import json
 import math
 import os
 import pkgutil
+import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, NoReturn
 
 from jinja2 import TemplateError
 
@@ -40,7 +42,8 @@ def _idle_minutes(text: str) -> float:
     try:
         value = float(text)
     except ValueError:
-        raise argparse.ArgumentTypeError(f"not a number: {text!r}") from None
+        # A fixed message: the typed text is never repeated (it could be anything).
+        raise argparse.ArgumentTypeError("not a number") from None
     if not math.isfinite(value) or not 0 < value <= MAX_IDLE_SECONDS / 60:
         raise argparse.ArgumentTypeError(
             f"must be above 0 and at most {MAX_IDLE_SECONDS / 60:g} minutes"
@@ -48,10 +51,48 @@ def _idle_minutes(text: str) -> float:
     return value
 
 
+# The argparse messages that are built only from OUR option table (the names a parser
+# defines), never from the command line text. Everything else (unrecognized arguments,
+# an invalid choice, an ignored explicit argument, an invalid value, an ambiguous
+# option, ...) repeats what the user typed and is replaced by one fixed message.
+# Fail closed: a message not matching here is never printed.
+_SAFE_ERRORS = (
+    re.compile(r"the following arguments are required: [A-Za-z0-9_,/ .-]+"),
+    re.compile(r"argument [A-Za-z0-9_,/ .-]+: expected (one|at least one) argument"),
+    re.compile(r"argument [A-Za-z0-9_,/ .-]+: expected \d+ arguments?"),
+    re.compile(r"one of the arguments [A-Za-z0-9_,/ .-]+ is required"),
+    re.compile(
+        r"argument [A-Za-z0-9_,/ .-]+: not allowed with argument [A-Za-z0-9_,/ .-]+"
+    ),
+)
+_GENERIC_ERROR = "invalid command line: see --help"
+
+
+class _Parser(argparse.ArgumentParser):
+    """The parser of the command line and, because subparsers take their class from
+    their parent, of every subcommand.
+
+    Abbreviations are off for all of them: argparse would take `--ye` for `--yes`, and
+    a destructive or private flag must be typed in full. And argparse echoes the
+    offending text in many errors, so a mistyped `--email-f ADDRESS` or `--yes=ADDRESS`
+    would put an address on stderr, where it can reach a log: only the messages that
+    name our own options are printed, every other one is the same fixed text."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("allow_abbrev", False)
+        super().__init__(*args, **kwargs)
+
+    def error(self, message: str) -> NoReturn:
+        if not any(p.fullmatch(message) for p in _SAFE_ERRORS):
+            message = _GENERIC_ERROR
+        super().error(message)
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _Parser(
         prog="reach-around",
         description="Build a static link page from a validated config.",
+        allow_abbrev=False,
     )
     parser.add_argument(
         "--version", action="store_true", help="print the version and exit"

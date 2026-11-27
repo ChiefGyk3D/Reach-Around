@@ -6,10 +6,49 @@ const KEY = "k".repeat(32);
 const PREV = "p".repeat(32);
 const stub = {} as unknown;
 
+/** A stand-in D1 binding: loadKitEnv only checks the shape and that the two databases differ. */
+const d1 = (): unknown => ({ prepare: () => ({}), batch: async () => [] });
+
 function env(extra: Record<string, unknown> = {}): Record<string, unknown> {
-  return { KIT: stub, GATE_LIMITER: { limit: async () => ({ success: true }) }, TOKEN_HMAC_KEY: KEY, TURNSTILE_SECRET: "t".repeat(16), ...extra };
+  return {
+    KIT: stub,
+    DB: d1(),
+    LEADS_DB: d1(),
+    GATE_LIMITER: { limit: async () => ({ success: true }) },
+    TOKEN_HMAC_KEY: KEY,
+    TURNSTILE_SECRET: "t".repeat(16),
+    ...extra,
+  };
 }
 const load = (e: Record<string, unknown>) => loadKitEnv(e as never);
+
+describe("loadKitEnv: the leads database (issue #772)", () => {
+  const fieldsOf = (e: Record<string, unknown>): readonly string[] => {
+    try {
+      load(e);
+    } catch (err) {
+      return (err as KitEnvError).fields;
+    }
+    return [];
+  };
+  it("a bound LEADS_DB loads", () => {
+    expect(fieldsOf(env())).toEqual([]);
+  });
+  it.each([
+    ["missing", undefined],
+    ["null", null],
+    ["a string", "reach-around-leads"],
+    ["an object with no prepare", {}],
+    ["prepare is not a function", { prepare: 1, batch: () => [] }],
+    ["batch is not a function", { prepare: () => ({}), batch: 1 }],
+  ])("refuses a LEADS_DB that is %s, naming the field", (_n, v) => {
+    expect(fieldsOf(env({ LEADS_DB: v }))).toEqual(["LEADS_DB"]);
+  });
+  it("refuses a LEADS_DB that is the analytics database itself: never a fallback", () => {
+    const same = d1();
+    expect(fieldsOf(env({ DB: same, LEADS_DB: same }))).toEqual(["LEADS_DB"]);
+  });
+});
 
 describe("loadKitEnv", () => {
   it("returns defaults: 24 h lifetime, kill off, no previous key", () => {

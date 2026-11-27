@@ -1,5 +1,5 @@
 {
-  "_comment": "Allowlist for scripts/check-dump.py. tables: every table and column order the Worker's migrations create (a test keeps this equal to them) plus Cloudflare's own bookkeeping tables. A new table or column needs a reviewed edit here. hex_ids: columns that hold an opaque 32-hex id or keyed hash. numeric: every numeric column (and the text columns that hold a counter or a timestamp) with the kind of value it may hold; numeric_kinds gives the allowed inclusive ranges (small stays under 2^24 and ms is epoch milliseconds from 2020 to 2099, so no value can be a 32-bit address). A numeric value outside its range fails. patterns: a regex a value in that column (any table) must fully match. spaces_ok: column names (any table) whose values may hold spaces (place names, and a migration's applied_at timestamp). digit_tokens_ok / hex_tokens_ok: columns (table.column) allowed to hold a long digit run (hour counters, timestamps, an email local part) / any 8-character hex token; every other text column refuses an 8-character all-hex token and a run of 9 or more digits. optional_tables: tables a Cloudflare export may leave out. A numeric value in a column with no numeric rule is always an error. bare_number_ok: columns that may hold a digits-only name (an email local part) as long as it is below 2^24; larger digit runs and every dotted, octal or hex form are read as addresses there too.",
+  "_comment": "Allowlist for scripts/check-dump.py. tables: every table and column order the Worker's migrations create (a test keeps this equal to them) plus Cloudflare's own bookkeeping tables. A new table or column needs a reviewed edit here. hex_ids: columns that hold an opaque 32-hex id or keyed hash. numeric: every numeric column (and the text columns that hold a counter or a timestamp) with the kind of value it may hold; numeric_kinds gives the allowed inclusive ranges (small stays under 2^24 and ms is epoch milliseconds from 2020 to 2099, so no value can be a 32-bit address). A numeric value outside its range fails. patterns: a regex a value in that column (any table) must fully match. spaces_ok: column names (any table) whose values may hold spaces (place names, and a migration's applied_at timestamp). digit_tokens_ok / hex_tokens_ok: columns (table.column) allowed to hold a long digit run (hour counters, timestamps, an email local part) / any 8-character hex token; every other text column refuses an 8-character all-hex token and a run of 9 or more digits. optional_tables: tables a Cloudflare export may leave out. triggers: the exact trigger text a dump may hold, namely the migrations' own triggers plus the two freeze triggers scripts/move-legacy-leads.py --freeze adds to the analytics database (a test keeps them equal to the script). A numeric value in a column with no numeric rule is always an error. bare_number_ok: columns that may hold a digits-only name (an email local part) as long as it is below 2^24; larger digit runs and every dotted, octal or hex form are read as addresses there too.",
   "tables": {
     "_cf_KV": [
       "key",
@@ -142,6 +142,9 @@
       "id",
       "name",
       "applied_at"
+    ],
+    "db_identity": [
+      "role"
     ],
     "kit_events": [
       "id",
@@ -404,6 +407,8 @@
   ],
   "triggers": {
     "kit_meta_floor_insert": "CREATE TRIGGER kit_meta_floor_insert BEFORE INSERT ON kit_meta WHEN NEW.key = 'unstored_floor_ts' AND NEW.value < 0 BEGIN SELECT RAISE(ABORT, 'unstored_floor_ts must be >= 0'); END",
-    "kit_meta_floor_update": "CREATE TRIGGER kit_meta_floor_update BEFORE UPDATE ON kit_meta WHEN NEW.key = 'unstored_floor_ts' AND NEW.value < 0 BEGIN SELECT RAISE(ABORT, 'unstored_floor_ts must be >= 0'); END"
+    "kit_meta_floor_update": "CREATE TRIGGER kit_meta_floor_update BEFORE UPDATE ON kit_meta WHEN NEW.key = 'unstored_floor_ts' AND NEW.value < 0 BEGIN SELECT RAISE(ABORT, 'unstored_floor_ts must be >= 0'); END",
+    "leads_frozen": "CREATE TRIGGER leads_frozen BEFORE INSERT ON leads BEGIN SELECT RAISE(ABORT, 'leads moved to the leads database'); END",
+    "kit_events_frozen": "CREATE TRIGGER kit_events_frozen BEFORE INSERT ON kit_events BEGIN SELECT RAISE(ABORT, 'leads moved to the leads database'); END"
   }
 }

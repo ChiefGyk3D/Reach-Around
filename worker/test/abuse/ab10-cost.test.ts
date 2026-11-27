@@ -65,9 +65,9 @@ describe("AB-10: a refused request costs nothing", () => {
   ];
   for (const [name, opts, over] of CHEAP) {
     it(`${name}: no database statement, no KV read, no vendor call, no alert`, async () => {
-      const { db, sql } = countingDb();
+      const { db, leads, sql } = countingDb();
       const page = kv();
-      const res = await send(gateReq(opts), makeEnv({ DB: db, KIT: page, ...over }));
+      const res = await send(gateReq(opts), makeEnv({ DB: db, LEADS_DB: leads, KIT: page, ...over }));
       expect([303, 503]).toContain(res.status);
       expect(res.headers.get("set-cookie")).toBeNull();
       expect(sql, name).toEqual([]);
@@ -89,8 +89,8 @@ describe("AB-10: a refused request costs nothing", () => {
   ];
   for (const [name, opts] of PARSE) {
     it(`${name}: refused after the limiters only, with no database statement and no vendor call`, async () => {
-      const { db, sql } = countingDb();
-      const res = await send(gateReq(opts), makeEnv({ DB: db }));
+      const { db, leads, sql } = countingDb();
+      const res = await send(gateReq(opts), makeEnv({ DB: db, LEADS_DB: leads }));
       expect(res.status).toBe(303);
       expect(res.headers.get("location")).toBe("/kit/retry/");
       expect(sql).toEqual([]);
@@ -123,8 +123,8 @@ describe("AB-10: a body is bounded before it is read", () => {
 
   it("a chunked body with no declared length is cut off at the cap, and the sender is told to stop", async () => {
     const { body, stats } = counted(10_000_000, 1024);
-    const { db, sql } = countingDb();
-    const res = await send(gateReq({ body, headers: { "content-length": null } }), makeEnv({ DB: db }));
+    const { db, leads, sql } = countingDb();
+    const res = await send(gateReq({ body, headers: { "content-length": null } }), makeEnv({ DB: db, LEADS_DB: leads }));
     expect(res.headers.get("location")).toBe("/kit/retry/");
     expect(stats.pulled).toBeLessThanOrEqual(4096 + 2048);
     expect(stats.cancelled).toBe(true);
@@ -154,9 +154,9 @@ describe("AB-10: a body is bounded before it is read", () => {
 
   it("a body that stalls forever is cut off at the 5 second deadline, with no database or vendor call", async () => {
     const body = new ReadableStream<Uint8Array>({ pull: () => new Promise(() => undefined) }, { highWaterMark: 0 });
-    const { db, sql } = countingDb();
+    const { db, leads, sql } = countingDb();
     const started = Date.now();
-    const res = await send(gateReq({ body, headers: { "content-length": null } }), makeEnv({ DB: db }));
+    const res = await send(gateReq({ body, headers: { "content-length": null } }), makeEnv({ DB: db, LEADS_DB: leads }));
     const took = Date.now() - started;
     expect(res.headers.get("location")).toBe("/kit/retry/");
     expect(took).toBeGreaterThanOrEqual(4500);
@@ -316,8 +316,8 @@ describe("AB-2: the lead caps hold, and the answer does not depend on them", () 
   it("an unstored visitor causes no event insert and no lead insert attempt", async () => {
     const env = makeEnv({ MAX_LEADS: "1" });
     await send(gateReq({ fields: FIELDS(1) }), env);
-    const { db, sql } = countingDb();
-    const res = await send(gateReq({ fields: FIELDS(2) }), makeEnv({ MAX_LEADS: "1", DB: db }));
+    const { db, leads, sql } = countingDb();
+    const res = await send(gateReq({ fields: FIELDS(2) }), makeEnv({ MAX_LEADS: "1", DB: db, LEADS_DB: leads }));
     expect(res.headers.get("set-cookie")).not.toBeNull();
     expect(await count("leads")).toBe(1);
     expect(sql.filter((s) => s.includes("INSERT INTO kit_events"))).toEqual([]);

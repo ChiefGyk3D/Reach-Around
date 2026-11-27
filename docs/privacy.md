@@ -57,7 +57,9 @@ or `auth_failed`; the code never contains platform or visitor data.
 
 ## What a lead is
 
-A lead is one row in the Worker's D1 `leads` table: the address as the visitor
+A lead is one row in the `leads` table of the leads D1 database (a separate
+database from the analytics one, see [deploy.md](deploy.md) "The leads
+database"): the address as the visitor
 typed it (lowercased), a two-letter country code the edge supplied, timestamps,
 and the kit events tied to that lead (an hour-rounded "unlocked", "viewed" or
 "verified" record). There is no column for an IP address, a user agent or a
@@ -118,7 +120,7 @@ The Worker reads the variable `LEAD_RETENTION_DAYS`:
 To check the last run (the query returns a time in milliseconds, not a person):
 
 ```
-npx wrangler d1 execute reach-around-clicks --remote --command "SELECT value FROM kit_meta WHERE key = 'last_purge_ts'"
+npx wrangler d1 execute reach-around-leads --remote --command "SELECT value FROM kit_meta WHERE key = 'last_purge_ts'"
 ```
 
 Not covered by this retention: Cloudflare's own recovery windows and logs for
@@ -159,17 +161,21 @@ about one person.
 
 ### Access: what you hold about one address
 
-1. Export the lead and its events to a private local file in a fresh private
-   directory (the file holds every address, so delete the directory when you
-   are done). The export must be these two queries, in this order: the tool
-   refuses an export with a missing, extra or swapped result set, because a
-   missing events result would otherwise read as "no events":
+1. Export the lead and its events to two private local files in a fresh private
+   directory (they hold every address, so delete the directory when you are
+   done). Each file is the one result block of its own single-statement call
+   (verified on real D1 with wrangler 4.162.0, 2026-11-27: one statement gives
+   one block). The tool refuses a file with any other number of blocks or the
+   wrong kind of rows, because a missing events result would otherwise read as
+   "no events":
 
    ```
    umask 077
    WORK=$(mktemp -d "$HOME/leads-request-XXXXXX") && cd "$WORK" && set -o noclobber
    npx wrangler d1 execute reach-around-leads --remote --json \
-     --command "SELECT id, email, created_ts, verified_ts, country FROM leads; SELECT lead_id, kind, ts FROM kit_events" > leads-export.json
+     --command "SELECT id, email, created_ts, verified_ts, country FROM leads" > leads-export.json
+   npx wrangler d1 execute reach-around-leads --remote --json \
+     --command "SELECT lead_id, kind, ts FROM kit_events" > events-export.json
    ```
 
 2. Put the address in a file or on stdin, never on the command line, and show
@@ -177,7 +183,7 @@ about one person.
 
    ```
    read -r ADDR   # type the address, press Enter
-   printf '%s\n' "$ADDR" | reach-around leads show --input leads-export.json --email-file - --database reach-around-leads
+   printf '%s\n' "$ADDR" | reach-around leads show --input leads-export.json --events events-export.json --email-file - --database reach-around-leads
    ```
 
    It prints the masked address, the country, the created and verified times
@@ -186,7 +192,7 @@ about one person.
    Exit 1 means no lead has that address (it may already be gone, or the
    spelling differs). It makes no network call and writes no file. Its error
    messages are fixed and never carry the address, even masked, because stderr
-   can reach a log. The export must hold exactly the five lead columns and the
+   can reach a log. The exports must hold exactly the five lead columns and the
    three event columns above, and a lead id that appears twice refuses the whole
    export. An event time that is not on the hour is shown as its hour.
 
@@ -326,7 +332,7 @@ QUESTION 5).
 | `kit_events` (4 columns) | hour-rounded unlock, view and verify events by lead id | yes | `DELETE`, read-back counts the rows; the foreign key also cascades |
 | `alert_dedup` (3 columns) | keyed hash of a recent alert, which can include the address; a row stops counting as a repeat after 10 minutes but is deleted only when the next alert event is admitted, so on a quiet site it can stay stored (at most 500 rows) until then or until cleared by hand | yes (#905): `leads delete --yes --alerts-database NAME`, then `--finish` | the whole table is cleared and read back to 0 twice, after the lead read-back; exit 3 if not confirmed; the owner closes the kit gate during erasure (statements below); a keyed hash is not erased by being hard to match |
 | `visitor_seen`, `view_events`, `click_events` | coarse visitor rows with no address, no IP address, no lead id | no | not matchable to a person by design (Art. 11); removed by retention |
-| 26 other tables (counters, rollups, budgets, logs, cursors) | counts and bookkeeping | no | aggregate, no row per person; counts cannot be un-counted |
+| 27 other tables (counters, rollups, budgets, logs, cursors) | counts and bookkeeping | no | aggregate, no row per person; counts cannot be un-counted |
 | KV, edge cache | the gated page, live status state, the public status body | no | no lead data found in the listed call sites; a text scan, not a data-flow proof (verify the namespace's keys by hand); the Worker never writes the gated page key |
 | R2, Durable Objects, queues | not used | not applicable | the test fails if one is added without review |
 | Unlock cookie | a signed token, no server copy | not applicable | stops opening the kit once the `leads` row is gone |
@@ -543,6 +549,76 @@ erasure, the one-month answer and the Art. 11 position on page view rows.
 There is no web route that deletes a lead, on purpose: anyone could call it.
 You run a local command, and then apply the SQL it prints with `wrangler`.
 
+Installations that collected leads before the leads database existed: until the one-time move in
+[deploy.md](deploy.md) ("The one-time move of existing leads") has emptied the analytics database,
+the same lead can also be in its `leads` and `kit_events` tables. Erase that copy with its own run,
+after the run below for the leads database (two runs, in this order: first the leads database, then the
+legacy analytics database). `leads delete` has an explicit legacy mode for it: you name the legacy
+database and type the same name again, and the run deletes from the `leads` and `kit_events` tables
+only. It takes no `--database`, `--alerts-database` or `--finish` (it needs `--legacy-database-id` and
+`--leads-database-id`, both from the Worker's configuration): the alert hashes are
+cleared by the first run's `--finish`.
+
+```
+(
+  set -eu
+  umask 077
+  WORK="$(mktemp -d)"
+  cleanup() { rm -rf -- "$WORK"; }
+  trap cleanup EXIT
+  trap 'exit 130' HUP INT TERM
+  WR=worker/node_modules/.bin/wrangler   # the pinned install; run from the repository root
+  LEGACY=your-analytics-database-name    # the legacy analytics database, never reach-around-leads
+  LEGACY_ID=the-legacy-database-id       # from the Worker's configuration (the analytics binding)
+  LEADS_ID=the-leads-database-id         # from the Worker's configuration (the LEADS_DB binding)
+  "$WR" d1 execute "$LEGACY" --remote --json \
+    --command "SELECT id, email FROM leads" > "$WORK/legacy-export.json"
+  printf 'Address to delete: ' >&2
+  read -r ADDR
+  # Exit 10 is the success of this step (checks passed, SQL written, NOTHING erased yet), so it
+  # is accepted explicitly; any other status stops the block before anything is applied.
+  set +e
+  printf '%s\n' "$ADDR" | reach-around leads delete --input "$WORK/legacy-export.json" --email - \
+    --legacy-database "$LEGACY" --confirm-legacy "$LEGACY" \
+    --legacy-database-id "$LEGACY_ID" --leads-database-id "$LEADS_ID" \
+    --yes --sql-out "$WORK/delete-lead-legacy.sql"
+  status=$?
+  set -e
+  if [ "$status" -ne 10 ]; then
+    echo "the legacy run ended with exit $status (not 10): nothing was applied" >&2
+    exit 1
+  fi
+  # The id the SQL file names (a random id, not the address).
+  LEAD_ID="$(grep -o "id = '[0-9a-f]\{32\}'" "$WORK/delete-lead-legacy.sql" | head -n 1 | cut -d"'" -f2)"
+  READ_BACK="SELECT (SELECT COUNT(*) FROM leads WHERE id = '$LEAD_ID') AS leads_remaining, (SELECT COUNT(*) FROM kit_events WHERE lead_id = '$LEAD_ID') AS events_remaining;"
+  # Apply the file in this block, before the cleanup removes it; wait; apply again.
+  "$WR" d1 execute "$LEGACY" --remote --file "$WORK/delete-lead-legacy.sql"
+  sleep 60
+  "$WR" d1 execute "$LEGACY" --remote --file "$WORK/delete-lead-legacy.sql"
+  # Two read-backs a minute apart; the erasure of this copy is done only when both read 0 and 0.
+  "$WR" d1 execute "$LEGACY" --remote --json --command "$READ_BACK" > "$WORK/read-1.json"
+  sleep 60
+  "$WR" d1 execute "$LEGACY" --remote --json --command "$READ_BACK" > "$WORK/read-2.json"
+  for f in "$WORK/read-1.json" "$WORK/read-2.json"; do
+    grep -q '"leads_remaining": 0' "$f" && grep -q '"events_remaining": 0' "$f" || {
+      echo "a read-back did not show 0 and 0: the legacy copy is NOT confirmed erased" >&2
+      exit 1
+    }
+  done
+  echo "legacy copy: both read-backs show 0 and 0 (a point-in-time check)" >&2
+)
+```
+
+Exit 10 from the legacy run means the checks passed (the database proved it is the analytics database
+and not the leads one) and NOTHING was erased yet; exit 1 means no lead has that address in the legacy
+copy; exit 2 means a refused request (an unconfirmed or mistyped name, equal ids, an identity that does
+not check out, a mixed option). The block accepts exit 10 only, applies the SQL file itself before it
+removes its work directory, runs both read-backs, and removes the directory last. The tool also prints
+the same commands (the identity read first); a name that differs from the leads name is only a typo
+guard, so the tool proves identity with read-only single-statement calls (the name resolves to the id
+you gave, that id is not the leads database's, and the database says `analytics`) before it prints
+anything to apply.
+
 The export holds every address, so the procedure below keeps it in a private
 temporary directory and removes it however the run ends: on success, on a
 failed step (an expired token, a dropped network, no matching lead), or on
@@ -566,14 +642,20 @@ Ctrl-C. Run it as one block from your project directory. The steps inside are:
    already exists or whose last component is a symlink; give it a path inside
    the private directory. Do not use a shell `>` redirect for this file.
 4. Apply it, wait a minute, apply it again (it is safe to repeat, and its
-   cleanup statement removes events left for a lead that is gone). Each run's
-   last statement shows two numbers, `leads_remaining` and `events_remaining`.
-   Treat the erasure as done only after two consecutive runs both read `0` and
-   `0`, and say in your reply that this is a point-in-time check: D1 offers no
+   cleanup statement removes events left for a lead that is gone). A file run
+   shows no result rows: D1 answers a `--file` run with one summary row
+   (database size, rows read, rows written, queries executed), never the rows
+   of a statement (wrangler 4.162.0 on real D1, checked 2026-11-27). So the
+   read-back is a separate command, printed by the tool with the id and never
+   the address: run it after each file run. It is one `--command` statement and
+   prints one result block with two numbers, `leads_remaining` and
+   `events_remaining`. Treat the erasure as done only after two consecutive
+   reads, a minute apart and each after a file run, both show `0` and `0`, and
+   say in your reply that this is a point-in-time check: D1 offers no
    transaction in a file and the Worker can write an event after the read.
    `leads_remaining` 1 means the id did not belong to that address in the live
    database (a stale or wrong export): nothing was deleted, stop and re-export.
-   `events_remaining` above 0 means events remain; run the block again. The two
+   `events_remaining` above 0 means events remain; run the file again. The two
    tables read here are the only tables this review classified as holding an
    address or a lead id (see "Every store, checked against the schema" above for
    what that classification does and does not prove).
@@ -618,6 +700,11 @@ Ctrl-C. Run it as one block from your project directory. The steps inside are:
 )
 ```
 
+The tool's message printed before the first file run holds the read-back
+command (`--json --command`, the id only). Copy it from the terminal and run it
+once after the block ends and once a minute later; it needs no file, so it still
+works after the block has removed the work directory.
+
 The subshell ends the shell variables (`ADDR`) with it, so nothing is left to
 unset. A kill signal that cannot be trapped (`kill -9`, a power loss) skips the
 cleanup; the work directory is printed on the first line so you can remove it
@@ -642,6 +729,13 @@ After a deletion, a lead who comes back and types the address again is a new
 lead. Remove copies that sit outside D1 yourself: see the inventory in
 docs/security/threat-model.md (T-17), and say in your reply what you could not
 reach.
+
+The one-time lead move (docs/deploy.md) deletes rows from the analytics database one
+statement at a time, with no personal value on a command line. A row that changed
+after the tool copied it comes back from the database different; the tool saves that
+version to a private file (`lead-returned-*.json`, mode 600, personal data, registered in the manifest; recovery consumes it, and the cleanup in docs/deploy.md shreds it
+after the move is verified) before anything else. Only such differing rows get a file
+of their own; matching rows are already in the recovery export.
 
 ## Click counters (funnel rollups, aggregate only)
 

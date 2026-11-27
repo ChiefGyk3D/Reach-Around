@@ -53,6 +53,7 @@ jobs:
         python3 -I scripts/check-public-assets.py
         /usr/bin/python3 -I scripts/check-edge.py --offline
         python3 -I .github/scripts/check-migrations.py
+        python3 -I .github/scripts/check-migrations.py worker/leads-migrations --no-legacy
         python3 -I scripts/check-wiki-scrub.py
         python3 -I scripts/changelog-assemble.py verify
         python3 -I scripts/changelog-assemble.py check-pr

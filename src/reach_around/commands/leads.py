@@ -302,9 +302,14 @@ def _check_row(row: Any) -> tuple[str, str]:
     return lead_id, email
 
 
-_TWO_SETS = (
-    "export: expected exactly two result sets in order, the leads query and "
-    "the kit events query (the second may be empty)"
+# `leads show` takes two files, each from its own `wrangler d1 execute --json
+# --command "<one statement>"` call. VERIFIED 2026-11-27 (wrangler 4.162.0, real D1,
+# synthetic data): one statement gives ONE result block. A file with any other number
+# of blocks, or the wrong kind of rows, is a wrong export and is refused.
+_ONE_SET = (
+    "export: expected exactly one result set from a single statement "
+    "(the leads query in --input, the kit events query in --events; the "
+    "events set may be empty)"
 )
 
 
@@ -355,7 +360,7 @@ def _load_blocks(path: Path, *, wrapped: bool = False) -> list[list[Any]]:
             blocks.append(results)
             total += len(results)
         elif wrapped:
-            raise LeadsError(_TWO_SETS)
+            raise LeadsError(_ONE_SET)
         else:
             blocks.append([item])
             total += 1
@@ -422,21 +427,23 @@ def _iso(ts_ms: int, *, hour: bool = False) -> str:
 
 
 def load_lead_views(
-    path: Path,
+    leads_path: Path, events_path: Path
 ) -> tuple[dict[str, str], dict[str, dict[str, Any]], list[tuple[str, str, int]]]:
-    """``(email by id, lead fields by id, events)`` from a leads plus events export."""
+    """``(email by id, lead fields by id, events)`` from the leads export and the kit
+    events export, each the one result block of its own single-statement call."""
     emails: dict[str, str] = {}
     fields: dict[str, dict[str, Any]] = {}
     events: list[tuple[str, str, int]] = []
-    blocks = _load_blocks(path, wrapped=True)
-    if len(blocks) != 2:
-        raise LeadsError(_TWO_SETS)
-    lead_rows, event_rows = blocks
+    lead_blocks = _load_blocks(leads_path, wrapped=True)
+    event_blocks = _load_blocks(events_path, wrapped=True)
+    if len(lead_blocks) != 1 or len(event_blocks) != 1:
+        raise LeadsError(_ONE_SET)
+    lead_rows, event_rows = lead_blocks[0], event_blocks[0]
     # An event row in the leads result (or the reverse) is a wrong export.
     if any(isinstance(r, dict) and "lead_id" in r for r in lead_rows) or any(
         not (isinstance(r, dict) and "lead_id" in r) for r in event_rows
     ):
-        raise LeadsError(_TWO_SETS)
+        raise LeadsError(_ONE_SET)
     for row in event_rows:
         if set(row) != EVENT_COLUMNS:
             raise LeadsError("export: an event row has unexpected columns")
@@ -486,13 +493,14 @@ _STATEMENTS = (
     # gone; it never touches the events of a lead that still exists.
     "DELETE FROM kit_events WHERE lead_id = '<ID>' AND NOT EXISTS "
     "(SELECT 1 FROM leads WHERE id = '<ID>');",
-    "-- read-back: 0 and 0 means no remaining rows AT THIS MOMENT, not proof of "
-    "completed erasure (no transaction in a file; an event can arrive after "
-    "the read). Run this file again after a wait until two consecutive runs "
-    "read 0 and 0. leads_remaining 1 means the id does not belong to that "
-    "address in this database and nothing was deleted",
+)
+# The read-back is NOT in the file: `d1 execute --file` returns one summary row and no
+# per-statement rows (wrangler 4.162.0 on real D1, checked 2026-11-27), so a SELECT in
+# the file would show nothing. It runs as its own `--command`, whose one block holds the
+# row. It names the id only, never the address.
+_READ_BACK = (
     "SELECT (SELECT COUNT(*) FROM leads WHERE id = '<ID>') AS leads_remaining, "
-    "(SELECT COUNT(*) FROM kit_events WHERE lead_id = '<ID>') AS events_remaining;",
+    "(SELECT COUNT(*) FROM kit_events WHERE lead_id = '<ID>') AS events_remaining;"
 )
 _SQL_EMAIL = re.compile(r"[a-z0-9_+.@-]{6,254}")
 # The read-back `--finish` uses. The printed file's read-back asks only about the
@@ -1462,6 +1470,13 @@ def _sql(lead_id: str, email: str) -> list[str]:
     ]
 
 
+def _read_back(lead_id: str) -> str:
+    """The one-statement read-back for ``--command`` (the id is already validated)."""
+    if not _ID.fullmatch(lead_id):
+        raise LeadsError("internal: refusing to build SQL from a non-id value")
+    return _READ_BACK.replace("<ID>", lead_id)
+
+
 def _address(arg: str) -> str:
     if arg != "-":
         return normalize_email(arg)
@@ -1530,7 +1545,7 @@ def run_show(args: argparse.Namespace) -> int:
     try:
         database = _database(args.database)
         email = _address_from_file(args.email_file)
-        emails, fields, events = load_lead_views(args.input)
+        emails, fields, events = load_lead_views(args.input, args.events)
     except LeadsError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
@@ -1640,6 +1655,182 @@ Your reply to the person is due within one month of the request.
 """
 
 
+# The legacy copy (#772): installations that collected leads before the leads database
+# existed still hold the lead tables in the analytics database until the one-time
+# move purged them. Erasing a person means erasing that copy too. The legacy run is
+# its own explicit mode: the owner names the legacy database AND types it a second
+# time, so a typo or a wrong paste never points the tool at a database by accident.
+# It deletes from exactly these two tables (the table list is explicit, never read
+# from the database) and nothing else.
+LEGACY_TABLES = ("leads", "kit_events")
+# The read-only identity statement: the analytics database says 'analytics' (migration
+# 0020); the leads database says 'leads'.
+_IDENTITY_READ = "SELECT role FROM db_identity ORDER BY role"
+
+
+def _legacy_database(name: str, confirm: str | None) -> str:
+    """The legacy analytics database, only if named twice, valid, and not the leads
+    database."""
+    database = _checked_database(name)
+    if database == LEADS_DATABASE:
+        raise LeadsError(
+            f"--legacy-database must not be {LEADS_DATABASE}: the leads database "
+            "is erased by the normal run"
+        )
+    if confirm != database:
+        raise LeadsError(
+            "--confirm-legacy NAME is required and must repeat --legacy-database "
+            "exactly: you are about to erase from the legacy analytics database. "
+            "Nothing was printed or changed"
+        )
+    return database
+
+
+def _run_delete_legacy(args: argparse.Namespace) -> int:
+    """`leads delete` for the legacy copy of a lead in the analytics database.
+
+    Same guards as the normal run: the address on stdin only, an id that the export
+    itself assigned to that address, SQL that pairs the id with the address (in the
+    file, never on a command line), a separate id-only read-back command, and exit
+    10 for "checks passed, nothing erased" (there is no --finish here: the alert
+    hashes are cleared by the normal run's --finish, and the read-back below is
+    the proof for this copy)."""
+    if args.legacy_database is None:
+        print("error: --confirm-legacy needs --legacy-database NAME", file=sys.stderr)
+        return EXIT_USAGE
+    if (
+        args.database is not None
+        or args.alerts_database is not None
+        or args.alerts_database_id is not None
+        or args.finish
+    ):
+        print(
+            "error: --legacy-database is its own run: it takes no --database, "
+            "--alerts-database, --alerts-database-id or --finish (run the normal "
+            "erasure for the leads database separately)",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    if args.sql_out is not None and not args.yes:
+        print("error: --sql-out needs --yes", file=sys.stderr)
+        return EXIT_USAGE
+    if args.sql_out is not None and os.fspath(args.sql_out).startswith("-"):
+        print(
+            "error: --sql-out must not start with '-' (it could be read as an "
+            "option); give a path such as ./delete-lead.sql",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    if (
+        args.wrangler is not None
+        or args.legacy_database_id is not None
+        or args.leads_database_id is not None
+    ) and not args.yes:
+        print("error: --wrangler and the database ids need --yes", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        database = _legacy_database(args.legacy_database, args.confirm_legacy)
+        legacy_id = leads_id = ""
+        if args.yes:
+            legacy_id = _checked_uuid(args.legacy_database_id, "--legacy-database-id")
+            leads_id = _checked_uuid(args.leads_database_id, "--leads-database-id")
+            if legacy_id == leads_id:
+                raise LeadsError(
+                    "the legacy database id is the leads database id: that is the "
+                    "same database (a name that points at the leads database). "
+                    "Nothing was printed or changed"
+                )
+        email = _address(args.email)
+        leads = load_leads(args.input)
+    except LeadsError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    print(
+        f"legacy database: {database} {DATABASE_NOTE}; erasing from its "
+        f"{' and '.join(LEGACY_TABLES)} tables only",
+        file=sys.stderr,
+    )
+    ids = [lead_id for lead_id, stored in leads if stored == email]
+    if not ids:
+        print(
+            "no lead matches the supplied address; nothing to delete", file=sys.stderr
+        )
+        return EXIT_NO_MATCH
+    if len(ids) > 1:
+        print(
+            f"error: {len(ids)} leads match the supplied address; expected one. "
+            "The export looks wrong; nothing printed",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    if not args.yes:
+        print(
+            f"dry run: 1 lead matches {mask_email(email)} in the legacy copy. It "
+            "would be deleted with its kit events. Nothing was changed and "
+            "nothing was requested, so this exit 0 is not an erasure. Re-run "
+            "with --yes to print the SQL."
+        )
+        return EXIT_OK
+    try:
+        if (ids[0], email) not in leads:
+            raise LeadsError("internal: the matched id is not in the export")
+        statements = _sql(ids[0], email)
+        wrangler = _resolve_wrangler(args.wrangler)
+        # A name that differs from the leads name proves nothing (an alias, a
+        # rename, a second binding to the same database): prove the identity with
+        # read-only single-statement calls BEFORE any actionable command is printed.
+        verify_identity(wrangler, LEADS_DATABASE, leads_id)
+        verify_identity(wrangler, database, legacy_id)
+        role = _wrangler_rows(wrangler, database, _IDENTITY_READ)
+        if role != [{"role": "analytics"}]:
+            raise LeadsError(
+                "the legacy database did not say it is the analytics database (its "
+                "db_identity row is missing or not 'analytics'): apply the analytics "
+                "migrations first, and never use the leads database here"
+            )
+    except LeadsError as exc:
+        print(f"error: {exc}; nothing was printed or changed", file=sys.stderr)
+        return EXIT_USAGE
+    text = "\n".join(statements) + "\n"
+    target = args.sql_out if args.sql_out is not None else "delete-lead-legacy.sql"
+    if args.sql_out is not None:
+        try:
+            _write_private(args.sql_out, text)
+        except LeadsError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+    quoted = shlex.quote(os.fspath(target))
+    shown = os.path.relpath(wrangler, os.path.realpath(REPO_ROOT))
+    where = (
+        f"The SQL is in {quoted} (new file, mode 0600). "
+        if args.sql_out is not None
+        else "The SQL is on stdout; prefer --sql-out. "
+    )
+    print(
+        f"checks passed (exit {EXIT_CHECKED}) for the LEGACY copy: NOTHING HAS BEEN "
+        f"REMOVED YET. {where}It holds the address, so delete it afterward. It "
+        "deletes only a row that still pairs that id with that address. Apply it "
+        f"to the legacy database {database} only. Its identity was just proven (the "
+        "name resolves to the id you gave, which is not the leads database's, and "
+        "the database says it is the analytics database); the first command repeats "
+        "that read. Then read the lead back with the last command "
+        "(the id only, no address): 0 and 0 means no remaining rows at "
+        "this moment, not proof of completed erasure (no transaction in a file; an "
+        "event can arrive after the read); run the file again after a wait until two "
+        "consecutive reads show 0 and 0. The alert hashes are cleared by the normal "
+        "run's --finish, not here:\n"
+        f"{shlex.quote(shown)} d1 execute {database} --remote --json --command "
+        f"{shlex.quote(_IDENTITY_READ)}\n"
+        f"{shlex.quote(shown)} d1 execute {database} --remote --file {quoted}\n"
+        f"{shlex.quote(shown)} d1 execute {database} --remote --json --command "
+        f"{shlex.quote(_read_back(ids[0]))}",
+        file=sys.stderr,
+    )
+    if args.sql_out is None:
+        sys.stdout.write(text)
+    return EXIT_CHECKED
+
+
 def run_delete(args: argparse.Namespace) -> int:
     if args.checklist:
         if (
@@ -1654,6 +1845,9 @@ def run_delete(args: argparse.Namespace) -> int:
             or args.leads_database_id is not None
             or args.wrangler is not None
             or args.finish
+            or args.legacy_database is not None
+            or args.legacy_database_id is not None
+            or args.confirm_legacy is not None
         ):
             print(
                 "error: --checklist prints a fixed list and takes no other option",
@@ -1674,6 +1868,12 @@ def run_delete(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return EXIT_USAGE
+    if (
+        args.legacy_database is not None
+        or args.legacy_database_id is not None
+        or args.confirm_legacy is not None
+    ):
+        return _run_delete_legacy(args)
     if args.sql_out is not None and not args.yes:
         print("error: --sql-out needs --yes", file=sys.stderr)
         return EXIT_USAGE
@@ -1805,7 +2005,12 @@ def run_delete(args: argparse.Namespace) -> int:
         "7). NOTHING HAS BEEN REMOVED YET. After the apply command below, run "
         "this same command again with --finish (the address on stdin again): it "
         "reads the lead tables back, clears the alert hashes and reads them back as 0. "
-        "Only that run exits 0. Close the kit gate (kill switch) while you erase.",
+        "Only that run exits 0. Close the kit gate (kill switch) while you erase. "
+        "LEGACY COPY: if this installation collected leads before the leads database "
+        "existed and the one-time move has not emptied the analytics database, that "
+        "database may still hold this lead, and this run does not touch it: run "
+        "this command again with --legacy-database NAME --confirm-legacy NAME "
+        "(docs/privacy.md, Honoring a deletion request).",
         file=sys.stderr,
     )
     print(
@@ -1814,12 +2019,16 @@ def run_delete(args: argparse.Namespace) -> int:
         "it from that directory (adjust the SQL file path if you are elsewhere). "
         "It deletes only a row in the live database that still pairs that id "
         f"with that address. Apply it to the leads database {database} only. "
-        "Reading 0 and 0 means no remaining rows at this moment; it is not proof "
-        "of completed erasure, because D1 offers no transaction in a file and "
-        "an event can arrive after the read. Run the file again after a wait "
-        "until two consecutive runs read 0 and 0 (leads_remaining 1 means "
-        "nothing was deleted):\n"
-        f"{shlex.quote(shown)} d1 execute {database} --remote --file {quoted}",
+        "The file shows no result rows (D1 returns only a summary for a file). "
+        "After each run, read the result with the second command, which holds the "
+        "id and not the address. Reading 0 and 0 means no remaining rows at this "
+        "moment; it is not proof of completed erasure, because D1 offers no "
+        "transaction in a file and an event can arrive after the read. Run the "
+        "file again after a wait until two consecutive reads show 0 and 0 "
+        "(leads_remaining 1 means nothing was deleted):\n"
+        f"{shlex.quote(shown)} d1 execute {database} --remote --file {quoted}\n"
+        f"{shlex.quote(shown)} d1 execute {database} --remote --json --command "
+        f"{shlex.quote(_read_back(ids[0]))}",
         file=sys.stderr,
     )
     if args.sql_out is None:
@@ -1876,11 +2085,14 @@ def _write_private(path: Path, text: str) -> None:
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     leads = subparsers.add_parser(
-        "leads", help="owner tools for media kit leads (deletion requests)"
+        "leads",
+        help="owner tools for media kit leads (deletion requests)",
+        allow_abbrev=False,  # an abbreviated destructive flag is never accepted
     )
     actions = leads.add_subparsers(dest="leads_command", required=True)
     delete = actions.add_parser(
         "delete",
+        allow_abbrev=False,
         help="erase one lead, its events and the alert hashes",
         description="Read a local export of the leads table (made with wrangler "
         "d1 execute --json, see docs/privacy.md), find the lead for one email "
@@ -1933,6 +2145,29 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         metavar="NAME",
         help=f"required: the database the export came from; only "
         f"{LEADS_DATABASE} is accepted (your attestation, not proof)",
+    )
+    delete.add_argument(
+        "--legacy-database",
+        default=None,
+        metavar="NAME",
+        help="erase the legacy copy of a lead from this analytics database (its "
+        "leads and kit_events tables only); its own run, with --confirm-legacy and "
+        "--yes, never together with --database or --finish",
+    )
+    delete.add_argument(
+        "--legacy-database-id",
+        default=None,
+        metavar="UUID",
+        help="with --legacy-database and --yes: the legacy database's id from the "
+        "Worker's configuration (the analytics binding); checked against the name "
+        "and against the leads database id, and the database must say it is the "
+        "analytics database",
+    )
+    delete.add_argument(
+        "--confirm-legacy",
+        default=None,
+        metavar="NAME",
+        help="repeat the --legacy-database name exactly, to confirm it",
     )
     delete.add_argument(
         "--alerts-database",
@@ -1995,8 +2230,9 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 
     show = actions.add_parser(
         "show",
+        allow_abbrev=False,
         help="print what is stored about one lead (access request)",
-        description="Read a local export of the leads table and the kit events "
+        description="Read two local exports, the leads table and the kit events "
         "(see docs/privacy.md) and print what an access request needs for one "
         "address: the masked address, country, created and verified times and "
         "the kit event kinds with their hours. Nothing else, no SQL, no network "
@@ -2004,7 +2240,18 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "line. Exit 0 done, 1 no match, 2 usage problem or a refused export.",
     )
     show.add_argument(
-        "--input", type=Path, required=True, metavar="PATH", help="export, JSON"
+        "--input",
+        type=Path,
+        required=True,
+        metavar="PATH",
+        help="the leads export, JSON (one result block)",
+    )
+    show.add_argument(
+        "--events",
+        type=Path,
+        required=True,
+        metavar="PATH",
+        help="the kit events export, JSON (one result block, may be empty)",
     )
     show.add_argument(
         "--email-file",

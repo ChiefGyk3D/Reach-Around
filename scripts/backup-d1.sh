@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# Owner-run: export the analytics tables of the D1 database to a private folder.
+# Owner-run: export the analytics tables of the ANALYTICS D1 database (binding DB) to a private folder.
+#
+# WHICH DATABASE. Two D1 databases exist (issue #772): the analytics database this script exports, and
+# the leads database (binding LEADS_DB, holding leads and kit events) that it never exports. DATABASE
+# must be the analytics one; every run prints the name it acts on. IDENTITY is checked on the live
+# database, not by name: with --apply the script reads the db_identity row and refuses (exit 3) unless
+# it is exactly 'analytics', whatever the database is called or how it was reached (a name, an alias).
+# The name is never a safeguard: a valid analytics database may be called anything.
+# The leads database has its own backup procedure (docs/backup-restore.md), never this allowlist.
 #
 # Usage: scripts/backup-d1.sh DATABASE DEST_DIR            # dry run: prints the plan
 #        scripts/backup-d1.sh DATABASE DEST_DIR --apply    # writes the export
@@ -96,7 +104,7 @@ tables=(
   click_events click_funnel_state click_hop_daily click_hop_monthly
   click_landing_daily click_landing_monthly click_landing_state click_month_log click_seal
   click_src_daily click_src_monthly
-  counters d1_migrations kit_meta
+  counters d1_migrations db_identity kit_meta
   view_city_daily view_daily view_dim_daily view_geo_daily view_hour_daily view_meta
   view_rollup_log
 )
@@ -197,6 +205,7 @@ out="$dest/d1-$stamp"
 
 if [ "$apply" -eq 0 ]; then
   echo "dry run: nothing is written and no network call is made."
+  echo "database: $db (the analytics database; the leads database is never exported by this script)"
   echo "would create: $out (mode 700)"
   echo "would export ${#tables[@]} tables (the run fails if the database lacks any of them, apply the migrations first, or if it holds a table this script does not know), one file each, mode 600:"
   printf '  %s\n' "${tables[@]}"
@@ -211,6 +220,39 @@ fi
   echo "error: scripts/check-dump.py not found next to this script" >&2
   exit 1
 }
+
+# WHICH DATABASE, BY WHAT IT SAYS IT IS. A name proves nothing (a database can be renamed, or reached
+# through an id or an alias), so ask the database itself: each one holds a db_identity row written by its
+# own migrations, 'analytics' or 'leads'. Only a database that answers exactly 'analytics' is exported;
+# one that answers 'leads', answers nothing, or cannot be read is refused before anything is written.
+identity=$(timeout "$limit" "${wrangler[@]}" d1 execute "$db" --remote --json \
+  --command "SELECT role FROM db_identity ORDER BY role" 2>/dev/null) || {
+  echo "error: could not read the database identity (wrong name, not signed in, timed out, or the analytics migrations are not applied); nothing was exported" >&2
+  exit 1
+}
+roles=$(printf '%s' "$identity" | python3 -I -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    rows = data[0]["results"] if isinstance(data, list) else data["results"]
+    # A fixed class only: what the database returned is never printed.
+    found = [r.get("role") for r in rows]
+    if not found:
+        print("none")
+    elif len(found) > 1:
+        print("multiple")
+    elif found[0] == "analytics":
+        print("analytics")
+    elif found[0] == "leads":
+        print("leads")
+    else:
+        print("unexpected")
+except Exception:
+    print("unreadable")
+') || roles="unreadable"
+if [ "$roles" != "analytics" ]; then
+  refuse "the database did not identify itself as the analytics database (class: ${roles:-unreadable}). Apply the analytics migrations (worker/migrations) first, and never point this script at the leads database."
+fi
 
 umask 077
 mkdir "$out"
@@ -640,7 +682,7 @@ rm -f -- "$out/.allowlist.json"
 (cd "$out" && sha256sum -- *.sql >SHA256SUMS)
 chmod 600 "$out/SHA256SUMS"
 ok=1
-echo "done: $count tables written to $out"
+echo "done: $count tables of the analytics database $db written to $out"
 echo "note: the tables are exported one call at a time, so this is not a single point-in-time snapshot."
 echo "      For one consistent copy, pause both write routes first (see docs/backup-restore.md)."
 echo "next: copy it to your offline copy, then run: (cd that folder && sha256sum -c SHA256SUMS)"

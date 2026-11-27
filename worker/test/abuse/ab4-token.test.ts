@@ -214,7 +214,7 @@ describe("AB-4: revocation and deleted leads", () => {
   it("a cookie for a deleted lead is refused, and so is one for a lead that never existed", async () => {
     const cookie = await signedCookie();
     await opens(cookie, "before delete");
-    await testEnv.DB.prepare("DELETE FROM leads WHERE id = ?1").bind(LEAD_ID).run();
+    await testEnv.LEADS_DB.prepare("DELETE FROM leads WHERE id = ?1").bind(LEAD_ID).run();
     await refused(cookie, "after delete");
     await refused(await signedCookie({ lid: "c".repeat(32) }), "never existed");
   });
@@ -224,7 +224,7 @@ describe("AB-4: revocation and deleted leads", () => {
     const old = await signedCookie({ iat: t - 100, exp: t + 3000 });
     const same = await signedCookie({ iat: t - 10, exp: t + 3000 });
     const fresh = await signedCookie({ iat: t - 5, exp: t + 3000 });
-    await setSessionFloor(testEnv.DB, LEAD_ID, (t - 10) * 1000 + 500);
+    await setSessionFloor(testEnv.LEADS_DB, LEAD_ID, (t - 10) * 1000 + 500);
     await refused(old, "older than the floor");
     await refused(same, "same second as the floor");
     await opens(fresh, "issued after the floor");
@@ -234,7 +234,7 @@ describe("AB-4: revocation and deleted leads", () => {
     // STRICT tables refuse text, so the shapes that can occur are tested at the session layer (session.test.ts);
     // here the end-to-end part: a revoked lead that passes the gate again gets a working new cookie.
     const t = nowSec();
-    await setSessionFloor(testEnv.DB, LEAD_ID, (t + 1) * 1000);
+    await setSessionFloor(testEnv.LEADS_DB, LEAD_ID, (t + 1) * 1000);
     await refused(await signedCookie({ iat: t - 5, exp: t + 3000 }), "floor in the future of the cookie");
   });
 
@@ -263,7 +263,7 @@ describe("AB-4: revocation and deleted leads", () => {
       ["no lead", await signedCookie({ lid: "d".repeat(32) })],
       ["expired", await signedCookie({ iat: t - 7200, exp: t - 3600 })],
     ];
-    await setSessionFloor(testEnv.DB, LEAD_ID, (t + 10) * 1000);
+    await setSessionFloor(testEnv.LEADS_DB, LEAD_ID, (t + 10) * 1000);
     attempts.push(["revoked", await signedCookie({ iat: t - 5, exp: t + 3000 })]);
     for (const [why, cookie] of attempts) {
       const res = await send(inquiryReq({ cookie }));

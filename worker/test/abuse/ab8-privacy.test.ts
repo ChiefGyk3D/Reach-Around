@@ -43,11 +43,14 @@ const SECRETS = [KEY, btoa("s".repeat(40)), "1x0000000000000000000000000000000AA
 const NAMES = ["TOKEN_HMAC_KEY", "TURNSTILE_SECRET", "VIEW_HASH_SECRET", "ALERT_DEDUP_KEY", "ALERT_DISCORD_WEBHOOK", "KIT_KILL"];
 
 async function dumpAllTables(): Promise<{ table: string; text: string }[]> {
-  const names = await testEnv.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name != 'd1_migrations'").all<{ name: string }>();
   const out: { table: string; text: string }[] = [];
-  for (const { name } of names.results) {
-    const rows = await testEnv.DB.prepare(`SELECT * FROM "${name}"`).all();
-    out.push({ table: name, text: JSON.stringify(rows.results) });
+  // Both databases: the leads database holds leads, kit_events and kit_meta (issue #772).
+  for (const db of [testEnv.DB, testEnv.LEADS_DB]) {
+    const names = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name != 'd1_migrations'").all<{ name: string }>();
+    for (const { name } of names.results) {
+      const rows = await db.prepare(`SELECT * FROM "${name}"`).all();
+      out.push({ table: name, text: JSON.stringify(rows.results) });
+    }
   }
   return out;
 }
@@ -81,13 +84,13 @@ describe("AB-8: what is stored", () => {
         expect(text, table).not.toContain("person");
       }
     }
-    const leads = tables.find((t) => t.table === "leads")!.text;
+    const leads = tables.filter((t) => t.table === "leads").map((t) => t.text).join(" "); // the analytics database keeps an empty legacy leads table
     expect(leads).toContain("person0@example.com");
   });
 
   it("the lead row carries only the address, timestamps, a fixed source and the edge country (no network or browser data)", async () => {
     await send(gateReq());
-    const cols = await testEnv.DB.prepare("SELECT name FROM pragma_table_info('leads')").all<{ name: string }>();
+    const cols = await testEnv.LEADS_DB.prepare("SELECT name FROM pragma_table_info('leads')").all<{ name: string }>();
     const names = cols.results.map((c) => c.name).sort();
     // A closed list on purpose: a new column (an address, a browser string) must be added here on review.
     expect(names).toEqual([
@@ -103,7 +106,7 @@ describe("AB-8: what is stored", () => {
       "source",
       "verified_ts",
     ]);
-    const row = await testEnv.DB.prepare("SELECT * FROM leads").first<Record<string, unknown>>();
+    const row = await testEnv.LEADS_DB.prepare("SELECT * FROM leads").first<Record<string, unknown>>();
     expect(JSON.stringify(row)).not.toContain(CLIENT_IP);
     expect(row!.source).toBe("gate");
   });
@@ -125,7 +128,7 @@ describe("AB-8: what is stored", () => {
       await resetState();
       const res = await send(gateReq({ headers: { "cf-ipcountry": bad }, fields: { email: EMAIL, "cf-turnstile-response": `ok-c-${bad}` } }));
       expect(res.headers.get("set-cookie")).not.toBeNull();
-      const row = await testEnv.DB.prepare("SELECT country FROM leads").first<{ country: string | null }>();
+      const row = await testEnv.LEADS_DB.prepare("SELECT country FROM leads").first<{ country: string | null }>();
       expect(row!.country, bad).toBeNull();
     }
   });

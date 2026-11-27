@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 import { env as testEnv } from "cloudflare:workers";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { UNSTORED_FLOOR_KEY } from "../../src/kit/leads";
+import { resetSeparationCache } from "../../src/kit/separation";
 import { authorizeSession } from "../../src/kit/session";
 import type { TokenClaims } from "../../src/kit/token";
 import { mintUnstoredId } from "../../src/kit/unstored";
@@ -19,12 +20,58 @@ function fakeDb(row: Record<string, unknown> | null): D1Database {
   return { prepare: () => stmt } as unknown as D1Database;
 }
 
+// The real leads database, except that the lead lookup answers a chosen row (or throws). Everything else
+// passes through, so the separation proof still runs against the real database.
+function leadsAnswering(row: Record<string, unknown> | null | Error): D1Database {
+  return new Proxy(testEnv.LEADS_DB, {
+    get(target, prop) {
+      if (prop === "prepare") {
+        return (q: string) => {
+          if (!/FROM leads WHERE id/.test(q)) return target.prepare(q);
+          if (row instanceof Error) throw row;
+          const stmt = { bind: () => stmt, first: async () => row };
+          return stmt;
+        };
+      }
+      const v = Reflect.get(target, prop) as unknown;
+      return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+    },
+  }) as D1Database;
+}
+
+// A handle that records every statement prepared through it.
+function recording(base: D1Database): { db: D1Database; sql: string[] } {
+  const sql: string[] = [];
+  const db = new Proxy(base, {
+    get(target, prop) {
+      if (prop === "prepare") {
+        return (q: string) => {
+          sql.push(q);
+          return target.prepare(q);
+        };
+      }
+      const v = Reflect.get(target, prop) as unknown;
+      return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+    },
+  }) as D1Database;
+  return { db, sql };
+}
+
+const LEADS = testEnv.LEADS_DB;
+const MAIN = testEnv.DB;
+
 beforeEach(async () => {
-  await testEnv.DB.batch([
-    testEnv.DB.prepare("DELETE FROM leads"),
-    testEnv.DB.prepare("DELETE FROM kit_meta"),
-    testEnv.DB.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?1, 'pat@example.com', ?2, ?2, 'gate')").bind(LEAD_ID, T0 - 86_400_000),
+  resetSeparationCache();
+  await MAIN.batch([MAIN.prepare("DELETE FROM leads"), MAIN.prepare("DELETE FROM kit_meta")]);
+  await LEADS.batch([
+    LEADS.prepare("DELETE FROM leads"),
+    LEADS.prepare("DELETE FROM kit_meta"),
+    LEADS.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?1, 'pat@example.com', ?2, ?2, 'gate')").bind(LEAD_ID, T0 - 86_400_000),
   ]);
+});
+afterEach(async () => {
+  await MAIN.prepare("DELETE FROM leads").run();
+  resetSeparationCache();
 });
 
 describe("authorizeSession: malformed floors fail closed", () => {
@@ -32,30 +79,86 @@ describe("authorizeSession: malformed floors fail closed", () => {
   for (const bad of BAD) {
     it(`refuses a stored lead whose floor is ${String(typeof bad === "object" ? "object" : bad)}`, async () => {
       const row = { id: LEAD_ID, session_floor_ts: bad };
-      expect(await authorizeSession(fakeDb(row), [KEY], claims())).toBe("error");
+      expect(await authorizeSession(leadsAnswering(row), MAIN, [KEY], claims())).toBe("error");
     });
   }
   it("refuses an unstored unlock whose kit-wide floor is malformed", async () => {
     const lid = await mintUnstoredId(KEY);
     for (const bad of ["invalid", Number.NaN, -5, 0.5]) {
-      expect(await authorizeSession(fakeDb({ value: bad }), [KEY], claims({ lid }))).toBe("error");
+      expect(await authorizeSession(LEADS, fakeDb({ value: bad }), [KEY], claims({ lid }))).toBe("error");
     }
   });
   it("a malformed floor is refused where a comparison alone would open the session", async () => {
     // Without the shape check, NaN and a negative compare as "not newer" and the session would be ok.
     for (const bad of [Number.NaN, -1, "invalid"]) {
-      expect(await authorizeSession(fakeDb({ id: LEAD_ID, session_floor_ts: bad }), [KEY], claims())).toBe("error");
+      expect(await authorizeSession(leadsAnswering({ id: LEAD_ID, session_floor_ts: bad }), MAIN, [KEY], claims())).toBe("error");
     }
     // Compatibility baseline: a null floor and a valid older floor stay ok.
-    expect(await authorizeSession(testEnv.DB, [KEY], claims())).toBe("ok");
-    await testEnv.DB.prepare("UPDATE leads SET session_floor_ts = ? WHERE id = ?").bind(T0 - 120_000, LEAD_ID).run();
-    expect(await authorizeSession(testEnv.DB, [KEY], claims())).toBe("ok");
+    expect(await authorizeSession(LEADS, MAIN, [KEY], claims())).toBe("ok");
+    await LEADS.prepare("UPDATE leads SET session_floor_ts = ? WHERE id = ?").bind(T0 - 120_000, LEAD_ID).run();
+    expect(await authorizeSession(LEADS, MAIN, [KEY], claims())).toBe("ok");
   });
   it("answers error when the storage read throws", async () => {
-    const boom = { prepare: () => { throw new Error("d1 down"); } } as unknown as D1Database;
-    expect(await authorizeSession(boom, [KEY], claims())).toBe("error");
     const lid = await mintUnstoredId(KEY);
-    expect(await authorizeSession(boom, [KEY], claims({ lid }))).toBe("error");
+    const boom = { prepare: () => { throw new Error("d1 down"); } } as unknown as D1Database;
+    expect(await authorizeSession(leadsAnswering(new Error("d1 down")), MAIN, [KEY], claims())).toBe("error");
+    expect(await authorizeSession(LEADS, boom, [KEY], claims({ lid }))).toBe("error");
+  });
+});
+
+describe("authorizeSession: which database answers what (issue #772)", () => {
+  it("reads the lead from the leads database only, and never touches the main database for it", async () => {
+    const leads = recording(LEADS);
+    const main = recording(MAIN);
+    expect(await authorizeSession(leads.db, main.db, [KEY], claims())).toBe("ok");
+    expect(leads.sql.some((q) => /FROM leads WHERE id/.test(q))).toBe(true);
+    expect(main.sql.some((q) => /FROM leads WHERE id/.test(q))).toBe(false);
+    expect(leads.sql.some((q) => /kit_meta/.test(q))).toBe(false);
+  });
+  it("reads the unstored floor from the main database only, and never touches the leads database for it", async () => {
+    const lid = await mintUnstoredId(KEY);
+    const leads = recording(LEADS);
+    const main = recording(MAIN);
+    expect(await authorizeSession(leads.db, main.db, [KEY], claims({ lid }))).toBe("ok");
+    expect(main.sql.some((q) => /kit_meta/.test(q))).toBe(true);
+    expect(leads.sql.some((q) => /kit_meta|FROM leads WHERE id/.test(q))).toBe(false);
+  });
+  it("a floor in the leads database does not apply to an unstored unlock, and a floor in the main database does", async () => {
+    const lid = await mintUnstoredId(KEY);
+    await LEADS.prepare("INSERT INTO kit_meta (key, value) VALUES (?, ?)").bind(UNSTORED_FLOOR_KEY, T0).run().catch(() => undefined);
+    expect(await authorizeSession(LEADS, MAIN, [KEY], claims({ lid }))).toBe("ok");
+    await MAIN.prepare("INSERT INTO kit_meta (key, value) VALUES (?, ?)").bind(UNSTORED_FLOOR_KEY, T0).run();
+    expect(await authorizeSession(LEADS, MAIN, [KEY], claims({ lid }))).toBe("expired");
+    await LEADS.prepare("DELETE FROM kit_meta WHERE key = ?").bind(UNSTORED_FLOOR_KEY).run().catch(() => undefined);
+  });
+  it("denies, without any lead read, when the leads database is the main database", async () => {
+    const main = recording(MAIN);
+    expect(await authorizeSession(main.db, MAIN, [KEY], claims())).toBe("error");
+    expect(main.sql.some((q) => /FROM leads WHERE id/.test(q))).toBe(false);
+  });
+  it("denies when the leads binding is missing or is not a database", async () => {
+    expect(await authorizeSession(undefined as unknown as D1Database, MAIN, [KEY], claims())).toBe("error");
+    expect(await authorizeSession({} as unknown as D1Database, MAIN, [KEY], claims())).toBe("error");
+  });
+  it("denies, without any lead read, when the main database still holds lead rows", async () => {
+    await MAIN.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?, 'old@example.com', 1, 1, 'gate')").bind("c".repeat(32)).run();
+    const leads = recording(LEADS);
+    expect(await authorizeSession(leads.db, MAIN, [KEY], claims())).toBe("error");
+    expect(leads.sql.some((q) => /FROM leads WHERE id/.test(q))).toBe(false);
+  });
+  it("denies a session for a lead that exists only in the wrong database", async () => {
+    const WRONG = "d".repeat(32);
+    await LEADS.prepare("DELETE FROM leads WHERE id = ?").bind(WRONG).run();
+    await MAIN.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?, 'wrong@example.com', 1, 1, 'gate')").bind(WRONG).run();
+    // Never "ok": the lead is not in the leads database, and the main database holding it fails the proof.
+    expect(await authorizeSession(LEADS, MAIN, [KEY], claims({ lid: WRONG }))).not.toBe("ok");
+    await MAIN.prepare("DELETE FROM leads").run();
+    resetSeparationCache();
+    // With the main database clean again the same id is simply unknown: expired.
+    expect(await authorizeSession(LEADS, MAIN, [KEY], claims({ lid: WRONG }))).toBe("expired");
+  });
+  it("denies when the two databases are passed the wrong way round", async () => {
+    expect(await authorizeSession(MAIN, LEADS, [KEY], claims())).toBe("error");
   });
 });
 
@@ -87,7 +190,7 @@ describe("migration 0021: negative kit-wide floor", () => {
     await dropTriggers();
     await testEnv.DB.prepare("INSERT INTO kit_meta (key, value) VALUES (?, -1)").bind(UNSTORED_FLOOR_KEY).run();
     const lid = await mintUnstoredId(KEY);
-    expect(await authorizeSession(testEnv.DB, [KEY], claims({ lid }))).toBe("error"); // the pre-migration outage
+    expect(await authorizeSession(LEADS, MAIN, [KEY], claims({ lid }))).toBe("error"); // the pre-migration outage
     const before = Date.now();
     await reapply();
     const v = (await floor())!.value;
@@ -95,8 +198,8 @@ describe("migration 0021: negative kit-wide floor", () => {
     expect(v).toBeLessThanOrEqual(Date.now());
     // An unlock issued before the migration is revoked, not an error; a later one is accepted.
     const nowSec = Math.floor(Date.now() / 1000);
-    expect(await authorizeSession(testEnv.DB, [KEY], claims({ lid, iat: nowSec - 60 }))).toBe("expired");
-    expect(await authorizeSession(testEnv.DB, [KEY], claims({ lid, iat: nowSec + 5 }))).toBe("ok");
+    expect(await authorizeSession(LEADS, MAIN, [KEY], claims({ lid, iat: nowSec - 60 }))).toBe("expired");
+    expect(await authorizeSession(LEADS, MAIN, [KEY], claims({ lid, iat: nowSec + 5 }))).toBe("ok");
   });
   async function triggerNames() {
     const r = await testEnv.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'kit_meta_floor_%' ORDER BY name").all<{ name: string }>();

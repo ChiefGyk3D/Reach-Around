@@ -28,10 +28,15 @@
 // (src/kit/budgets.ts, the kit's daily purge allowance); the rest is left for
 // the counter purge. A backlog simply continues on the next run.
 //
+// DATABASE (issue #772). Leads and kit events live in the leads database (binding LEADS_DB), so this
+// purge runs there and nowhere else, and its heartbeat (kit_meta last_purge_ts) is written there.
+// The same hourly invocation meter covers both databases.
+//
 // LOGS. Fixed strings and one count, through log.ts. Never an address.
 
-import { QueryMeter, meterOf, meteredDb } from "../d1budget";
+import { BudgetExceeded, QueryMeter, meterOf, meteredDb } from "../d1budget";
 import { logEvent } from "./log";
+import { assertLeadsSeparated } from "./separation";
 
 export const DEFAULT_LEAD_RETENTION_DAYS = 30;
 export const MAX_LEAD_RETENTION_DAYS = 365;
@@ -57,7 +62,10 @@ const DAY_MS = 86_400_000;
 const DIGITS = /^[0-9]{1,9}$/;
 
 export interface LeadRetentionEnv {
+  /** The analytics database. Required: the purge proves LEADS_DB is a different database from it. */
   DB: D1Database;
+  /** The leads database (issue #772). The analytics database is never passed here and never a fallback. */
+  LEADS_DB: D1Database;
   LEAD_RETENTION_DAYS?: string;
 }
 
@@ -66,6 +74,8 @@ export interface LeadPurgeOptions {
   leadBatch?: number;
   /** Events per run; can only lower LEAD_PURGE_EVENT_BATCH. */
   eventBatch?: number;
+  /** The scheduled job's meter slice for the separation proof (SEPARATION_QUERIES). A direct call leaves it unset. */
+  separationMeter?: QueryMeter;
 }
 
 /** Parse LEAD_RETENTION_DAYS. `valid` is false when a set value was refused. */
@@ -86,9 +96,20 @@ function lower(requested: unknown, ceiling: number): number {
 /** Purge one bounded step. Resolves to the number of leads deleted this run. */
 export async function purgeExpiredLeads(env: LeadRetentionEnv, nowMs: number, opts: LeadPurgeOptions = {}): Promise<number> {
   if (typeof nowMs !== "number" || !Number.isFinite(nowMs)) throw new RangeError("nowMs must be a finite number");
-  const outer = meterOf(env.DB);
+  // Every path to the purge, scheduled or direct, proves the separation here (separation.ts): the
+  // analytics binding is part of the contract so a caller cannot hand the analytics database in.
+  try {
+    await assertLeadsSeparated(env, { meter: opts.separationMeter });
+  } catch (e) {
+    if (e instanceof BudgetExceeded) {
+      logEvent("purge", "over_budget");
+      return 0;
+    }
+    throw e;
+  }
+  const outer = meterOf(env.LEADS_DB);
   const meter = outer ?? new QueryMeter(LEAD_PURGE_QUERIES);
-  const db = outer ? env.DB : meteredDb(env.DB, meter);
+  const db = outer ? env.LEADS_DB : meteredDb(env.LEADS_DB, meter);
   const leadBatch = lower(opts.leadBatch, LEAD_PURGE_BATCH);
   const eventBatch = lower(opts.eventBatch, LEAD_PURGE_EVENT_BATCH);
 

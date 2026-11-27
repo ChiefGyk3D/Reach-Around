@@ -22,7 +22,11 @@ import {
 } from "../../src/kit/leads";
 import leadsSource from "../../src/kit/leads.ts?raw";
 
-const DB = testEnv.DB;
+// In this file `DB` is the LEADS database (issue #772). The analytics database is ANALYTICS; only the
+// `counters` table, which stays there, is read from it.
+const DB = testEnv.LEADS_DB;
+const ANALYTICS = testEnv.DB;
+const dbOf = (table: string): D1Database => (table === "counters" ? ANALYTICS : DB);
 
 /** Test shorthand: the production function requires the cap, tests default it. */
 const upsertLead = (
@@ -302,7 +306,7 @@ describe("schema", () => {
 
   it("no kit column can hold an IP address or user agent by name", async () => {
     for (const t of KIT_TABLES) {
-      const cols = await DB.prepare(`SELECT name FROM pragma_table_info('${t}')`).all<{ name: string }>();
+      const cols = await dbOf(t).prepare(`SELECT name FROM pragma_table_info('${t}')`).all<{ name: string }>();
       expect(cols.results.length, `${t} exists`).toBeGreaterThan(0);
       for (const c of cols.results) expect(c.name, `${t}.${c.name}`).not.toMatch(FORBIDDEN);
     }
@@ -322,7 +326,7 @@ describe("schema", () => {
     url: "https://example.com/path?q=1",
     ms: "1700000000123",
   };
-  const run = (sql: string, ...binds: unknown[]) => DB.prepare(sql).bind(...binds).run();
+  const run = (sql: string, ...binds: unknown[]) => dbOf(/\bcounters\b/.test(sql) ? "counters" : "").prepare(sql).bind(...binds).run();
   const LEAD = "INSERT INTO leads (id, email, created_ts, last_seen_ts, source, country) VALUES (?, ?, ?, ?, ?, ?)";
 
   it("every key column refuses NULL", async () => {
@@ -333,7 +337,7 @@ describe("schema", () => {
     await expect(run("INSERT INTO kit_meta (key, value) VALUES (NULL, 1)"), "kit_meta.key NULL").rejects.toThrow();
     // declared, not only enforced by the engine's STRICT handling
     for (const [t, c] of [["leads", "id"], ["kit_events", "lead_id"], ["counters", "key"], ["counters", "day"], ["kit_meta", "key"]]) {
-      const r = await DB.prepare(`SELECT "notnull" AS nn FROM pragma_table_info('${t}') WHERE name = ?`).bind(c).first<{ nn: number }>();
+      const r = await dbOf(t!).prepare(`SELECT "notnull" AS nn FROM pragma_table_info('${t}') WHERE name = ?`).bind(c).first<{ nn: number }>();
       expect(r?.nn, `${t}.${c} declared NOT NULL`).toBe(1);
     }
     // negative control: the same statements with real values are accepted
@@ -358,8 +362,10 @@ describe("schema", () => {
   });
 
   it("the tables are STRICT, so text cannot land in an integer column", async () => {
-    const t = await DB.prepare("SELECT name, strict FROM pragma_table_list WHERE schema = 'main' AND name IN ('leads','kit_events','counters','kit_meta')").all<{ name: string; strict: number }>();
-    expect(t.results.length).toBe(4);
+    const t = await DB.prepare("SELECT name, strict FROM pragma_table_list WHERE schema = 'main' AND name IN ('leads','kit_events','kit_meta')").all<{ name: string; strict: number }>();
+    expect(t.results.length).toBe(3);
+    const c = await ANALYTICS.prepare("SELECT name, strict FROM pragma_table_list WHERE schema = 'main' AND name = 'counters'").all<{ name: string; strict: number }>();
+    expect(c.results.map((r) => r.strict)).toEqual([1]);
     for (const r of t.results) expect(r.strict, r.name).toBe(1);
     await expect(run(LEAD, ID, "x@y.com", "Mozilla/5.0", 1, "gate", null)).rejects.toThrow();
     await expect(run(LEAD, ID, "x@y.com", 1, "1.2.3.4", "gate", null)).rejects.toThrow();
@@ -444,7 +450,7 @@ describe("schema", () => {
 
   it("the migration declares the columns later tasks write", async () => {
     const cols = async (t: string) =>
-      (await DB.prepare(`SELECT name FROM pragma_table_info('${t}')`).all<{ name: string }>()).results.map((r) => r.name);
+      (await dbOf(t).prepare(`SELECT name FROM pragma_table_info('${t}')`).all<{ name: string }>()).results.map((r) => r.name);
     expect(await cols("leads")).toEqual(
       expect.arrayContaining([
         "id", "email", "created_ts", "last_seen_ts", "verified_ts", "source", "country",
@@ -454,6 +460,16 @@ describe("schema", () => {
     expect(await cols("kit_events")).toEqual(["id", "ts", "lead_id", "kind"]);
     expect(await cols("counters")).toEqual(["key", "day", "count"]);
     expect(await cols("kit_meta")).toEqual(["key", "value"]);
+  });
+
+  it("the leads database holds only lead tables, and the analytics tables are not in it (issue #772)", async () => {
+    const names = (await DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name <> 'd1_migrations'").all<{ name: string }>()).results.map((r) => r.name).sort();
+    expect(names).toEqual(["db_identity", "kit_events", "kit_meta", "leads"]); // db_identity added for the separation proof
+    // and a lead stored through the leads database is invisible to the analytics database
+    await run(LEAD, ID, "x@y.com", 1, 1, "gate", null);
+    const other = await ANALYTICS.prepare("SELECT COUNT(*) AS n FROM leads WHERE id = ?").bind(ID).first<{ n: number }>();
+    expect(other!.n).toBe(0);
+    await DB.prepare("DELETE FROM leads").run();
   });
 
   it("has indexes on the retention columns", async () => {

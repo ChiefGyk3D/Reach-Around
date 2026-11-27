@@ -9,22 +9,27 @@
 // issued in a second strictly after the floor's second passes.
 
 import { getLead, getUnstoredSessionFloor } from "./leads";
+import { assertLeadsSeparated } from "./separation";
 import { isUnstoredId } from "./unstored";
 import type { TokenClaims } from "./token";
 
 export type SessionVerdict = "ok" | "expired" | "error";
 
 /**
- * Decide whether verified token claims still open the gated routes. "expired" is a lead that is gone
+ * Decide whether verified token claims still open the gated routes. The lead row is read from `leadsDb`
+ * only and the unstored kit-wide floor from `floorDb` only (never one for the other). "expired" is a lead that is gone
  * or a cookie at or below the applicable floor; "error" is a storage read that failed or a stored floor that is malformed (callers refuse).
  */
-export async function authorizeSession(db: D1Database, keys: readonly string[], claims: TokenClaims): Promise<SessionVerdict> {
+export async function authorizeSession(leadsDb: D1Database, floorDb: D1Database, keys: readonly string[], claims: TokenClaims): Promise<SessionVerdict> {
   let floorMs: number | null;
   try {
     if (await isUnstoredId(keys, claims.lid)) {
-      floorMs = await getUnstoredSessionFloor(db); // CONTROL:unstored-floor
+      floorMs = await getUnstoredSessionFloor(floorDb); // CONTROL:unstored-floor (the main database only)
     } else {
-      const lead = await getLead(db, claims.lid); // CONTROL:lead-exists
+      // A fresh proof that the lead database is a different database from the main one, right before the
+      // lead read; any failure (unbound, same database, lead rows in the main database) denies.
+      await assertLeadsSeparated({ DB: floorDb, LEADS_DB: leadsDb }); // CONTROL:session-separation
+      const lead = await getLead(leadsDb, claims.lid); // CONTROL:lead-exists (the lead database only)
       if (lead === null) return "expired";
       floorMs = lead.session_floor_ts;
     }

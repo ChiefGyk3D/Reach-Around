@@ -328,6 +328,352 @@ The test deploy (`deploy-test.yml`) writes `BEACON_MODE = "observe"` and the `MI
 
 **Responses.** The mint answers `200` with `{"t": "<token>", "ttl": 900}` and `Cache-Control: no-store` only when it issues a token. Every other outcome, on every route, is the empty 204. The mint honors the same kill switches as the routes it serves: it issues nothing for a site whose click route and view route are both off (`CLICKS_KILL`, `CLICKS_KILL_SITES`, `VIEWS_KILL`, `VIEWS_KILL_SITES`), and a click-only (`edge`) site still gets a token because its clicks use one.
 
+## The leads database (`LEADS_DB`)
+
+Issue #772. Leads and kit events live in a SECOND D1 database, bound to the Worker as `LEADS_DB`, so
+that leads have their own access, backup and erasure and no read credential for the analytics
+database (`DB`) reaches an address. The analytics database keeps the counters (`counters`,
+`kit_meta` with the unstored session floor) and everything else. Its old `leads` and `kit_events`
+tables stay in place and are emptied by the one-time move below (dropping the empty tables is a later,
+annotated contract migration). An installation that ever collected a lead holds those rows in the
+analytics database today, readable by anything with an analytics-only credential, so the separation
+is not true for it until the move has run.
+
+What the Worker does without it. The binding is not in the committed `worker/wrangler.toml` (a
+commented block only), the same way the other bindings the owner has not created yet are held back,
+so no deploy copy creates or demands the database early. The Worker serves a lead path (the gate, the
+view route, the lead purge) only when `src/kit/separation.ts` has proven three things, and refuses
+otherwise: the gate (`POST /k/gate`) answers its usual retry redirect and stores nothing,
+`GET /k/view` refuses with its usual redirect, and the hourly job skips the lead purge and logs one
+closed line (`purge`, `closed`, `binding`). There is no fallback to the analytics database, ever.
+
+1. Both bindings are D1 databases (shape), and they are not the same object.
+2. They are different databases, by what each one states it is. A D1 binding exposes no database id to
+   the Worker (read 2026-11-24, developers.cloudflare.com D1 "Workers Binding API" and Wrangler
+   configuration: `prepare`, `batch`, `exec`, `dump`, `withSession`; the `database_id` exists only in the
+   Wrangler configuration), and a second binding name for one database is a different JavaScript object,
+   so object identity proves nothing. Each database therefore carries a `db_identity` row written by its
+   own migrations: `analytics` (`worker/migrations/0020_db_identity.sql`) or `leads`
+   (`worker/leads-migrations/0002_db_identity.sql`). `LEADS_DB` must answer exactly `leads` and `DB`
+   exactly `analytics`; one database under two names answers the same thing twice, so one side fails.
+3. The analytics database holds no lead rows (`leads` and `kit_events` empty or gone).
+
+The proof is shared by every path (the gate, the view route, the exported `purgeExpiredLeads`). An
+approval is NEVER remembered. D1 query bound of the public routes: the configuration check at the top of
+the gate and the view route makes NO D1 query (shape and presence only), so a request that is rate
+limited, malformed or has a closed binding costs none. The gate then proves separation once after the
+per-IP and network limiters and before the vendor call, and once more immediately before its lead write
+(after the lookup and the daily-unit reservation): at most 2 proofs. The view route proves once,
+immediately before the lead read, and not at all for an unstored token. The purge proves once before its
+batch. The unlock event write does not prove again (it follows the write that was just proved). Only a
+refusal is remembered, for 10 seconds per isolate (fail closed, so a refused deployment does not pay the
+probes on every request; after the move, allow 10 seconds). Each proof costs at most 3 D1 queries (1 on
+`LEADS_DB`, 1 batch and 1 row look on `DB`; 2 once the legacy tables are gone), all counted; the hourly
+job counts them against `QUERY_BUDGET`, which is why the lead-purge guarantee now starts at
+`QUERY_BUDGET` 12.
+
+The residual race, exactly. A proof and the write it protects are separate D1 operations. In the
+new-lead path the proof is the last await before the write, but an older Worker that still writes the
+analytics database can insert a lead after the proof returned and before (or right after) the write, so
+a lead can be stored while separation has just become false, and the same visitor's data can then be in
+both databases. No application check can close that. It is closed only by the cutover below: a hard
+precondition, enforced at the database, not a best effort.
+
+**Ordered cutover (required before enabling `features.kit_gate`)**, from the folder whose wrangler
+config names both databases, with the private work directory from the move section. Every command
+below names each database twice: its name and its platform id (`--source-id`, `--dest-id`), read in
+your own environment with `npx wrangler d1 info <NAME> --json` (the `uuid` field). The tool asks the
+platform again on every run and refuses unless the answer equals the id you passed; the id is never
+taken from a table inside the database, because a restore or a clone copies that along.
+
+1. Freeze the analytics lead tables. From this point the database itself aborts any INSERT into
+   `leads` or `kit_events`, so an older Worker cannot store a lead there whatever version is deployed:
+   `python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --freeze`
+2. Lock the window: deploy the Worker with the kill switches that stop every write to either
+   database (`KIT_KILL`, so the gate, the view route and the inquiry route are closed, and
+   `SCHEDULED_KILL`, so the hourly lead purge does not run; see the quiet deploy in this file and
+   [cutover-runbook.md](cutover-runbook.md) section 2.3), and make sure no older Worker or other
+   script still writes the analytics lead tables or the leads database. This is your statement, not
+   something the tool can prove (see below).
+3. Move (dry run, `--copy`, then `--purge --locked-window-confirmed`; see below).
+4. Verify. Exit 0 only when the analytics lead tables hold no row and are frozen (or are gone), AND
+   the leads database holds exactly the rows the move recorded: the same count and the same digest of
+   every column, none missing and none different. Every destination row must also still exist in the
+   source or be one this tool's own delete removed (recorded in the manifest's deleted set) and a
+   recovery export made by this cutover holds. A lead deleted from the source
+   after the copy is reported, never silently kept or silently deleted. The operator decides whether
+   to keep it in the destination because the lead existed and was moved, or remove it with the
+   documented command below. The tool never claims success while the destination and manifest
+   accounting disagree. It reads the move's manifest from the work directory
+   (`move-manifest.json`, digests only, kept after the move). The source-or-export reconciliation
+   runs only after a destructive attempt is recorded in that manifest; before a purge, verification
+   retains the exact source, freeze, and destination checks used by the copy procedure. Without a
+   manifest there is nothing to reconcile: verification retains its previous behavior and passes
+   only if the source is empty and frozen and the leads database also holds no lead row. A non-zero exit blocks enabling the gate:
+   `python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --verify`
+5. Only then deploy the new Worker and enable `features.kit_gate`.
+
+This repository does not run the freeze or the verification from CI (they act on live databases and need
+your login); step 4 is the gate on step 5 and its output belongs in the change record. Until the freeze
+has been applied, the window above is open. The kit gate ships OFF at the cutover (`features.kit_gate`),
+so a deployment that has not created the second database loses nothing it was using.
+
+Create it, once (owner step, secrets in the secret manager (development environment before
+production); the database id is not a secret but stays out of the repository):
+
+```bash
+npx wrangler d1 create reach-around-leads
+```
+
+Add the block to the deploy copy of the wrangler config, with the id the command printed. The name
+`reach-around-leads` is only a convention for people: `scripts/backup-d1.sh` and the Worker decide by the
+`db_identity` row the database states, never by its name or id:
+
+```toml
+[[d1_databases]]
+binding = "LEADS_DB"
+database_name = "reach-around-leads"
+database_id = "<the id wrangler printed>"
+migrations_dir = "leads-migrations"
+```
+
+Apply ITS migrations, a separate folder (`worker/leads-migrations`), to it and only to it. The analytics
+migrations (`worker/migrations`, binding `DB`) are never applied to this database:
+
+```bash
+npx wrangler d1 migrations apply LEADS_DB --remote
+```
+
+The analytics database needs its own identity row too, so apply the analytics migrations
+(`worker/migrations`, which now include `0020_db_identity.sql`) to `DB` as usual before the Worker that
+checks it is deployed; until then the Worker refuses the lead paths (closed, not broken).
+
+### The one-time move of existing leads
+
+This is step 3 of the ordered cutover above (the freeze, the locked window and the verification are never skipped; the
+dry run tells you whether there is anything to move). Run it once, after creating and migrating the leads database and before
+enabling the kit gate. It copies every lead and kit event to the leads database, reads them back, and
+only then deletes the analytics copies. Run it from the folder whose wrangler config names both
+databases, with a private directory outside any git work tree (mode 700); the script makes a fresh
+directory inside it for each temporary statement file (created exclusively, never through a symlink,
+removed when its chunk is done). The work directory also keeps `move-manifest.json` (mode 600, a digest
+per copied row and a cursor, no address) and one mode-600 `lead-recovery-*.json` file per destructive
+attempt. The recovery exports contain full lead rows. Keep them private and outside every repository.
+Do not delete them before the retention decision and recovery window have ended. The copy and delete
+run in chunks of 200 rows (`MOVE_BATCH`, 1 to 1000), so memory and each statement file stay bounded;
+a run that stops midway rechecks every destination row at or before the cursor against the manifest
+before it resumes. A prefix mismatch is refused with exit 3. After resolving why the destination
+changed, rerun the copy from the beginning by adding `--restart-copy`; this clears only the saved
+cursors and preserves the manifest digests and recovery records. An intact prefix resumes normally,
+and running it again is safe:
+
+```bash
+mkdir -m 700 ~/lead-move-work
+# Read both platform ids first, and compare them with what you expect (they are not secret).
+npx wrangler d1 info <ANALYTICS DATABASE> --json
+npx wrangler d1 info reach-around-leads --json
+# 1. Dry run: counts only, identity of both databases checked, nothing written or deleted.
+python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work
+# 2. Copy and verify (still deletes nothing). Read the "not in dest" line: it must say 0 and 0.
+python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --copy
+# If a saved destination prefix differs after investigation, restart from the beginning:
+python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --copy --restart-copy
+# 3. Delete the analytics copies, inside the locked window of step 2 of the cutover.
+python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --purge --locked-window-confirmed
+# Recovery of only the deleted lead rows, if needed:
+python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --recover-from-export
+```
+
+What `--purge` does, in this order. It refuses (exit 3), before any copy or delete, without
+`--locked-window-confirmed` and unless the freeze of step 1 is in place. It repeats the copy and the
+read-back (a row that changed in analytics since the manifest recorded it is copied again and its
+digest replaced, never skipped), proves from the manifest that the leads database holds exactly the
+recorded rows, reads both databases twice `MOVE_SETTLE` seconds apart (default 5, 0 to 60) and refuses
+if either changed, records a Time Travel bookmark of the analytics database in the manifest (it
+refuses without one), writes and verifies a private recovery export of every row eligible for deletion,
+and only then deletes rows whose id and every column match a recorded digest (a lead only once it has
+no event left), never the whole table. Every destructive attempt gets its own timestamped bookmark and
+export; the current bookmark is labeled and earlier bookmarks are listed separately. A row added or
+changed after the copy survives; the script then exits 4 and says to run it again. Last,
+in the same run, it runs the `--verify` check and fails unless that passes.
+If verification reports rows as "removed at source or unknown," it prints only the count. Decide
+whether each moved lead should remain in the destination because it existed at copy time, or should
+be removed under the applicable retention or deletion record. To remove an approved lead, use the
+owner deletion procedure in [privacy.md](privacy.md), recording the decision and identifier outside
+tool output, then rerun `--verify`. Do not delete a row merely to make verification pass. The manifest
+records a deleted set: a row goes into it only when the tool's own delete call succeeded and the
+database returned that row in the statement's `RETURNING` result (keyed by attempt, table, id and row digest, no
+address). Verification accepts a moved row that is absent from analytics only if it is in that set
+and a recovery export holds it, so a row removed by anything else is reported by count. A delete call whose outcome was never
+known stays unaccounted. Because the lost answer leaves a row accounted for nowhere (a row that changed in that very instant would exist only in Time Travel), `--restore-from-export` and `--recover-from-export` refuse it unless you add `--accept-unaccounted-rows`. To reconcile it, restore the exported rows with the steps under Recovery
+below and run `--purge` again: the tool then deletes them itself and records them.
+
+Concurrent runs. Every mode takes an exclusive lock on `.move-run.lock` in the work directory
+before it reads the manifest and holds it until it exits. A second run, in any mode, refuses at once
+with exit 7 and a fixed message, and does nothing. The lock is dropped by the system whenever the
+process ends (a normal end, a signal, SIGKILL), so it never goes stale; a `.move-run.lock` file a
+killed run left behind is reused and is not a problem. A lock file that is a symbolic link, not
+yours, not mode 600 or not a plain file is refused with exit 3: remove it by hand once no run is
+active. Each write of the manifest re-checks the lock and that the file is the one this run last read.
+
+After a purge that did not end cleanly. If a purge was killed (SIGKILL, power loss) or ended with a
+lost call (exit 5), the manifest keeps `purge_open` set and `--purge` refuses (exit 3) until a
+verification attempt has been recorded. The steps, in order: (1) make sure no run is active; (2) run
+`--verify` (exit 0 or not, it records the attempt and prints the counts; it clears `purge_open` only
+when it passes); (3) compare the counts and decide: a failing verify with analytics rows left means
+run `--purge` again, which is now allowed; (4) a purge starting again clears the record, so the next
+unclean end is gated again. A purge that stopped with every delete outcome known (exit 4, or a
+signal after a delete) records that itself and can be rerun at once.
+
+What the locked window can and cannot prove. D1 has no transaction across two databases, so the
+re-read of the leads database and the delete in the analytics database can never be one atomic step,
+and this procedure does not pretend they are. The tool can check that the freeze triggers are exactly
+present, that the leads database holds exactly the recorded rows, and that both databases read the same
+twice some seconds apart. It cannot prove that no writer is running: a writer that is quiet for those
+seconds, or an older Worker that updates or deletes (the freeze blocks inserts only), is not seen. That
+part is your statement (`--locked-window-confirmed`), backed by the kill switches. The per-chunk
+re-read of the leads database and the freeze check inside each DELETE statement are kept as defense in
+depth; they narrow the window and are not an atomic proof.
+
+Recovery. Use `--recover-from-export`, one command. It reads and validates every recorded export
+first (a bad export touches nothing), then lifts the freeze, restores, and creates the freeze again in
+a finally step whatever the restore did, and reads the freeze back by its exact text. It keeps the
+current version of each row once, puts all leads back before any kit event, inserts only missing
+exported rows, refuses if an existing primary key has different data, and verifies every row by digest
+without printing its contents. It is safe to run again. Keep the locked window in place and do not
+re-enable any Worker or other writer until it has finished and the check below passes.
+
+```bash
+python3 -I scripts/move-legacy-leads.py --source <ANALYTICS DATABASE> --source-id <ITS UUID> --dest reach-around-leads --dest-id <ITS UUID> --workdir ~/lead-move-work --recover-from-export
+```
+
+D1's documentation (Worker API, read 2026-11-25) describes only the Worker `batch()` call as one SQL
+transaction; it does not say that `wrangler d1 execute --file` runs a multi-statement file as one, so the
+tool does not rely on that and never merges lift, restore and freeze into one file. A kill (SIGKILL) or
+power loss between the lift and the final freeze cannot be caught. After any recovery that did not end
+with a normal exit code, run this check; it must print two rows, and if it does not, run `--freeze`
+before anything else:
+
+```bash
+npx wrangler d1 execute <ANALYTICS DATABASE> --remote --command "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name IN ('leads_frozen', 'kit_events_frozen')"
+```
+
+`--restore-from-export` alone (restore without lifting or re-creating the freeze) still exists for a
+database whose freeze you have already lifted by hand; use `--freeze` afterwards.
+
+Keep all
+`lead-recovery-*.json` and `lead-returned-*.json` files private until the retention decision and recovery
+window have ended. Then destroy them with exactly:
+
+```bash
+find ~/lead-move-work -maxdepth 1 -type f \( -name 'lead-recovery-*.json' -o -name 'lead-returned-*.json' \) -exec shred -u -- {} +
+```
+
+Trust boundary of the work directory. The tool trusts the same operating-system user and the work
+directory it names. The manifest and the recovery exports are checked against accidental corruption and
+mix-ups (owner, mode, atomic writes, digests, the lock), not authenticated: someone who can write as that
+user while no run is active can edit them consistently, and the tool will accept the result. If that is
+not acceptable for you, keep the work directory on storage only the operator can write, run the move as
+a dedicated user, and keep a copy of the manifest and exports outside the directory (for example a
+checksum written to the change record) to compare before `--purge` and `--verify`.
+
+Delete accounting. Each DELETE statement asks the database to return the rows it removed
+(`DELETE ... RETURNING`), and only returned rows are recorded as deleted by this tool; a row that is
+merely absent afterwards is unknown. Checked on real D1 (wrangler 4.162.0, 2026-11-27, synthetic
+data): a single statement sent with `--command` and `--json` answers with one result block whose
+`results` hold the deleted rows (one row on a match, none when nothing matched), so `RETURNING` works.
+A multi-statement `--file` run answers with one block whose `results` hold a single summary row
+(database size, rows read, rows written, queries executed) and no per-statement rows, so nothing
+could be recorded from a file run. The tool therefore sends every DELETE as its own `--command` call
+(inserts, which need no returned rows, still go through a file) and never reads rows from a `--file`
+run. No personal value goes on a command line (it would show in the process list to other local users): the DELETE
+matches a row by its id and its non-personal columns, leaving out the email and country, and the removed row that
+the database returns is compared by its full digest. If the address changed after the tool read the row, the
+returned version differs. Before it sends the first DELETE of a chunk, the tool creates one private file for that chunk
+(`lead-returned-*.json`, exclusively, mode 600, fsynced) and registers its name in the manifest (`rescue_files`); the file
+names the table and the chunk's ids (no personal data) and starts with no rows. A changed row is added to it atomically
+before anything else is done with the row, then written to the leads database through a private file, read back,
+recorded in the manifest and in its own recovery export. The chunk's file is overwritten with a consumed marker, unregistered
+and removed once the chunk ends; only after the chunk's rows are safe. If the file could not be written, the row is still
+written to the leads database and the export. A failure after the row was added to the file ends the run with exit 5 and
+names the file. After a crash, `--recover-from-export` reads every registered rescue file first: a file that is missing or
+empty, or a deleted row that no file, acknowledgement or source row accounts for, makes it refuse (exit 5, "Time Travel")
+before it restores anything, so a stale export is never put back over a lost newer row and nothing is unregistered; use
+the recorded Time Travel bookmark. Otherwise it restores the rows, writes each rescued row to the leads database, records it
+and consumes the file (checked on the open descriptor: a regular file of yours, mode 600, one link, the inode and size it
+validated). The cleanup command below shreds any that remain. Only rows that differ from the copied row go in a rescue
+file: a matching row is already in the recovery export written before the first DELETE. The tool fails closed: if the database refuses the clause, the delete fails and the run
+needs `--verify`; if no rows come back, nothing is recorded and the final verification reports the
+rows as unaccounted.
+
+Time Travel is the last-resort full-loss option. The command the tool prints is `npx wrangler d1
+time-travel restore <ANALYTICS DATABASE> --bookmark=<BOOKMARK>`. Restoring a bookmark rolls back
+everything written to that database after the bookmark, including views and clicks, not only lead
+rows. It overwrites the analytics database in place and cancels queries in flight, so run it only with
+the window still locked. Time Travel keeps bookmarks 30 days on the Workers Paid plan and 7 on Free
+(Cloudflare D1 Time Travel page, read 2026-11-25). The bookmark of the leads database (`npx wrangler d1
+time-travel info <LEADS DATABASE>`) is a second, separate recovery point; take it before step 3.
+
+Exit codes. 0 done or dry run; 1 a step failed and this run deleted nothing; 2 usage; 3 refused (a
+precondition did not hold, nothing deleted by this run); 4 partial purge, some chunks were deleted and
+the rest were not, the copies and the manifest are intact, safe to run `--purge` again; 5 failure after
+a delete, a delete may have been applied (a call was lost, or the final verification failed): run
+`--verify` and compare the counts before anything else, recovery is the bookmark; 6 interrupted by a
+signal at a safe point before this run deleted anything, safe to run the same command again; 7
+another run holds the lock on the work directory, this run did nothing.
+
+Interruption. Ctrl-C (SIGINT), SIGTERM and SIGHUP are caught. The handler only notes the signal, so no
+manifest, cursor or export write is ever cut in half; the run stops between two chunks (or right after the
+settle wait, at most 60 seconds). A database call already running finishes first (it is bounded by `MOVE_TIMEOUT`), so the
+outcome of every statement is known. The exit code is then 6 when this run deleted nothing (a `--copy`
+resumes from its saved cursor, and a `--purge` simply starts again), or 4 (or 5 when an outcome is
+unknown) when it had already deleted. It never prints a traceback. The manifest, the cursor and the
+recovery export are each written to a temporary file with mode 600, fsynced, renamed into place, and the
+directory is fsynced, so a crash leaves the previous file or the new one. SIGKILL and power loss cannot
+be caught: the manifest records `purge_open` before the first delete of an attempt and it stays set
+until a `--verify` passes, and `--purge` refuses until a `--verify` attempt has been recorded (see
+"After a purge that did not end cleanly" above). A
+killed run can leave a `move-*` scratch directory or a `.*.tmp` file in the work directory; they may
+hold lead rows, so remove them by hand once no run is active (the next manifest or export write removes
+its own leftover temporary files). Only one run is active at a time: a second one is refused (exit 7).
+
+The tool leaves exactly two objects in the analytics database, the freeze triggers `leads_frozen` and
+`kit_events_frozen`, and nothing in the leads database. `scripts/dump-schema.json` allows those two
+triggers, so the dump check in [backup-restore.md](backup-restore.md) passes before and after the
+move. They go when the legacy tables are dropped in the later contract migration.
+
+It prints counts and fixed messages only. It refuses (exit 3) unless the source answers `analytics` and
+the destination answers `leads` (from their own `db_identity` tables) and each name has the platform id
+you passed, so swapped or aliased names stop it before anything happens. Residual limit: the ids are
+checked at the start of each run, and the later calls address the databases by name through the
+wrangler config of the folder you run from; read the two ids you pass against that config. If a
+lead's address is already in the leads database under a different id, the read-back fails and nothing is
+deleted: resolve that lead by hand, then run it again (the copy never overwrites a row it did not
+write). Until the analytics
+tables are empty, the Worker serves no lead path, and erasure and export requests in
+[privacy.md](privacy.md) must cover both databases. After a successful move the old empty tables can go
+in a later, annotated contract migration.
+
+The statement file is written into a fresh directory that is held open by descriptor, created
+exclusively and checked again (owner, mode, same inode) right before wrangler runs it. wrangler opens
+it by path, so a process of your own user that swaps it in that instant is not stopped; the work
+directory is mode 700 and outside any git work tree, and anything that can write there can already
+read the manifest.
+
+Which database each tool acts on:
+
+| Tool | Database | Notes |
+|---|---|---|
+| The Worker: gate, view route, lead purge | `LEADS_DB` | leads, kit events, purge heartbeat (`kit_meta last_purge_ts`) |
+| The Worker: everything else | `DB` | clicks, views, rollups, counters, health, alert dedup |
+| `scripts/backup-d1.sh DATABASE DEST` | the analytics database | with `--apply` reads the database's own `db_identity` and refuses unless it says `analytics` (name and id do not matter); never exports lead tables |
+| `scripts/move-legacy-leads.py` | both, once | moves lead rows from analytics to the leads database in chunks, verifies against a digest manifest, then deletes the analytics copies (only frozen, in a locked window, after a recorded Time Travel bookmark); `--verify` proves the leads database complete |
+| The lead export and erasure steps in [privacy.md](privacy.md) | `reach-around-leads` | name it in every `wrangler d1 execute` |
+
+Not done here: the deploy workflows (`deploy-worker.yml`, `deploy-test.yml`) do not write the binding or
+apply the leads migrations yet. That wiring creates a resource, so it is its own change, after the
+owner has created the database.
+
 ## Kit limits and the daily write budget
 
 The media kit Worker is sized for the Cloudflare paid plan (approved 2026-11-19; it was sized for the Free plan before, and the Free plan's 100,000 rows written a day no longer fits the click ceiling below), and the ruling is: **when a limit is reached the kit goes unavailable; the limits cap the bill.** Every limit below fails closed. A request over a route budget, a lead or event over its cap, an alert or email over the daily budget, and any invalid setting all get a refusal, never a pass. No paid feature is switched on by any of these settings.
@@ -384,7 +730,7 @@ That is 23.4 percent of the default quota of 1600000. Raising a budget raises th
 
 **Analytics health and coverage (issues #401, #402).** Migration `0014_health.sql` adds `analytics_coverage` (one row per UTC day, 24 letters; apply it before or with the Worker, nothing breaks if it is missing: the step logs a failure and the cron goes on). Each hourly run (in degraded mode, when the table definition is wrong, it writes nothing and sends nothing) does, before the purges and the rollup, one read batch and one write batch (coverage plus a prune of rows older than 400 days) and, only when the `analytics_health` alert is on and a condition changed, a few more queries for the message; it is set aside at most 8 of the run's `QUERY_BUDGET` and skipped below 12, so keep `QUERY_BUDGET` at 12 or more. About 24 rows written a day. Details: [alerts.md](alerts.md#analytics-health-alerts). Failure modes: [failure-modes.md](failure-modes.md).
 
-**Lead retention.** One source of truth: `privacy.lead_retention_days` in `site.yaml` (1 to 365, default 30). The build records it in the build manifest, `verify-manifest.py` checks it, "Write deploy config" writes it to the Worker as `LEAD_RETENTION_DAYS` (always, so the deployed value is never the Worker's silent default by accident), and the generated privacy page prints the same number. The repository variable `LEAD_RETENTION_DAYS` is optional and only compared: when it is set and differs from the config the deploy stops with an error naming both numbers (an invalid variable stops it too); unset, it changes nothing. The Worker variable `LEAD_RETENTION_DAYS` (1 to 365, default 30; digits only, an invalid value falls back to 30 and is logged as a fixed line, it is not part of the table above because it never closes the gate) sets how long a lead is kept. Each hourly run is ONE metered D1 query (a batch) that deletes at most 80 `kit_events` of expired leads, then at most 20 expired leads that have no events left (a lead goes only after its events, so the cascade never deletes events in bulk and a lead with many events is purged over several runs), and writes the heartbeat. Estimated writes per run: 20 x 4 + 80 x 3 + 1 = 321 (a lead row and its three indexes, an event row and its two indexes; an estimate, not measured on D1), so 24 runs are 7704 a day, within 80 percent of the 10000 kit purge reserve above; the rest is left for the counter purge. **Budget guarantee:** at `QUERY_BUDGET` 9 or more the lead purge runs first and always gets its one query, and the rest of the jobs share the remainder (the rollup gets the budget minus one). Below 9 the rollup wins (8 is the smallest budget in which one rollup day completes, `rollup_budget.test.ts`), the lead purge runs last on whatever is left with no guarantee, and logs `purge` / `over_budget` when it gets none; keep `QUERY_BUDGET` at 9 or more (default 40). It never runs on the 2-minute live cron. Details and the owner deletion command: [privacy.md](privacy.md).
+**Lead retention.** One source of truth: `privacy.lead_retention_days` in `site.yaml` (1 to 365, default 30). The build records it in the build manifest, `verify-manifest.py` checks it, "Write deploy config" writes it to the Worker as `LEAD_RETENTION_DAYS` (always, so the deployed value is never the Worker's silent default by accident), and the generated privacy page prints the same number. The repository variable `LEAD_RETENTION_DAYS` is optional and only compared: when it is set and differs from the config the deploy stops with an error naming both numbers (an invalid variable stops it too); unset, it changes nothing. The Worker variable `LEAD_RETENTION_DAYS` (1 to 365, default 30; digits only, an invalid value falls back to 30 and is logged as a fixed line, it is not part of the table above because it never closes the gate) sets how long a lead is kept. Each hourly run is ONE metered D1 query (a batch) that deletes at most 80 `kit_events` of expired leads, then at most 20 expired leads that have no events left (a lead goes only after its events, so the cascade never deletes events in bulk and a lead with many events is purged over several runs), and writes the heartbeat. Estimated writes per run: 20 x 4 + 80 x 3 + 1 = 321 (a lead row and its three indexes, an event row and its two indexes; an estimate, not measured on D1), so 24 runs are 7704 a day, within 80 percent of the 10000 kit purge reserve above; the rest is left for the counter purge. **Budget guarantee:** at `QUERY_BUDGET` 12 or more the lead purge runs first and always gets its one query plus the (at most 3) queries of the separation proof, and the rest of the jobs share the remainder. Below 12 the rollup wins (8 is the smallest budget in which one rollup day completes, `rollup_budget.test.ts`), the lead purge runs last on whatever is left with no guarantee, and logs `purge` / `over_budget` when it gets none; keep `QUERY_BUDGET` at 12 or more (default 40). (It was 9 before the separation proof, issue #772.) It never runs on the 2-minute live cron. Details and the owner deletion command: [privacy.md](privacy.md).
 
 **For the route code that uses these limits:** run the per-client throttle (`checkIpMinute`) before taking from a global route counter, so one client cannot spend the shared budget. A request refused by the throttle must not touch a counter.
 

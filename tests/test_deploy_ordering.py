@@ -55,6 +55,53 @@ def test_the_real_migrations_pass() -> None:
     assert run(MIGRATIONS, str(ROOT / "worker" / "migrations")).returncode == 0
 
 
+def test_the_real_leads_migrations_pass_with_no_legacy_exemption() -> None:
+    folder = ROOT / "worker" / "leads-migrations"
+    assert any(folder.glob("0001_*.sql"))
+    assert run(MIGRATIONS, str(folder), "--no-legacy").returncode == 0
+
+
+def test_no_legacy_applies_the_rule_to_the_first_migration(tmp_path: Path) -> None:
+    d = _dir(tmp_path, {"0001_x.sql": "DROP TABLE leads;"})
+    # The analytics folder keeps its pre-rule exemption.
+    assert run(MIGRATIONS, str(d)).returncode == 0
+    refused = run(MIGRATIONS, str(d), "--no-legacy")
+    assert refused.returncode == 1
+    assert "0001_x.sql" in refused.stdout
+
+
+def test_no_legacy_checks_migration_number_zero_too(tmp_path: Path) -> None:
+    # Issue #772 review: "no legacy" used 0 as the exemption limit, and 0000
+    # matches the name pattern.
+    d = _dir(tmp_path, {"0000_drop.sql": "DROP TABLE leads;"})
+    refused = run(MIGRATIONS, str(d), "--no-legacy")
+    assert refused.returncode == 1
+    assert "0000_drop.sql" in refused.stdout
+    # The analytics folder keeps its pre-rule exemption.
+    assert run(MIGRATIONS, str(d)).returncode == 0
+
+
+def test_ci_checks_the_leads_migrations_too() -> None:
+    # An executed line of a step's run block, not a comment or an inert scalar.
+    wanted = "check-migrations.py worker/leads-migrations --no-legacy"
+    doc = yaml.safe_load((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
+
+    def strings(node: object) -> list[str]:
+        if isinstance(node, str):
+            return [node]
+        if isinstance(node, dict):
+            return [s for v in node.values() for s in strings(v)]
+        if isinstance(node, list):
+            return [s for v in node for s in strings(v)]
+        return []
+
+    lines = [
+        line.strip() for text in strings(doc["jobs"]) for line in text.splitlines()
+    ]
+    # A line the shell runs: it ends with the command and is not a comment.
+    assert any(line.endswith(wanted) and not line.startswith("#") for line in lines)
+
+
 @pytest.mark.parametrize(
     "sql",
     [

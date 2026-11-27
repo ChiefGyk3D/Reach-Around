@@ -5,10 +5,12 @@ declare global {
   namespace Cloudflare {
     interface Env {
       DB: D1Database;
+      LEADS_DB: D1Database;
       SITE_HOST: string;
       LINK_IDS: string;
       DESTINATION_KINDS: string;
       TEST_MIGRATIONS: D1Migration[];
+      TEST_LEADS_MIGRATIONS: D1Migration[];
     }
   }
 }

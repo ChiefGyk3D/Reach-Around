@@ -82,6 +82,26 @@ Losing `kit_events` means the kit funnel counts before the loss are gone; that
 is the price of keeping lead data out of every copy. Lead data has its own
 retention, see [deploy.md](deploy.md) ("Lead retention").
 
+Which database. This script acts on the ANALYTICS database (binding `DB`) and
+prints the name it was given. Leads and kit events live in the separate leads
+database (`LEADS_DB`, [deploy.md](deploy.md) "The leads database"), which this
+script never exports: with `--apply` it first reads the database's own
+`db_identity` row and refuses (exit 3) unless it says `analytics`, whatever the
+database is called or how it was reached; the name is never part of the check.
+Nothing is written before that. The leads database has no export script on purpose;
+Time Travel on that database is its recovery path, with its own bookmark
+(`npx wrangler d1 time-travel info <LEADS DATABASE>`).
+
+The one-time lead move ([deploy.md](deploy.md), "The one-time move of existing
+leads") uses Time Travel as its recovery point: before any delete it records a
+fresh bookmark and writes a private full-row recovery export. Recover deleted
+lead rows with the move's `--recover-from-export` mode first. Time Travel is the
+last-resort full-database option: restoring a bookmark rolls back everything
+written to that database after the bookmark, including views and clicks, not
+only the purged lead rows. The move leaves two triggers in the analytics database
+(`leads_frozen`, `kit_events_frozen`); `scripts/dump-schema.json` allows exactly
+those, so the dump check passes before and after the move.
+
 After the export the script runs `scripts/check-dump.py` over everything it
 wrote, against the allowlist minus those four tables. It fails, and deletes the
 run, if it finds an unknown table or column, an address or a user agent. It

@@ -210,6 +210,121 @@ def test_dry_run_is_the_default_and_writes_nothing(tmp_path: Path) -> None:
     assert list(d.iterdir()) == []
 
 
+def test_the_dry_run_names_the_database_and_says_leads_are_not_exported(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    d = dest(tmp_path)
+    dry = run(env, "reach-db", str(d))
+    assert dry.returncode == 0, dry.stderr
+    assert "database: reach-db" in dry.stdout
+    assert "leads database is never exported" in dry.stdout
+
+
+def test_the_finished_run_names_the_database_it_exported(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    d = dest(tmp_path)
+    done = run(env, "reach-db", str(d), "--apply")
+    assert done.returncode == 0, done.stderr
+    assert "analytics database reach-db" in done.stdout
+
+
+@pytest.mark.parametrize("name", ["reach-around-leads", "LEADS_DB", "my.Leads.db"])
+def test_an_analytics_database_with_leads_in_its_name_is_still_exported(
+    tmp_path: Path, name: str
+) -> None:
+    # Round 6: a name is not an identity. The database answers for itself, so a
+    # valid analytics database is never refused for what it is called.
+    env = make(tmp_path)
+    d = dest(tmp_path)
+    dry = run(env, name, str(d))
+    assert dry.returncode == 0, dry.stderr
+    done = run(env, name, str(d), "--apply")
+    assert done.returncode == 0, done.stderr
+    assert f"analytics database {name}" in done.stdout
+
+
+@pytest.mark.parametrize("name", ["reach-around-leads", "LEADS_DB", "my.Leads.db"])
+def test_a_leads_identity_is_refused_whatever_the_name_says(
+    tmp_path: Path, name: str
+) -> None:
+    env = make(tmp_path)
+    set_identity(env, "leads")
+    d = dest(tmp_path)
+    r = run(env, name, str(d), "--apply")
+    assert r.returncode == 3, r.stdout
+    assert "did not identify itself as the analytics database" in r.stderr
+    assert list(d.iterdir()) == []
+
+
+def set_identity(env: dict[str, str], role: str | None) -> None:
+    """Make the stub database say what it is (None: the table is not there)."""
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        if role is None:
+            db.execute("DROP TABLE db_identity")
+        else:
+            db.execute("UPDATE db_identity SET role = ?", (role,))
+        db.commit()
+
+
+@pytest.mark.parametrize(
+    "name", ["contacts", "reach-db", "0123abcd-4567-89ab-cdef-0123456789ab"]
+)
+def test_a_leads_database_is_refused_by_what_it_is_not_by_what_it_is_called(
+    tmp_path: Path, name: str
+) -> None:
+    # Issue #772 review: the refusal was a substring check on the name. The
+    # database now answers for itself.
+    env = make(tmp_path)
+    set_identity(env, "leads")
+    d = dest(tmp_path)
+    r = run(env, name, str(d), "--apply")
+    assert r.returncode == 3, r.stdout
+    assert "did not identify itself as the analytics database" in r.stderr
+    assert "leads" in r.stderr  # what it answered, never a row
+    assert list(d.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("rows", "klass"),
+    [
+        (["SECRET-example.test"], "unexpected"),
+        (["line one\nSECRET-two"], "unexpected"),
+        (["analytics", "SECRET-other"], "multiple"),
+        ([], "none"),
+    ],
+)
+def test_the_refusal_never_echoes_what_the_database_returned(
+    tmp_path: Path, rows: list[str], klass: str
+) -> None:
+    # Round 2: the role text came from the database and was printed back.
+    env = make(tmp_path)
+    with closing(sqlite3.connect(env["STUB_DB"])) as db:
+        db.execute("DROP TABLE db_identity")
+        db.execute("CREATE TABLE db_identity (role TEXT)")
+        db.executemany(
+            "INSERT INTO db_identity (role) VALUES (?)", [(x,) for x in rows]
+        )
+        db.commit()
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    assert r.returncode == 3, r.stdout
+    assert "SECRET" not in r.stderr + r.stdout
+    assert f"class: {klass}" in r.stderr
+    assert list(d.iterdir()) == []
+
+
+def test_a_database_that_cannot_say_what_it_is_is_refused(tmp_path: Path) -> None:
+    env = make(tmp_path)
+    set_identity(env, None)
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    # A step failed (like any unreadable database), and nothing is written.
+    assert r.returncode == 1, r.stdout
+    assert "could not read the database identity" in r.stderr
+    assert list(d.iterdir()) == []
+
+
 def test_apply_writes_private_files_without_lead_tables(tmp_path: Path) -> None:
     env = make(tmp_path)
     d = dest(tmp_path)
@@ -684,6 +799,8 @@ def test_the_run_makes_only_listing_and_count_queries(tmp_path: Path) -> None:
     assert r.returncode == 0, r.stderr
     lines = log.read_text().splitlines()
     queries = [ln for ln in lines if ln.startswith("execute:")]
+    # The first query asks the database who it is (#772): only 'analytics' is exported.
+    assert queries.pop(0) == "execute: SELECT role FROM db_identity ORDER BY role"
     assert len(queries) == 4
     assert queries[0] == queries[3] == f"execute: {LISTING_SQL}"
     assert queries[1] == queries[2]
@@ -693,7 +810,8 @@ def test_the_run_makes_only_listing_and_count_queries(tmp_path: Path) -> None:
     # Order: listing, counts, every export, counts, listing.
     kinds = [ln.split(":")[0] for ln in lines]
     first, last = kinds.index("export"), len(kinds) - 1 - kinds[::-1].index("export")
-    assert kinds[:first] == ["execute", "execute"]
+    # identity, listing, counts
+    assert kinds[:first] == ["execute", "execute", "execute"]
     assert kinds[last + 1 :] == ["execute", "execute"]
     exports = [ln for ln in lines if ln.startswith("export:")]
     assert len(exports) == len(_script_array("tables"))
@@ -1074,7 +1192,10 @@ def test_an_invalid_envelope_around_a_complete_listing_is_not_trusted(
     _fails_before_keeping(r, d)
     assert "unexpected answer" in r.stderr
     lines = log.read_text().splitlines()
-    assert lines == [f"execute: {LISTING_SQL}"]
+    assert lines == [
+        "execute: SELECT role FROM db_identity ORDER BY role",
+        f"execute: {LISTING_SQL}",
+    ]
 
 
 @pytest.mark.parametrize("answer", ["not json", "[]", '{"error": "boom"}'])

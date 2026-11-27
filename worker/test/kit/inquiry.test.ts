@@ -53,6 +53,7 @@ function limiter(success = true): Limiter {
 function baseEnv(over: Partial<InquiryEnv> = {}): InquiryEnv {
   return {
     DB: testEnv.DB,
+    LEADS_DB: testEnv.LEADS_DB,
     SITE_HOST: HOST,
     TOKEN_HMAC_KEY: KEY,
     VIEW_HASH_SECRET: btoa("s".repeat(40)),
@@ -116,14 +117,18 @@ beforeEach(async () => {
     testEnv.DB.prepare("DELETE FROM counters"),
     testEnv.DB.prepare("DELETE FROM leads"),
     testEnv.DB.prepare("DELETE FROM kit_meta"),
-    testEnv.DB.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?1, 'pat@example.com', ?2, ?2, 'gate')").bind(LEAD_ID, T0 - 86_400_000),
+  ]);
+  // The lead lives in the leads database only (issue #772); the main database holds none.
+  await testEnv.LEADS_DB.batch([
+    testEnv.LEADS_DB.prepare("DELETE FROM leads"),
+    testEnv.LEADS_DB.prepare("INSERT INTO leads (id, email, created_ts, last_seen_ts, source) VALUES (?1, 'pat@example.com', ?2, ?2, 'gate')").bind(LEAD_ID, T0 - 86_400_000),
   ]);
 });
 
 // A DB handle that records every statement prepared through it, so a test can prove the session check ran.
-function recordingDb(): { db: D1Database; sql: string[] } {
+function recordingDb(base: D1Database = testEnv.DB): { db: D1Database; sql: string[] } {
   const sql: string[] = [];
-  const db = new Proxy(testEnv.DB, {
+  const db = new Proxy(base, {
     get(target, prop) {
       if (prop === "prepare") {
         return (q: string) => {
@@ -152,16 +157,19 @@ describe("session checks (the same rules as the view route)", () => {
   }
 
   it("reads the stored lead before it delivers (fails without the session check)", async () => {
-    const rec = recordingDb();
-    const { res, f } = await post({ cookie: await sessionCookie() }, baseEnv({ DB: rec.db }));
+    const rec = recordingDb(testEnv.LEADS_DB);
+    const main = recordingDb();
+    const { res, f } = await post({ cookie: await sessionCookie() }, baseEnv({ DB: main.db, LEADS_DB: rec.db }));
     expect(res.headers.get("location")).toBe(INQUIRY_SENT_ROUTE);
     expect(f.calls).toHaveLength(1);
     expect(rec.sql.some((q) => /FROM leads WHERE id/.test(q))).toBe(true);
+    // The lead read hits the leads database only: the main database never sees the lead lookup.
+    expect(main.sql.some((q) => /FROM leads WHERE id/.test(q))).toBe(false);
   });
   it("answers 503 and delivers nothing when the session read fails", async () => {
     const lim = limiter();
     const sql: string[] = [];
-    const boom = new Proxy(testEnv.DB, {
+    const boom = new Proxy(testEnv.LEADS_DB, {
       get(target, prop) {
         if (prop === "prepare") {
           return (q: string) => {
@@ -175,7 +183,7 @@ describe("session checks (the same rules as the view route)", () => {
         return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
       },
     }) as D1Database;
-    const { res, f } = await post({ cookie: await sessionCookie() }, baseEnv({ DB: boom, INQUIRY_LIMITER: lim }));
+    const { res, f } = await post({ cookie: await sessionCookie() }, baseEnv({ LEADS_DB: boom, INQUIRY_LIMITER: lim }));
     expect(res.status).toBe(503);
     expect(f.calls).toHaveLength(0);
     // The session lookup was the failing statement and nothing was prepared after it.
@@ -185,14 +193,14 @@ describe("session checks (the same rules as the view route)", () => {
     expect(row?.n).toBe(0);
   });
   it("refuses a cookie for a lead that no longer exists", async () => {
-    await testEnv.DB.prepare("DELETE FROM leads WHERE id = ?").bind(LEAD_ID).run();
+    await testEnv.LEADS_DB.prepare("DELETE FROM leads WHERE id = ?").bind(LEAD_ID).run();
     await refused(await sessionCookie());
   });
   it("refuses a cookie whose lead id was never stored", async () => {
     await refused(await sessionCookie({ lid: "b".repeat(32) }));
   });
   it("refuses a cookie issued at or before the lead's floor, accepts one issued after it", async () => {
-    await setSessionFloor(testEnv.DB, LEAD_ID, T0 - 30_000);
+    await setSessionFloor(testEnv.LEADS_DB, LEAD_ID, T0 - 30_000);
     await refused(await sessionCookie({ iat: NOW_SEC - 30 }));
     await refused(await sessionCookie({ iat: NOW_SEC - 60 }));
     const { res } = await post({ cookie: await sessionCookie({ iat: NOW_SEC - 29 }) });
