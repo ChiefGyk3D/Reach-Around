@@ -561,21 +561,10 @@ def delete_statements(table: str, rows: list[dict[str, Any]], guard: str) -> lis
             f" AND {guard}{back}"
         )
     cols = tuple(c for c in COLUMNS[table] if c not in PII_COLUMNS)
-    kept = tuple(c for c in COLUMNS[table] if c in PII_COLUMNS)
-
-    def lengths(r: dict[str, Any]) -> str:
-        # Only the length of each personal value is sent, never the value: a change
-        # that alters the length makes the DELETE match nothing. (length() is core
-        # SQLite; that D1 runs it is inferred, not checked.) The full compare is the
-        # digest of the returned row.
-        return "".join(
-            f" AND length({c}) IS {len(r[c]) if isinstance(r.get(c), str) else 'NULL'}"
-            for c in kept
-        )
-
-    return [
-        f"DELETE FROM {table} WHERE " + where(cols, r) + lengths(r) + tail for r in rows
-    ]
+    # Nothing derived from a personal column (not its value, its length or its
+    # null-ness) goes on the command line either: the full compare is the digest of
+    # the returned row, and a changed row is kept (keep_changed_rows).
+    return [f"DELETE FROM {table} WHERE " + where(cols, r) + tail for r in rows]
 
 
 def same_file(a: os.stat_result, b: os.stat_result) -> bool:
