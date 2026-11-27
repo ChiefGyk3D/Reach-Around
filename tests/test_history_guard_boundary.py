@@ -135,6 +135,8 @@ PROTECTED = (
     "scripts/history-guard.py",
     "scripts/verify-history-rewrite.sh",
     "scripts/read-lock.sh",
+    "scripts/lib/nested/helper.py",  # a future nested guard file
+    ".github/actions/local/action.yml",
     "engine.lock",
     "engine.release.json",
 )
