@@ -35,17 +35,26 @@ The fediverse snapshot file (--fediverse). The same rules as the engine's own
 guard over what it stores, and stricter in one way: the engine DROPS an entry
 that fails, this script REFUSES the whole file (fail closed). The shape is
 {"version": 1, "platforms": {"bluesky": S, "mastodon": S}} with S one anonymous,
-complete snapshot: exactly the keys platform, as_of, followers, posts,
-interactions (rows of exactly boosts, favorites, replies) and complete (true);
-platform equals its key; as_of is a real day; counts are whole numbers within the
-engine's bounds; at most 200 rows; at most 512 KiB; no duplicate keys, no NaN, no
-float, no null. Every key and every string at any depth (at most 8 levels) is
-checked: a person-level key name (handle, email, user id, ...) or a string that
-has an identifying shape (a URL, an address, a DID, a handle or host with dots, an
-email, an IP address, a channel id, any space, over 40 characters) is refused. No
-account, handle, host or link is ever part of the file; the config names the
-account. Only this file crosses; the engine's unit note, its .bad copy and staged
-files stay behind (the refresh script does not copy them).
+complete snapshot: the keys platform, as_of, interactions (rows of exactly
+boosts, favorites, replies) and complete (true) are REQUIRED; followers and
+posts (the profile's own counts) are OPTIONAL, as in the engine (a read that
+could not get them leaves them out); no other key, and no reason (that belongs
+to an incomplete snapshot, which is never stored); platform equals its key;
+as_of is a real day; counts are whole numbers within the engine's bounds; at
+most 200 rows; at most 512 KiB; no duplicate keys, no NaN, no float, no null.
+Freshness is the kit's own rule (apply_collected): an entry whose as_of is more
+than 30 days before today or after today is not used by the kit, so it is
+DROPPED here, not carried; a file left with no entry is still written (an empty
+platforms object), so the committed copy of a removed or long-failing source
+ages out instead of staying for ever. The kit also ignores a platform that has
+no configured source, whatever the file holds. Every key and every string at any
+depth (at most 8 levels) is checked: a person-level key name (handle, email,
+user id, ...) or a string that has an identifying shape (a URL, an address, a
+DID, a handle or host with dots, an email, an IP address, a channel id, any
+space, over 40 characters) is refused. No account, handle, host or link is ever
+part of the file; the config names the account. Only this file crosses; the
+engine's unit note, its .bad copy and staged files stay behind (the refresh
+script does not copy them).
 
 The output is not a copy of the input. It is written fresh in the engine's own
 format (sorted ids, two-space indent) to a new temporary file next to --out and
@@ -61,7 +70,7 @@ import os
 import re
 import stat
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 MAX_BYTES = 64 * 1024
@@ -76,6 +85,7 @@ EARLIEST = datetime(2000, 1, 1, tzinfo=UTC)
 
 # The fediverse snapshot file. These values are the engine's own (a test compares
 # each one with the engine's constant, so a change there fails here).
+FEDIVERSE_WINDOW_DAYS = 30
 FEDIVERSE_MAX_BYTES = 512 * 1024
 FEDIVERSE_MAX_POSTS = 200
 FEDIVERSE_MAX_INTERACTIONS = 10**9
@@ -87,6 +97,7 @@ FEDIVERSE_TOP_KEYS = frozenset(
     {"platform", "as_of", "followers", "posts", "interactions", "complete", "reason"}
 )
 FEDIVERSE_ROW_KEYS = frozenset({"boosts", "favorites", "replies"})
+FEDIVERSE_REQUIRED_KEYS = frozenset({"platform", "as_of", "complete", "interactions"})
 FEDIVERSE_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 NAME_PARTS = (
     "username",
@@ -265,8 +276,12 @@ def check_snapshot(kind: str, snap: Any) -> None:
     if not isinstance(snap, dict):
         raise Bad("a snapshot must be an object")
     walk(snap, 0)
-    if set(snap) - FEDIVERSE_TOP_KEYS or snap.get("platform") != kind:
-        raise Bad("a snapshot has an unknown key or the wrong platform")
+    if (
+        set(snap) - FEDIVERSE_TOP_KEYS
+        or not FEDIVERSE_REQUIRED_KEYS <= set(snap)
+        or snap.get("platform") != kind
+    ):
+        raise Bad("a snapshot has an unknown or missing key or the wrong platform")
     if snap.get("complete") is not True or "reason" in snap:
         raise Bad("only a complete snapshot is carried")
     day = snap.get("as_of")
@@ -291,7 +306,13 @@ def check_snapshot(kind: str, snap: Any) -> None:
             raise Bad("an interaction row is not exactly three bounded counts")
 
 
-def parse_fediverse(data: bytes) -> dict[str, dict[str, Any]]:
+def fresh(snap: dict[str, Any], today: date) -> bool:
+    """The kit's own rule: as_of from today back to 30 days before it."""
+    age = (today - date.fromisoformat(snap["as_of"])).days
+    return 0 <= age <= FEDIVERSE_WINDOW_DAYS
+
+
+def parse_fediverse(data: bytes, today: date) -> dict[str, dict[str, Any]]:
     doc = load_json(data)
     if not isinstance(doc, dict) or set(doc) != {"version", "platforms"}:
         raise Bad("must be an object with exactly version and platforms")
@@ -302,7 +323,7 @@ def parse_fediverse(data: bytes) -> dict[str, dict[str, Any]]:
         raise Bad("platforms must be an object of bluesky and mastodon only")
     for kind, snap in platforms.items():
         check_snapshot(kind, snap)
-    return dict(platforms)
+    return {k: v for k, v in platforms.items() if fresh(v, today)}
 
 
 def stale_warnings(
@@ -355,7 +376,9 @@ def main() -> int:
     args = parser.parse_args()
     try:
         if args.fediverse:
-            snaps = parse_fediverse(read_regular(args.source, FEDIVERSE_MAX_BYTES))
+            snaps = parse_fediverse(
+                read_regular(args.source, FEDIVERSE_MAX_BYTES), datetime.now(UTC).date()
+            )
             body = {
                 "version": 1,
                 "platforms": {kind: snaps[kind] for kind in sorted(snaps)},

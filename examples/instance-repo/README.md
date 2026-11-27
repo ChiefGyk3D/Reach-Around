@@ -26,7 +26,7 @@ engine repository for the reasoning.
 | `.github/history-approvers` | The GitHub logins allowed to authorize such a rewrite. Ships empty. |
 | `.github/CODEOWNERS` | Example owners of the paths that decide a rewrite (the primary boundary with code-owner review). Replace `OWNER-LOGIN`; see "History rewrites". |
 | `renovate.json` | Keeps `engine.lock` and the Actions pins current. |
-| `scripts/` | `check-freshness.py` (the stale check of the hand-kept file, standard library only), `validate-numbers.py` (the strict check on `numbers.json`, and with `--fediverse` on `numbers.fediverse.json`, that the counts refresh runs twice), `refresh-counts.sh`, `verify-history.sh` (the engine's `counts history-verify` on the history file, offline), `verify-history-rewrite.sh` (the engine's `counts history-compare`: append-only or a valid tombstone-only rewrite), `history-guard.py` (the pull-request guard that decides whether a rewrite is authorized, standard library only), `check-config.sh` (the plain-language config check), `validate.sh` (the build CI runs), `write-result.py` (bundles the preview job's results into the one data file the comment job reads), `render-comment.py` (run by the comment job from the base commit: validates that file and writes the pull request comment from fixed text), `check-repo.sh`, `read-lock.sh`, `deploy-local.sh`. |
+| `scripts/` | `check-freshness.py` (the stale check of the hand-kept file, standard library only), `check-artifact.py` (the exact file set the publish job accepts from the artifact: regular files only, no links, no extra names), `validate-numbers.py` (the strict check on `numbers.json`, and with `--fediverse` on `numbers.fediverse.json`, that the counts refresh runs twice), `refresh-counts.sh`, `verify-history.sh` (the engine's `counts history-verify` on the history file, offline), `verify-history-rewrite.sh` (the engine's `counts history-compare`: append-only or a valid tombstone-only rewrite), `history-guard.py` (the pull-request guard that decides whether a rewrite is authorized, standard library only), `check-config.sh` (the plain-language config check), `validate.sh` (the build CI runs), `write-result.py` (bundles the preview job's results into the one data file the comment job reads), `render-comment.py` (run by the comment job from the base commit: validates that file and writes the pull request comment from fixed text), `check-repo.sh`, `read-lock.sh`, `deploy-local.sh`. |
 | `docs/EDITING.md` | How to change the page without touching code. |
 
 ## Adopt it
@@ -324,7 +324,12 @@ in the engine repo); without it that source is reported as skipped
   `scripts/validate-numbers.py --fediverse`: the engine's own size limit
   (512 KiB) and key rules, anonymous aggregates only (no account, handle,
   host, link or any person-level key), and the whole file is refused when any
-  part fails. Only that file crosses. The engine's unit note
+  part fails (`followers` and `posts` are optional, as in the engine; the rest
+  is required). An entry older than 30 days, or dated after today, is dropped,
+  the kit's own freshness rule, so the last snapshot of a source you removed or
+  that keeps failing ages out (the file is then written with no entry); the kit
+  also ignores a platform with no configured source at once. Only that file
+  crosses. The engine's unit note
   (`.numbers.json.unit`), its `.bad` copy, the pending note and staged copies
   stay in the scratch folder and are never carried or committed.
 - The egress check does not apply to this template. `reach-around counts

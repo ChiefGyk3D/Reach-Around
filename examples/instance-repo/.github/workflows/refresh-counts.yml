@@ -115,20 +115,10 @@ jobs:
         run: |
           set -eu
           in="$RUNNER_TEMP/counts-in"
-          found="$(cd "$in" && find . -mindepth 1 | sort | tr '\n' ' ')"
-          case "$found" in
-            "./numbers.json " | "./numbers.fediverse.json ./numbers.json " | \
-            "./history ./history/social.jsonl ./numbers.json " | \
-            "./history ./history/social.jsonl ./numbers.fediverse.json ./numbers.json ") ;;
-            *)
-              echo "::error::The artifact must hold numbers.json and, optionally, numbers.fediverse.json and history/social.jsonl, and nothing else."
-              exit 1
-              ;;
-          esac
-          if [ -n "$(find "$in" -type l)" ]; then
-            echo "::error::The artifact must not hold links."
+          python3 -I scripts/check-artifact.py "$in" || {
+            echo "::error::The artifact must hold numbers.json and, optionally, numbers.fediverse.json and history/social.jsonl, regular files only, and nothing else."
             exit 1
-          fi
+          }
           python3 -I scripts/validate-numbers.py --in "$in/numbers.json" --out numbers.json
           if [ -f "$in/numbers.fediverse.json" ]; then
             python3 -I scripts/validate-numbers.py --fediverse \

@@ -15,19 +15,22 @@ import os
 import shutil
 import subprocess
 import sys
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 
-from reach_around.config.fediverse import MAX_INTERACTIONS, MAX_POSTS
+from reach_around.config.fediverse import MAX_INTERACTIONS, MAX_POSTS, WINDOW_DAYS
 from reach_around.config.import_guard import _NAME_PARTS, _NAME_WHOLE
 from reach_around.counts import bluesky_feed, fediverse_store, mastodon_feed
+from test_fediverse_wiring import kit_config, stored_snapshot, write_snapshot
 
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATE = ROOT / "examples" / "instance-repo"
 VALIDATOR = TEMPLATE / "scripts" / "validate-numbers.py"
+ARTIFACT = TEMPLATE / "scripts" / "check-artifact.py"
 WORKFLOW = TEMPLATE / ".github" / "workflows" / "refresh-counts.yml"
 SCRIPT = TEMPLATE / "scripts" / "refresh-counts.sh"
 README = TEMPLATE / "README.md"
@@ -35,10 +38,14 @@ NAME = "numbers.fediverse.json"
 BASH = shutil.which("bash") or "/bin/bash"
 
 
+def _today() -> date:
+    return datetime.now(UTC).date()
+
+
 def _snap(kind: str = "bluesky", **over: object) -> dict[str, object]:
     base: dict[str, object] = {
         "platform": kind,
-        "as_of": "2026-11-20",
+        "as_of": (_today() - timedelta(days=1)).isoformat(),
         "followers": 120,
         "posts": 40,
         "interactions": [{"boosts": 1, "favorites": 2, "replies": 3}],
@@ -222,8 +229,37 @@ def _load_validator() -> Any:
     return mod
 
 
+@pytest.mark.parametrize("field", ["platform", "as_of", "complete", "interactions"])
+def test_every_required_field_is_required_like_the_engine(
+    field: str, tmp_path: Path
+) -> None:
+    snap = {k: v for k, v in _snap().items() if k != field}
+    out = tmp_path / "out.json"
+    assert _run(_put(tmp_path, _file_raw("bluesky", snap)), out).returncode == 1
+    assert fediverse_store._valid("bluesky", snap) is False  # noqa: SLF001
+
+
+@pytest.mark.parametrize("field", ["followers", "posts"])
+def test_the_profile_counts_are_optional_exactly_like_the_engine(
+    field: str, tmp_path: Path
+) -> None:
+    snap = {k: v for k, v in _snap().items() if k != field}
+    out = tmp_path / "out.json"
+    done = _run(_put(tmp_path, _file_raw("bluesky", snap)), out)
+    assert done.returncode == 0, done.stderr
+    assert fediverse_store._valid("bluesky", snap) is True  # noqa: SLF001
+    both = {k: v for k, v in _snap().items() if k not in ("followers", "posts")}
+    assert fediverse_store._valid("bluesky", both) is True  # noqa: SLF001
+    assert _run(_put(tmp_path, _file_raw("bluesky", both)), out).returncode == 0
+
+
+def _file_raw(kind: str, snap: dict[str, object]) -> dict[str, object]:
+    return {"version": 1, "platforms": {kind: snap}}
+
+
 def test_the_validators_limits_are_the_engines_limits() -> None:
     mod = _load_validator()
+    assert mod.FEDIVERSE_WINDOW_DAYS == WINDOW_DAYS
     assert mod.FEDIVERSE_MAX_BYTES == fediverse_store.MAX_SNAPSHOT_BYTES
     assert mod.FEDIVERSE_MAX_POSTS == MAX_POSTS
     assert mod.FEDIVERSE_MAX_INTERACTIONS == MAX_INTERACTIONS
@@ -236,6 +272,64 @@ def test_the_validators_limits_are_the_engines_limits() -> None:
     assert frozenset(mod.FEDIVERSE_KINDS) == frozenset(fediverse_store.KINDS)
     assert frozenset(mod.FEDIVERSE_TOP_KEYS) == bluesky_feed._TOP_KEYS  # noqa: SLF001
     assert frozenset(mod.FEDIVERSE_ROW_KEYS) == bluesky_feed._ROW_KEYS  # noqa: SLF001
+
+
+# ---- freshness: the kit's own rule ---------------------------------------------
+
+FROZEN = date(2026, 11, 26)
+
+
+@pytest.mark.parametrize("offset", [-1, 0, 1, 29, 30, 31, 400])
+def test_the_validator_keeps_what_the_kit_would_use(
+    offset: int, tmp_path: Path
+) -> None:
+    mod = _load_validator()
+    as_of = (FROZEN - timedelta(days=offset)).isoformat()
+    data = json.dumps(_file_raw("bluesky", _snap(as_of=as_of))).encode()
+    kept = "bluesky" in mod.parse_fediverse(data, FROZEN)
+    # The engine's feed, with the same clock and the same snapshot.
+    stored = stored_snapshot(as_of=as_of)
+    config = fediverse_store.apply_collected(
+        kit_config(), write_snapshot(tmp_path, stored), FROZEN
+    )
+    assert config.kit is not None
+    used = any(e.collected for e in config.kit.fediverse)
+    assert kept == used, offset
+
+
+def test_an_old_snapshot_ages_out_and_the_file_is_still_written(
+    tmp_path: Path,
+) -> None:
+    old = (_today() - timedelta(days=WINDOW_DAYS + 5)).isoformat()
+    fresh = _snap("mastodon")
+    both = _file(_snap("bluesky", as_of=old), fresh)
+    out = tmp_path / "out.json"
+    assert _run(_put(tmp_path, both), out).returncode == 0
+    assert json.loads(out.read_text(encoding="utf-8"))["platforms"] == {
+        "mastodon": fresh
+    }
+    only_old = _file(_snap("bluesky", as_of=old))
+    assert _run(_put(tmp_path, only_old), out).returncode == 0
+    assert json.loads(out.read_text(encoding="utf-8")) == {
+        "version": 1,
+        "platforms": {},
+    }
+
+
+def test_the_committed_snapshot_of_a_removed_source_ages_out_of_a_refresh(
+    tmp_path: Path,
+) -> None:
+    """The engine leaves the seeded file alone when no source is configured; the
+    script re-checks it, so once it is older than the window it is emptied."""
+    root, env = _fixture(tmp_path)
+    old = (_today() - timedelta(days=WINDOW_DAYS + 1)).isoformat()
+    (root / NAME).write_text(
+        fediverse_store.dump_snapshots({"bluesky": _snap(as_of=old)}),
+        encoding="utf-8",
+    )
+    r = _refresh(root, env, tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert json.loads((root / NAME).read_text(encoding="utf-8"))["platforms"] == {}
 
 
 # ---- the refresh script -----------------------------------------------------
@@ -261,6 +355,15 @@ case " $* " in
     if [ -n "${FAKE_SNAPSHOT:-}" ]; then
       printf '%s' "$FAKE_SNAPSHOT" > "$data/numbers.fediverse.json"
     fi
+    case "${FAKE_OUTPUT_KIND:-}" in
+      symlink) rm -f "$data/numbers.fediverse.json"
+               printf '%s' "$FAKE_SNAPSHOT" > "$data/real.json"
+               ln -s real.json "$data/numbers.fediverse.json" ;;
+      fifo) rm -f "$data/numbers.fediverse.json"
+            mkfifo "$data/numbers.fediverse.json" ;;
+      dir) rm -f "$data/numbers.fediverse.json"
+           mkdir "$data/numbers.fediverse.json" ;;
+    esac
     # What a collector run leaves besides the snapshot.
     printf 'u' > "$data/.numbers.json.unit"
     printf 'b' > "$data/.numbers.json.unit.bad"
@@ -356,6 +459,22 @@ def test_a_run_without_a_snapshot_installs_none(tmp_path: Path) -> None:
     assert not (root / NAME).exists()
 
 
+@pytest.mark.parametrize("kind", ["symlink", "fifo", "dir"])
+def test_an_engine_output_that_is_not_a_regular_file_fails_the_refresh(
+    kind: str, tmp_path: Path
+) -> None:
+    root, env = _fixture(tmp_path)
+    old = fediverse_store.dump_snapshots({"bluesky": _snap("bluesky", followers=7)})
+    (root / NAME).write_text(old, encoding="utf-8")
+    r = _refresh(
+        root, env, tmp_path, FAKE_SNAPSHOT=json.dumps(GOOD), FAKE_OUTPUT_KIND=kind
+    )
+    assert r.returncode == 1, r.stderr
+    assert "not a regular file" in r.stderr
+    assert (root / NAME).read_text(encoding="utf-8") == old
+    assert not (root / "numbers.json").exists()
+
+
 def test_a_symbolic_link_snapshot_in_the_repository_is_refused(tmp_path: Path) -> None:
     root, env = _fixture(tmp_path)
     target = tmp_path / "t.json"
@@ -400,20 +519,113 @@ def _check_step() -> str:
     )
 
 
-def test_the_publish_job_checks_the_snapshot_again_and_allows_only_known_sets() -> None:
+def test_the_publish_job_runs_the_artifact_check_before_anything_is_read() -> None:
+    """Extra guard (strings); the behavior is tested on real trees below."""
     check = _check_step()
+    assert check.index("check-artifact.py") < check.index("validate-numbers.py")
     assert "--fediverse" in check and NAME in check
-    # The allow-list case names every combination, with and without the snapshot.
-    assert "./numbers.fediverse.json ./numbers.json " in check
-    assert '"./numbers.json "' in check
-    full = "./history ./history/social.jsonl ./numbers.fediverse.json ./numbers.json "
-    assert full in check
-    assert 'find "$in" -type l' in check
-    # The check writes a fresh copy, and runs before the commit.
     runs = [s.get("run", "") for s in _jobs()["publish"]["steps"]]
     verify_at = next(i for i, r in enumerate(runs) if "--fediverse" in r)
     commit_at = next(i for i, r in enumerate(runs) if "commit -m" in r)
     assert verify_at < commit_at
+
+
+def _tree(root: Path, files: list[str]) -> Path:
+    for rel in files:
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
+    return root
+
+
+def _artifact(root: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(  # noqa: S603 - fixed argv, the template's script
+        [sys.executable, "-I", str(ARTIFACT), str(root)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        ["numbers.json"],
+        ["numbers.json", NAME],
+        ["numbers.json", "history/social.jsonl"],
+        ["numbers.json", NAME, "history/social.jsonl"],
+    ],
+)
+def test_the_artifact_check_accepts_exactly_the_known_sets(
+    files: list[str], tmp_path: Path
+) -> None:
+    done = _artifact(_tree(tmp_path / "a", files))
+    assert done.returncode == 0, done.stderr
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        [],
+        [NAME],
+        ["history/social.jsonl"],
+        ["numbers.json", "extra.txt"],
+        ["numbers.json", ".numbers.json.unit"],
+        ["numbers.json", ".numbers.json.unit.bad"],
+        ["numbers.json", ".numbers.fediverse.json.0123456789abcdef.staged"],
+        ["numbers.json", "history/notes.txt"],
+        ["numbers.json", "history/social.jsonl", "history/.social.jsonl.lock"],
+        ["numbers.json", "other/social.jsonl"],
+        ["numbers.json", "history/deep/social.jsonl"],
+        ["numbers.json", "numbers.json\n./numbers.fediverse.json"],
+        ["numbers.json", "numbers.fediverse.json "],
+        ["numbers.json", "-rf"],
+        ["numbers.json", "::error::x"],
+        ["numbers.json", "x" * 250],
+        ["Numbers.json"],
+    ],
+)
+def test_the_artifact_check_refuses_everything_else(
+    files: list[str], tmp_path: Path
+) -> None:
+    done = _artifact(_tree(tmp_path / "a", files))
+    assert done.returncode == 1
+    assert "refused" in done.stderr
+    # A name from the artifact is never echoed (it could carry a command).
+    assert "::error::x" not in done.stderr + done.stdout
+
+
+def test_the_artifact_check_refuses_links_and_special_files(tmp_path: Path) -> None:
+    root = _tree(tmp_path / "a", ["numbers.json"])
+    (root / NAME).symlink_to(root / "numbers.json")
+    assert _artifact(root).returncode == 1
+    (root / NAME).unlink()
+    os.mkfifo(root / NAME)
+    assert _artifact(root).returncode == 1
+    (root / NAME).unlink()
+    (root / "history").symlink_to(tmp_path)
+    assert _artifact(root).returncode == 1
+    (root / "history").unlink()
+    (root / "numbers.json").unlink()
+    (root / "numbers.json").symlink_to(tmp_path / "x")
+    assert _artifact(root).returncode == 1
+
+
+def test_the_artifact_check_refuses_an_empty_folder_and_a_missing_one(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "empty").mkdir()
+    assert _artifact(tmp_path / "empty").returncode == 1
+    assert _artifact(tmp_path / "missing").returncode == 1
+    (tmp_path / "f").write_text("x", encoding="utf-8")
+    assert _artifact(tmp_path / "f").returncode == 1
+
+
+def test_the_artifact_check_refuses_a_deleted_numbers_file(tmp_path: Path) -> None:
+    root = _tree(tmp_path / "a", ["numbers.json", NAME])
+    assert _artifact(root).returncode == 0
+    (root / "numbers.json").unlink()
+    assert _artifact(root).returncode == 1
 
 
 def test_the_snapshot_is_proposed_with_the_numbers_and_nothing_else() -> None:
@@ -437,6 +649,77 @@ def test_the_egress_check_has_nothing_to_check_in_the_template() -> None:
     assert "counts egress-check" in readme and NAME in readme
 
 
-def test_the_build_mounts_the_snapshot_beside_the_numbers_file() -> None:
+SHIM = r"""#!/bin/bash
+if [ "$1" = "--version" ]; then echo "Docker version 27"; exit 0; fi
+printf '%s\n' "$@" >> "$SHIM_LOG"
+exit 0
+"""
+
+
+def _build(tmp: Path, *, link: bool = False, absent: bool = False) -> tuple[int, str]:
+    root = tmp / "inst"
+    shutil.copytree(TEMPLATE, root)
+    (root / NAME).unlink(missing_ok=True)
+    if link:
+        target = tmp / "t.json"
+        target.write_text("{}", encoding="utf-8")
+        (root / NAME).symlink_to(target)
+    elif not absent:
+        (root / NAME).write_text("{}", encoding="utf-8")
+    (root / "numbers.json").write_text('{"version": 1, "platforms": {}}', "utf-8")
+    bin_dir = tmp / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text(SHIM, encoding="utf-8")
+    docker.chmod(0o755)
+    log = tmp / "argv.log"
+    done = subprocess.run(  # noqa: S603 - fixed argv, a copy of the template
+        [
+            BASH,
+            str(root / "scripts" / "validate.sh"),
+            "--out",
+            str(tmp / "out"),
+            "--manifest",
+            str(tmp / "m" / "manifest.json"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "SHIM_LOG": str(log),
+        },
+    )
+    text = log.read_text(encoding="utf-8") if log.exists() else done.stderr
+    return done.returncode, text
+
+
+def test_the_build_mounts_the_snapshot_read_only_beside_the_numbers_file(
+    tmp_path: Path,
+) -> None:
+    code, argv = _build(tmp_path)
+    assert code == 0, argv
+    root = tmp_path / "inst"
+    lines = argv.splitlines()
+    assert f"{root}/{NAME}:/config/{NAME}:ro" in lines
+    assert f"{root}/numbers.json:/config/numbers.json:ro" in lines
+    # Every mount that comes from the repository folder is read-only.
+    mounts = [x for x in lines if x.startswith(f"{root}/")]
+    assert mounts and all(x.endswith(":ro") for x in mounts), mounts
+
+
+def test_the_build_mounts_no_snapshot_when_there_is_none(tmp_path: Path) -> None:
+    code, argv = _build(tmp_path, absent=True)
+    assert code == 0, argv
+    assert NAME not in argv
+
+
+def test_the_build_refuses_a_symbolic_link_snapshot(tmp_path: Path) -> None:
+    code, text = _build(tmp_path, link=True)
+    assert code == 2 and "must not be a symbolic link" in text
+
+
+def test_the_string_guard_for_the_mount_list() -> None:
     text = (TEMPLATE / "scripts" / "validate.sh").read_text(encoding="utf-8")
     assert f"numbers.json {NAME}" in text

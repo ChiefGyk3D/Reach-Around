@@ -315,7 +315,12 @@ fi
 # The engine's snapshot file, checked the same way (into a scratch file; the
 # whole file is refused when any part fails, and then nothing is changed).
 checked_fediverse=""
-if [ -f "$workdir/numbers.fediverse.json" ] && [ ! -L "$workdir/numbers.fediverse.json" ]; then
+if [ -L "$workdir/numbers.fediverse.json" ] ||
+  { [ -e "$workdir/numbers.fediverse.json" ] && [ ! -f "$workdir/numbers.fediverse.json" ]; }; then
+  echo "refresh-counts: the engine left a link or a file that is not a regular file where the fediverse snapshot belongs; nothing was changed." >&2
+  exit 1
+fi
+if [ -f "$workdir/numbers.fediverse.json" ]; then
   checked_fediverse="$workdir/numbers.fediverse.checked.json"
   python3 -I "$here/scripts/validate-numbers.py" --fediverse \
     --in "$workdir/numbers.fediverse.json" --out "$checked_fediverse" || {

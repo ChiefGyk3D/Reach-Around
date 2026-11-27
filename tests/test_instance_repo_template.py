@@ -165,6 +165,7 @@ def test_the_template_files_exist() -> None:
         ".github/workflows/refresh-counts.yml",
         "scripts/refresh-counts.sh",
         "scripts/validate-numbers.py",
+        "scripts/check-artifact.py",
         "scripts/verify-history.sh",
         "scripts/unmerged-history.sh",
         ".github/workflows/check-hand-kept-freshness.yml",
