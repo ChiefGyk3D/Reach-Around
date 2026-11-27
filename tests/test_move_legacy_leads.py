@@ -2537,9 +2537,7 @@ def test_accepting_unaccounted_rows_warns_and_leaves_an_audit_record(
         "--pur",
     ],
 )
-def test_the_move_tool_refuses_an_abbreviated_option(
-    tmp_path: Path, flag: str
-) -> None:
+def test_the_move_tool_refuses_an_abbreviated_option(tmp_path: Path, flag: str) -> None:
     env = make(tmp_path)
     work = workdir(tmp_path)
     before = src_rows(env)
