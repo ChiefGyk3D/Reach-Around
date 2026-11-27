@@ -104,7 +104,7 @@ tables=(
   click_events click_funnel_state click_hop_daily click_hop_monthly
   click_landing_daily click_landing_monthly click_landing_state click_month_log click_seal
   click_src_daily click_src_monthly
-  counters d1_migrations kit_meta
+  counters d1_migrations db_identity kit_meta
   view_city_daily view_daily view_dim_daily view_geo_daily view_hour_daily view_meta
   view_rollup_log
 )

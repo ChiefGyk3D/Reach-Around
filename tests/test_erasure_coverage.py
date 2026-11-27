@@ -1726,8 +1726,10 @@ def test_every_registered_class_has_a_reason_and_known_class() -> None:
 
 
 def lead_statements() -> list[str]:
-    """The SQL file the owner applies (the lead tables only)."""
-    return _sql("0123456789abcdef0123456789abcdef", "nobody@example.test")
+    """The SQL file the owner applies (the lead tables only), then the read-back the
+    tool prints as its own `--command` (a `--file` run returns no rows, #772)."""
+    lead = "0123456789abcdef0123456789abcdef"
+    return [*_sql(lead, "nobody@example.test"), leads_mod._read_back(lead)]
 
 
 TARGET_LEAD = "0123456789abcdef0123456789abcdef"
@@ -1742,7 +1744,7 @@ def finish_flow_statements() -> list[str]:
     stops clearing, or clears before the lead read-back, changes this list and
     the guard tests below fail (#905 review round 1, Medium 4). The schema reads
     are left out (they are not part of the erasure). The lead read-back that runs
-    first is dropped from the list, since the owner's SQL file ends with it."""
+    first is dropped from the list, since the printed read-back command (after the owner's SQL file) is the same read."""
     fake = FakeWrangler()
     fake.single_database()
     ids = (LEADS_UUID, LEADS_UUID)
@@ -1785,6 +1787,7 @@ def delete_statements() -> list[str]:
     (applied by the owner), then the alert clear and its read-back (`--finish`)."""
     return [
         *_sql(TARGET_LEAD, TARGET_MAIL),
+        leads_mod._read_back(TARGET_LEAD),  # printed as its own --command (#772)
         *(f"{s};" for s in finish_flow_statements()),
     ]
 
