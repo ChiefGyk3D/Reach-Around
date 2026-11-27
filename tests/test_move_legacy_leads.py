@@ -76,6 +76,9 @@ else:
 writes = is_file or sql.lstrip().startswith("DELETE FROM")
 if os.environ.get("STUB_FAIL_FILE") and writes:
     sys.exit(1)
+mark = os.environ.get("STUB_MARK")
+if mark and is_file and os.path.exists(mark):
+    sys.exit(1)  # every file fails once the changed row was deleted
 if os.environ.get("CRASH_AT") and writes:
     counter = os.environ["STUB_COUNTER"]
     n = int(open(counter).read()) if os.path.exists(counter) else 0
@@ -92,6 +95,8 @@ if writes:
             + "'"
         )
         db.commit()
+        if os.environ.get("STUB_MARK"):
+            open(os.environ["STUB_MARK"], "w").write("x")
     if log and name == "analytics-db" and "DELETE FROM" in sql:
         open(log, "a").write("delete-file\\n" if is_file else "delete\\n")
     inject = os.environ.get("STUB_INJECT")
@@ -2770,6 +2775,27 @@ def test_a_row_changed_after_it_was_read_is_kept_in_dest_not_lost(
     assert got == ("changed@example.test",)
     assert "changed@example.test" not in log.read_text()
     assert run(env, work, "--verify").returncode == 0
+
+
+def test_a_changed_row_survives_in_a_private_file_when_keeping_it_fails(
+    tmp_path: Path,
+) -> None:
+    env = make(tmp_path)
+    log = spy_env(tmp_path, env)
+    env["STUB_INJECT"] = "email"  # the address changes right before its DELETE
+    env["STUB_MARK"] = str(tmp_path / "changed")  # then every file call fails
+    work = workdir(tmp_path)
+    r = purge(env, work)
+    assert r.returncode == 5, (r.returncode, r.stderr)  # VerifyRequired
+    saved = [p for p in work.iterdir() if p.name.startswith("lead-returned-")]
+    assert len(saved) == 1
+    assert stat.S_IMODE(saved[0].stat().st_mode) == 0o600
+    data = json.loads(saved[0].read_text())
+    assert data["row"]["email"] == "changed@example.test"  # the only copy is kept
+    assert str(saved[0]) in r.stderr  # the path is named
+    for out in (r.stdout, r.stderr, log.read_text()):
+        assert "changed@example.test" not in out
+    assert "partial purge" not in r.stderr
 
 
 def frozen_names(env: dict[str, str]) -> set[str]:

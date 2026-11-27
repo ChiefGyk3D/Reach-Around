@@ -561,7 +561,21 @@ def delete_statements(table: str, rows: list[dict[str, Any]], guard: str) -> lis
             f" AND {guard}{back}"
         )
     cols = tuple(c for c in COLUMNS[table] if c not in PII_COLUMNS)
-    return [f"DELETE FROM {table} WHERE " + where(cols, r) + tail for r in rows]
+    kept = tuple(c for c in COLUMNS[table] if c in PII_COLUMNS)
+
+    def lengths(r: dict[str, Any]) -> str:
+        # Only the length of each personal value is sent, never the value: a change
+        # that alters the length makes the DELETE match nothing. (length() is core
+        # SQLite; that D1 runs it is inferred, not checked.) The full compare is the
+        # digest of the returned row.
+        return "".join(
+            f" AND length({c}) IS {len(r[c]) if isinstance(r.get(c), str) else 'NULL'}"
+            for c in kept
+        )
+
+    return [
+        f"DELETE FROM {table} WHERE " + where(cols, r) + lengths(r) + tail for r in rows
+    ]
 
 
 def same_file(a: os.stat_result, b: os.stat_result) -> bool:
@@ -1712,6 +1726,24 @@ def purge_chunks(
                 require_frozen(w, args.source)
 
 
+RETURNED_PREFIX = "lead-returned-"
+
+
+def save_returned_row(work: Path, table: str, row: dict[str, Any]) -> Path:
+    """Write a row the database handed back changed to its own private file (mode
+    600, whole or absent, fsynced) in the checked work directory. This is the first
+    thing done with such a row: until it is on disk it exists only in memory, because
+    the DELETE that removed it from SOURCE has already been applied."""
+    name = f"{RETURNED_PREFIX}{secrets.token_hex(8)}.json"
+    body = json.dumps({"table": table, "digest": digest(table, row), "row": row})
+    dfd = os.open(work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        write_private(dfd, name, body)
+    finally:
+        os.close(dfd)
+    return work / name
+
+
 def keep_changed_rows(
     w: Wrangler,
     args: argparse.Namespace,
@@ -1723,21 +1755,41 @@ def keep_changed_rows(
 ) -> None:
     """A DELETE matches without the personal columns, so the row it removed can differ
     from the copied one there (changed after it was read). The database handed that
-    version back: write it to DEST (through a private file, never a command line),
-    read it back, record it, and only then let it count as deleted. Nothing is lost."""
+    version back, and it is the only copy. Order, so that nothing is lost:
+    1. write it to a private file of its own (before anything that can fail);
+    2. write it to DEST through a private file and read it back;
+    3. record it in the manifest and in a recovery export;
+    only then does it count as deleted. A failure after step 1 raises VerifyRequired
+    naming the file (never a value): the row is in that file, nothing else is lost."""
     for r in back:
         if str(r.get("id")) != str(sent.get("id")) or digest(table, r) == digest(
             table, sent
         ):
             continue
-        run_file(w, args.dest, work, upsert_sql(table, [r]))
-        back_dest = by_ids(w, args.dest, table, [r.get("id")])
-        if missing_from(back_dest, [r], COLUMNS[table]):
-            raise Failed("a changed row could not be kept in the destination")
-        m.record(table, r)
-        m.save()
-        item = {"table": table, "digest": digest(table, r), "row": r}
-        write_recovery_export(w, args, work, m, [item])  # an export holds it too
+        try:
+            saved = save_returned_row(work, table, r)
+        except (Failed, Refused, OSError, UnicodeError):
+            raise VerifyRequired(
+                "a row changed after it was read was deleted from the source and could "
+                "not be saved: run --verify, then recover from the Time Travel "
+                "bookmark before anything else."
+            ) from None
+        try:
+            run_file(w, args.dest, work, upsert_sql(table, [r]))
+            back_dest = by_ids(w, args.dest, table, [r.get("id")])
+            if missing_from(back_dest, [r], COLUMNS[table]):
+                raise Failed("not kept")
+            m.record(table, r)
+            m.save()
+            item = {"table": table, "digest": digest(table, r), "row": r}
+            write_recovery_export(w, args, work, m, [item])
+        except (Failed, Refused, OSError, UnicodeError):
+            raise VerifyRequired(
+                "a row changed after it was read was deleted from the source and could "
+                f"not be kept in the destination. It is saved in {saved} (mode 600, "
+                "holds personal data): restore it by hand, run --verify, and delete "
+                "the file afterwards."
+            ) from None
         sent.clear()
         sent.update(r)
 
