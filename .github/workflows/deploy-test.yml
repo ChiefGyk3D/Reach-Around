@@ -186,7 +186,7 @@ jobs:
       - name: Fetch count-source keys from Doppler
         id: doppler
         if: ${{ vars.DOPPLER_COUNTS_IDENTITY_ID != '' && vars.DOPPLER_COUNTS_PROJECT != '' && vars.DOPPLER_COUNTS_CONFIG != '' }}
-        uses: ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@ff658b7c11a55eea1394af5fd1a3a1b4b09d9cd0 # v1.36.0
+        uses: ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@9e0d7b2e7e8530e2b1bb200ecb4fbf6de021881f # v1.38.0
         with:
           project: ${{ vars.DOPPLER_COUNTS_PROJECT }}
           config: ${{ vars.DOPPLER_COUNTS_CONFIG }}
@@ -979,7 +979,7 @@ jobs:
       # from the GitHub `test` environment secret.
       - name: Fetch Cloudflare credentials from Doppler
         id: cf_doppler
-        uses: ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@ff658b7c11a55eea1394af5fd1a3a1b4b09d9cd0 # v1.36.0
+        uses: ChiefGyk3D/git-your-ship-together/.github/actions/doppler-secrets@9e0d7b2e7e8530e2b1bb200ecb4fbf6de021881f # v1.38.0
         with:
           project: reach-around
           config: dev

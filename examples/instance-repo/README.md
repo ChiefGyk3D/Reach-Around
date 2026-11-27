@@ -22,8 +22,11 @@ engine repository for the reasoning.
 | `.github/workflows/deploy.yml` | On a push to `main` or a manual run: check and validate always; deploy staging only while `ALLOW_STAGING_DEPLOY` is exactly `true`; production only by a manual run with target `production` while `ALLOW_PRODUCTION_DEPLOY` is exactly `true`. Each deploy waits for its environment's reviewer. |
 | `.github/workflows/refresh-counts.yml` | Once a day (and by hand): refresh follower counts with the pinned engine and open a pull request with the new `numbers.json`. Optional; see "Daily follower counts". |
 | `.github/workflows/check-hand-kept-freshness.yml` | Once a week (and by hand): check `hand-kept.json` and keep one issue open while a number you keep by hand is past its limit. Optional; see "Hand-kept numbers". |
+| `.github/workflows/history-guard.yml` | On a pull request: fail any change to `history/social.jsonl` that is not an append, except a labeled tombstone-only rewrite. Optional; see "History rewrites". Its check is named `History guard`. |
+| `.github/history-approvers` | The GitHub logins allowed to authorize such a rewrite. Ships empty. |
+| `.github/CODEOWNERS` | Example owners of the paths that decide a rewrite (the primary boundary with code-owner review). Replace `OWNER-LOGIN`; see "History rewrites". |
 | `renovate.json` | Keeps `engine.lock` and the Actions pins current. |
-| `scripts/` | `check-freshness.py` (the stale check of the hand-kept file, standard library only), `validate-numbers.py` (the strict check on `numbers.json` the counts refresh runs twice), `refresh-counts.sh`, `verify-history.sh` (the engine's `counts history-verify` on the history file, offline), `check-config.sh` (the plain-language config check), `validate.sh` (the build CI runs), `write-result.py` (bundles the preview job's results into the one data file the comment job reads), `render-comment.py` (run by the comment job from the base commit: validates that file and writes the pull request comment from fixed text), `check-repo.sh`, `read-lock.sh`, `deploy-local.sh`. |
+| `scripts/` | `check-freshness.py` (the stale check of the hand-kept file, standard library only), `validate-numbers.py` (the strict check on `numbers.json` the counts refresh runs twice), `refresh-counts.sh`, `verify-history.sh` (the engine's `counts history-verify` on the history file, offline), `verify-history-rewrite.sh` (the engine's `counts history-compare`: append-only or a valid tombstone-only rewrite), `history-guard.py` (the pull-request guard that decides whether a rewrite is authorized, standard library only), `check-config.sh` (the plain-language config check), `validate.sh` (the build CI runs), `write-result.py` (bundles the preview job's results into the one data file the comment job reads), `render-comment.py` (run by the comment job from the base commit: validates that file and writes the pull request comment from fixed text), `check-repo.sh`, `read-lock.sh`, `deploy-local.sh`. |
 | `docs/EDITING.md` | How to change the page without touching code. |
 
 ## Adopt it
@@ -321,6 +324,215 @@ in the engine repo); without it that source is reported as skipped
   and it was not opened by the Actions bot, comes from a fork, or changes
   anything besides `numbers.json` and `history/social.jsonl`, the run stops with a message and touches
   nothing. Close that pull request or rename its branch, then run again.
+
+## History rewrites
+
+The counts history is append-only. `.github/workflows/history-guard.yml` (the
+check named `History guard`) runs on every pull request and fails any change to
+`history/social.jsonl` that is not a pure append of well-formed lines. The one
+exception is a **tombstone-only rewrite**: an owner redaction that replaces old
+`api` rows with tombstones (see `docs/social-history.md` in the engine
+repository, "Redact stored values (tombstones)").
+
+A rewrite is accepted only when ALL of these hold, and any failure is a red
+check that prints fixed words, never a value:
+
+- The head branch is named `redact/<anything>`, in this repository (not a fork),
+  and never `counts/refresh`.
+- The pull request carries the label `history-tombstone`, and the last label
+  event is a `labeled` event applied by a login listed in
+  `.github/history-approvers`. The guard reads that file from the base commit,
+  so a pull request cannot add its own author. The label and the applier are
+  read live from the API, twice, and must agree. The label event must come
+  after the head commit last changed, and be at least 24 hours old (a notice
+  period, not a second approval). The time the head changed is the later of the
+  first workflow run GitHub started for this exact head commit on this pull
+  request and the latest forced push; a commit date is never used, because the
+  author sets it. If that time cannot be determined the check fails. Pushing a
+  new head after the label therefore needs the label removed and applied again,
+  and a fresh 24 hours.
+- No pull request from the Actions bot is open on `counts/refresh`.
+- The change touches only `history/social.jsonl`, optionally `numbers.json`
+  (removal of the entry that shows a redacted value, nothing else), and adds
+  exactly one `history/redactions/<run-id>.manifest`.
+- The engine's `counts history-compare` returns "valid rewrite" for the exact
+  bytes: only `api` rows became tombstones (their corrections go with them);
+  every other line keeps its content and order; no tombstone was removed or
+  turned back into data; later lines are re-chained and canonical; at most 500
+  records and 10 percent of the rows; every tombstone field and the manifest are
+  derived from the redacted keys, one reason code and two dates, so a redacted
+  value has no field to hide in. Make such a file with
+  `reach-around counts history-redact ... --confirm --derived`.
+- The head contains the current tip of `main` (update the branch if `main`
+  moved). A stale `counts/refresh` pull request built before the rewrite no
+  longer extends `main` and fails the check.
+
+The label is an intent record and a 24 hour cooling-off signal, not a gate that
+GitHub enforces: the workflow reads it, but GitHub does not stop a merge because
+a label is missing or was removed after a green run. The compare is the control
+for the bytes. A label alone changes nothing, and `hand_kept` and `imported`
+rows are never accepted by this route.
+
+**Set it up in this order.** First bump `engine.lock` to a release that has
+`counts history-compare` and merge the scripts (`scripts/history-guard.py`,
+`scripts/verify-history-rewrite.sh`) and `.github/history-approvers` in one pull
+request; the guard reads its scripts from the base commit, so the workflow file
+goes in a second pull request. Then set up the code-owner boundary below, require
+the check `History guard` and "branch must be up to date before merging" on
+`main`, and do not enable a merge queue (the guard does not run under
+`merge_group`). Add your login to `.github/history-approvers` only after the
+activation checklist below; the file ships empty, which means no rewrite is
+accepted.
+
+**The workflow is NOT a sufficient merge gate on its own.** With a
+`pull_request` trigger GitHub runs the workflow file of the pull request's merge
+ref, so a pull request can replace `history-guard.yml` and keep the required
+check name; the guard scripts are pinned to the base commit, but that only
+helps after the workflow has run its checkout. The first steps of the job
+compare the running copy of the workflow with the base commit's copy and fail on
+any difference: that catches accidental drift, and it does not stop a replaced
+workflow that leaves the step out.
+
+**The primary boundary is CODEOWNERS plus code-owner review.** The paths that
+decide whether a rewrite can merge are `.github/` (the workflow and the
+approvers file), `scripts/`, `engine.lock`, `engine.release.json` and
+`history/redactions/` (the manifests). Protect them with all of the following,
+so a change to the guard or its inputs cannot merge without a review the pull
+request's author cannot give. The history file itself (`history/social.jsonl`)
+and `numbers.json` are deliberately not owned: the guard decides whether a
+rewrite is accepted, so the review must cover the guard, its approvers and the
+manifests, and the daily refresh only appends, which is not a rewrite and needs
+no human review:
+
+- A `CODEOWNERS` file that covers those paths. A ready file is
+  `.github/CODEOWNERS` in this template (replace `OWNER-LOGIN`). GitHub reads it
+  from the base branch of the pull request, so a pull request cannot change who
+  owns a path for itself. A code owner needs write access.
+- The branch rule "Require review from Code Owners", "Dismiss stale pull request
+  approvals when new commits are pushed" and "Require approval of the most
+  recent reviewable push" (an approval from someone other than the last person
+  to push), and the setting "Do not allow bypassing the above settings" so that
+  administrators are included.
+- The check `History guard`, required, with "branch must be up to date".
+
+Why this is the boundary and the workflow is not: a replaced workflow is a
+change under `.github/`, which needs the code-owner approval. The check, the
+engine comparison and the label and age gate stay as designed, but they now
+protect against mistakes and unreviewed paths, not against a hostile workflow
+replacement.
+
+**The ruleset required workflow is NOT AVAILABLE on a Team plan.** The ruleset
+rule "Require workflows to pass before merging" (a workflow in a separate
+trusted repository that a pull request cannot replace) would be a stronger
+boundary, but it is organization or enterprise level and, per GitHub's sources,
+only on GitHub Enterprise plans. Sources read 2026-11-26: the page on available
+rules for rulesets,
+<https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets>
+(ruleset workflows "can be configured at the organization or enterprise
+level"), and GitHub's changelog of 2023-08-02 (the ability "will only be
+available on GitHub Enterprise plans"). Do not build on it unless you have an
+Enterprise account; then it is an optional upgrade path, and you must confirm it
+fires for your events first (user reports say it does not run on the `labeled`
+and `unlabeled` events; UNVERIFIED).
+
+**Who reviews when you are the only person.** GitHub does not let an author
+approve their own pull request (the page on approving a pull request, read
+2026-11-26: "Pull request authors cannot approve their own pull requests"), so
+with one human owner a code-owner review has to come from something other than
+the account that opens the pull request. Options, strongest first, each with
+what it does and does not protect:
+
+1. A second GitHub account that you control, with write access, named in
+   `CODEOWNERS`, with its own credential kept apart from the one your tools and
+   agents use (a separate hardware key or passkey, not stored on the machine
+   that opens pull requests). Protects against: a mistake or a compromised token
+   or automation under your first account merging a change to the guard, its
+   inputs or the approvers file without a deliberate second step. Does not
+   protect against: you approving without reading, or someone holding both
+   credentials. It reduces to your own discipline at the moment you approve. A
+   code owner must have write access (verified, CODEOWNERS page read
+   2026-11-26). Whether GitHub's terms allow a second login that you operate
+   yourself is UNVERIFIED: read them before you rely on it.
+2. A GitHub App or bot as the reviewer. UNVERIFIED: the code owners page names
+   people and teams with write access, and the branch rules page does not say
+   whether an app's approval counts; do not rely on it until you have seen a
+   test pull request merge only with that approval. Do not use the Actions
+   token to approve: the repository setting for it exists, but whether its
+   approval counts toward required reviews is UNVERIFIED.
+3. A team. A team that contains only you does not help: you are still the
+   author, and the author's approval is not allowed. A team helps only when it
+   contains an account other than the one that opens the pull request, which is
+   option 1 in another form.
+4. Administrator bypass (leave "Do not allow bypassing" off and merge as the
+   owner). Protects against nothing but an accidental merge: the owner can
+   merge without the review (verified, approving page: owners and administrators
+   can merge without an approving review). This is not a boundary. It reduces
+   entirely to your discipline and to the audit log you read afterwards.
+
+Recommendation: option 1, with the bypass setting on (administrators included).
+With one person, the 24 hour cooling-off after the label and the detective
+record in the job summary add time to think and a trail, not a second opinion.
+If you choose option 4, say so plainly in the pull request and treat the guard
+as mistake prevention only. A rewrite then needs you to turn the protection off
+for the merge and back on, which is an act of discipline, not a control.
+
+**Defense in depth (not a boundary).** These add friction and a record and
+never replace the code-owner review:
+
+- Restricting who can push `redact/*` branches. A pull request from any branch
+  can replace the workflow, so this is not a trust boundary.
+- The running-copy comparison at the start of the job.
+- The label, the 24 hour age and the detective job summary.
+
+**Checklist before you list the first approver.** `.github/history-approvers`
+ships empty so that nothing is accepted. Complete all of these first, in order:
+
+- [ ] `.github/CODEOWNERS` is present on `main` and covers `.github/`,
+      `scripts/`, `engine.lock`, `engine.release.json`,
+      `history/redactions/` and `.github/history-approvers` (not the history
+      file itself, so the daily refresh needs no review).
+- [ ] Branch protection or a ruleset on `main` requires review from Code Owners
+      (with stale approvals dismissed, approval of the most recent reviewable
+      push, and administrators included, no bypass), and the check
+      `History guard` with "branch must be up to date".
+- [ ] You OBSERVED it block: a test pull request that edits
+      `.github/workflows/history-guard.yml` cannot merge without an independent
+      code-owner approval. Configuration alone does not count; do not add any
+      approver login until you have seen the block.
+- [ ] Optional, recommended: live gate G1 (which revision of the workflow GitHub
+      executes for a pull request that edits it) was run on a scratch
+      repository. Not required for this boundary.
+
+**What is verified and what is not.** Verified from GitHub's documentation: a
+`pull_request` workflow must already exist on the default branch and runs
+against the pull request's merge ref. The guard reads its scripts and the
+approvers file from a checkout pinned to the base commit and the pull request's
+data from a checkout pinned to the head commit. UNVERIFIED until G1: which
+revision of the workflow file GitHub executes for a pull request that edits it,
+and (G5) that `actions: read` is enough and every write is refused.
+Until the checklist is complete, assume anyone who can merge a change to the workflow, `scripts/`,
+`engine.lock` or the approvers file can weaken the guard. A pull request that
+edits the workflow itself fails the running-copy comparison by design: change
+the workflow in its own reviewed pull request.
+
+**`actions: read` is wide.** The job token needs `actions: read` only to list
+the workflow runs of the head commit. That permission is capability-wide: it
+also reads the logs and artifacts of the repository, and GitHub has no narrower
+built-in permission for the run list alone. It is acceptable only together with
+the trust boundary above, because a replaced workflow would receive it. The
+token cannot write.
+
+**What this does not do.** A sole owner cannot be protected from their own
+account; the guard prevents mistakes, bounds a rewrite, and leaves a record in
+the job summary (short commit ids, the label event number, label age and the
+manifest name; no login, no full commit id, no value). Whether removing the label
+after a green run turns the merge red depends on your branch protection. An
+approval covers one head commit only: a different head needs the label removed
+and applied again. A tombstone cleans the working
+tree only: git history, deployed copies and Actions artifacts still hold the
+old value. Removing it from the git history of this repository is a separate
+operation (see the runbook "Runbook: removing redacted history from the private
+instance repo's git history").
 
 ## The token
 

@@ -51,6 +51,7 @@ from reach_around.config.budget import (
 from reach_around.config.cutover import check_cutover_day
 from reach_around.config.disclosure import DisclosureField
 from reach_around.config.footer import Footer
+from reach_around.config.hoplabel import has_hop_param
 from reach_around.config.kit import KitConfig, _iso_date
 from reach_around.config.loader import ConfigError, load_yaml
 from reach_around.config.numbers_sources import NumbersConfig
@@ -111,7 +112,19 @@ SITE_BUDGET = Budget(
 MAX_LOC_SEGMENT_CHARS = 40
 MAX_LOC_SEGMENTS = 8
 
-Title = Annotated[str, StringConstraints(min_length=1, max_length=200)]
+
+def _not_blank(value: str) -> str:
+    # A title of only spaces draws an empty heading or an unlabeled tile (#873).
+    if not value.strip():
+        raise ValueError("must not be blank")
+    return value
+
+
+Title = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=200),
+    AfterValidator(_not_blank),
+]
 Subtitle = Annotated[str, StringConstraints(min_length=1, max_length=500)]
 Slug = Annotated[str, StringConstraints(pattern=_SLUG.pattern)]
 
@@ -171,8 +184,14 @@ class Link(_Model):
     icon: Slug | None = None
     image: Annotated[str, Field(max_length=_MAX_URL)] | None = None
     image_alt: Annotated[str, StringConstraints(max_length=120)] = ""
-    affiliate: bool = False
+    # Strict: "yes", 1 or "true" are refused, so a typo cannot silently turn a
+    # paid link into an unflagged one (#873).
+    affiliate: StrictBool = False
     featured: bool = False
+    # A link to another site of the owner's, counted by the same collector
+    # (#593). The build adds ``h=<analytics.hop_label>`` to it so the funnel can
+    # tell where the visitor came from; never set it on an outside link.
+    internal: StrictBool = False
     show_from: date | None = None
     show_until: date | None = None
 
@@ -207,6 +226,13 @@ class Link(_Model):
             raise ValueError("show_until must not be before show_from")
         if self.affiliate and is_tab_ref(self.url):
             raise ValueError("an internal tab: link cannot be an affiliate link")
+        if self.internal and self.affiliate:
+            raise ValueError("an internal site link cannot be an affiliate link")
+        if self.internal and is_tab_ref(self.url):
+            raise ValueError(
+                "internal: true is for a link to another site of yours; "
+                "a tab: link already stays on this site"
+            )
         return self
 
 
@@ -233,6 +259,7 @@ Intent = Literal[
     "shop",
     "blog",
     "gear",
+    "services",
     "more",
     "hire",
     "free",
@@ -1029,6 +1056,35 @@ class SiteConfig(_Model):
         return self
 
     @model_validator(mode="after")
+    def _internal_links_can_carry_a_hop(self) -> SiteConfig:
+        marked = [(where, link) for where, link in _all_links(self) if link.internal]
+        if not marked:
+            return self
+        label = self.analytics.hop_label
+        if label is None:
+            raise ValueError(
+                "a link has internal: true but analytics.hop_label is not set: "
+                "name this site's hop label, or remove internal: true"
+            )
+        sites = set(self.analytics.other_sites)
+        problems = []
+        for where, link in marked:
+            host = (urlsplit(link.url).hostname or "").lower()
+            if host not in sites:
+                problems.append(
+                    f"{where}: internal: true needs the link's host to be listed "
+                    "in analytics.other_sites (an outside link never gets a hop)"
+                )
+            elif has_hop_param(link.url):
+                problems.append(
+                    f"{where}: the url already has an h query parameter; "
+                    "it is never overwritten"
+                )
+        if problems:
+            raise ValueError("; ".join(problems))
+        return self
+
+    @model_validator(mode="after")
     def _bot_check_needs_a_beacon(self) -> SiteConfig:
         if (
             self.analytics.turnstile_beacon
@@ -1150,6 +1206,21 @@ def _check_screen_intent(tab: Tab, position: int, last: dict[str | None, int]) -
             "(support: free, paid, crypto; contact: contact, hire)"
         )
     last[tab.screen] = index
+
+
+def _all_links(config: SiteConfig) -> list[tuple[str, Link]]:
+    """Every ``Link`` of the tabs (bare blocks and section links), with its key."""
+    found: list[tuple[str, Link]] = []
+    for t, tab in enumerate(config.tabs):
+        for b, block in enumerate(tab.blocks):
+            base = f"tabs[{t}].blocks[{b}]"
+            if isinstance(block, Link):
+                found.append((base, block))
+            elif isinstance(block, Section):
+                found.extend(
+                    (f"{base}.links[{k}]", link) for k, link in enumerate(block.links)
+                )
+    return found
 
 
 def _internal_urls(config: SiteConfig) -> list[tuple[str, str]]:

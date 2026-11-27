@@ -16,7 +16,8 @@ export function killedResponse(): Response {
       "Retry-After": "3600",
       "Cache-Control": "private, no-store",
       "Content-Type": "text/html; charset=utf-8",
-      "Content-Security-Policy": "default-src 'none'",
+      "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+      "X-Content-Type-Options": "nosniff",
     },
   });
 }

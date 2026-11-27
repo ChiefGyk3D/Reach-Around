@@ -97,6 +97,11 @@ KIT_FIELD_POLICY: Mapping[str, FieldPolicy] = {
     # pages beside the contact block. Public, since the line is on the public page.
     "consulting_url": FieldPolicy("public"),
     "tags": FieldPolicy("public"),
+    # The copy-link control (#432): the switch and the address are configuration.
+    # Neither is a kit content field and neither enters a projection; the address
+    # (the public kit page's own) is printed only by the page's dedicated control.
+    "copy_link": FieldPolicy("private"),
+    "public_url": FieldPolicy("private"),
     "photo": FieldPolicy("public"),
     "metrics": FieldPolicy("public"),
     "analytics": FieldPolicy("public"),
@@ -821,6 +826,15 @@ class KitConfig(_Model):
         default=None, min_length=1, max_length=300
     )
     imported_history_public: StrictBool = False
+    # The "Copy link" control on the public kit page (#432): the page's own address
+    # as plain text with a copy button that needs script. It needs ``page.url`` (the
+    # site's https origin) and prints nothing without it. Set false to leave it off.
+    copy_link: StrictBool = True
+    # The https address the copy-link control prints: where the owner publishes the
+    # public kit page. Left out, it is ``page.url`` plus ``/kit/`` (``page.url`` is
+    # only set for the stack layout). No query string and no fragment: a link with
+    # tracking parameters cannot be configured.
+    public_url: Annotated[str, Field(max_length=2048)] | None = None
     # v1 has no emailed unlock link, so true is refused (see the validator).
     unlock_link: StrictBool = False
 
@@ -869,6 +883,16 @@ class KitConfig(_Model):
     @classmethod
     def _kit_urls_are_https(cls, value: str | None) -> str | None:
         return None if value is None else _https(value)
+
+    @field_validator("public_url")
+    @classmethod
+    def _public_url_is_plain(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        checked = _https(value)
+        if "?" in checked or "#" in checked:
+            raise ValueError("public_url must have no query string and no fragment")
+        return checked
 
     @field_validator("turnstile_site_key")
     @classmethod

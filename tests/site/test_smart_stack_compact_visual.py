@@ -34,7 +34,7 @@ EXAMPLE = (
 )
 PHONES = [(390, 844), (390, 664), (360, 640)]
 SIZES = [*PHONES, (1920, 930)]
-TILES = 26
+TILES = 28
 
 
 class _Quiet(http.server.SimpleHTTPRequestHandler):
@@ -263,6 +263,7 @@ def test_nothing_is_collapsed_or_behind_a_tab(browser: Browser, base_url: str) -
         "chat",
         "support",
         "gear i use",
+        "services i use",
         "more",
     ]
     page.context.close()
@@ -549,7 +550,7 @@ def test_desktop_groups_sit_in_dom_and_focus_order_on_the_example(
 ) -> None:
     page, _foreign = open_page(browser, base_url, (1920, 930))
     groups = page.evaluate(GROUP_ORDER)
-    assert len(groups) == 6
+    assert len(groups) == 7
     assert reading_order_is_visual_order(groups), groups
     page.context.close()
 

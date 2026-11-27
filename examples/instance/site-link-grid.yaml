@@ -109,7 +109,7 @@ tabs:
     title: Support
     intent: support
     # columns: tiles per row, 1 to 6. Unset, five links or fewer share one row.
-    columns: 3
+    columns: 5
     blocks:
       - id: support-patreon
         title: Patreon
@@ -131,6 +131,9 @@ tabs:
         title: Crypto
         url: https://example.invalid/support-crypto
         icon: bitcoin
+  # Two recommendation groups (#873). List only what you use and earn from. An
+  # affiliate: true link carries rel="sponsored" and turns the page's
+  # disclosure line on; with no flagged link the line is not shown.
   - id: gear
     title: Gear I Use
     intent: gear
@@ -143,10 +146,26 @@ tabs:
         title: Security
         url: https://example.invalid/gear-security
         icon: shield
-      - id: gear-creator
-        title: Creator
-        url: https://example.invalid/gear-creator
+      # A placeholder: replace it with a real item, or delete it.
+      - id: gear-example
+        title: Example gear
+        url: https://example.invalid/gear-example
         icon: tools
+        affiliate: true
+  - id: services
+    title: Services I Use
+    intent: services
+    blocks:
+      - id: services-digitalocean
+        title: DigitalOcean
+        url: https://m.do.co/c/e3aaa65aed6b
+        icon: website
+        affiliate: true
+      # A placeholder: replace it with a real service, or delete it.
+      - id: services-example
+        title: Example service
+        url: https://example.invalid/services-example
+        icon: link
   - id: more
     title: More
     intent: more

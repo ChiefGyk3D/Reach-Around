@@ -22,6 +22,9 @@
 {% endif %}
 {{ range_line(kit) }}
 {{ actions(kit, form) }}
+{% if share_url %}
+<p class="kit-share"><span class="kit-share-label">Page link:</span> <a class="kit-share-url" href="{{ share_url }}" data-copy-link-url>{{ share_url }}</a> <button type="button" class="ra-c-btn ra-c-btn--secondary kit-share-button" data-copy-link>Copy link</button><span class="kit-share-status" role="status" aria-live="polite" data-copy-link-status></span></p>
+{% endif %}
 {% if kit.contact %}
 <p class="kit-about kit-contact">{{ kit.contact }}</p>
 {% endif %}

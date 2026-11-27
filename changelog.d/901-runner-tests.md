@@ -1,0 +1,1 @@
+- Made the browser layout tests match the current page and not depend on the example's brand theme, follower-count dates or the tab icon fetch, and documented in `docs/runner-tests.md` what a runner needs (jq, a git checkout, a Chromium) to run the whole suite (#901, epic #795).

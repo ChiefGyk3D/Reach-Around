@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from reach_around.cli import main
+from reach_around.commands.leads import EXIT_CHECKED as CHECKED
 
 ID_A = "0123456789abcdef0123456789abcdef"
 ID_B = "fedcba9876543210fedcba9876543210"
@@ -25,10 +26,29 @@ VERIFIED = 1_700_003_600_000
 EVENT_TS = 1_700_002_800_000 - (1_700_002_800_000 % HOUR)  # on the hour
 
 
+_FAKE: dict[str, Any] = {}
+
+
+@pytest.fixture(autouse=True)
+def _install_fake_wrangler(fake_wrangler: Any) -> None:
+    """`leads delete --yes` checks the schemas through wrangler (#905); these tests
+    run it against the in-memory fake, never a real process."""
+    _FAKE["w"] = fake_wrangler
+
+
 def cli(argv: list[str]) -> int:
     """`main`, with the now mandatory `--database` added to `leads show` and
-    `leads delete` unless the test names one (or asks for the checklist)."""
+    `leads delete` unless the test names one (or asks for the checklist), and
+    the alert database and fake wrangler added to `leads delete --yes`."""
     args = list(argv)
+    if args[:2] == ["leads", "delete"] and "--yes" in args:
+        if "--alerts-database" not in args:
+            args += ["--alerts-database", "ra-alerts"]
+        # The two database ids from the Worker's configuration (#905 round 2).
+        args += ["--leads-database-id", "11111111-2222-4333-8444-555555555555"]
+        args += ["--alerts-database-id", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"]
+        if "--wrangler" not in args:
+            args += ["--wrangler", str(_FAKE["w"].path)]
     if (
         args[:1] == ["leads"]
         and args[1:2] in (["show"], ["delete"])
@@ -584,12 +604,15 @@ def test_delete_names_the_leads_database_and_refuses_the_analytics_one(
     monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
     code = cli(["leads", "delete", "--input", str(export), "--email", "-", "--yes"])
     captured = capsys.readouterr()
-    assert code == 0
+    assert code == CHECKED  # step 1: checks passed, nothing erased (#905 round 2)
     assert "database: reach-around-leads" in captured.err
+    # Round 4 (#905): the printed command names wrangler relative to the root.
+    rel = _FAKE["w"].path.resolve().relative_to(_FAKE["w"].root.resolve())
     assert (
-        "npx wrangler d1 execute reach-around-leads --remote --file delete-lead.sql"
+        f"{rel} d1 execute reach-around-leads --remote --file delete-lead.sql"
         in captured.err
     )
+    assert "npx" not in captured.err
     assert "reach-around-clicks" not in captured.out + captured.err
     for db in ("reach-around-clicks", "analytics"):
         monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
@@ -656,7 +679,7 @@ def test_delete_success_writes_no_form_of_the_address_to_stderr(
     argv = ["leads", "delete", "--input", str(delete_export), "--email", "-", "--yes"]
     code = cli(argv)
     err = capsys.readouterr().err
-    assert code == 0
+    assert code == CHECKED
     assert "***" not in err and "partner" not in err
 
 
@@ -696,20 +719,19 @@ def _sqlite_with(rows: list[tuple[str, str]], events: list[str]) -> sqlite3.Conn
 
 def _read_back_command(err: str) -> str:
     """The separate read-back statement the tool prints for ``--command`` (stderr)."""
-    line = err[err.rindex("npx wrangler d1 execute") :]
-    assert "--json --command" in line
-    tokens = shlex.split(line)
-    assert tokens[:7] == [
-        "npx",
-        "wrangler",
+    marker = " d1 execute reach-around-leads --remote --json --command "
+    at = err.rindex(marker)
+    tokens = shlex.split(err[err.rindex("\n", 0, at) + 1 :])
+    assert tokens[1:7] == [
         "d1",
         "execute",
         "reach-around-leads",
         "--remote",
         "--json",
+        "--command",
     ]
-    assert tokens[7] == "--command" and len(tokens) == 9
-    return tokens[8]
+    assert len(tokens) == 8
+    return tokens[7]
 
 
 def _with_read_back(captured: Any) -> str:
@@ -758,7 +780,7 @@ def test_delete_sql_deletes_only_the_row_that_still_pairs_the_id_and_address(
     monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
     code = cli(["leads", "delete", "--input", str(forged), "--email", "-", "--yes"])
     sql = _with_read_back(capsys.readouterr())
-    assert code == 0
+    assert code == CHECKED
     live = _sqlite_with([(ID_A, "someone-else@example.test")], [ID_A, ID_A])
     remaining = _apply(live, sql)
     # Nothing was deleted, and the read-back says so (not (0, 0)).
@@ -780,7 +802,8 @@ def _printed_sql(
 ) -> str:
     path = write(tmp_path / "ok.json", blocks([{"id": ID_A, "email": ADDR}]))
     monkeypatch.setattr("sys.stdin", io.StringIO(ADDR + "\n"))
-    assert cli(["leads", "delete", "--input", str(path), "--email", "-", "--yes"]) == 0
+    argv = ["leads", "delete", "--input", str(path), "--email", "-", "--yes"]
+    assert cli(argv) == CHECKED
     return _with_read_back(capsys.readouterr())
 
 
@@ -848,7 +871,7 @@ def test_sql_out_creates_a_private_file_and_prints_no_sql(
     finally:
         os.umask(old)
     captured = capsys.readouterr()
-    assert code == 0
+    assert code == CHECKED
     assert "DELETE" not in captured.out
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
     assert "DELETE FROM leads" in target.read_text(encoding="utf-8")
@@ -899,13 +922,16 @@ def test_the_printed_apply_command_is_shell_safe_for_any_file_name(
     name: str,
 ) -> None:
     target = tmp_path / name
-    assert _delete_to(monkeypatch, delete_export, target) == 0
+    assert _delete_to(monkeypatch, delete_export, target) == CHECKED
     err = capsys.readouterr().err
-    command = err[err.index("npx wrangler") : err.rindex("\nnpx wrangler d1 execute")]
+    # Round 4 (#905): wrangler is printed relative to the repository root. The apply
+    # command is the line before the read-back command.
+    wrangler = str(_FAKE["w"].path.resolve().relative_to(_FAKE["w"].root.resolve()))
+    last = err.rindex("\n" + wrangler)
+    command = err[err.rindex("\n" + wrangler, 0, last) + 1 : last]
     tokens = shlex.split(command)
     assert tokens == [
-        "npx",
-        "wrangler",
+        wrangler,
         "d1",
         "execute",
         "reach-around-leads",
@@ -944,6 +970,7 @@ def test_a_failed_sql_write_leaves_no_partial_file(
         os.write(fd, data[: len(data) // 2])  # part of the address lands on disk
         raise OSError(28, "No space left on device")
 
+    real_write = leads_module._write_all
     monkeypatch.setattr(leads_module, "_write_all", short_write)
     target = tmp_path / "delete-lead.sql"
     assert _delete_to(monkeypatch, delete_export, target) == 2
@@ -952,8 +979,8 @@ def test_a_failed_sql_write_leaves_no_partial_file(
     assert "removed" in captured.err
     assert ADDR not in captured.err and "DELETE" not in captured.out
     # A retry is possible: the path is free again.
-    monkeypatch.undo()
-    assert _delete_to(monkeypatch, delete_export, target) == 0
+    monkeypatch.setattr(leads_module, "_write_all", real_write)
+    assert _delete_to(monkeypatch, delete_export, target) == CHECKED
 
 
 def test_a_partial_file_that_cannot_be_removed_is_named_in_the_output(
@@ -985,7 +1012,7 @@ def test_the_output_and_docs_claim_only_a_point_in_time_check(
     delete_export: Path,
     tmp_path: Path,
 ) -> None:
-    assert _delete_to(monkeypatch, delete_export, tmp_path / "d.sql") == 0
+    assert _delete_to(monkeypatch, delete_export, tmp_path / "d.sql") == CHECKED
     err = capsys.readouterr().err.lower()
     assert "no remaining rows at this moment" in err
     assert "erased" not in err and "is deleted" not in err

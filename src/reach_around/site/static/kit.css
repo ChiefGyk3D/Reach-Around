@@ -338,6 +338,16 @@
 .kit-range { color: var(--ra-brand-muted); font-size: var(--ra-text-md); }
 .kit-actions { display: flex; flex-wrap: wrap; gap: var(--ra-space-3); }
 .kit-actions .ra-c-btn { min-height: var(--ra-tap); text-align: center; }
+/* Copy link (#432): the link text is the whole control without script; the button
+   stays hidden until copy-link.js marks the page. The link keeps a 44 px tap
+   height and wraps inside its row, so a long address never pushes the page wide. */
+.kit-share { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ra-space-2) var(--ra-space-3); }
+.kit-share-label { color: var(--ra-color-muted); font-size: var(--ra-text-sm); }
+.kit-share-url { display: inline-flex; align-items: center; min-height: var(--ra-tap); overflow-wrap: anywhere; }
+.kit-share .kit-share-button { display: none; min-height: var(--ra-tap); text-align: center; cursor: pointer; }
+.copy-link-ready .kit-share .kit-share-button { display: inline-flex; }
+.kit-share-status { flex-basis: 100%; min-height: 1.25em; color: var(--ra-color-muted); font-size: var(--ra-text-sm); }
+.kit-share-status:empty { display: none; }
 .kit-trust, .kit-numbers time { white-space: nowrap; }
 .kit-numbers .kit-method { display: block; min-width: 10rem; }
 @media (min-width: 48rem) {

@@ -413,8 +413,25 @@ kit:
 
 Mastodon, Bluesky and Pixelfed publish their follower and post counts and the
 interaction counts of each public post. `kit.fediverse` holds what the public
-profile shows, typed by you on a date, one entry per platform (#630). It is hand-kept
-until a collector for public post data has its own design; nothing is fetched.
+profile shows, typed by you on a date, one entry per platform (#630). Typing it stays
+the way to fill the block, and it is the only way unless you also configure the
+collector.
+
+**Collected counts (#940).** With `numbers.fediverse` set (see
+[`numbers.fediverse`](config.md#numbersfediverse)), the daily `counts refresh` reads the
+same counts from the public API of a Bluesky account and a Mastodon-API account and
+stores them in `numbers.fediverse.json`, beside the numbers file. The build, `kit pdf` and
+`kit private-measures` read that file: a platform with a source and a fresh, complete
+snapshot (dated at most 30 days before the build, not in the future) gets the collected
+entry in place of the typed one, labeled `API` with the day it was read; `show_mean` is
+kept from your typed entry. Medians are still worked out by the build. A platform with no
+source, no file, a damaged file, an old snapshot or an incomplete read keeps its typed
+entry exactly as before, so the hand-kept path always works. An incomplete read (a
+network failure, a page cap, a rate limit) leaves the stored snapshot and the history
+untouched and never writes a zero; the status file names the fixed reason word. The
+provider reads at most 600 feed entries (12 pages of 50): an account with more than about
+600 entries in its 30-day window reports `page_cap` by design, so the typed entry remains
+the way to fill the block for such an account.
 
 ```yaml
 kit:
@@ -679,6 +696,24 @@ retry page and the PDF carry no display-zone script and stay UTC (the kit and
 retry pages do load the Turnstile script, see below).
 There is no setting to turn it on: it is part of the public kit page.
 
+**Copy link.** The first screen of the public kit page shows the page's own
+address as plain, visible link text ("Page link:") so a brand can pass the page
+to a colleague. With JavaScript on, a "Copy link" button appears beside it and
+puts that text on the clipboard through the browser clipboard API; the result
+("Copied") is announced in an `aria-live` status region. Where the clipboard API
+is missing (an old browser, or a page that is not a secure context) the button
+selects the text so the visitor can copy it by hand. With JavaScript off the
+button stays hidden and the link text is the whole control. The address comes
+only from config: `kit.public_url`, or else `page.url` plus `/kit/`; it is never
+read from the request, and it carries no query string and no fragment (so no
+tracking parameter and no `#tz=` choice). If neither is set, nothing is printed.
+There are no share-to-network buttons, no share-intent link and no third-party
+script: the script is one small same-origin file, `static/copy-link.js`, loaded
+with `defer` under the existing CSP (`script-src 'self'`; no change), and it
+makes no request and stores nothing. The gated page and the retry page carry no
+such control (a forwarded link lands on the gate), and the public PDF drops it.
+Set `kit.copy_link: false` to leave it off.
+
 If the kit has gated content, the page explains the gate and shows the form.
 
 ### The gate form
@@ -799,7 +834,27 @@ configured the visitor sees the "not sent" page and nothing is lost silently.
 The text is neutralized like every alert (no markup, mention or link survives,
 line breaks become spaces), so a visitor cannot make the alert do anything. The
 daily alert budget (`DAILY_ALERT_BUDGET`, default 20) is also the daily cap on
-inquiries.
+inquiries. It is an attempt bound: a unit is spent before delivery is tried and
+is not given back when delivery fails. The cap is one counter for the whole
+site, not one per visitor. **Availability impact:** anyone who can unlock the
+gate (an unlock needs only an email address that passes the gate's checks) can
+post valid inquiry forms, and every one spends a unit whether or not delivery
+works. An attacker can therefore use up the day's budget (20 by default), most
+cheaply while a channel is failing, and until the next UTC day every other
+visitor gets the temporary "unavailable" answer. The per-client limit slows one
+address, not several. This is accepted: it bounds the work the form can cause
+and costs availability of the form only, never the kit pages.
+
+**What the owner sees.** Only the Worker logs show each case: the kit logger
+writes `send` / `failed` / `provider` for a failed delivery and `send` /
+`over_budget` / `route_budget` when the inquiry budget is spent. There is no
+health alert for the inquiry budget itself (its counter is separate from the
+alert counter). The `alert_budget_near` health alert (80 percent of
+`DAILY_ALERT_BUDGET`) counts alert units, and a failed delivery still spends
+one, but it is sent over the same channels, so it cannot arrive when every
+channel is down. With no alert channel enabled for `inquiry_received` no alert
+unit is spent at all, so only the logs show it. Check the Worker logs for
+these lines; the `alert_budget_near` alert is a hint, not a guarantee.
 
 The private PDF prints the owner details and drops the form (the form's
 `<aside>` is chrome, like the footer). The privacy page gains one entry for the

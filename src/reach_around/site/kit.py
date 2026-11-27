@@ -1843,6 +1843,24 @@ def plan_warnings(
 BaseContext = Callable[[str, str, bool], dict[str, Any]]
 
 
+def share_url(config: SiteConfig) -> str | None:
+    """The public kit page's address for the copy-link control (#432), or None.
+
+    Taken from ``kit.public_url``, or built from the configured site origin
+    (``page.url``) and the fixed kit path. Never from a request, never with a
+    query or fragment. None when the owner turned the control off or configured
+    no address: none is guessed.
+    """
+    kit = config.kit
+    if kit is None or not kit.copy_link:
+        return None
+    if kit.public_url is not None:
+        return kit.public_url
+    if config.page.url is None:
+        return None
+    return f"{config.page.url}/{KIT_PAGE.parent.as_posix()}/"
+
+
 def render_kit(
     env: Environment,
     config: SiteConfig,
@@ -1884,6 +1902,7 @@ def render_kit(
             "kit": public,
             "form": form,
             "zone_choices": ZONES if public["number_rows"] else None,
+            "share_url": share_url(config),
         }
     )
     if form is not None:

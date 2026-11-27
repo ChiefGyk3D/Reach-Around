@@ -3,6 +3,7 @@ import { env as testEnv } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULTS,
+  claimGateUnit,
   KitLimitsError,
   PURGE_RESERVE,
   PAGE_VIEW_DAILY_WRITES,
@@ -355,5 +356,17 @@ describe("lead cap at the boundary (existing upsertLead, new limits)", () => {
       Array.from({ length: 20 }, (_, i) => upsertLead(DB, `c${i}@example.com`, "gate", null, T0, loadKitLimits({ MAX_LEADS: "5" } as never).maxLeads)),
     );
     expect(r.filter((x) => x !== null)).toHaveLength(5);
+  });
+});
+
+describe("claimGateUnit with a zero gate budget (#927)", () => {
+  it("answers budget before reading, so an already claimed token is not reported as a replay", async () => {
+    const key = `ts-${"a".repeat(40)}`;
+    const day = "2027-03-14";
+    await DB.prepare("INSERT INTO counters (key, day, count) VALUES (?1, ?2, 1)").bind(key, day).run();
+    expect(await claimGateUnit({ DB, ROUTE_BUDGET_GATE: "0" } as never, key, day, T0)).toBe("budget");
+    const fresh = `ts-${"b".repeat(40)}`;
+    expect(await claimGateUnit({ DB, ROUTE_BUDGET_GATE: "0" } as never, fresh, day, T0)).toBe("budget");
+    expect(await DB.prepare("SELECT COUNT(*) AS n FROM counters WHERE key = ?1").bind(fresh).first<{ n: number }>()).toEqual({ n: 0 });
   });
 });

@@ -312,7 +312,11 @@ def test_the_example_instance_grid_builds_and_matches_the_contract(
     assert "rednote" not in html.lower()
     text = EXAMPLE.read_text(encoding="utf-8")
     assert "—" not in text
-    assert not re.search(r"https?://(?!example\.(?:com|invalid|org)\b)", text)
+    # The one real URL is the DigitalOcean referral link (#873).
+    assert not re.search(
+        r"https?://(?!example\.(?:com|invalid|org)\b|m\.do\.co/c/e3aaa65aed6b)", text
+    )
+    assert "Services I Use" in html
 
 
 def test_compact_html_matches_golden(tmp_path: Path, update_golden: bool) -> None:
@@ -528,6 +532,7 @@ CLASSIFIED: dict[str, dict[str, str]] = {
         "image": "inert",
         "image_alt": "inert",
         "affiliate": "inert",
+        "internal": "inert",
         "featured": "inert",
         "show_from": "window",
         "show_until": "window",

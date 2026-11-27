@@ -92,7 +92,24 @@ if [ "$(status_of page)" = "200" ]; then
 else
     fail "page / answered $(status_of page), expected 200"
 fi
-if header_of page content-type | grep -qi 'text/html'; then
+# Match a captured value, not `... | grep -q`: under pipefail a grep that exits
+# at its first match can make the writer die of SIGPIPE and flip the result.
+# Lower-cased with tr, not a bash 4 case expansion: macOS ships bash 3.2.
+# Whole values, not substrings: the media type (before any ;parameter) must be
+# exactly text/html, and the nosniff value must be exactly nosniff.
+content_type="$(header_of page content-type | tr '[:upper:]' '[:lower:]')"
+nosniff="$(header_of page x-content-type-options | tr '[:upper:]' '[:lower:]')"
+content_type="${content_type#*:}"
+content_type="${content_type%%;*}"
+nosniff="${nosniff#*:}"
+trim() {
+    local v="$1"
+    v="${v#"${v%%[![:space:]]*}"}"
+    printf '%s' "${v%"${v##*[![:space:]]}"}"
+}
+content_type="$(trim "$content_type")"
+nosniff="$(trim "$nosniff")"
+if [ "$content_type" = "text/html" ]; then
     pass "page content-type is text/html"
 else
     fail "page content-type is not text/html"
@@ -102,7 +119,7 @@ if [ -n "$(header_of page content-security-policy)" ]; then
 else
     fail "page has no content-security-policy header"
 fi
-if header_of page x-content-type-options | grep -qi 'nosniff'; then
+if [ "$nosniff" = "nosniff" ]; then
     pass "page has x-content-type-options nosniff"
 else
     fail "page has no x-content-type-options nosniff header"

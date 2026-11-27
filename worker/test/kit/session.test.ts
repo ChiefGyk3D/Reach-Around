@@ -231,3 +231,48 @@ describe("migration 0021: negative kit-wide floor", () => {
     expect((await floor())!.value).toBe(12345);
   });
 });
+
+describe("migration 0022: the floor guard is recreated with its exact bodies", () => {
+  const mig = () => testEnv.TEST_MIGRATIONS.find((m) => m.name.includes("0022"))!;
+  const run = async () => { for (const q of mig().queries) await testEnv.DB.prepare(q).run(); };
+  const guard = async () => {
+    const r = await testEnv.DB.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'kit_meta_floor_%' ORDER BY name").all<{ name: string; sql: string }>();
+    return r.results.map((x) => [x.name, x.sql.replace(/\s+/g, " ")]);
+  };
+  const EXACT = [
+    ["kit_meta_floor_insert", "CREATE TRIGGER kit_meta_floor_insert BEFORE INSERT ON kit_meta WHEN NEW.key = 'unstored_floor_ts' AND NEW.value < 0 BEGIN SELECT RAISE(ABORT, 'unstored_floor_ts must be >= 0'); END"],
+    ["kit_meta_floor_update", "CREATE TRIGGER kit_meta_floor_update BEFORE UPDATE ON kit_meta WHEN NEW.key = 'unstored_floor_ts' AND NEW.value < 0 BEGIN SELECT RAISE(ABORT, 'unstored_floor_ts must be >= 0'); END"],
+  ];
+  const floorKey = UNSTORED_FLOOR_KEY;
+
+  it("replaces same-named triggers that have a different body", async () => {
+    await testEnv.DB.prepare("DROP TRIGGER kit_meta_floor_insert").run();
+    await testEnv.DB.prepare("DROP TRIGGER kit_meta_floor_update").run();
+    await testEnv.DB.prepare("CREATE TRIGGER kit_meta_floor_insert BEFORE INSERT ON kit_meta WHEN 0 BEGIN SELECT 1; END").run();
+    await testEnv.DB.prepare("CREATE TRIGGER kit_meta_floor_update BEFORE UPDATE ON kit_meta WHEN 0 BEGIN SELECT 1; END").run();
+    await testEnv.DB.prepare("INSERT INTO kit_meta (key, value) VALUES (?, -1)").bind(floorKey).run(); // weak guard allows it
+    await run();
+    expect(await guard()).toEqual(EXACT);
+    expect((await testEnv.DB.prepare("SELECT value FROM kit_meta WHERE key = ?").bind(floorKey).first<{ value: number }>())!.value).toBeGreaterThanOrEqual(0);
+    await expect(testEnv.DB.prepare("UPDATE kit_meta SET value = -1 WHERE key = ?").bind(floorKey).run()).rejects.toThrow();
+  });
+  it("works when the triggers do not exist yet", async () => {
+    await testEnv.DB.prepare("DROP TRIGGER kit_meta_floor_insert").run();
+    await testEnv.DB.prepare("DROP TRIGGER kit_meta_floor_update").run();
+    await run();
+    expect(await guard()).toEqual(EXACT);
+  });
+  it("creates the guard before the repair", () => {
+    const q = mig().queries.map((s) => s.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").trim()); // the first statement carries the file header comments
+    const at = (re: RegExp) => q.findIndex((s) => re.test(s));
+    const repair = at(/^UPDATE kit_meta SET/);
+    expect(repair).toBeGreaterThan(-1);
+    for (const n of ["kit_meta_floor_insert", "kit_meta_floor_update"]) {
+      const drop = at(new RegExp(`^DROP TRIGGER IF EXISTS ${n}`));
+      const create = at(new RegExp(`^CREATE TRIGGER ${n}`));
+      expect(drop, `${n} drop exists`).toBeGreaterThan(-1);
+      expect(create, `${n} create comes after its drop`).toBeGreaterThan(drop);
+      expect(create, `${n} create comes before the repair`).toBeLessThan(repair);
+    }
+  });
+});

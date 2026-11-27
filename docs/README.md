@@ -19,6 +19,7 @@ A state is a judgment on 2026-11-24, not a test result. The decisions that super
 |---|---|---|
 | [../README.md](../README.md) | What the project is, status, run it in a container, links | GOOD (status text refreshed in #801) |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | The gate script and CI | GOOD, thin |
+| [runner-tests.md](runner-tests.md) | What a machine needs to run the full test suite, and the 2026-11-26 runner failures with causes | GOOD |
 | [../CHANGELOG.md](../CHANGELOG.md) | What changed per release; fragments live in `changelog.d/` | GOOD |
 
 ## Deploy and operate
@@ -31,6 +32,7 @@ A state is a judgment on 2026-11-24, not a test result. The decisions that super
 | [failure-modes.md](failure-modes.md) | Kill switches, quota, restore, how gaps are shown | GOOD |
 | [backup-restore.md](backup-restore.md) | Backing up the analytics database and history, restore drill | GOOD |
 | [collection-gaps-runbook.md](collection-gaps-runbook.md) | Response and recovery when collection has gaps | GOOD |
+| [history-rewrite-runbook.md](history-rewrite-runbook.md) | Remove a record from the private instance repository's git history: steps, verification, rollback | GOOD |
 | [token-health.md](token-health.md) | Token health report | GOOD |
 | [token-sink.md](token-sink.md) | Store rotated collector tokens in the secret manager | GOOD |
 | [alerts.md](alerts.md) | Owner alerts from the Worker | GOOD |

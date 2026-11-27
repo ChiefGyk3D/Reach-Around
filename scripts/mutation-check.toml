@@ -1,0 +1,1213 @@
+# Mutation list for scripts/mutation-check.py (issue #270). See docs/security/abuse-suite.md.
+#
+# Each [[mutation]] is ONE edit to ONE file under worker/: `find` must occur exactly once in `file`
+# (the script checks it), and is replaced by `replace`. `tests` names the vitest files that must catch
+# it (or `group`, a key of [groups]). An entry may carry `equivalent = "reason"` only when the edit
+# cannot change behavior a caller can see, or another layer provably covers it; the reason is
+# recorded so the table never hides a survivor. Strings are TOML literal strings (single quotes), so
+# the TypeScript text is written as it appears in the source.
+
+default_tests = [
+  "test/abuse/ab3-gate-bypass.test.ts",
+  "test/abuse/ab4-token.test.ts",
+  "test/abuse/ab8-privacy.test.ts",
+  "test/abuse/ab9-alerts.test.ts",
+  "test/abuse/ab10-cost.test.ts",
+  "test/abuse/ab12-direct.test.ts",
+  "test/kit/gate.test.ts",
+  "test/kit/inquiry.test.ts",
+  "test/kit/token.test.ts",
+  "test/kit/session.test.ts",
+  "test/kit/input.test.ts",
+  "test/kit/body.test.ts",
+  "test/kit/limits.test.ts",
+  "test/kit/log.test.ts",
+  "test/kit/turnstile.test.ts",
+  "test/kit/budgets.test.ts",
+  "test/alerts/alerts.test.ts",
+  "test/alerts/hardening.test.ts",
+]
+
+[groups]
+gate = ["test/abuse/ab3-gate-bypass.test.ts", "test/abuse/ab4-token.test.ts", "test/abuse/ab8-privacy.test.ts", "test/abuse/ab10-cost.test.ts", "test/kit/gate.test.ts", "test/abuse/ab12-direct.test.ts"]
+token = ["test/abuse/ab4-token.test.ts", "test/abuse/ab3-gate-bypass.test.ts", "test/kit/token.test.ts", "test/kit/gate.test.ts", "test/abuse/ab12-direct.test.ts"]
+session = ["test/abuse/ab4-token.test.ts", "test/kit/session.test.ts", "test/kit/gate.test.ts", "test/kit/inquiry.test.ts", "test/abuse/ab12-direct.test.ts"]
+inquiry = ["test/abuse/ab9-alerts.test.ts", "test/abuse/ab4-token.test.ts", "test/abuse/ab10-cost.test.ts", "test/kit/inquiry.test.ts", "test/abuse/ab12-direct.test.ts"]
+input = ["test/abuse/ab9-alerts.test.ts", "test/abuse/ab10-cost.test.ts", "test/kit/input.test.ts", "test/kit/gate.test.ts", "test/abuse/ab12-direct.test.ts"]
+body = ["test/abuse/ab10-cost.test.ts", "test/abuse/ab9-alerts.test.ts", "test/kit/body.test.ts", "test/kit/input.test.ts", "test/kit/inquiry.test.ts", "test/abuse/ab12-direct.test.ts"]
+limits = ["test/abuse/ab10-cost.test.ts", "test/abuse/ab3-gate-bypass.test.ts", "test/kit/limits.test.ts", "test/kit/budgets.test.ts", "test/kit/gate.test.ts", "test/abuse/ab12-direct.test.ts"]
+turnstile = ["test/abuse/ab10-cost.test.ts", "test/abuse/ab8-privacy.test.ts", "test/kit/turnstile.test.ts", "test/kit/gate.test.ts", "test/abuse/ab12-direct.test.ts"]
+log = ["test/abuse/ab8-privacy.test.ts", "test/kit/log.test.ts"]
+alerts = ["test/abuse/ab9-alerts.test.ts", "test/abuse/ab8-privacy.test.ts", "test/alerts/alerts.test.ts", "test/alerts/hardening.test.ts"]
+
+# ---- gate.ts: the POST /k/gate pipeline ----
+
+[[mutation]]
+id = "gate-content-type-check-removed"
+file = "src/kit/gate.ts"
+group = "gate"
+controls = ["gate-content-type"]
+what = "the gate stops requiring the form content type (checked again in readForm)"
+find = 'if (request.headers.get("content-type") !== FORM_CONTENT_TYPE) return fail("other");'
+replace = 'if (false) return fail("other");'
+
+[[mutation]]
+id = "gate-bot-ua-check-removed"
+file = "src/kit/gate.ts"
+group = "gate"
+controls = ["gate-bot-ua"]
+what = "tool and crawler user agents are no longer refused"
+find = 'if (isBotUserAgent(request.headers.get("user-agent"))) return fail("bot_ua");'
+replace = 'if (false) return fail("bot_ua");'
+
+[[mutation]]
+id = "gate-declared-length-widened"
+file = "src/kit/gate.ts"
+group = "gate"
+controls = ["gate-declared-length"]
+what = "an over-cap Content-Length is no longer refused before the body read (readForm repeats it)"
+find = 'Number(declared) > MAX_FORM_BYTES)) return fail("size");'
+replace = 'Number(declared) > 1e9)) return fail("size");'
+
+[[mutation]]
+id = "gate-ip-minute-removed"
+file = "src/kit/gate.ts"
+group = "gate"
+controls = ["gate-ip-minute"]
+what = "the per-client minute limiter is skipped"
+find = 'if (!(await checkIpMinute(env.GATE_LIMITER, key))) return fail("ip_minute");'
+replace = 'if (false) return fail("ip_minute");'
+
+[[mutation]]
+id = "gate-network-allowance-removed"
+file = "src/kit/gate.ts"
+group = "gate"
+controls = ["gate-check-ceiling"]
+what = "the per-network allowance before Turnstile is skipped"
+find = 'if (!(await checkIpMinute(checkLimiter, netKey))) return fail("route_budget");'
+replace = 'if (false) return fail("route_budget");'
+
+[[mutation]]
+id = "gate-network-key-uses-client-key"
+file = "src/kit/gate.ts"
+group = "gate"
+what = "the network allowance is keyed by the single client instead of the coarse network"
+find = 'limiterKey(limiterSecret, secretText, "gnet", network)'
+replace = 'limiterKey(limiterSecret, secretText, "gnet", address)'
+
+[[mutation]]
+id = "gate-turnstile-verdict-ignored"
+file = "src/kit/gate.ts"
+group = "gate"
+controls = ["gate-route-budget", "turnstile"]
+what = "a failed Turnstile or spent budget no longer stops the unlock"
+find = 'if (verdict !== "ok") return fail('
+replace = 'if (false) return fail('
+
+[[mutation]]
+id = "gate-budget-verdict-treated-as-ok"
+file = "src/kit/gate.ts"
+group = "gate"
+what = "a replayed token or spent hourly budget comes back as ok"
+find = 'return claim === "ok" ? "ok" : claim === "budget" ? "budget" : "failed";'
+replace = 'return "ok";'
+
+[[mutation]]
+id = "gate-challenge-freshness-removed"
+file = "src/kit/gate.ts"
+group = "gate"
+controls = ["turnstile-fresh"]
+what = "a stale or far-future challenge time is accepted"
+find = 'if (Math.abs(nowMs - at) > CHALLENGE_SKEW_MS) return "failed";'
+replace = 'if (false) return "failed";'
+
+[[mutation]]
+id = "gate-challenge-future-allowed"
+file = "src/kit/gate.ts"
+group = "gate"
+what = "only past challenge times are checked, a future one is accepted"
+find = 'Math.abs(nowMs - at) > CHALLENGE_SKEW_MS'
+replace = '(nowMs - at) > CHALLENGE_SKEW_MS'
+
+[[mutation]]
+id = "gate-challenge-skew-doubled"
+file = "src/kit/gate.ts"
+group = "gate"
+what = "the challenge freshness window grows from 10 to 20 minutes"
+find = 'const CHALLENGE_SKEW_MS = 10 * 60_000;'
+replace = 'const CHALLENGE_SKEW_MS = 20 * 60_000;'
+
+[[mutation]]
+id = "gate-origin-check-removed"
+file = "src/kit/gate.ts"
+group = "gate"
+controls = ["gate-origin"]
+what = "any Origin is accepted on the gate POST"
+find = 'ok = originAllowList(origins)(request);'
+replace = 'ok = true;'
+
+[[mutation]]
+id = "gate-kill-switch-ignored"
+file = "src/kit/gate.ts"
+group = "gate"
+controls = ["kill-switch"]
+what = "the kill switch no longer closes the gate and the view"
+find = 'if (isKitKilled(env)) return killedResponse(); // CONTROL:kill-switch'
+replace = ''
+
+[[mutation]]
+id = "gate-get-allowed-on-gate-route"
+file = "src/kit/gate.ts"
+group = "gate"
+what = "the gate route accepts methods other than POST"
+find = 'if (path !== GATE_ROUTE || method !== "POST") return empty(404);'
+replace = 'if (path !== GATE_ROUTE) return empty(404);'
+
+[[mutation]]
+id = "view-accepts-any-method"
+file = "src/kit/gate.ts"
+group = "gate"
+what = "the gated page answers methods other than GET and HEAD"
+find = 'method === "GET" || method === "HEAD" ? view(request, env, deps) : empty(404)'
+replace = 'view(request, env, deps)'
+
+[[mutation]]
+id = "view-head-returns-body"
+file = "src/kit/gate.ts"
+group = "gate"
+what = "HEAD on the gated page returns the page"
+find = 'request.method.toUpperCase() === "HEAD"'
+replace = 'request.method.toUpperCase() === "NEVER"'
+
+[[mutation]]
+id = "view-session-check-skipped"
+file = "src/kit/gate.ts"
+group = "gate"
+what = "the session floor and lead existence are not checked on /k/view"
+find = 'if (verdict !== "ok") return back(verdict === "error" ? "other" : "expired");'
+replace = ''
+
+[[mutation]]
+id = "view-ip-minute-removed"
+file = "src/kit/gate.ts"
+group = "gate"
+controls = ["view-ip-minute"]
+what = "the per-client view limiter is skipped"
+find = 'if (!(await checkIpMinute(env.KIT_VIEW_LIMITER, key))) return back("ip_minute");'
+replace = ''
+
+[[mutation]]
+id = "view-route-budget-removed"
+file = "src/kit/gate.ts"
+group = "gate"
+controls = ["view-route-budget"]
+what = "the shared hourly view budget is not charged or enforced"
+find = 'if (!(await reserveRoute({ ...env, DB: env.DB }, "view", now))) return back("route_budget");'
+replace = ''
+
+[[mutation]]
+id = "view-cache-control-public"
+file = "src/kit/gate.ts"
+group = "gate"
+what = "responses become cacheable"
+find = '"Cache-Control": "private, no-store",'
+replace = '"Cache-Control": "public, max-age=600",'
+
+[[mutation]]
+id = "view-csp-frame-ancestors-dropped"
+file = "src/kit/gate.ts"
+group = "gate"
+what = "the gated page's CSP loses frame-ancestors"
+find = 'frame-ancestors'
+replace = 'frame-src'
+
+[[mutation]]
+id = "view-noindex-dropped"
+file = "src/kit/gate.ts"
+group = "gate"
+what = "the gated page loses X-Robots-Tag noindex"
+find = '"X-Robots-Tag": "noindex",'
+replace = ''
+
+[[mutation]]
+id = "gate-failure-redirect-changed"
+file = "src/kit/gate.ts"
+group = "gate"
+what = "failures send the visitor to a different page than the one the contract names"
+find = 'export const GATE_FAIL_PAGE = "/kit/retry/";'
+replace = 'export const GATE_FAIL_PAGE = "/kit/retry";'
+
+[[mutation]]
+id = "gate-new-lead-cap-removed"
+file = "src/kit/gate.ts"
+group = "gate"
+what = "the per-day new-lead cap is lifted"
+find = 'deps.newLeadsPerDay ?? NEW_LEADS_PER_DAY)'
+replace = 'deps.newLeadsPerDay ?? 100000)'
+
+[[mutation]]
+id = "gate-new-lead-unit-never-refunded"
+file = "src/kit/gate.ts"
+group = "gate"
+what = "a unit taken for a lead the cap refused is not given back"
+find = 'if (made === null || !made.created) await refundNewLead(env.DB, day);'
+replace = ''
+
+[[mutation]]
+id = "gate-refund-lowers-below-zero"
+file = "src/kit/gate.ts"
+group = "gate"
+what = "the refund can take the day's counter below zero"
+find = 'WHERE key = ?1 AND day = ?2 AND count > 0").bind(NEW_LEAD_KEY, day)'
+replace = 'WHERE key = ?1 AND day = ?2").bind(NEW_LEAD_KEY, day)'
+equivalent = "the refund runs only after the same request took a unit of that counter, so the count is at least 1 there; only a purge of the current day between the two statements could change that, and the purge deletes only days older than two"
+
+[[mutation]]
+id = "gate-unstored-visitor-refused"
+file = "src/kit/gate.ts"
+group = "gate"
+what = "at the lead cap the visitor is refused instead of unlocked (answer depends on storage)"
+find = 'leadId = await mintUnstoredId(cfg.keys[0]!);'
+replace = 'return fail("other");'
+
+[[mutation]]
+id = "gate-unlock-event-always-written"
+file = "src/kit/gate.ts"
+group = "gate"
+what = "an unlock event is recorded for an unstored visitor (no lead row to point to)"
+find = 'if (stored) {'
+replace = 'if (true) {'
+
+[[mutation]]
+id = "gate-owner-alert-failure-fails-unlock"
+file = "src/kit/gate.ts"
+group = "gate"
+what = "a failing alert sink breaks the unlock"
+find = 'deps.ctx.waitUntil(send(env, { kind: "kit_unlocked", atMs: now, email: form.email }, dispatch).catch(() => undefined));'
+replace = 'deps.ctx.waitUntil(send(env, { kind: "kit_unlocked", atMs: now, email: form.email }, dispatch)); throw new Error("sink");'
+
+[[mutation]]
+id = "gate-watch-limiter-refuses"
+file = "src/kit/gate.ts"
+group = "gate"
+what = "the monitoring-only busy signal starts refusing visitors"
+find = 'busy = (await env.GATE_WATCH_LIMITER.limit({ key: WATCH_KEY }))?.success === false;'
+replace = 'busy = (await env.GATE_WATCH_LIMITER.limit({ key: WATCH_KEY }))?.success === false; if (busy) return fail("route_budget");'
+
+# ---- budgets.ts / limits.ts: counters ----
+
+[[mutation]]
+id = "budget-replay-lookup-removed"
+file = "src/kit/budgets.ts"
+group = "gate"
+what = "an already claimed Turnstile token is no longer found by the read"
+find = 'if (seen !== null) return "replay";'
+replace = ''
+
+[[mutation]]
+id = "budget-claim-written-without-unit"
+file = "src/kit/budgets.ts"
+group = "gate"
+controls = ["turnstile-single-use"]
+what = "the claim row is written even when the hourly gate unit was not taken"
+find = 'SELECT ?1, ?2, 1 WHERE changes() = 1'
+replace = 'SELECT ?1, ?2, 1 WHERE 1 = 1'
+
+[[mutation]]
+id = "budget-gate-unit-not-given-back-on-replay"
+file = "src/kit/budgets.ts"
+group = "gate"
+what = "a concurrent loser of the claim race keeps its unit spent (budget drains faster)"
+find = 'UPDATE counters SET count = count - 1 WHERE key = ?1 AND day = ?2 AND count > 0").bind("route-gate", hour)'
+replace = 'UPDATE counters SET count = count WHERE key = ?1 AND day = ?2 AND count > 0").bind("route-gate", hour)'
+
+[[mutation]]
+id = "budget-claim-key-shape-unchecked"
+file = "src/kit/budgets.ts"
+group = "limits"
+what = "any claim key text is accepted"
+find = 'if (!/^ts-[0-9a-f]{40}$/.test(claimKey)) throw new RangeError("claim key must be ts- and 40 hex digits");'
+replace = ''
+
+[[mutation]]
+id = "budget-gate-limit-zero-allowed"
+file = "src/kit/budgets.ts"
+group = "limits"
+what = "a zero hourly gate budget no longer closes the gate"
+find = 'if (limit <= 0) return "budget";'
+replace = ''
+
+[[mutation]]
+id = "budget-view-route-name-confusion"
+file = "src/kit/budgets.ts"
+group = "limits"
+what = "an unknown route name is granted a budget"
+find = 'else return false;'
+replace = 'else limit = 100;'
+
+[[mutation]]
+id = "limits-count-boundary-off-by-one"
+file = "src/kit/limits.ts"
+group = "limits"
+controls = ["budget"]
+what = "a counter admits one unit past its limit"
+find = 'DO UPDATE SET count = count + 1 WHERE count < ?3`, // CONTROL:budget'
+replace = 'DO UPDATE SET count = count + 1 WHERE count <= ?3`, // CONTROL:budget'
+
+[[mutation]]
+id = "limits-zero-limit-admits"
+file = "src/kit/limits.ts"
+group = "limits"
+what = "limit 0 stores a row and grants a unit"
+find = 'SELECT ?1, ?2, 1 WHERE ?3 > 0'
+replace = 'SELECT ?1, ?2, 1 WHERE ?3 >= 0'
+
+[[mutation]]
+id = "limits-limiter-throw-fails-open"
+file = "src/kit/limits.ts"
+group = "limits"
+what = "a rate limiter that throws lets the request through"
+find = '''  } catch {
+    return false;
+  }
+}
+
+/** Most counter rows'''
+replace = '''  } catch {
+    return true;
+  }
+}
+
+/** Most counter rows'''
+
+[[mutation]]
+id = "limits-limiter-verdict-lenient"
+file = "src/kit/limits.ts"
+group = "limits"
+what = "any limiter answer except an explicit failure passes"
+find = 'return v?.success === true;'
+replace = 'return v?.success !== false;'
+
+[[mutation]]
+id = "limits-empty-key-allowed"
+file = "src/kit/limits.ts"
+group = "limits"
+controls = ["ip-minute"]
+what = "a client with no usable address passes the limiter"
+find = 'if (typeof key !== "string" || key === "") return false;'
+replace = 'if (typeof key !== "string" || key === "") return true;'
+
+[[mutation]]
+id = "limits-purge-cutoff-inclusive"
+file = "src/kit/limits.ts"
+group = "limits"
+what = "the counter purge also deletes the boundary day"
+find = 'substr(day, 1, 10) < ?1 LIMIT ?2'
+replace = 'substr(day, 1, 10) <= ?1 LIMIT ?2'
+
+[[mutation]]
+id = "limits-day-label-unchecked"
+file = "src/kit/limits.ts"
+group = "limits"
+what = "an impossible calendar day is accepted as a budget bucket"
+find = '!DAY_RE.test(day) || !isRealUtcDate(day)'
+replace = '!DAY_RE.test(day)'
+
+# ---- token.ts: unlock cookie ----
+
+[[mutation]]
+id = "token-signature-not-checked"
+file = "src/kit/token.ts"
+group = "token"
+controls = ["token-signature"]
+what = "a forged signature is accepted"
+find = 'const ok = await crypto.subtle.verify("HMAC", await importKey(k, "verify"), sig, body); // CONTROL:token-signature'
+replace = 'const ok = true; // CONTROL:token-signature'
+
+[[mutation]]
+id = "token-expiry-not-checked"
+file = "src/kit/token.ts"
+group = "token"
+controls = ["token-expiry"]
+what = "an expired token is accepted"
+find = 'if (nowSec >= out.exp) return null; // CONTROL:token-expiry'
+replace = ''
+
+[[mutation]]
+id = "token-expiry-boundary-off-by-one"
+file = "src/kit/token.ts"
+group = "token"
+what = "a token is still valid in the second it expires"
+find = 'if (nowSec >= out.exp) return null; // CONTROL:token-expiry'
+replace = 'if (nowSec > out.exp) return null; // CONTROL:token-expiry'
+
+[[mutation]]
+id = "token-future-issue-time-accepted"
+file = "src/kit/token.ts"
+group = "token"
+what = "a token issued far in the future is accepted"
+find = 'if (out.iat > nowSec + CLOCK_SKEW_SECONDS) return null;'
+replace = ''
+
+[[mutation]]
+id = "token-clock-skew-widened"
+file = "src/kit/token.ts"
+group = "token"
+what = "the allowed future skew grows from one minute to one hour"
+find = 'export const CLOCK_SKEW_SECONDS = 60;'
+replace = 'export const CLOCK_SKEW_SECONDS = 3600;'
+
+[[mutation]]
+id = "token-lifetime-cap-removed"
+file = "src/kit/token.ts"
+group = "token"
+what = "a signer could issue a token valid longer than the 168 hour verifier cap"
+find = 'c.exp - c.iat <= MAX_TOKEN_AGE_SECONDS &&'
+replace = ''
+
+[[mutation]]
+id = "token-exp-before-iat-accepted"
+file = "src/kit/token.ts"
+group = "token"
+what = "a token that expires before it was issued passes the shape check"
+find = 'c.exp > c.iat &&'
+replace = ''
+
+[[mutation]]
+id = "token-version-not-checked"
+file = "src/kit/token.ts"
+group = "token"
+what = "a token with another version prefix is parsed"
+find = 'if (parts.length !== 3 || parts[0] !== VERSION) return null;'
+replace = 'if (parts.length !== 3) return null;'
+
+[[mutation]]
+id = "token-length-cap-removed"
+file = "src/kit/token.ts"
+group = "token"
+what = "an oversized cookie value is no longer refused up front"
+find = 'token.length > MAX_TOKEN_LENGTH) return null;'
+replace = 'false) return null;'
+
+[[mutation]]
+id = "token-previous-key-ignored"
+file = "src/kit/token.ts"
+group = "token"
+what = "only the first key is tried, so a rotation logs everyone out"
+find = 'for (const k of list) {'
+replace = 'for (const k of list.slice(0, 1)) {'
+
+[[mutation]]
+id = "token-unusable-key-not-filtered"
+file = "src/kit/token.ts"
+group = "token"
+what = "a short key is accepted for verification"
+find = '.filter(keyUsable);'
+replace = '.filter(() => true);'
+
+[[mutation]]
+id = "token-noncanonical-base64-accepted"
+file = "src/kit/token.ts"
+group = "token"
+what = "a re-encoded (non-canonical) signature or payload decodes"
+find = 'return toB64url(out) === s ? out : null;'
+replace = 'return out;'
+
+[[mutation]]
+id = "token-duplicate-cookie-accepted"
+file = "src/kit/token.ts"
+group = "token"
+what = "two unlock cookies in one header are accepted (the last one wins)"
+find = 'return count === 1 && found !== null && found !== "" ? found : null;'
+replace = 'return count >= 1 && found !== null && found !== "" ? found : null;'
+
+[[mutation]]
+id = "token-cookie-name-prefix-match"
+file = "src/kit/token.ts"
+group = "token"
+what = "a cookie whose name merely starts with the unlock name is read"
+find = 'p.slice(0, i) !== COOKIE_NAME'
+replace = '!p.startsWith(COOKIE_NAME)'
+
+[[mutation]]
+id = "token-cookie-httponly-dropped"
+file = "src/kit/token.ts"
+group = "token"
+what = "the unlock cookie is readable by page script"
+find = '; HttpOnly; Secure;'
+replace = '; Secure;'
+
+[[mutation]]
+id = "token-cookie-secure-dropped"
+file = "src/kit/token.ts"
+group = "token"
+what = "the unlock cookie is sent over plain http"
+find = '; HttpOnly; Secure;'
+replace = '; HttpOnly;'
+
+[[mutation]]
+id = "token-cookie-samesite-dropped"
+file = "src/kit/token.ts"
+group = "token"
+what = "the unlock cookie loses SameSite"
+find = '; SameSite=Lax;'
+replace = ';'
+
+[[mutation]]
+id = "token-cookie-value-unchecked"
+file = "src/kit/token.ts"
+group = "token"
+what = "a token with attribute separators or newlines can be written into Set-Cookie"
+find = 'if (typeof token !== "string" || !COOKIE_VALUE_RE.test(token)) throw new Error("cookie value is not a token");'
+replace = ''
+
+[[mutation]]
+id = "token-signing-accepts-short-key"
+file = "src/kit/token.ts"
+group = "token"
+what = "tokens can be signed with a key under 32 bytes"
+find = 'if (!keyUsable(key)) throw new Error("token signing key is missing or too short");'
+replace = ''
+
+# ---- session.ts: revocation ----
+
+[[mutation]]
+id = "session-floor-boundary-off-by-one"
+file = "src/kit/session.ts"
+group = "session"
+controls = ["session-floor"]
+what = "a cookie issued in the same second as the floor still opens"
+find = 'if (claims.iat <= Math.floor(floorMs / 1000)) return "expired";'
+replace = 'if (claims.iat < Math.floor(floorMs / 1000)) return "expired";'
+
+[[mutation]]
+id = "session-floor-ignored"
+file = "src/kit/session.ts"
+group = "session"
+what = "a revoked cookie still opens"
+find = 'if (claims.iat <= Math.floor(floorMs / 1000)) return "expired";'
+replace = ''
+
+[[mutation]]
+id = "session-deleted-lead-still-opens"
+file = "src/kit/session.ts"
+group = "session"
+controls = ["lead-exists"]
+what = "a cookie for a deleted lead still opens"
+find = 'if (lead === null) return "expired";'
+replace = 'if (lead === null) return "ok";'
+
+[[mutation]]
+id = "session-malformed-floor-opens"
+file = "src/kit/session.ts"
+group = "session"
+controls = ["session-floor-shape"]
+what = "a corrupt floor value no longer closes the session"
+find = 'if (typeof floorMs !== "number" || !Number.isSafeInteger(floorMs) || floorMs < 0) return "error";'
+replace = ''
+
+[[mutation]]
+id = "session-read-error-fails-open"
+file = "src/kit/session.ts"
+group = "session"
+what = "a failed database read opens the session"
+find = '''  } catch {
+    return "error";
+  }'''
+replace = '''  } catch {
+    return "ok";
+  }'''
+
+[[mutation]]
+id = "session-unstored-uses-lead-lookup"
+file = "src/kit/session.ts"
+group = "session"
+controls = ["unstored-floor"]
+what = "an unstored cookie is held to a lead lookup instead of the kit-wide floor"
+find = 'if (await isUnstoredId(keys, claims.lid)) {'
+replace = 'if (false) {'
+
+[[mutation]]
+id = "unstored-tag-not-checked"
+file = "src/kit/unstored.ts"
+group = "session"
+what = "any 32 hex id is treated as an unstored unlock"
+find = 'if ((await tag(k, half)) === want) found = true;'
+replace = 'found = true;'
+
+[[mutation]]
+id = "unstored-previous-key-ignored"
+file = "src/kit/unstored.ts"
+group = "session"
+what = "an unstored cookie from the previous key is not recognized after rotation"
+find = 'for (const k of keys) {'
+replace = 'for (const k of keys.slice(0, 1)) {'
+
+# ---- input.ts / body.ts: parsing and bounds ----
+
+[[mutation]]
+id = "input-honeypot-ignored"
+file = "src/kit/input.ts"
+group = "input"
+what = "a filled honeypot field no longer refuses"
+find = 'if ((seen.get(FIELD_HONEYPOT) ?? "") !== "") return null;'
+replace = ''
+
+[[mutation]]
+id = "input-unknown-field-allowed"
+file = "src/kit/input.ts"
+group = "input"
+what = "unknown form fields are tolerated"
+find = 'if (k !== FIELD_EMAIL && k !== FIELD_TURNSTILE && k !== FIELD_HONEYPOT) return null;'
+replace = ''
+
+[[mutation]]
+id = "input-repeated-field-allowed"
+file = "src/kit/input.ts"
+group = "input"
+what = "a repeated field is tolerated (the last value wins)"
+find = 'if (seen.has(k)) return null;'
+replace = ''
+
+[[mutation]]
+id = "input-bad-percent-allowed"
+file = "src/kit/input.ts"
+group = "input"
+what = "a stray percent sign is passed through"
+find = 'if (BAD_PERCENT.test(text)) return null;'
+replace = ''
+
+[[mutation]]
+id = "input-form-cap-doubled"
+file = "src/kit/input.ts"
+group = "input"
+what = "the form body cap grows from 4096 to 8192 bytes"
+find = 'export const MAX_FORM_BYTES = 4096;'
+replace = 'export const MAX_FORM_BYTES = 8192;'
+
+[[mutation]]
+id = "input-non-ascii-email-allowed"
+file = "src/kit/input.ts"
+group = "input"
+what = "non-ASCII and whitespace characters are allowed in an address"
+find = 'if (!PRINTABLE_ASCII.test(raw)) return null;'
+replace = ''
+
+[[mutation]]
+id = "input-two-at-signs-allowed"
+file = "src/kit/input.ts"
+group = "input"
+what = "an address with more than one @ is accepted"
+find = 'if (at < 1 || at !== s.lastIndexOf("@")) return null;'
+replace = 'if (at < 1) return null;'
+equivalent = "with a second at sign the domain part keeps it, and the DNS label check refuses a label with that character, so the address is refused either way"
+
+[[mutation]]
+id = "input-local-part-grammar-loosened"
+file = "src/kit/input.ts"
+group = "input"
+what = "quoted and special characters in the local part are accepted"
+find = 'if (local.length > MAX_LOCAL_LENGTH || !LOCAL_RE.test(local)) return null;'
+replace = 'if (local.length > MAX_LOCAL_LENGTH) return null;'
+
+[[mutation]]
+id = "input-ip-literal-domain-allowed"
+file = "src/kit/input.ts"
+group = "input"
+what = "a numeric top label (an IP address host) is accepted"
+find = 'if (!TLD_RE.test(labels[labels.length - 1]!)) return null;'
+replace = ''
+
+[[mutation]]
+id = "input-single-label-domain-allowed"
+file = "src/kit/input.ts"
+group = "input"
+what = "a domain with one label is accepted"
+find = 'if (labels.length < 2) return null;'
+replace = ''
+
+[[mutation]]
+id = "input-email-length-cap-removed"
+file = "src/kit/input.ts"
+group = "input"
+what = "an address longer than 254 characters is accepted"
+find = 'raw.length > MAX_EMAIL_LENGTH'
+replace = 'false'
+
+[[mutation]]
+id = "input-token-charset-unchecked"
+file = "src/kit/input.ts"
+group = "input"
+what = "a Turnstile token with spaces or control characters is passed on"
+find = 'return TOKEN_RE.test(v) ? v : null;'
+replace = 'return v;'
+
+[[mutation]]
+id = "input-token-length-cap-removed"
+file = "src/kit/input.ts"
+group = "input"
+what = "an oversized Turnstile token is passed on"
+find = 'v.length > MAX_TURNSTILE_TOKEN_LENGTH'
+replace = 'false'
+
+[[mutation]]
+id = "body-byte-cap-widened"
+file = "src/kit/body.ts"
+group = "body"
+controls = ["body-cap"]
+what = "the streamed body cap is not enforced until twice the limit"
+find = 'if (total > cap) {'
+replace = 'if (total > cap * 2) {'
+
+[[mutation]]
+id = "body-declared-cap-widened"
+file = "src/kit/body.ts"
+group = "body"
+what = "a Content-Length one over the cap is accepted"
+find = 'if (declared > cap) {'
+replace = 'if (declared > cap + 1) {'
+
+[[mutation]]
+id = "body-length-mismatch-allowed"
+file = "src/kit/body.ts"
+group = "body"
+what = "a body shorter or longer than its declared length is accepted"
+find = 'if (declared !== null && declared !== total) return fail("length_mismatch");'
+replace = ''
+
+[[mutation]]
+id = "body-invalid-utf8-allowed"
+file = "src/kit/body.ts"
+group = "body"
+what = "invalid UTF-8 is repaired instead of refused"
+find = 'new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(r.bytes)'
+replace = 'new TextDecoder("utf-8", { fatal: false, ignoreBOM: false }).decode(r.bytes)'
+
+[[mutation]]
+id = "body-bad-length-header-allowed"
+file = "src/kit/body.ts"
+group = "body"
+what = "a non-numeric Content-Length is tolerated"
+find = 'if (!/^\d{1,10}$/.test(declaredRaw)) {'
+replace = 'if (false) {'
+
+[[mutation]]
+id = "body-empty-chunk-flood-allowed"
+file = "src/kit/body.ts"
+group = "body"
+what = "a stream of empty chunks is no longer cut off"
+find = 'if (++empties > MAX_EMPTY_CHUNKS) {'
+replace = 'if (false) {'
+
+# ---- guard.ts ----
+
+[[mutation]]
+id = "guard-null-origin-allowed"
+file = "src/kit/guard.ts"
+group = "inquiry"
+controls = ["origin"]
+what = "a missing or null Origin passes the allow-list"
+find = 'return origin !== null && set.has(origin);'
+replace = 'return origin === null || set.has(origin);'
+
+[[mutation]]
+id = "guard-origin-prefix-match"
+file = "src/kit/guard.ts"
+group = "inquiry"
+what = "an Origin that merely starts with an allowed one passes"
+find = 'return origin !== null && set.has(origin);'
+replace = 'return origin !== null && [...set].some((a) => origin.startsWith(a));'
+
+[[mutation]]
+id = "guard-kill-switch-skipped"
+file = "src/kit/guard.ts"
+group = "inquiry"
+controls = ["kill-switch"]
+what = "the shared guard ignores the kill switch"
+find = 'if (isKitKilled(env)) return { allow: false, response: killedResponse() };'
+replace = ''
+
+[[mutation]]
+id = "guard-method-allow-list-removed"
+file = "src/kit/guard.ts"
+group = "inquiry"
+what = "methods outside the allow-list pass the guard"
+find = 'if (!opts.methods.includes(method)) {'
+replace = 'if (false) {'
+
+[[mutation]]
+id = "guard-origin-hook-error-allows"
+file = "src/kit/guard.ts"
+group = "inquiry"
+what = "a throwing origin hook allows the request"
+find = '''  } catch {
+    ok = false;
+  }
+  if (!ok) return refuse(403);'''
+replace = '''  } catch {
+    ok = true;
+  }
+  if (!ok) return refuse(403);'''
+
+[[mutation]]
+id = "guard-killed-body-names-switch"
+file = "src/kit/guard.ts"
+group = "gate"
+what = "the killed page names the switch that caused it"
+find = '<p>Temporarily unavailable.'
+replace = '<p>Temporarily unavailable (KIT_KILL).'
+
+# ---- inquiry.ts ----
+
+[[mutation]]
+id = "inquiry-content-type-unchecked"
+file = "src/kit/inquiry.ts"
+group = "inquiry"
+what = "the inquiry form accepts any content type"
+find = 'if (type !== CONTENT_TYPE) return plain(415);'
+replace = ''
+
+[[mutation]]
+id = "inquiry-cookie-not-required"
+file = "src/kit/inquiry.ts"
+group = "inquiry"
+controls = ["inquiry-gate"]
+what = "the form accepts a request with no valid unlock cookie"
+find = 'if (claims === null) {'
+replace = 'if (false) {'
+
+[[mutation]]
+id = "inquiry-ip-minute-removed"
+file = "src/kit/inquiry.ts"
+group = "inquiry"
+controls = ["inquiry-ip-minute"]
+what = "the per-client limiter on the inquiry is skipped"
+find = 'if (!(await checkIpMinute(env.INQUIRY_LIMITER, key))) {'
+replace = 'if (false) {'
+
+[[mutation]]
+id = "inquiry-session-check-removed"
+file = "src/kit/inquiry.ts"
+group = "inquiry"
+controls = ["inquiry-session"]
+what = "a revoked or deleted-lead cookie can still send an inquiry"
+find = 'if (verdict !== "ok") {'
+replace = 'if (false) {'
+
+[[mutation]]
+id = "inquiry-oversize-body-allowed"
+file = "src/kit/inquiry.ts"
+group = "inquiry"
+controls = ["inquiry-size"]
+what = "the inquiry body cap is lifted"
+find = 'readBoundedText(request, INQUIRY_LIMITS.maxBodyBytes,'
+replace = 'readBoundedText(request, 10_000_000,'
+
+[[mutation]]
+id = "inquiry-failed-send-refunds-budget"
+file = "src/kit/inquiry.ts"
+group = "inquiry"
+what = "an inquiry that no channel delivered gives its daily budget unit back, so the budget stops bounding attempts"
+find = 'log.log("send", "failed", "provider");'
+replace = 'await env.DB.prepare("UPDATE counters SET count = count - 1 WHERE key = ?1 AND day = ?2 AND count > 0").bind(BUDGET_KEY, utcDay(now)).run(); log.log("send", "failed", "provider");'
+
+[[mutation]]
+id = "inquiry-daily-budget-removed"
+file = "src/kit/inquiry.ts"
+group = "inquiry"
+controls = ["inquiry-budget"]
+what = "the daily owner-alert budget does not limit inquiries"
+find = 'if (!allowed) {'
+replace = 'if (false) {'
+
+[[mutation]]
+id = "inquiry-honeypot-sends"
+file = "src/kit/inquiry.ts"
+group = "inquiry"
+controls = ["inquiry-honeypot"]
+what = "a honeypot hit sends the owner an alert"
+find = 'if (parsed.honeypot) {'
+replace = 'if (false) {'
+
+[[mutation]]
+id = "inquiry-alert-failure-reported-sent"
+file = "src/kit/inquiry.ts"
+group = "inquiry"
+what = "when no channel took the alert the visitor is told it was sent"
+find = 'if (!receipt.some((r) => r.ok)) {'
+replace = 'if (false) {'
+
+[[mutation]]
+id = "inquiry-get-allowed-on-submit-route"
+file = "src/kit/inquiry.ts"
+group = "inquiry"
+what = "the submit route answers methods other than POST"
+find = 'method === "POST" ? submit(request, env, deps) : plain(405, { Allow: "POST" })'
+replace = 'submit(request, env, deps)'
+
+[[mutation]]
+id = "inquiry-post-on-result-pages-allowed"
+file = "src/kit/inquiry.ts"
+group = "inquiry"
+what = "POST on the result pages is no longer refused"
+find = 'if (method === "POST") return plain(405, { Allow: "GET, HEAD" });'
+replace = ''
+
+[[mutation]]
+id = "inquiry-signing-key-length-unchecked"
+file = "src/kit/inquiry.ts"
+group = "inquiry"
+what = "a signing key under 32 bytes is accepted"
+find = 'enc.encode(cur).length < MIN_KEY_BYTES'
+replace = 'false'
+
+# ---- turnstile.ts: vendor answer checks ----
+
+[[mutation]]
+id = "turnstile-success-flag-ignored"
+file = "src/kit/turnstile.ts"
+group = "turnstile"
+what = "a failed verification body is accepted"
+find = 'if (r.success !== true) return false;'
+replace = ''
+
+[[mutation]]
+id = "turnstile-error-codes-ignored"
+file = "src/kit/turnstile.ts"
+group = "turnstile"
+what = "error codes on a success body are ignored"
+find = 'if (codes !== undefined && (!Array.isArray(codes) || codes.length > 0)) return false;'
+replace = ''
+
+[[mutation]]
+id = "turnstile-action-ignored"
+file = "src/kit/turnstile.ts"
+group = "turnstile"
+what = "a token minted for another action is accepted"
+find = 'if (r.action !== action) return false;'
+replace = ''
+
+[[mutation]]
+id = "turnstile-hostname-ignored"
+file = "src/kit/turnstile.ts"
+group = "turnstile"
+controls = ["turnstile-hostname"]
+what = "a token minted for another host is accepted"
+find = 'if (typeof r.hostname !== "string" || r.hostname.toLowerCase() !== host) return false;'
+replace = ''
+
+[[mutation]]
+id = "turnstile-status-ignored"
+file = "src/kit/turnstile.ts"
+group = "turnstile"
+what = "a non-200 vendor answer is parsed anyway"
+find = 'if (res === "timeout" || res.status !== 200) return false;'
+replace = 'if (res === "timeout") return false;'
+
+[[mutation]]
+id = "turnstile-redirects-followed"
+file = "src/kit/turnstile.ts"
+group = "turnstile"
+what = "the siteverify call follows redirects (the secret could be sent elsewhere)"
+find = 'redirect: "error",'
+replace = 'redirect: "follow",'
+
+[[mutation]]
+id = "turnstile-empty-secret-allowed"
+file = "src/kit/turnstile.ts"
+group = "turnstile"
+what = "a missing Turnstile secret still calls the vendor"
+find = 'if (typeof secret !== "string" || secret === "") return false;'
+replace = ''
+
+[[mutation]]
+id = "turnstile-unknown-action-allowed"
+file = "src/kit/turnstile.ts"
+group = "turnstile"
+what = "an action name outside the two the kit uses is accepted"
+find = 'if (action !== "gate" && action !== "send") return false;'
+replace = ''
+
+[[mutation]]
+id = "turnstile-duplicate-key-allowed"
+file = "src/kit/turnstile.ts"
+group = "turnstile"
+what = "a vendor body with a repeated key (a smuggled second success) is accepted"
+find = 'if (k === "__proto__" || Object.prototype.hasOwnProperty.call(obj, k)) return fail();'
+replace = 'if (k === "__proto__") return fail();'
+
+# ---- log.ts: closed vocabulary, no personal data ----
+
+[[mutation]]
+id = "log-unknown-value-written-through"
+file = "src/kit/log.ts"
+group = "log"
+what = "a value outside the closed vocabulary is written to the log verbatim"
+find = 'return typeof v === "string" && v.length <= MAX_VALUE_LENGTH && set.has(v) ? (v as T) : fallback;'
+replace = 'return typeof v === "string" ? (v as T) : fallback;'
+
+[[mutation]]
+id = "log-minute-cap-off-by-one"
+file = "src/kit/log.ts"
+group = "log"
+controls = ["log-cap"]
+what = "one extra line per minute is written past the cap"
+find = 'if (emitted >= cap) {'
+replace = 'if (emitted > cap) {'
+
+[[mutation]]
+id = "log-per-request-cap-off-by-one"
+file = "src/kit/log.ts"
+group = "log"
+what = "a request may write one line more than its budget"
+find = 'if (used >= limit) return;'
+replace = 'if (used > limit) return;'
+
+# ---- alerts: text from visitors is made inert before it reaches the owner ----
+
+[[mutation]]
+id = "alerts-mention-not-defanged"
+file = "src/alerts/sanitize.ts"
+group = "alerts"
+what = "@everyone and @here in visitor text stay live"
+find = 's = s.replace(/@/g, "(at)");'
+replace = ''
+
+[[mutation]]
+id = "alerts-angle-brackets-kept"
+file = "src/alerts/sanitize.ts"
+group = "alerts"
+what = "angle brackets (user, channel and link syntax) survive"
+find = 's = s.replace(/[<>]/g, " ");'
+replace = ''
+
+[[mutation]]
+id = "alerts-link-scheme-kept"
+file = "src/alerts/sanitize.ts"
+group = "alerts"
+what = "a URI scheme keeps its colon, so clients linkify it"
+find = 's = s.replace(/([A-Za-z][A-Za-z0-9+.-]*):/g, "$1 ");'
+replace = ''
+
+[[mutation]]
+id = "alerts-host-dots-kept"
+file = "src/alerts/sanitize.ts"
+group = "alerts"
+what = "host names keep their dots, so clients linkify them"
+find = 's = s.replace(/([A-Za-z0-9])\.(?=[A-Za-z0-9])/g, "$1(dot)");'
+replace = ''
+
+[[mutation]]
+id = "alerts-markdown-not-escaped"
+file = "src/alerts/sanitize.ts"
+group = "alerts"
+what = "markdown syntax in visitor text stays live in Discord"
+find = 'if (mode === "markdown") s = s.replace(MARKDOWN, (c) => `\\${c}`);'
+replace = ''
+
+[[mutation]]
+id = "alerts-control-characters-kept"
+file = "src/alerts/sanitize.ts"
+group = "alerts"
+what = "control and bidi characters survive"
+find = 'else s += isInvisible(cp) ? " " : ch;'
+replace = 'else s += ch;'
+
+[[mutation]]
+id = "alerts-field-length-cap-removed"
+file = "src/alerts/sanitize.ts"
+group = "alerts"
+what = "one visitor field can be any length"
+find = 'if (s.length > max) {'
+replace = 'if (false) {'
+
+[[mutation]]
+id = "alerts-message-cap-removed"
+file = "src/alerts/sanitize.ts"
+group = "alerts"
+what = "the whole alert is no longer cut to the hard cap"
+find = 'if (text.length <= max) return text;'
+replace = 'return text;'
+
+# ---- second pass: markers the first list did not reach ----
+
+[[mutation]]
+id = "input-email-not-validated"
+file = "src/kit/input.ts"
+group = "input"
+controls = ["email-validate"]
+what = "the gate form passes the address on without the grammar check"
+find = 'email: email === undefined ? null : normalizeEmail(email),'
+replace = 'email: email === undefined ? null : email,'
+
+[[mutation]]
+id = "gate-body-deadline-stretched"
+file = "src/kit/gate.ts"
+group = "gate"
+controls = ["gate-body-cap"]
+what = "a body that never finishes is waited for 30 seconds instead of 5"
+find = 'const BODY_DEADLINE_MS = 5000;'
+replace = 'const BODY_DEADLINE_MS = 30000;'
+
+[[mutation]]
+id = "view-null-claims-fall-through"
+file = "src/kit/gate.ts"
+group = "gate"
+controls = ["view-token"]
+what = "a cookie that does not verify is no longer refused up front"
+find = 'if (claims === null) return back("expired");'
+replace = 'if (claims === null && raw === null) return back("expired");'
+
+[[mutation]]
+id = "budget-view-uses-gate-limit"
+file = "src/kit/budgets.ts"
+group = "limits"
+controls = ["route-budget"]
+what = "the view route is held to the gate's hourly budget instead of its own"
+find = 'else if (route === "view") limit = c.routeViewPerHour;'
+replace = 'else if (route === "view") limit = c.routeGatePerHour;'
+
+[[mutation]]
+id = "budget-gate-unit-boundary-off-by-one"
+file = "src/kit/budgets.ts"
+group = "gate"
+controls = ["route-budget"]
+what = "the hourly gate budget admits one unlock past its limit"
+find = 'DO UPDATE SET count = count + 1 WHERE count < ?3`, // CONTROL:route-budget'
+replace = 'DO UPDATE SET count = count + 1 WHERE count <= ?3`, // CONTROL:route-budget'
+
+[[mutation]]
+id = "budget-send-limit-lifted"
+file = "src/kit/budgets.ts"
+group = "limits"
+controls = ["send-budget"]
+what = "the daily send budget (default 0, nothing may be sent) is lifted"
+find = '(c) => c.dailySendBudget'
+replace = '(c) => 1000'
+
+[[mutation]]
+id = "budget-alert-limit-lifted"
+file = "src/kit/budgets.ts"
+group = "limits"
+controls = ["alert-budget"]
+what = "the daily alert budget is lifted"
+find = '(c) => c.dailyAlertBudget'
+replace = '(c) => 1000'
+
+[[mutation]]
+id = "alerts-quota-limit-removed"
+file = "src/alerts/quota.ts"
+group = "alerts"
+controls = ["alert-quota"]
+what = "the per-channel quota counts up forever instead of stopping at its limit"
+find = 'ON CONFLICT (site, channel, scope, window_start) DO UPDATE SET count = count + 1 WHERE count < ?5'
+replace = 'ON CONFLICT (site, channel, scope, window_start) DO UPDATE SET count = count + 1 WHERE 1'
+
+[[mutation]]
+id = "alerts-dedup-always-claims"
+file = "src/alerts/quota.ts"
+group = "alerts"
+controls = ["alert-dedup"]
+what = "a repeat of an event inside the window is claimed again and alerted again"
+find = 'WHERE alert_dedup.expires_at <= ?5'
+replace = 'WHERE 1'

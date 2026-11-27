@@ -233,12 +233,313 @@ first item:
 5. Hand-made exports, dumps and spreadsheets (including the files you made for
    the steps above).
 6. Shell history, tickets and notes that hold the address.
-7. By hand, where neither this list nor the tool can look: Worker logs and any
+7. The `alert_dedup` hash (automated by `leads delete`, #905; see the store
+   table below). `reach-around leads delete --yes --alerts-database NAME`
+   checks the schemas, prints the lead SQL, and after you apply it
+   `--finish` reads the lead tables back, clears the whole table and reads it
+   back as 0 twice. Only exit 0 is complete; exit 3 means the lead rows are
+   erased but the alert hashes are not confirmed cleared, and exit 4 means the
+   lead rows are not confirmed erased. A quiet site keeps up to 500 rows until
+   the next alert or a clear. Clearing it only resets repeat-alert suppression
+   for up to 10 minutes. Close the kit gate (the kill switch) while you erase.
+8. By hand, where neither this list nor the tool can look: Worker logs and any
    collector logs or exception output; alert delivery logs at the chat or mail
    provider; automated backups and exports of the database beyond Time Travel;
    CI artifacts and deploy logs; monitoring and error-tracking systems; any
    system wired to the Worker that stores request or alert payloads. Record the
    result of each check, even "nothing found".
+
+### Every store, checked against the schema
+
+Checked 2026-11-26 against every table, column, view and trigger the
+migrations create. The test `tests/test_erasure_coverage.py` runs the
+migrations in order in an in-memory SQLite database and reads the schema from
+it (not from the migration text), and fails when something appears that
+`scripts/erasure-stores.json` has not classified, when a column in a table not
+classed lead or lead_hash has a personal-looking name, a blob or untyped
+declaration or an expression default without its own recorded reason, or when
+the recorded column lists or the schema digest no longer match. Columns are read
+with `table_xinfo`, so generated (virtual or stored) and hidden columns are in
+the inventory; each one needs its own recorded reason, and a table that has one
+also pins its normalized CREATE text, which holds the generating expression. The
+schema digest covers every column, type, default, key and hidden flag, and the
+full text of every view, trigger and index (whitespace is collapsed between
+tokens only, never inside a string, a quoted name or a comment), so changing only
+a view or trigger body fails until it is looked at again. Class "lead" means a
+row holds an address or carries a lead id; the delete tool removes those.
+
+What this classification proves, and what it only infers. The test proves that
+every table and column the migrations create is classified, that a column whose
+name, declared type or default looks like it could hold personal data needs a
+recorded reason, and that a table linked to `leads` by a foreign key is classed
+lead. It does not trace what the Worker writes into a column: a TEXT column with
+an innocuous name in a table classed aggregate, with a reviewer's reason, would
+pass. So `leads` and `kit_events` are the only tables this review classified as
+holding an address or a lead id; that is a statement about the classification,
+not a data-flow proof (Worker D1 writes are not analyzed; only storage
+primitives and bindings are inventoried). The test also runs on SQLite, which
+stands in for D1. Inferred and not tested against D1 itself: that D1's SQL
+dialect and `table_xinfo` behave as SQLite's do on these migrations, that
+foreign keys are enforced and `ON DELETE CASCADE` fires, that the statements of
+one `db.batch` run as one unit, and what D1 does with the rest of a file after
+one statement fails. The purge and dedup checks run the real statements on
+SQLite; whether the Worker calls them is covered by the vitest suite in
+`worker/test`, not by the Python test.
+
+What the test does check about the Worker's other stores: every file under
+`worker/src` that names a storage primitive or a storage binding from any
+wrangler config is listed, and so is each statement that mentions one (a short
+hash of the statement text, comments and spacing removed). A new write through an
+already approved binding, or an edit to a reviewed one, fails until it is read
+and recorded. This is a lexical inventory of where storage is named. It is not a
+proof of where data flows: it pins statement text, it does not follow data, and
+a write that never names a primitive or a binding (an indirect call through an
+object passed in, a computed method name) is not seen. What an operator must
+still verify by hand: that the KV namespace holds only the gated page and live
+status state (list its keys), that no R2, Durable Object or queue binding exists
+in the deployed configuration, and that nothing outside this repository was wired
+to the Worker to store requests or alert payloads.
+
+Every export command is found by scanning every text file in the repository
+outside dependency and cache directories and Markdown (scripts anywhere, every
+`package.json`, Makefile and justfile, workflows, composite actions, a
+Containerfile, deploy files, JSON and YAML command arrays). A file larger than
+2 MB is scanned in overlapping chunks, not skipped; a file larger than 64 MB is
+not read and fails the test by name unless it is listed with a reason under
+`export_paths.unscanned_large_files`. In Markdown, each command line is judged
+on its own (a fenced line, an inline code span, a piece of prose), so a later
+`--table` on another command does not hide a whole-database export. A command
+built at run time from pieces that never appear together is not seen.
+
+What the test cannot do: it cannot tell that a person read a registry change.
+The registry carries a digest of itself, so the schema digest, the column lists
+and the reviewed call sites cannot be edited one at a time; that proves the
+records were recomputed together, not that someone else approved them. Review of
+changes to `scripts/erasure-stores.json` (and to this table) by a second human is
+a policy control, not something CI enforces. That includes every `known_gaps`
+entry: it must cite an issue listed under `reviewed_issues` with its title, and
+the registry digest changes with either list, so a waiver cannot be added
+quietly, but the test is not the reviewer and cannot tell whether a person agreed
+to it. A table classed `lead_hash` also needs a reason that names how its value is
+derived and how long it lives, and a recorded reason for every column, the hash
+column included. The repository's CODEOWNERS file
+does not cover the registry and does not require a code owner review (see OPEN
+QUESTION 5).
+
+| Store | Holds | Touched by the delete tool | How erasure is done or checked |
+|---|---|---|---|
+| `leads` (11 columns) | the address, country, times, session floor | yes | `DELETE`, read-back counts the row; also purged by age |
+| `kit_events` (4 columns) | hour-rounded unlock, view and verify events by lead id | yes | `DELETE`, read-back counts the rows; the foreign key also cascades |
+| `alert_dedup` (3 columns) | keyed hash of a recent alert, which can include the address; a row stops counting as a repeat after 10 minutes but is deleted only when the next alert event is admitted, so on a quiet site it can stay stored (at most 500 rows) until then or until cleared by hand | yes (#905): `leads delete --yes --alerts-database NAME`, then `--finish` | the whole table is cleared and read back to 0 twice, after the lead read-back; exit 3 if not confirmed; the owner closes the kit gate during erasure (statements below); a keyed hash is not erased by being hard to match |
+| `visitor_seen`, `view_events`, `click_events` | coarse visitor rows with no address, no IP address, no lead id | no | not matchable to a person by design (Art. 11); removed by retention |
+| 26 other tables (counters, rollups, budgets, logs, cursors) | counts and bookkeeping | no | aggregate, no row per person; counts cannot be un-counted |
+| KV, edge cache | the gated page, live status state, the public status body | no | no lead data found in the listed call sites; a text scan, not a data-flow proof (verify the namespace's keys by hand); the Worker never writes the gated page key |
+| R2, Durable Objects, queues | not used | not applicable | the test fails if one is added without review |
+| Unlock cookie | a signed token, no server copy | not applicable | stops opening the kit once the `leads` row is gone |
+| `scripts/backup-d1.sh` exports | `leads`, `kit_events`, `visitor_seen`, `view_events` are never exported | not applicable | the only lead-related data this script exports is the `alert_dedup` hashes; the test runs the script against a recording stub and judges every wrangler call it makes, and inventories every export command in any text file of the repository |
+| Hand-made whole-database exports | a `wrangler d1 export` with no `--table` (shown in `docs/deploy.md`, `docs/failure-modes.md` and the wiki as a backstop before a migration) holds every table, `leads` and `kit_events` included | no | by hand, checklist item 5; the test lists the docs that show one, so a new one is noticed |
+| D1 Time Travel | the whole database, 7 days Free, 30 days Paid | no | ages out; see the checklist |
+| Alert copies, inquiry text, hand-made exports, logs | outside the Worker | no | by hand, items 2, 3, 5, 6 and 8 of the checklist |
+
+Alert hash erasure (#905). `reach-around leads delete` clears the alert hash
+table itself, in two steps, and a quiet site otherwise keeps up to 500 rows until
+the next alert is admitted:
+
+1. `--yes --alerts-database NAME --alerts-database-id UUID --leads-database-id
+   UUID` (all three are required with `--yes`; without them the command exits 2
+   before it prints any SQL). The two ids are the `database_id` values of the
+   `[[d1_databases]]` entries in the Worker's own configuration (the private
+   instance repository holds the real ones; this repository's `wrangler.toml`
+   carries placeholders): the entry for the binding the Worker reads alerts
+   from, and the one for the leads binding. The command asks Cloudflare for the
+   id behind each name (`wrangler d1 info NAME --json`) and refuses unless it
+   equals the id you gave, so a decoy database with the right tables, or a
+   name that points somewhere else, ends in exit 2 with nothing changed. If one
+   database holds both, give the same name and the same id for both. Then it
+   reads the schema of the leads database and of the named database. The named
+   database must hold `alert_dedup` and must NOT hold `leads` or `kit_events`,
+   unless it is the leads database itself. An absent table is a refusal, never
+   a clear. It then prints the lead SQL and its apply command and **exits 10:
+   the checks passed and NOTHING is erased.** Exit 10 is never a completed
+   erasure; only the `--finish` run can exit 0.
+2. Close the kit gate (the kill switch) first and keep it closed until this
+   step ends: it is a Worker setting this tool cannot read, so it is a
+   precondition you must meet, not a check. After you apply the SQL, run the
+   same command again with `--finish`. It repeats the identity and schema
+   checks and reads the lead tables back for the exported id AND for the
+   address (must be 0 and 0: a lead created again for the same address, with a
+   new id, counts; else exit 4 and the alert table is untouched). The address
+   is compared trimmed and lower-cased on both sides, which is how the Worker
+   stores it (the table refuses any other spelling); plus-addresses and dots are
+   not folded together, because the store does not treat them as equal. It checks both
+   databases again, clears the whole alert table (not only expired rows) with
+   one statement that deletes only while the alert database holds no lead
+   table, and reads it back, repeating the clear up to three times if a row
+   arrives. It waits two seconds, reads the alert table back once more, checks
+   the identity and schema a last time and reads the lead tables for the
+   address one last time. Any alert row left, including one whose life began
+   after the erasure started, a lead row for the address that exists again, or
+   a database that changed during the run, is exit 3: the lead rows were read
+   as erased but the erasure is NOT complete. Once `--finish` is running it
+   never exits 2: before the lead tables read clean every failure is exit 4,
+   after that every failure is exit 3.
+
+Database identity. `wrangler d1 execute` takes a database name or binding, not
+an id, and its JSON answer is not documented to carry the database id
+(Cloudflare D1 wrangler commands page, read 2026-11-26), so nothing available
+to this tool proves which database one execute call used. What it does: every
+remote statement runs between two checks (`d1 info NAME --json`, before and
+after) that the name resolves to the id you gave, and a changed id at either
+check discards the answer (exit 3 or 4 as above). So the ids bind the name to
+the database the Worker's configuration names at the moment of each check. A
+name that is re-pointed to another database and back inside one call is NOT
+detected (the call could then read 0 on a decoy), and neither is a change
+between the last check and the end of the run. Treat the result as verified
+only for a database whose name and bindings nobody else can change during the
+erasure.
+
+The wrangler. The command runs only the wrangler installed in this repository
+(`cd worker && npm ci --ignore-scripts`; `--wrangler PATH` takes a path inside
+`worker/node_modules/.bin` or `worker/node_modules/wrangler`, nothing else),
+never one found through `PATH` or `npx`. It hands your Cloudflare token to that
+program, which is code you already trust with the token as the same OS user; a
+printed version number proves nothing, so the tool never asks for one. What it
+checks: the real path (symlinks resolved) stays inside the wrangler package; the
+package's `package.json` and npm's install record
+(`worker/node_modules/.package-lock.json`) name wrangler at the version and
+tarball digest in `worker/package-lock.json`; the file and every directory above
+it belong to root or you (the file too, so a root-owned `0755` file is
+accepted) and are not writable by others (world write is refused everywhere,
+the repository and every directory above it included) and not by a group that
+anyone else belongs to. A group write bit is accepted only when the group is
+your effective primary group (not a supplementary group), lists no member but
+you, is no other account's primary group, and the `passwd` and `group` lines of
+`/etc/nsswitch.conf` name exactly `files`: that is the private group and local
+account files of a normal account with umask 002, which give every file of a
+plain checkout and of `npm ci` a group write bit that no one else can use, so
+those need no `chmod`. Only a local files-only identity database is accepted:
+with `systemd` (systemd-userdb can answer a targeted lookup for an account that
+enumeration never lists) or any directory service on either line (sss, ldap,
+winbind, nis, compat), an unreadable `nsswitch.conf` or any error from the
+account or group lookup, the tool cannot know the group has no other member, so
+it refuses a group write bit instead. The alternative is to remove it:
+`chmod -R g-w worker/node_modules` (and the same for the repository root,
+`worker` and every directory above it that is group-writable). World write is
+refused in every case. Outside the repository, a sticky shared directory such as
+`/tmp` is accepted only when root owns it. The wrangler package, and the
+packages it lists in `dependencies`, `optionalDependencies` or
+`peerDependencies` (resolved the way node resolves them under
+`worker/node_modules`, recursively), are walked: every file and directory must
+belong to root or you with no other write bit and no write bit for a group
+anyone else belongs to (the same rule), a symlink (to a file or
+to a directory) must resolve inside `worker/node_modules` (the directories
+between its target and the repository root are checked, and a directory target
+is walked like any other directory), and the
+walk stops with a refusal past 200000 entries. A dependency a package requires
+(`dependencies`, or a peer dependency not marked optional) that is not installed
+under `worker/node_modules` is a refusal; only `optionalDependencies` and
+optional peers may be absent. A `node_modules` directory in the repository root
+or in any directory above it, or a `.node_modules` or `.node_libraries` folder
+in your home directory, is a refusal too, because node would search it and it is
+not checked (the message names no path). Installation mode: only the layout made
+by `cd worker && npm ci --ignore-scripts` is supported (lock file
+`worker/package-lock.json`, every package of the wrangler closure under
+`worker/node_modules`). Hoisted and workspace installs are refused on purpose,
+and the refusal message names that command; hoisting is not supported. The
+program's environment never holds
+`NODE_PATH`, `NODE_OPTIONS` or `NPM_CONFIG_*`. Only that walked tree is checked:
+a package no `dependencies` field names, or one node loads from outside
+`worker/node_modules` (for example the system module folder next to node
+itself), is not seen. Step 1 prints the apply command with the wrangler path
+relative to the repository root, never an absolute path. What it does not
+prove: that the installed files are those of the
+published package (npm keeps no per-file digests and the lock file's digest
+covers the tarball, which is not re-downloaded), that `node` is genuine, or that
+nothing changes between the check and the run. Anyone who can write as your OS
+user can defeat all of it. The program gets only the token, the account id,
+`HOME` and a fixed `PATH` (node must be in `/usr/bin` or `/bin`), runs in `/`
+with no stdin and in its own process group, and its output is read with a hard
+size cap (on the cap or the time limit the whole group is killed, not only the
+program; a descendant that starts a session of its own is not reached).
+
+Exit codes: 0 only for the verified erasure of `--finish` (a dry run, which
+requests nothing and changes nothing, also exits 0); 10 `--yes` step 1: checks
+passed, SQL printed, NOT erased; 1 no match; 2 usage problem, refused export,
+database, database id or wrangler, in step 1 or before `--finish` makes any
+remote call (this tool changed nothing); 3 the lead rows were read as erased but
+the alert hashes are not confirmed cleared, a database changed, a check failed
+after that point, or a lead for the address exists again; 4 lead rows not
+confirmed erased (any failure before that point; the alert table was not
+touched). Residual windows: a person who can still open the kit or trigger an
+alert can create a new lead or hash after the last read-back, and the tool
+cannot close that; the kit gate cannot be read by this tool, so closing it is
+your precondition; and the identity checks and the statements are separate
+remote calls (see "Database identity" for what that leaves). The ids bind the
+name to the database the Worker's configuration names; they cannot prove that
+the Worker you run uses that configuration.
+Clearing every row (not only the lead's own hashes, which cannot be told apart
+without the Worker's secret key) resets repeat-alert suppression for up to 10
+minutes for everyone; that is the cost of this step and the owner accepts it by
+running it.
+Recovery after exit 3: run `--finish` again (it uses the checked wrangler). To do
+it by hand, use the same pinned wrangler, in the directory whose configuration
+names the database, and read back to 0 before you call the erasure complete:
+
+```
+"$WRANGLER" d1 execute <DATABASE> --remote --command "DELETE FROM alert_dedup"
+"$WRANGLER" d1 execute <DATABASE> --remote --command "SELECT COUNT(*) AS alert_dedup_remaining FROM alert_dedup"
+```
+
+(`WRANGLER` is the absolute path of `worker/node_modules/.bin/wrangler`, as in the
+block under "Honoring a deletion request".) For routine housekeeping only, this deletes just
+the rows already past their 10 minute life, the point after which they no longer
+count as repeats; it leaves a recent row, so it is not the erasure step. It takes
+the current time in milliseconds as the number:
+
+```
+"$WRANGLER" d1 execute <DATABASE> --remote --command "DELETE FROM alert_dedup WHERE expires_at <= <NOW_MS>"
+```
+
+OPEN QUESTION 1, backups beyond Time Travel. The checklist can only tell you to
+look: the tool does not know where your automated backups go. Options: (a)
+accept that a copy outside the database ages out with that system's own
+retention and state the date in your reply (current text); (b) set a maximum
+age for any backup you keep and delete older ones on a schedule; (c) stop
+keeping backups of anything that can hold an address (the export script already
+leaves the lead tables out). Needs the owner's choice.
+
+OPEN QUESTION 2, the point-in-time read-back. Two runs reading 0 and 0 are still
+a moment in time: the Worker can write an event after the read. Options: (a)
+keep the repeat-until-two-clean-runs rule (current); (b) pause the event writes
+with the kit switch during the erasure window, then re-enable (loses unlock
+events for a few minutes); (c) rely on the foreign key cascade as well (already
+in the schema; D1 turning foreign keys on is inferred and unverified here).
+Needs the owner's choice.
+
+OPEN QUESTION 3, short-lived alert hashes. Today an expired row is removed only
+when the next alert event is admitted (checked in the code: nothing prunes it on
+a timer), so on a quiet site it stays until then. Options: (a) the whole-table
+clear and read-back run by `leads delete --finish` after a schema check of the
+named database (current, #905); (b) prune expired
+`alert_dedup` rows in the scheduled handler too, so a quiet site never holds one
+past its life (a Worker change; it would still not remove a row made minutes
+ago); (c) add `DELETE FROM alert_dedup` to the delete SQL, which is the one-command
+erasure but fails the whole file if the alert tables are in another database than
+the leads one. Needs the owner's choice.
+
+OPEN QUESTION 5, who reviews the registry. A test cannot enforce that a second
+person approves a change to `scripts/erasure-stores.json`. Options: (a) add the
+registry, its test and this page to CODEOWNERS and turn on required code owner
+review in branch protection (the CODEOWNERS file is a guard file, so this is
+the owner's change); (b) keep review as a stated policy only (current). Needs
+the owner's choice.
+
+OPEN QUESTION 4, aggregate counts. Hour-rounded counters (gate attempts, kit
+views by day) include the erased person's events and cannot be un-counted. The
+position written here is that they are not personal data about one person.
+Options: (a) keep that position (current); (b) say so in the visitor notice
+sentence; (c) drop counters that fall under a small threshold. Needs the owner's
+choice.
 
 TODO-copy: the visitor-facing sentence for the right of access, the right to
 erasure, the one-month answer and the Art. 11 position on page view rows.
@@ -289,9 +590,19 @@ Ctrl-C. Run it as one block from your project directory. The steps inside are:
    transaction in a file and the Worker can write an event after the read.
    `leads_remaining` 1 means the id did not belong to that address in the live
    database (a stale or wrong export): nothing was deleted, stop and re-export.
-   `events_remaining` above 0 means events remain; run the file again. Whether
-   the tables read here are every place the Worker stores lead data is
-   unverified against the full schema.
+   `events_remaining` above 0 means events remain; run the file again. The two
+   tables read here are the only tables this review classified as holding an
+   address or a lead id (see "Every store, checked against the schema" above for
+   what that classification does and does not prove).
+5. The block erases the lead rows only. The `--yes` run inside it exits 10
+   (checks passed, SQL printed, NOTHING erased), which the block expects. Run
+   the same `leads delete` command again with `--finish` (checklist item 7,
+   #905): it reads the lead tables back, clears the alert hashes and reads them
+   back as 0 twice. Call the erasure complete only on exit 0 of that `--finish`
+   run (exit 3: the alert hashes are not confirmed cleared; exit 4: the lead
+   rows are not confirmed erased). Keep the kit gate closed (the kill switch)
+   until it exits 0. Set `ALERTS_DB`, `ALERTS_ID` and `LEADS_ID` from the
+   Worker's own configuration first (see the alert hash erasure section).
 
 ```
 (
@@ -302,7 +613,11 @@ Ctrl-C. Run it as one block from your project directory. The steps inside are:
   trap cleanup EXIT
   trap 'exit 130' HUP INT TERM
   echo "private work directory (removed on exit): $WORK" >&2
-  npx wrangler d1 execute reach-around-leads --remote --json \
+  WRANGLER="$PWD/worker/node_modules/.bin/wrangler"   # pinned: cd worker && npm ci --ignore-scripts
+  ALERTS_DB="<the database the Worker writes alerts to>"
+  ALERTS_ID="<its database_id from the Worker's own configuration>"
+  LEADS_ID="<the database_id of reach-around-leads from the same configuration>"
+  "$WRANGLER" d1 execute reach-around-leads --remote --json \
     --command "SELECT id, email FROM leads" > "$WORK/leads-export.json"
   printf 'Address to delete: ' >&2
   read -r ADDR
@@ -310,10 +625,13 @@ Ctrl-C. Run it as one block from your project directory. The steps inside are:
   printf 'Print the delete SQL and apply it? Type yes: ' >&2
   read -r OK
   [ "$OK" = yes ]
-  printf '%s\n' "$ADDR" | reach-around leads delete --input "$WORK/leads-export.json" --email - --database reach-around-leads --yes --sql-out "$WORK/delete-lead.sql"
-  npx wrangler d1 execute reach-around-leads --remote --file "$WORK/delete-lead.sql"
+  RC=0
+  printf '%s\n' "$ADDR" | reach-around leads delete --input "$WORK/leads-export.json" --email - --database reach-around-leads --alerts-database "$ALERTS_DB" --alerts-database-id "$ALERTS_ID" --leads-database-id "$LEADS_ID" --yes --sql-out "$WORK/delete-lead.sql" || RC=$?
+  [ "$RC" -eq 10 ]   # 10 = checks passed, SQL printed, nothing erased yet
+  "$WRANGLER" d1 execute reach-around-leads --remote --file "$WORK/delete-lead.sql"
   sleep 60
-  npx wrangler d1 execute reach-around-leads --remote --file "$WORK/delete-lead.sql"
+  "$WRANGLER" d1 execute reach-around-leads --remote --file "$WORK/delete-lead.sql"
+  printf '%s\n' "$ADDR" | reach-around leads delete --input "$WORK/leads-export.json" --email - --database reach-around-leads --alerts-database "$ALERTS_DB" --alerts-database-id "$ALERTS_ID" --leads-database-id "$LEADS_ID" --yes --finish
 )
 ```
 
@@ -328,8 +646,13 @@ cleanup; the work directory is printed on the first line so you can remove it
 yourself, and you should check that it is gone before you report the request
 done.
 
-The command reads only the file you give it. It makes no network call, needs no
-token and writes no file except the `--sql-out` file. It refuses an address that
+The dry run reads only the file you give it and makes no network call. With
+`--yes` the command also talks to Cloudflare, only through the repository's
+wrangler and only to read the database ids and schemas (step one, exit 10) or,
+with `--finish`, to read the lead tables, clear `alert_dedup` and read both back
+(checklist item 7, #905). It
+writes no file except the `--sql-out` file and never prints remote text. It
+refuses an address that
 is not valid (ASCII, one `@`, a dotted domain; whitespace around it and upper
 case are normalized), and refuses an export that has a result block without
 `success: true`, a column other than the `leads` columns, a duplicate key, a

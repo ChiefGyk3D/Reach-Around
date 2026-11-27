@@ -286,6 +286,62 @@ def write_new_atomic(
         os.close(dir_fd)
 
 
+class StagedFile:
+    """A file written beside its target but not yet in place (see ``stage_file``).
+
+    ``commit`` is one rename in the same folder; ``discard`` removes the staged
+    copy. After the first call of either, the other does nothing.
+    """
+
+    def __init__(self, target: Path, staged: Path) -> None:
+        self.target = target
+        self.staged = staged
+        self._done = False
+
+    def commit(self) -> None:
+        if self._done:
+            return
+        dir_fd = os.open(
+            self.target.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        )
+        try:
+            os.replace(
+                self.staged.name,
+                self.target.name,
+                src_dir_fd=dir_fd,
+                dst_dir_fd=dir_fd,
+            )
+            self._done = True
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+
+    def discard(self) -> None:
+        if self._done:
+            return
+        self._done = True
+        try:
+            self.staged.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def stage_file(
+    path: Path,
+    text: str,
+    writer: Callable[[Path, str], None] | None = None,
+) -> StagedFile:
+    """Write ``text`` beside ``path`` (temp file, fsync, mode 0600) without
+    touching ``path``; ``StagedFile.commit`` then puts it in place with one rename.
+
+    ``writer`` stands in for ``write_atomic`` (the caller's own seam). A failure
+    raises before ``path`` has been touched.
+    """
+    staged = path.with_name(f".{path.name}.{secrets.token_hex(8)}.staged")
+    (writer or write_atomic)(staged, text)
+    return StagedFile(path, staged)
+
+
 def write_atomic(
     path: Path,
     text: str,

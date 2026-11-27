@@ -33,6 +33,7 @@ from reach_around.config.blocks import (
     Text,
 )
 from reach_around.config.footer import CREDIT_URL
+from reach_around.config.hoplabel import add_hop
 from reach_around.config.imported_history import ImportedHistory
 from reach_around.config.models import (
     SCREEN_PATHS,
@@ -84,6 +85,7 @@ from reach_around.site.kit import (
     gate_path_extras,
     public_paths,
     render_kit,
+    share_url,
     stage_gated,
 )
 from reach_around.site.overrides import (
@@ -233,6 +235,9 @@ def _frame_plan(config: SiteConfig) -> dict[str, str]:
 
 # The display-zone script (#372): linked from the public kit page only.
 _ZONE_SCRIPT = Path("static") / "zone.js"
+# The copy-link script (#432): linked from the public kit page only, and only
+# when that page prints a link.
+_COPY_LINK_SCRIPT = Path("static") / "copy-link.js"
 
 
 # Published only for a site with an email block; the script only if one uses it.
@@ -334,6 +339,24 @@ def _nav(config: SiteConfig, current: int, root: str) -> list[dict[str, Any]]:
         }
         for i, tab in enumerate(config.tabs)
     ]
+
+
+def _link_href(config: SiteConfig) -> Callable[[Any], str]:
+    """The address a link is written with: its url, plus ``h=<label>`` if internal.
+
+    Only a link the owner marked ``internal`` gets the hop (#593); the config
+    check has already tied it to a listed site of the owner's and refused an
+    existing ``h``, and ``add_hop`` judges the label again at the point of use.
+    """
+    label = config.analytics.hop_label
+
+    def href(link: Any) -> str:
+        url = str(link.url)
+        if getattr(link, "internal", False) is True and label is not None:
+            return add_hop(url, label)
+        return url
+
+    return href
 
 
 def _internal_href(
@@ -1308,6 +1331,8 @@ def build_site(
     if kit is None:
         static.pop(_KIT_STYLE, None)
         static.pop(_ZONE_SCRIPT, None)
+    if share_url(config) is None:
+        static.pop(_COPY_LINK_SCRIPT, None)
     plan = _frame_plan(config)
     if not plan:
         static.pop(_FRAME_STYLE, None)
@@ -1318,6 +1343,7 @@ def build_site(
         static[Path("static") / "custom.css"] = custom_css.encode("utf-8")
     named = fingerprint(static)
     env = make_environment(overrides)
+    env.globals["link_href"] = _link_href(config)
     env.globals["platform_rows"] = lambda block: platform_rows(
         block, numbers, number_day or today, config
     )

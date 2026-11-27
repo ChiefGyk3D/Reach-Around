@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import sys
 import time
 from collections.abc import Callable, Mapping, MutableMapping
@@ -34,6 +35,7 @@ from typing import TextIO
 
 from reach_around.config import ConfigError, SiteConfig, load_site_config
 from reach_around.config.cutover import utc_today
+from reach_around.config.fediverse_sources import FediverseSource
 from reach_around.config.imported_history import parse_imported
 from reach_around.config.loader import _read
 from reach_around.config.numbers import NumbersEntry, load_numbers
@@ -47,14 +49,47 @@ from reach_around.counts.beacons import (
     BeaconsImportError,
     parse_beacons_csv,
 )
+from reach_around.counts.fediverse_commit import (
+    SAME_DAY_KEPT,
+    SNAPSHOT_IN_FUTURE,
+    UNIT_NOTE_QUARANTINED,
+    UnitFileTooLarge,
+    UnitNote,
+    abandon_unit,
+    day_conflicts,
+    discard_unit,
+    find_stale,
+    future_snapshots,
+    mark_landed,
+    new_generation,
+    quarantine_unit,
+    remove_stale,
+    rows_present,
+    snapshot_rows,
+    status_committed,
+    unit_path,
+    unit_pending,
+    write_unit,
+)
+from reach_around.counts.fediverse_refresh import FediverseResult, platform_key
+from reach_around.counts.fediverse_refresh import run as run_fediverse
+from reach_around.counts.fediverse_store import (
+    dump_snapshots,
+    load_snapshots,
+    missing_endpoints,
+    required_endpoints,
+    snapshot_path,
+)
 from reach_around.counts.files import (
     LOCK_WAIT_SECONDS,
     FileLock,
     LockBusy,
     LockLost,
     Paths,
+    StagedFile,
     dump_numbers,
     plan_paths,
+    stage_file,
     utc_stamp,
     write_atomic,
     write_new_atomic,
@@ -69,6 +104,7 @@ from reach_around.counts.history import (
     OldCopyRemainsError,
     Record,
     RedactDurabilityError,
+    _open_parent,
     append_records,
     check_redaction_arguments,
     dump_new_history,
@@ -79,6 +115,14 @@ from reach_around.counts.history import (
     read_history,
     redact_records,
     remove_stale_redaction_temps,
+    rewrite_metadata,
+)
+from reach_around.counts.history_compare import (
+    COMPARE_MAX_BYTES,
+    MAX_MANIFEST_BYTES,
+    MAX_NUMBERS_BYTES,
+    compare_history,
+    read_regular,
 )
 from reach_around.counts.imported_export import export_imported
 from reach_around.counts.importer import (
@@ -157,6 +201,7 @@ EXIT_SOURCE_FAILED = 3
 EXIT_DUE = 4
 EXIT_TOKEN_WARNING = 4  # counts tokens: a token is expiring (same code as counts stale)
 EXIT_REPLACED_UNSURE = 5  # history-redact: the file was replaced, durability unsure
+EXIT_REWRITE = 10  # history-compare: a valid tombstone-only rewrite (reserved)
 
 
 @dataclass(frozen=True)
@@ -251,9 +296,13 @@ def run_refresh(
 ) -> int:
     try:
         config = load_site_config(config_path)
-        if config.numbers is None or not config.numbers.sources:
+        if config.numbers is None or not (
+            config.numbers.sources or config.numbers.fediverse
+        ):
             raise ValueError("the config has no numbers.sources to refresh")
         sources = select(config.numbers, only)
+        # ``--only`` names numbers sources; it never starts the fediverse collector.
+        fediverse = [] if only else list(config.numbers.fediverse)
         known = {source.platform for source in config.numbers.sources}
         unknown = sorted(set(accept_drop or []) - known)
         if unknown:
@@ -262,6 +311,11 @@ def run_refresh(
             )
         paths = plan_paths(config_path, out)
         history = history_path(config, config_path, paths)
+        fediverse_file = snapshot_path(paths.target) if fediverse else None
+        if fediverse_file is not None and (
+            fediverse_file.is_symlink() or fediverse_file.is_dir()
+        ):
+            raise ValueError("the fediverse snapshot file is a symlink or a directory")
     except (ConfigError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
@@ -284,6 +338,11 @@ def run_refresh(
             print(
                 f"would fetch {source.platform}: {source.kind} from {host_of(source)}"
             )
+        for item in fediverse:
+            print(
+                f"would fetch {platform_key(item.kind)}: "
+                f"{', '.join(required_endpoints([item]))}"
+            )
         print("dry run: nothing fetched, nothing written")
         return EXIT_OK
 
@@ -303,6 +362,8 @@ def run_refresh(
                 history,
                 sinks,
                 _retention_policy(config),
+                fediverse,
+                fediverse_file,
             )
     except LockBusy:
         print(
@@ -448,6 +509,160 @@ def _settle_history(paths: Paths, nonce: str) -> None:
         pass  # a stale note only makes the next run compare its values
 
 
+def _discard(staged: StagedFile | None) -> None:
+    """Remove a staged snapshot that will not be committed (never raises)."""
+    if staged is not None:
+        try:
+            staged.discard()
+        except OSError:
+            pass  # a stray dot file is harmless; the snapshot itself is untouched
+
+
+def _pending_live(paths: Paths, fediverse_file: Path) -> bool:
+    """True when an earlier attempt's history rows may lack their numbers write
+    (a note that cannot be read counts as live: it proves nothing). The unit note
+    of a snapshot whose numbers write did not land counts as live too."""
+    try:
+        if unit_pending(paths.target, fediverse_file):
+            return True
+        return bool(live_ids(read_note(pending_path(paths.target)), paths.target))
+    except (OSError, HistoryError):
+        return True
+
+
+def _unit_state(
+    paths: Paths,
+    history: Path | None,
+    fediverse_file: Path,
+    stamp: datetime,
+    run_id: str,
+) -> tuple[list[Record], list[str], bool]:
+    """Recompute from the files on disk whether the committed unit is complete.
+
+    Returns the history rows the committed snapshot implies that history lacks,
+    the platforms whose snapshot is dated after today, and whether EVERY part
+    agrees: no staged or temp copy, no live pending note, no unsettled unit note
+    (the numbers of the snapshot's run landed), no missing row, no future
+    snapshot. The status ``committed: true`` is written only when this holds.
+    Raises ``OSError``, ``HistoryError`` or ``ConfigError`` when a part cannot
+    be read (the caller treats that as not complete)."""
+    snapshots = load_snapshots(fediverse_file)
+    rows = snapshot_rows(snapshots, run_id, stamp.date())
+    late = future_snapshots(snapshots, stamp.date())
+    missing: list[Record] = []
+    if history is not None and rows:
+        held = read_history(history) if history.exists() else None
+        missing = [row for row in rows if not rows_present(held, [row])]
+    agree = not (
+        find_stale(fediverse_file)
+        or _pending_live(paths, fediverse_file)
+        or missing
+        or late
+    )
+    return missing, late, agree
+
+
+def _unit_complete(
+    paths: Paths,
+    history: Path | None,
+    fediverse_file: Path,
+    stamp: datetime,
+    run_id: str,
+) -> bool:
+    """The final consistency check before ``committed: true`` (never raises)."""
+    try:
+        return _unit_state(paths, history, fediverse_file, stamp, run_id)[2]
+    except (OSError, HistoryError, ConfigError):
+        return False
+
+
+def _recover(
+    paths: Paths,
+    history: Path | None,
+    fediverse_file: Path,
+    stamp: datetime,
+    run_id: str,
+) -> int | None:
+    """Repair what an interrupted fediverse run left (table: ``fediverse_commit``).
+
+    Runs first, under the refresh lock. The status is RECOMPUTED from the files
+    (``_unit_state``), never trusted: when any part of the unit disagrees and the
+    status says ``committed: true``, it is set to false BEFORE any repair step
+    runs (so a crash during recovery cannot keep the stale true). Then it removes
+    staged and temp copies (a staged copy is a run that never reached its rename:
+    rolled back) and appends the history rows the committed snapshot implies and
+    history lacks, whatever the age of the snapshot (never twice). Recovery never
+    writes true; only the end of a complete run does. Returns an exit code on
+    failure, ``None`` otherwise.
+    """
+    try:
+        overflow: UnitFileTooLarge | None = None
+        try:
+            stale = find_stale(fediverse_file)
+        except UnitFileTooLarge as exc:
+            stale, overflow = [], exc  # too many to examine: fail closed below
+        try:
+            missing, late, agree = _unit_state(
+                paths, history, fediverse_file, stamp, run_id
+            )
+        except (OSError, HistoryError, ConfigError):
+            missing, late, agree = [], [], False  # an unreadable part is not complete
+        if (not agree or overflow is not None) and status_committed(
+            paths.status
+        ) is True:
+            write_atomic(
+                paths.status,
+                render_status(load_status(paths.status), [], stamp, False),
+            )
+        if overflow is not None:
+            raise overflow  # status is false; every file stays as evidence
+        # After the demotion above: a note of a transaction that never crossed
+        # the commit point (its proposed snapshot is not the committed one, or its
+        # staged copy is still here) is removed, so it cannot block the status.
+        abandon_unit(paths.target, fediverse_file, stale)
+        remove_stale(stale)
+        for kind in late:
+            print(
+                f"{platform_key(kind)}: {SNAPSHOT_IN_FUTURE}, its history rows wait",
+                file=sys.stderr,
+            )
+        if history is not None and missing:
+            append_records(history, missing, now=stamp, skip_days=True)
+    except (OSError, HistoryError, ConfigError) as exc:
+        print(
+            f"error: the previous run could not be repaired: {type(exc).__name__}",
+            file=sys.stderr,
+        )
+        return EXIT_WRITE
+    return None
+
+
+def _same_day(
+    fed: FediverseResult, history: Path, stamp: datetime, run_id: str
+) -> FediverseResult | None:
+    """Keep the stored snapshot of a platform whose day already has history rows
+    with other values (the rule in ``fediverse_commit``); ``None`` when history
+    cannot be read."""
+    rows = snapshot_rows(fed.snapshots, run_id, stamp.date())
+    try:
+        held = read_history(history) if history.exists() else None
+    except (OSError, HistoryError):
+        return None
+    kept = day_conflicts(held, rows) if held is not None else set()
+    if not kept:
+        return fed
+    return FediverseResult(
+        {k: v for k, v in fed.snapshots.items() if k not in kept},
+        {k: v for k, v in fed.aggregates.items() if k not in kept},
+        [
+            Outcome(item.platform, item.kind, "skipped", None, SAME_DAY_KEPT)
+            if item.platform in {platform_key(k) for k in kept}
+            else item
+            for item in fed.outcomes
+        ],
+    )
+
+
 def _write_failed(exc: Exception) -> None:
     reason = exc.strerror if isinstance(exc, OSError) else str(exc)
     print(f"error: cannot write the result files: {reason}", file=sys.stderr)
@@ -560,6 +775,8 @@ def _cycle(
     history: Path | None = None,
     sinks: Sinks | None = None,
     retention: RetentionPolicy | None = None,
+    fediverse: list[FediverseSource] | None = None,
+    fediverse_file: Path | None = None,
 ) -> int:
     try:
         previous = (
@@ -570,6 +787,24 @@ def _cycle(
         return EXIT_USAGE
     stamp = now()
     run_id = new_run_id(stamp)
+    quarantined = False
+    if fediverse_file is not None:
+        # First, before any read: repair what an interrupted run left.
+        repaired = _recover(paths, history, fediverse_file, stamp, run_id)
+        if repaired is not None:
+            return repaired
+        # After the demotion in ``_recover``: a note that cannot be parsed moves
+        # aside, and this run keeps the status false (the next good run settles).
+        try:
+            quarantined = quarantine_unit(paths.target)
+        except OSError as exc:
+            print(
+                f"error: the previous run could not be repaired: {type(exc).__name__}",
+                file=sys.stderr,
+            )
+            return EXIT_WRITE
+        if quarantined:
+            print(f"fediverse: {UNIT_NOTE_QUARANTINED}", file=sys.stderr)
     numbers, outcomes = refresh(
         sources,
         previous,
@@ -582,6 +817,40 @@ def _cycle(
         meta_sink=sinks.meta if sinks is not None else None,
         tiktok_sink=sinks.pair if sinks is not None else None,
     )
+    fed = (
+        run_fediverse(
+            fediverse,
+            now=stamp,
+            transport=transport if transport is not None else default_transport(),
+            sleep=default_sleep,
+        )
+        if fediverse and fediverse_file is not None
+        else FediverseResult({}, {}, [])
+    )
+    if history is not None and fed.snapshots:
+        # The same-day rule: one row set per platform and day, never rewritten.
+        ruled = _same_day(fed, history, stamp, run_id)
+        if ruled is None:
+            print(
+                "error: history not read, nothing was changed",
+                file=sys.stderr,
+            )
+            return EXIT_WRITE
+        fed = ruled
+    for outcome in fed.outcomes:
+        if outcome.status == "ok":
+            print(f"{outcome.platform}: complete {outcome.count} posts")
+        elif outcome.status == "skipped":
+            print(
+                f"{outcome.platform}: skipped ({outcome.detail}), "
+                "history holds another value for today, the stored snapshot was kept"
+            )
+        else:
+            print(
+                f"{outcome.platform}: incomplete ({outcome.detail}), "
+                "the previous snapshot was kept",
+                file=sys.stderr,
+            )
     for outcome in outcomes:
         if outcome.status == "ok":
             print(f"{outcome.platform}: ok {outcome.count}")
@@ -599,13 +868,39 @@ def _cycle(
     # The status file goes first and the numbers file last, so a failure can never
     # leave new numbers with no record of the run. If the numbers write fails, the
     # status is rewritten with ``committed: false`` (best effort) and the exit is 1.
-    changed = any(outcome.status == "ok" for outcome in outcomes)
+    # A fediverse read that finished also counts as a change: the numbers file is
+    # then written again (as it was when no number changed), so the pending note
+    # of this run is settled the same way for both kinds of rows.
+    changed = any(outcome.status == "ok" for outcome in outcomes) or bool(fed.snapshots)
     staged: Staged | None = None
     figures, insight_failures = _insights(
         sources, outcomes, environment, transport, now(), history
     )
     for failure in insight_failures:
         print(f"{failure.platform}: insights error ({failure.word})", file=sys.stderr)
+    # A run that read a fediverse snapshot is ONE unit (#940) with ONE commit
+    # point, the rename of the staged snapshot. The order is: recover what the last
+    # run left (start of the cycle), stage the snapshot beside its file, append
+    # the ordinary history rows (the pending note covers a later failure), write
+    # the status as ``committed: false``, RENAME the snapshot into place, append
+    # the fediverse rows derived from it, write the numbers file, settle the
+    # pending note, and only then write the status as ``committed: true``. A
+    # failure before the rename leaves the old snapshot byte for byte and a
+    # status that never claims the commit. After it the snapshot is the truth and
+    # whatever did not land is repaired by the next run. Design and crash table:
+    # ``counts/fediverse_commit.py``.
+    staged_snapshot: StagedFile | None = None
+    proposed_digest = ""
+    if fediverse_file is not None and fed.snapshots:
+        try:
+            snapshot_text = dump_snapshots(
+                {**load_snapshots(fediverse_file), **fed.snapshots}
+            )
+            proposed_digest = content_digest(snapshot_text)
+            staged_snapshot = stage_file(fediverse_file, snapshot_text, write_atomic)
+        except (OSError, ConfigError) as exc:
+            _write_failed(exc)
+            return EXIT_WRITE
     if history is not None and changed:
         # History goes first: if it cannot be written, the status and numbers
         # files are left exactly as they were. Only values that were fetched and
@@ -641,6 +936,9 @@ def _cycle(
             )
             for figure in figures
         ]
+        # The fediverse aggregates are not here: their rows are derived from the
+        # committed snapshot and appended after the commit point (see
+        # ``fediverse_commit``), so a run that never commits leaves no row.
         # One append takes at most MAX_BATCH records. If the assembled batch is
         # over it, only the analytics figures of this run are left out (they are
         # reported as too_large); subscribers and other sources are never dropped.
@@ -648,57 +946,149 @@ def _cycle(
         for platform in too_big:
             print(f"{platform}: insights error (too_large)", file=sys.stderr)
             insight_failures.append(InsightFailure(platform, "too_large"))
-        try:
-            staged = _stage_history(
-                history, paths, fetched, run_id, _expected_digest(numbers)
-            )
-            fetched = staged.records
-        except OSError as exc:
-            _write_failed(exc)
-            return EXIT_WRITE
-        except HistoryError as exc:
-            print(
-                f"error: history not written, nothing else was changed: {exc}",
-                file=sys.stderr,
-            )
-            return EXIT_WRITE
-        try:
-            kept = append_records(history, fetched, now=stamp, skip_days=True)
-        except HistoryError as exc:
-            _withdraw(paths, history, staged, exc)
-            print(
-                f"error: history not written, nothing else was changed: {exc}",
-                file=sys.stderr,
-            )
-            return EXIT_WRITE
-        if kept < len(fetched):
-            print("history: today's value was already recorded; kept as it is")
+        if fetched:
+            try:
+                staged = _stage_history(
+                    history, paths, fetched, run_id, _expected_digest(numbers)
+                )
+                fetched = staged.records
+            except OSError as exc:
+                _discard(staged_snapshot)
+                _write_failed(exc)
+                return EXIT_WRITE
+            except HistoryError as exc:
+                _discard(staged_snapshot)
+                print(
+                    f"error: history not written, nothing else was changed: {exc}",
+                    file=sys.stderr,
+                )
+                return EXIT_WRITE
+            try:
+                kept = append_records(history, fetched, now=stamp, skip_days=True)
+            except HistoryError as exc:
+                _discard(staged_snapshot)
+                _withdraw(paths, history, staged, exc)
+                print(
+                    f"error: history not written, nothing else was changed: {exc}",
+                    file=sys.stderr,
+                )
+                return EXIT_WRITE
+            if kept < len(fetched):
+                print("history: today's value was already recorded; kept as it is")
     if history is not None:
         _retention_checks(history, stamp, retention)
     previous_status = load_status(paths.status)
+    reported = outcomes + fed.outcomes
+    # Legacy order (no snapshot in this run): status first as ``committed: true``,
+    # rewritten as false if the numbers write fails. A run with a snapshot follows
+    # the unit order described above: false first, true last.
+    # A fediverse run that changed nothing must not say ``true`` while an earlier
+    # attempt's note is still live: that status would hide the unfinished attempt.
+    # A unit run (a snapshot in this run, or any state in which the unit is not
+    # complete: a live note, an unsettled unit note, a missing row, a snapshot
+    # dated after today) follows the unit order: ``false`` first, and ``true``
+    # only after a final consistency check in this very run. An unfinished
+    # attempt is never hidden by a later run that found nothing new to write.
+    unit = fediverse_file is not None and (
+        staged_snapshot is not None
+        or quarantined
+        or not _unit_complete(paths, history, fediverse_file, stamp, run_id)
+    )
     try:
         write_atomic(
-            paths.status, render_status(previous_status, outcomes, stamp, True)
+            paths.status,
+            render_status(previous_status, reported, stamp, not unit),
         )
     except (OSError, ConfigError) as exc:
+        _discard(staged_snapshot)
         _write_failed(exc)
         return EXIT_WRITE
+    unit_note: UnitNote | None = None
     if changed:
+        if staged_snapshot is not None:
+            try:
+                # The unit note, a transaction record: the digest of the proposed
+                # snapshot, of the numbers it belongs to and a fresh generation
+                # id. It exists before the commit point, so a crash after the
+                # rename can never leave a snapshot with no trace of its numbers.
+                digest = _expected_digest(numbers)
+                if digest is None:
+                    raise ConfigError(str(paths.target), None, "numbers not valid")
+                unit_note = UnitNote(proposed_digest, digest, new_generation())
+                write_unit(paths.target, unit_note)
+            except (OSError, ConfigError) as exc:
+                _discard(staged_snapshot)
+                _write_failed(exc)
+                return EXIT_WRITE
+            try:
+                # THE commit point: one rename. The stored snapshots of platforms
+                # that failed this run stay (they were merged when staging). A
+                # failure leaves the old snapshot and everything else untouched.
+                staged_snapshot.commit()
+            except OSError as exc:
+                _discard(staged_snapshot)
+                discard_unit(paths.target)  # never crossed the commit point
+                _write_failed(exc)
+                return EXIT_WRITE
+            if history is not None and fediverse_file is not None:
+                # Rows derived from the snapshot now on disk (never twice).
+                rows = snapshot_rows(
+                    load_snapshots(fediverse_file), run_id, stamp.date()
+                )
+                try:
+                    if rows:
+                        append_records(history, rows, now=stamp, skip_days=True)
+                except (OSError, HistoryError) as exc:
+                    # Committed, status still false: the next run appends them.
+                    print(
+                        f"error: history rows not written: {type(exc).__name__}",
+                        file=sys.stderr,
+                    )
+                    return EXIT_WRITE
         try:
             write_atomic(paths.target, dump_numbers(numbers))
         except (OSError, ConfigError) as exc:
-            try:
-                write_atomic(
-                    paths.status,
-                    render_status(previous_status, outcomes, stamp, False),
-                )
-            except (OSError, ConfigError):
-                pass  # the numbers file is untouched either way
-            _write_failed(exc)
+            if not unit:
+                try:
+                    write_atomic(
+                        paths.status,
+                        render_status(previous_status, reported, stamp, False),
+                    )
+                except (OSError, ConfigError):
+                    pass  # the numbers file is untouched either way
+            _write_failed(exc)  # a unit's status already says ``committed: false``
             return EXIT_WRITE
+        if fediverse_file is not None:
+            # A numbers file was written after the snapshot: the unit note is done.
+            if unit_note is not None:
+                try:
+                    mark_landed(paths.target, unit_note)  # this generation's proof
+                except OSError:
+                    pass  # the note stays unsettled; a later run writes numbers
+            try:
+                unit_path(paths.target).unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass  # still there: unit_pending() judges it by its digest
         if staged is not None:
             _settle_history(paths, staged.nonce)
-    failed = any(outcome.status == "error" for outcome in outcomes) or bool(
+    if (
+        unit
+        and not quarantined
+        and fediverse_file is not None
+        and _unit_complete(paths, history, fediverse_file, stamp, run_id)
+    ):
+        # The final consistency check passed in this very run: every part of the
+        # unit (snapshot, history rows, numbers, notes) agrees. Only now: true.
+        try:
+            write_atomic(
+                paths.status, render_status(previous_status, reported, stamp, True)
+            )
+        except (OSError, ConfigError) as exc:
+            _write_failed(exc)  # the status keeps saying ``committed: false``
+            return EXIT_WRITE
+    failed = any(outcome.status == "error" for outcome in reported) or bool(
         insight_failures
     )
     return EXIT_SOURCE_FAILED if failed else EXIT_OK
@@ -818,6 +1208,52 @@ def run_history_verify(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def run_history_compare(args: argparse.Namespace) -> int:
+    """Append-only (exit 0), a valid tombstone-only rewrite (10), else refuse (1).
+
+    Prints counts and fixed words only: never a value, a note or a digest.
+    """
+    try:
+        old = read_regular(args.old, COMPARE_MAX_BYTES)
+        new = read_regular(args.new, COMPARE_MAX_BYTES)
+        manifest = (
+            read_regular(args.manifest, MAX_MANIFEST_BYTES)
+            if args.manifest is not None
+            else None
+        )
+        numbers_old = (
+            read_regular(args.numbers_old, MAX_NUMBERS_BYTES)
+            if args.numbers_old is not None
+            else None
+        )
+        numbers_new = (
+            read_regular(args.numbers_new, MAX_NUMBERS_BYTES)
+            if args.numbers_new is not None
+            else None
+        )
+        result = compare_history(
+            old,
+            new,
+            allow_tombstones=args.allow_tombstones,
+            manifest=manifest,
+            manifest_name=args.manifest_name,
+            pr_day=args.pr_day,
+            numbers_old=numbers_old,
+            numbers_new=numbers_new,
+        )
+    except HistoryError as exc:
+        _say(f"refused: {exc}", sys.stderr)
+        return EXIT_WRITE
+    if result.mode == "append":
+        _say("ok: append-only")
+        return EXIT_OK
+    _say(
+        f"ok: tombstone-only rewrite, {result.replaced} records replaced, "
+        f"{result.dropped} corrections dropped"
+    )
+    return EXIT_REWRITE
+
+
 def _safe(text: str) -> str:
     """``text`` with every control or non-ASCII character escaped, for a terminal."""
     return "".join(
@@ -829,6 +1265,249 @@ def _safe(text: str) -> str:
 def _say(message: str, stream: TextIO | None = None) -> None:
     """Print one control-safe line: a file name can hold an escape sequence."""
     print(_safe(message), file=stream if stream is not None else sys.stdout)
+
+
+INSTALL_NOT_STARTED = "not-started"  # only the temporary name exists
+INSTALL_LINKED = "linked"  # both names exist
+INSTALL_UNLINKED = "unlinked"  # only the final name exists, not yet synced
+INSTALL_SYNCED = "synced"  # only the final name exists, folder synced
+
+
+class _StagedManifest:
+    """The manifest of a derived redaction, written but not yet installed (#619).
+
+    The order is: check every condition, write the content to a private
+    temporary file in the same folder, replace the history file, then link the
+    temporary file to its final name (never replacing a file) and remove it. The
+    folder is held as a descriptor opened without following symlinks, so a
+    ``redactions`` symlink is refused and nothing is created outside it.
+
+    Residual: the history file and the manifest are two files, so a crash or a
+    failure of the last step (after the history file was replaced) leaves the
+    rewritten history with the manifest still under its temporary name; the
+    message names a no-overwrite step that completes it. The temporary file
+    and a newly created folder are fsynced before the history file is replaced.
+    """
+
+    def __init__(
+        self, folder_fd: int, run_id: str, tmp_name: str, folder_path: str
+    ) -> None:
+        self.folder_fd = folder_fd
+        # The absolute path of the redactions folder (shell-quoted), for the
+        # operator-facing text only; the code works through folder_fd.
+        self.folder_path = folder_path
+        self.final_name = f"{run_id}.manifest"
+        self.tmp_name = tmp_name
+        # The last completed step of install(), for recovery guidance.
+        self.state = INSTALL_NOT_STARTED
+
+    def discard(self) -> None:
+        """Remove the temporary file and close the folder."""
+        try:
+            os.unlink(self.tmp_name, dir_fd=self.folder_fd)
+        except OSError:
+            pass
+        self.close()
+
+    def close(self) -> None:
+        try:
+            os.close(self.folder_fd)
+        except OSError:
+            pass
+
+    def install(self) -> None:
+        """Give the manifest its final name.
+
+        ``self.state`` names the last completed operation (not-started, linked,
+        unlinked, synced), so a failure or an interruption at any point leaves
+        an accurate record of which names exist. The folder stays open; the
+        caller closes it.
+        """
+        os.link(
+            self.tmp_name,
+            self.final_name,
+            src_dir_fd=self.folder_fd,
+            dst_dir_fd=self.folder_fd,
+            follow_symlinks=False,
+        )
+        self.state = INSTALL_LINKED
+        os.unlink(self.tmp_name, dir_fd=self.folder_fd)
+        self.state = INSTALL_UNLINKED
+        os.fsync(self.folder_fd)
+        self.state = INSTALL_SYNCED
+
+
+def _stage_manifest(
+    target: Path, plan: list[Record], args: argparse.Namespace, moment: datetime
+) -> _StagedManifest:
+    """Check every manifest condition and write its content, before any rewrite.
+
+    Keys and codes only, in the bytes the rewrite check rebuilds. Raises
+    ``HistoryError`` (fixed words) when the folder is a symlink or not a folder,
+    the manifest already exists, or the folder cannot be written.
+    """
+    run_id, _, text = rewrite_metadata(
+        [r.key for r in plan],
+        args.reason,
+        args.trigger_date,
+        moment.strftime("%Y-%m-%d"),
+    )
+    final = f"{run_id}.manifest"
+    tmp = f".{run_id}.manifest.tmp-{os.getpid()}"
+    try:
+        parent_fd = _open_parent(target, strict=True)
+    except OSError:
+        raise HistoryError("cannot open the history folder") from None
+    folder_fd = -1
+    try:
+        try:
+            os.mkdir("redactions", 0o755, dir_fd=parent_fd)
+        except FileExistsError:
+            pass
+        else:
+            # A new folder: make its entry durable before anything relies on it.
+            os.fsync(parent_fd)
+        folder_fd = os.open(
+            "redactions",
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+    except OSError:
+        raise HistoryError(
+            "the redactions folder is a symlink, not a folder or not creatable; "
+            "nothing was written"
+        ) from None
+    finally:
+        os.close(parent_fd)
+    try:
+        try:
+            os.stat(final, dir_fd=folder_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise HistoryError("the manifest already exists; nothing was written")
+        out_fd = os.open(
+            tmp,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=folder_fd,
+        )
+        try:
+            with os.fdopen(out_fd, "wb") as out:
+                out.write(text.encode("ascii"))
+                out.flush()
+                os.fchmod(out.fileno(), 0o644)
+                os.fsync(out.fileno())
+            # The file is closed; now make its directory entry durable too,
+            # before the history file is replaced.
+            os.fsync(folder_fd)
+        except OSError:
+            try:
+                os.unlink(tmp, dir_fd=folder_fd)
+            except OSError:
+                pass
+            raise
+    except HistoryError:
+        os.close(folder_fd)
+        raise
+    except OSError:
+        os.close(folder_fd)
+        raise HistoryError("cannot write the manifest; nothing was written") from None
+    folder_path = shlex.quote(
+        os.path.join(os.path.abspath(target.parent), "redactions")
+    )
+    return _StagedManifest(folder_fd, run_id, tmp, folder_path)
+
+
+def _recovery_step(staged: _StagedManifest) -> str:
+    """The no-overwrite step that gives a retained manifest its final name."""
+    return (
+        f"in the folder {staged.folder_path} first compare any existing "
+        f"{staged.final_name} with {staged.tmp_name} using cmp (never "
+        "overwrite it), then run: "
+        f"ln {staged.tmp_name} {staged.final_name} && rm {staged.tmp_name}"
+    )
+
+
+def _retain_after_interruption(staged: _StagedManifest) -> None:
+    """An ambiguous stop: keep the only copy of the manifest and say what to do."""
+    _say(
+        "error: the redaction stopped and it is not known whether the history "
+        "file was rewritten; the manifest was kept under its temporary name. "
+        "Run history-verify. If the history file was not rewritten, remove "
+        f"{staged.tmp_name} from the folder {staged.folder_path}. If it was "
+        "rewritten, " + _recovery_step(staged),
+        sys.stderr,
+    )
+    staged.close()
+
+
+def _observed_install_state(staged: _StagedManifest) -> str:
+    """Which names exist now, read through the held folder descriptor.
+
+    An interruption can land between an operation and the line that records it,
+    so the recorded state is the fallback, not the authority.
+    """
+
+    def look(name: str) -> os.stat_result | bool | None:
+        try:
+            return os.stat(name, dir_fd=staged.folder_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return None
+
+    tmp, final = look(staged.tmp_name), look(staged.final_name)
+    if tmp is None or final is None:
+        return staged.state
+    if isinstance(tmp, os.stat_result) and isinstance(final, os.stat_result):
+        # Both names: ours (one file) or a final file somebody else made.
+        same = (tmp.st_dev, tmp.st_ino) == (final.st_dev, final.st_ino)
+        return INSTALL_LINKED if same else INSTALL_NOT_STARTED
+    if isinstance(final, os.stat_result):
+        return INSTALL_UNLINKED
+    return INSTALL_NOT_STARTED
+
+
+def _install_failure_message(staged: _StagedManifest) -> str:
+    """Recovery guidance for the state install() reached (never says ln when
+    the final name already exists)."""
+    state = _observed_install_state(staged)
+    if state == INSTALL_LINKED:
+        return (
+            "error: the history file was rewritten and the manifest was linked "
+            f"as {staged.final_name} but the temporary name {staged.tmp_name} "
+            f"was not removed; in the folder {staged.folder_path} verify the two files "
+            "are identical with cmp, then run: "
+            f"cmp {staged.tmp_name} {staged.final_name} && rm {staged.tmp_name}"
+        )
+    if state in (INSTALL_UNLINKED, INSTALL_SYNCED):
+        return (
+            "error: the history file was rewritten and the manifest is "
+            f"installed as {staged.final_name} in the folder {staged.folder_path}, "
+            "but the folder was "
+            "not confirmed durable; nothing else to do: run sync on the "
+            "folder or run history-verify again"
+        )
+    return (
+        "error: the history file was rewritten but the manifest could not be "
+        "installed; " + _recovery_step(staged)
+    )
+
+
+def _install_staged(staged: _StagedManifest) -> bool:
+    """Install the manifest after the rewrite; on failure name the recovery step."""
+    try:
+        staged.install()
+    except BaseException as stop:
+        _say(_install_failure_message(staged), sys.stderr)
+        if not isinstance(stop, Exception):
+            raise
+        return False
+    finally:
+        staged.close()
+    _say(f"wrote the manifest redactions/{staged.final_name} (commit it with the file)")
+    return True
 
 
 def run_history_redact(args: argparse.Namespace) -> int:
@@ -879,19 +1558,52 @@ def run_history_redact(args: argparse.Namespace) -> int:
         if removed:
             _say(f"removed {removed} stale redaction temporary file(s)")
         notices: list[str] = []
+        moment = datetime.now(UTC)
+        # Every manifest condition is checked and its bytes written to a private
+        # temporary file BEFORE the history file is touched (#619).
+        staged = (
+            _stage_manifest(target, plan, args, moment)
+            if (args.derived and plan)
+            else None
+        )
         try:
             count = redact_records(
                 target,
                 plan,
                 reason=args.reason,
                 trigger_date=args.trigger_date,
+                now=moment,
                 confirm=True,
                 include_hand_kept=args.include_hand_kept,
                 notices=notices,
+                derived=args.derived,
             )
+        except RedactDurabilityError:
+            # The new file is in place: complete the pair, then report.
+            if staged is not None:
+                _install_staged(staged)
+            raise
+        except BaseException as stop:
+            # Only a plain HistoryError positively reports that the history file
+            # was not replaced (redact_records raises RedactDurabilityError for
+            # every outcome after the replacement). Any other stop, an interrupt
+            # included, is ambiguous: keep the staged manifest.
+            if staged is not None:
+                if isinstance(stop, HistoryError):
+                    staged.discard()
+                else:
+                    _retain_after_interruption(staged)
+                    if isinstance(stop, Exception):
+                        return EXIT_REPLACED_UNSURE
+            raise
         finally:
             for notice in notices:
                 _say(notice)
+        if staged is not None:
+            if not count:
+                staged.discard()
+            elif not _install_staged(staged):
+                return EXIT_REPLACED_UNSURE
     except OldCopyRemainsError as exc:
         _say(f"error: {exc}; the file is {exc.temp_name}", sys.stderr)
         _say(
@@ -918,6 +1630,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return run_history_verify(args)
     if args.counts_command == "history-redact":
         return run_history_redact(args)
+    if args.counts_command == "history-compare":
+        return run_history_compare(args)
     if args.counts_command == "history-export-imported":
         return run_export_imported(args.file, args.out)
     if args.counts_command == "history-import-beacons":
@@ -926,6 +1640,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _run_import(args)
     if args.counts_command == "stale":
         return _run_stale(args)
+    if args.counts_command == "egress-check":
+        return _run_egress_check(args)
     if args.counts_command == "tokens":
         return _run_tokens(args)
     return _run(args)
@@ -976,6 +1692,23 @@ def _register_history(
         "1 when the file is damaged (including a truncated last line).",
     )
     _where(verify)
+    compare = actions.add_parser(
+        "history-compare",
+        help="check that a new history file only appends, or only tombstones",
+        description="Compare an old and a new history file. Exit 0 when the new "
+        "file only appends canonical records; exit 10 (reserved for this "
+        "command) when, with --allow-tombstones, it is a valid tombstone-only "
+        "rewrite whose manifest and published numbers also match; any other "
+        "status is a refusal. Prints counts and fixed words only.",
+    )
+    compare.add_argument("--old", required=True)
+    compare.add_argument("--new", required=True)
+    compare.add_argument("--allow-tombstones", action="store_true")
+    compare.add_argument("--manifest")
+    compare.add_argument("--manifest-name")
+    compare.add_argument("--pr-day", help="UTC date YYYY-MM-DD the pull request opened")
+    compare.add_argument("--numbers-old")
+    compare.add_argument("--numbers-new")
     redact = actions.add_parser(
         "history-redact",
         help="replace stored api records with tombstones (owner-run, not a refresh)",
@@ -1007,6 +1740,12 @@ def _register_history(
         help="YYYY-MM-DD of the revocation, request or expiry that started the clock",
     )
     redact.add_argument("--include-hand-kept", action="store_true")
+    redact.add_argument(
+        "--derived",
+        action="store_true",
+        help="write the fixed tombstone forms the reviewed pull request route "
+        "accepts (day-granular time, derived run id) and a manifest file (#619)",
+    )
     mode = redact.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="the default")
     mode.add_argument("--confirm", action="store_true", help="rewrite the file")
@@ -1327,6 +2066,33 @@ def run_tokens(
     return token_exit_code(report, EXIT_SOURCE_FAILED, EXIT_TOKEN_WARNING)
 
 
+MAX_ALLOWED_BYTES = 64 * 1024
+
+
+def run_egress_check(config_path: Path, allowed_path: Path) -> int:
+    """Check that the egress allow-list names every host the fediverse collector
+    needs. No network. Exit 0 all listed (or nothing to check), 3 one or more are
+    missing (their host names are printed), 2 usage or config problem."""
+    try:
+        config = load_site_config(config_path)
+        text = _read(allowed_path, MAX_ALLOWED_BYTES).decode("utf-8", errors="strict")
+    except (ConfigError, ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    sources = config.numbers.fediverse if config.numbers is not None else []
+    missing = missing_endpoints(sources, text)
+    for endpoint in missing:
+        print(f"missing from the allow-list: {endpoint}", file=sys.stderr)
+    if missing:
+        return EXIT_SOURCE_FAILED
+    print(f"egress ok: {len(required_endpoints(sources))} fediverse endpoint(s) listed")
+    return EXIT_OK
+
+
+def _run_egress_check(args: argparse.Namespace) -> int:
+    return run_egress_check(args.config, args.allowed)
+
+
 def _run_tokens(args: argparse.Namespace) -> int:
     return run_tokens(args.config, args.status, args.format)
 
@@ -1435,6 +2201,18 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         help=f"remind when a number is this many days old (default {REMIND_DAYS})",
     )
     stale_parser.add_argument("--json", action="store_true", help="machine-readable")
+    egress_parser = actions.add_parser(
+        "egress-check",
+        help="check that an egress allow-list names every fediverse host",
+        description="Reads the config and a file holding the workflow's "
+        "allowed-endpoints value (host:443 entries separated by spaces, commas "
+        "or newlines). No network. Exit 0 every needed host is listed, 3 one is "
+        "missing (it is printed), 2 usage or config error.",
+    )
+    egress_parser.add_argument("--config", type=Path, required=True)
+    egress_parser.add_argument(
+        "--allowed", type=Path, required=True, help="file with the allowed endpoints"
+    )
     tokens_parser = actions.add_parser(
         "tokens",
         help="report platform token health (ok, expiring, expired, rejected)",

@@ -116,6 +116,76 @@ The instance repository has two GitHub environments, `staging` and `production`.
 The Worker and the D1 migrations ship at the switch (#596), carrying the
 configuration that was proven on staging. See 2.3 for the order.
 
+### 1.5 Staging test deploy map (#860)
+
+State read 2026-11-27 from `origin/main` (ffc5d602), the open issues and the
+lead's queue. Goal: a test deploy with real data on the staging host, then the
+cutover rehearsal. Marks: **O** owner only (a credential, an account or his
+word), **A** agent doable. Anything not read from a named source is marked
+**inferred**; whether the staging host and its Pages custom domain exist today
+is **unverified** and is the first owner read in step 5.
+
+**No longer blockers (merged, so do not re-open them):**
+the Bluesky provider (#934) and the Mastodon provider (#936); the fediverse
+wiring, config, refresh, history and kit feed (#941); backups that treat a
+missing table as a failure (#935), so a backup taken before that merge must be
+taken again; the probe results for both providers (#943); the edge settings
+module and the read-only drift check (#734); the D1 rollback check as a manual
+procedure (#929); the counts history guard (#913). The private hardening series
+is parked and is not on this path. Open Low follow-ups (#938, #944, #945) are
+batched and do not block a test deploy.
+
+**Ordered blockers**
+
+| # | Blocker | Who | Exact next action | Issue | Unblocks |
+|---|---|---|---|---|---|
+| 1 | Leads database split awaits the owner's D1 step. | O, then A | Owner runs the step 0b script (it uses a temporary token) and pastes the output; the agent then finishes the D1 packet walk-through, and merges #850 head-pinned once both gates are green. | #850, #772 | The release candidate can include `LEADS_DB`; the kit with real data. Merge before the freeze in step 7, because a changed candidate restarts the soak. |
+| 2 | Template carry for the fediverse snapshot is prepared but not pushed. | O, then A | Owner pushes the prepared branch with the workflow scope. Then the agent opens the PR, runs both gates and the Daybreak round (it changes workflow allow-lists), and merges head-pinned. | #942 | The private instance repository can carry the fediverse numbers into its staging build. |
+| 3 | Edge rate rule on `/e/` is not written. The read gate is verified and answers NOT MET until the rule exists. | O | Owner runs the write pair (step 5 of the edge steps) in the morning, adding the rule to the existing phase and never replacing it. Then the agent re-runs the gate with `--live` and expects exit 0. Bot Fight Mode stays off until real beacon traffic is measured. | #613, #734 | Real beacon traffic can hit staging; the zone is shared, so this also protects production. |
+| 4 | Secrets for staging. | O | See the secrets plan below. Set `VIEW_HASH_SECRET` by name from the secret manager, never in chat; confirm with `npx wrangler secret list`. | #553, #602, #610 | Step 6 (Worker deploy). |
+| 5 | Staging host, Pages custom domain and `/e/*` route. | O, A reads | Owner reads whether `links-staging.example.com` is Active under the Pages project and whether the zone route covers `/e/*` (the agent can check both read-only with the edge token). If missing, the owner adds the record and the custom domain, on his explicit word. | #344, #366 | A place to deploy to; the click route counts only with the route. |
+| 6 | Staging D1 and Worker with migrations, in the quiet order. | O+A | Agent prepares the `deploy-worker.yml` call (a staging Worker name that is not the test Worker, per its `worker_name` input) and the checklist; owner takes a fresh Time Travel bookmark and a backup with the current `scripts/backup-d1.sh`, passes the restore drill, then runs the order in 2.3: quiet with all three switches, migrate, deploy, clear. Create the leads database too once #850 is merged. | #596, #366, #929 | A Worker and databases that can take real visits. |
+| 7 | Frozen release candidate, pinned in the instance. | O+A | Owner approves the SHA in chat. Agent opens the instance PR moving the three `engine.lock` lines; owner merges it, which deploys staging. | #595, #605 | The soak has a fixed subject; real site built from real config. |
+| 8 | Real data in the private instance. | O+A | Owner enables the fediverse collector in the private config (accounts stay private), exports from Beacons (links, analytics CSV, forms) and supplies the latest. Agent runs `counts history-import-beacons` (dry run, then real) and `history-verify`. | #941, #376 | Real numbers, real history and the media kit with real generated data. |
+| 9 | Smoke and the synthetic check. | A, O | Agent runs `bash scripts/smoke.sh https://links-staging.example.com` and `check-dump.py` on a fresh export. Owner opens the page once from a labeled source in a normal browser and clicks one outbound link; agent reads the report within the hour. | #366, #378 | B1, B2, B3 evidence. |
+| 10 | 48 hour analytics soak. | O supplies the CSV, A runs | After two full UTC days, owner exports Beacons daily views and clicks; agent runs `scripts/proof-export.sh` and `check-analytics.py` and records the result line. The soak restarts if the candidate changes. | #366, [analytics-acceptance.md](analytics-acceptance.md) | A3 and the go to rehearse. |
+| 11 | Cutover rehearsal. | O+A | Lower the TTL on the throwaway host 48 hours ahead, then run Part 5 (`rehearse.sh`) with the owner's word, and post times only. | #597 | Rollback proven; Part 3 can be scheduled. |
+
+Also needed before the real switch, not before the test deploy: the privacy page
+approved (#598), the security review rounds closed on the frozen candidate
+(#605), the hand checks in 2.2 and 2.3, the `--live` edge gate at exit 0, and
+the owner's separate word for production. Not blockers: #915 (wiki sync), #604
+(Free-plan limits revisit), and the kit PDF and Beacons CSV items that belong to
+the 30 day parity (Part 7).
+
+**Secrets plan per environment.** Staging uses the secret manager's `dev`
+environment, the same dev configuration 1.4 names (decision of #602: the test
+deploy reads dev, production reads a `prd` config created at go-live with its
+own identity). No separate `stg` config is needed, because staging and the test
+Worker are the same tier. `prd` is not touched until the owner says in his own
+words that the project is live in production; promotion is its own step with its
+own access plan. The edge read identity has its own config and its own token;
+the deploy identity is split from the counts job after cutover (#602). The
+Worker's `VIEW_HASH_SECRET` is a different value for staging and production, set
+by name and never in a file, a variable or chat.
+
+**Rehearsal checklist the owner can run** (each line is a command or a look; no
+values are posted):
+
+- [ ] `npx wrangler secret list` shows the secret names on the staging Worker.
+- [ ] `bash scripts/smoke.sh https://links-staging.example.com` exits 0.
+- [ ] A fresh export passes `python3 -I scripts/check-dump.py dump.sql`.
+- [ ] One labeled visit and one outbound click show in
+      `reach-around report --input export.json --days 1` within the hour.
+- [ ] `/socials?x=1` lands on `/` with the query kept (302 on staging).
+- [ ] `POST /e/c/unknown` answers 204; the edge gate `--live` exits 0.
+- [ ] The kit gate and `KIT_KILL` behave as 2.2 says, with no lead row written.
+- [ ] `reach-around counts stale --config site.yaml` exits 0 and the kit shows
+      the fediverse numbers.
+- [ ] A restore drill passed on a scratch database from the new backup.
+- [ ] The 48 hour reconciliation exits 0, then Part 5 is run once and its times
+      are posted.
+
 ## Part 2. Preconditions checklist
 
 Every box must be checked, with the evidence in the cutover record (private) and
@@ -277,6 +347,62 @@ the result lines (no values) in #344. Do not start the DNS steps with a box open
 - [ ] The full Beacons export (step 9 in the who-does-what table) is in the private instance
       repository before the switch, as a second copy of what week 1 requires (D1).
 
+### 2.4a Payments and support rails
+
+Issue #888. The Support page is link-out cards only. Nothing is checked until it
+is run on the staging host.
+
+- [ ] **The five rails are on the Support page:** Patreon, StreamElements,
+      Ko-fi, cryptocurrency and merch. Ko-fi and StreamElements are separate
+      tipping platforms, so each has its own card.
+- [ ] **Each link-out answers (agent-ready).** "Answers" is defined per rail
+      and is checked without following redirects, so a hop to an unexpected
+      host cannot hide. For each provider URL on the staging Support page run
+      `curl --proto '=https' -sSI --max-time 20 "<provider URL>"` (no `-L`) and
+      read the status line and `Location` header only. Pass means either
+      status `200`, or a `3xx` whose `Location` host is exactly the provider
+      host the owner wrote down for that rail in the private cutover record
+      (Patreon, StreamElements, Ko-fi, the cryptocurrency page or wallet
+      service, the merch store). Any other `Location` host fails the rail.
+      If the first hop is on the expected host, repeat the same command on that
+      `Location`, at most 3 hops, applying the same host rule to every hop.
+      Record status and `Location` host only (no query values, no cookies). A
+      provider that blocks automated requests is reported as not checked, not
+      as passing.
+- [ ] **Each link-out works (owner-only).** The owner opens each card on a phone
+      and a laptop and confirms it lands on the right provider page. This
+      navigation check is the whole requirement and needs no payment. A real
+      transaction is never required to complete this checklist, and the
+      default is to make none. The provider help pages for refunds were not
+      readable by an agent on 2026-11-25 (HTTP 403 for the StreamElements
+      "Tipping FAQ for viewers", the Ko-fi "Supporter payments FAQ" and the
+      Patreon "Why are there refunds I didn't initiate" pages), so what each
+      rail does on a refund, cancellation or chargeback is **UNVERIFIED** here.
+      Secondary indications only, not a source: StreamElements tips may be
+      final by default with refunds through support; a Ko-fi one-time payment
+      goes through the payment processor; cancelling a Patreon pledge stops
+      future charges but need not reverse one already taken. Therefore: check
+      the provider's help before tipping; the tip may not be refundable, and
+      processing fees may not be returned. If the owner still chooses to test,
+      it is one tip of the provider's minimum amount on a tipping rail only
+      (not merch, and not cryptocurrency, because on-chain transfers cannot be
+      refunded), made by the owner personally with the owner's own payment
+      method, after the owner has read that rail's current refund page and
+      noted in the private record what it says. An agent never makes a payment.
+- [ ] **OWNER DECISION: the tips host.** The tips host was reported to answer a
+      301 to the StreamElements tip page. That state is UNVERIFIED here: no
+      observation is recorded in this repository. Immediately before the
+      decision, check it read-only (`curl --proto '=https' -sSI
+      "https://tips.example.com/"`, no `-L`; record status and `Location` host
+      only). At cutover it either stays that 301, or points at the in-site
+      Support page. Not decided; do not change it until the owner says
+      which, in chat, with the cutover word.
+- [ ] **The old support host is consolidated** by the redirect plan in 3.5, with
+      the owner's explicit word on cutover day.
+- [ ] **No payment data touches the site.** Link-out only: no form, no script and
+      no frame from a payment provider on the page. A Ko-fi frame is optional
+      later and needs the privacy page line and a per-path `frame-src`.
+
 ### 2.5 DNS inputs
 
 - [ ] The current record at the production host is written down in the private
@@ -389,6 +515,180 @@ query (query twice, a minute apart, and compare).
 - Tell the assistant the time of each check. A page that looks right on one
   device and wrong on another is a propagation or cache difference, not yet a
   rollback reason (see 4.1).
+
+### 3.5 Support page consolidation (draft, owner approves each step)
+
+Issue #888 (under #860). Owner decision of 2026-11-25: "Consolidate at cutover,
+I will approve the redirect then". The old support host
+(`support.example.com` here) is replaced by the in-site Support page on the new
+site (`links.example.com/support/` here). This is a draft plan, **inferred and
+not yet run**.
+
+Two separate approvals apply, and neither covers the other:
+
+- **Staging rehearsal approval (once, before cutover day).** The owner approves
+  one edit for the staging host only: a single redirect rule on
+  `support-staging.example.com`, status `302`, target
+  `https://links-staging.example.com/support/`, query string preserved. The
+  approval lists that exact edit, is quoted with its time in the private
+  cutover record, and covers nothing on a production host.
+- **Production cutover approval (cutover day).** Every DNS or redirect edit on
+  a production host waits for the owner's explicit word on cutover day, quoted
+  with its time in the cutover record. Until then the old support host is
+  untouched and stays the live page.
+
+The engine's `redirects` switch ([deploy.md](deploy.md), "Redirecting the old
+/socials path") only writes rules for paths on the site's own host. The old
+support host is a different hostname, so its rule is a redirect on that host in
+Cloudflare, written by the owner. The wording is the same as for `/socials`.
+
+**Vendor behavior (read 2026-11-25).** Cloudflare Single Redirects take a status
+code of 301, 302, 307 or 308 and a "Preserve query string" setting
+(https://developers.cloudflare.com/rules/url-forwarding/single-redirects/settings/).
+The default edge cache TTL, when the response carries no `Cache-Control` or
+`Expires`, is 120 minutes for 301 and 20 minutes for 302 and 303
+(https://developers.cloudflare.com/cache/how-to/configure-cache-status-code/).
+Single-file purge removes a cached redirect response itself, not the content at
+the destination
+(https://developers.cloudflare.com/cache/how-to/purge-cache/purge-by-single-file/).
+INFERRED, not verified: whether a rule-generated redirect response can carry a
+chosen `Cache-Control` (check the rule's settings and a `curl -sSI` on staging
+before relying on it), and how long a given browser keeps a 301 with no
+`Cache-Control` (heuristic, per client).
+
+1. **Rule.** On the old support host, redirect every request for `/` to
+   `https://links.example.com/support/`, keep the query string, and leave other
+   paths unaffected (a path the old page served that has no new home is listed
+   in the private cutover record before the switch). Cloudflare Redirect Rules
+   (or a Bulk Redirect) hold this; the owner reads the current screens in the
+   vendor docs before the edit, not this runbook.
+2. **Staging first, status 302.** Point the staging copy of the rule at
+   `https://links-staging.example.com/support/` with status `302`.
+3. **Staging checks** (agent-ready, read-only). Run the verifier, which never
+   follows redirects and fails closed:
+
+   ```sh
+   SRC_HOST=support-staging.example.com EXP_HOST=links-staging.example.com \
+     scripts/verify-support-redirect.sh
+   echo "exit=$?"
+   ```
+
+   Both hosts are required and their normalized authorities must differ.
+   Normalization lowercases the host, removes one trailing dot, and removes
+   `:443` for HTTPS or `:80` for HTTP before comparison. A host is a valid DNS
+   name containing only lowercase ASCII letters, digits, hyphens and dots after
+   normalization, with a maximum length of 253 characters and labels of 1
+   through 63 characters that do not begin or end with a hyphen, or a canonical
+   IPv4 dotted quad with four decimal octets from 0 through 255 and no leading
+   zeros. Empty hosts, control characters, and legacy numeric or hexadecimal
+   IPv4 spellings are rejected. An optional decimal port is from 1 through
+   65535 without a leading zero; userinfo, slashes and spaces are rejected.
+   Nothing is defaulted. Every request is a direct GET made by a validated,
+   absolute curl executable owned by root and not group or world writable.
+   Its resolved target and every parent directory through `/` must also be
+   root-owned and not group or world writable. Symlinks are resolved before
+   validation and the resolved target is executed. The remaining theoretical
+   race in which root replaces a validated root-owned executable is accepted.
+   The verifier supports only Linux systems that provide `/usr/bin/bash` and a
+   root-owned curl at `/usr/bin/curl` or `/bin/curl` (that is an explicit
+   prerequisite; layouts such as NixOS are not supported, and the test suite
+   skips when `/usr/bin/bash` is missing). Its shebang is `#!/usr/bin/bash -p`,
+   so bash ignores `BASH_ENV`, `ENV`, `SHELLOPTS`, `BASHOPTS` and exported shell
+   functions instead of running caller-controlled code before the first
+   statement. Run it as the executable (`scripts/verify-support-redirect.sh`),
+   or as `/usr/bin/bash -p scripts/verify-support-redirect.sh`, never as plain
+   `bash scripts/verify-support-redirect.sh`: a shell script cannot secure
+   itself before bash has started, so the script refuses to run without
+   privileged mode, and that refusal is only an accident guard.
+   Its first executable statement replaces the caller's `PATH` with
+   `/usr/bin:/bin`, exports it, and its security-sensitive utilities are invoked
+   by absolute path so later `PATH` changes cannot select substitutes. Curl runs
+   in a clean environment containing only that fixed safe `PATH`, `LC_ALL=C`,
+   and an empty private temporary `HOME`. Caller proxy, curl, certificate, TLS
+   key logging, and other environment settings cannot affect the request.
+   Response headers are captured in that private directory with a 64 KiB
+   file-size limit (`ulimit -f 64`, in 1024-byte units). The body is discarded and redirects are never followed. It
+   is never HEAD, because browsers navigate with GET and a rule or origin can
+   treat HEAD differently.
+   It exits `0` only after every
+   check ran and passed: two probe requests (`?probe=a%2Fb&probe=two` and
+   `?q=x%20y&utm_source=mail&empty=`) each return status `302` and exactly one
+   `Location` header (two or more fail), equal, character for character, to
+   `https://links-staging.example.com/support/` plus the exact query sent (so a
+   rule that hard-codes a query fails); the other path (`OTHER_PATH`, default
+   `/other-path`) is not redirected at all: it answers `OTHER_EXPECT_STATUS`
+   (default `200`; set it, for example to `404`, to the status that page
+   really serves) with no `Location` header, so a redirect to Support, to
+   another host or to itself fails; and the Support page (`/support/`) answers
+   `200`. Each request has a connect timeout and a total time limit. A failed
+   request, an oversized header capture, an unparsable final response status
+   line, an obsolete folded header, or a missing or duplicated `Location` is a
+   failure (exit `1`). If curl returns multiple response header blocks, only
+   the last block is evaluated.
+   A missing, equal or malformed host or an invalid port is a usage error (exit
+   `2`). It is tested against local servers (which record every request
+   path and query) in `tests/test_verify_support_redirect.py`, and each check
+   was revert-proved by breaking it and watching a test fail. It has not yet
+   been run against a real Cloudflare rule.
+4. **Cutover build, short-lived redirect first.** After the owner's cutover
+   word, create the production rule with status `302`, not `301`, and (if the
+   rule settings allow it, otherwise INFERRED unavailable) a short
+   `Cache-Control: max-age` of 300 seconds or less on the redirect response.
+   Verify with the same script on the real hosts, both set explicitly:
+
+   ```sh
+   SRC_HOST=support.example.com EXP_HOST=links.example.com \
+     scripts/verify-support-redirect.sh
+   echo "exit=$?"
+   ```
+5. **Soak, then permanent.** The owner decides the promotion; these health
+   gates must all hold first, and the evidence for each is recorded in the
+   private cutover record before the owner is asked for the second word:
+   - the verifier exits `0` on staging and, freshly (same day as the request),
+     on production;
+   - the Support page answers `200` and each card passes the 2.4a checks;
+   - the analytics report (or the host's error-rate view) shows no spike in
+     errors or in visitors landing on the old host, compared with before the
+     switch, and no unresolved incident is open;
+   - the stated soak of at least 7 days (the owner may lengthen it) has passed,
+     with the verifier run at least once a day and every run passing.
+   If any gate fails, the rule stays a `302` or is rolled back; time alone never
+   promotes it. Only then, on a second explicit word from the owner, switch the
+   rule to `301`. Record the soak start and end, the gate evidence and the
+   owner's word.
+6. **Rollback and client recovery.** While the rule is a `302`, deleting it (or
+   restoring the written-down previous state) returns the old page once any
+   cached copy is gone. Cloudflare's cache page gives a default edge TTL of 20
+   minutes for a `302` (read 2026-11-25, URL above), but that page frames it
+   around origin responses. **INFERRED, not established:** that a redirect
+   produced by a Single Redirect rule enters the cache under that default, and
+   how quickly a rule change or removal takes effect (the Single Redirects
+   page, https://developers.cloudflare.com/rules/url-forwarding/single-redirects/,
+   read 2026-11-25, states neither). Measure it on staging first: request the
+   staging redirect twice and record `CF-Cache-Status` and `Age`, remove the
+   rule, and record how long the old behavior takes to return.
+   After removing the rule, purge every cached redirect for the old host, not
+   only the probe URL. Cloudflare lists these purge options, available on all
+   plans (https://developers.cloudflare.com/cache/how-to/purge-cache/, read
+   2026-11-25): by single URL, by hostname, by prefix, by tag and purge
+   everything. Single-URL purge covers only the URLs given, and the page says
+   nothing about query-string variants (INFERRED: each variant is its own
+   URL), so it cannot enumerate unknown query variants. Use **purge by
+   hostname** for the old support host, which covers every variant under that
+   hostname, and then request `/` and one query variant and confirm `CF-Cache-Status` is not
+   `HIT` (the page notes a purge is not confirmed by Cloudflare, so verify).
+   **A served `301` is not undone by removing the rule.** Browsers and
+   intermediaries that cached it keep sending visitors to the new page until
+   their cache expires or is cleared, and the runbook cannot reach those
+   clients. After the switch to `301`, the recovery path is on the destination
+   side: keep the Support page live and correct, disable individual cards
+   without touching the rule, or serve a replacement redirect from the old
+   host's path only if the owner decides. A browser's cached `301` is cleared
+   by clearing the site's cache in that browser; a hard reload is not a
+   guaranteed way to drop it. This is why the `301` waits for the health gates.
+7. Record the rule, its status, the time, the owner's quoted words and the
+   `curl` output lines (status and `Location` only, no cookies) in the private
+   cutover record.
 
 ## Part 4. Rollback
 

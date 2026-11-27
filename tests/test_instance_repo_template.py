@@ -4,6 +4,9 @@ and its workflows keep the hardening docs/instance-repos.md promises."""
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
+import hashlib
 import json
 import os
 import re
@@ -11,7 +14,9 @@ import shutil
 import stat
 import subprocess
 import sys
-from collections.abc import Mapping
+import tempfile
+import time
+from collections.abc import Callable, Iterator, Mapping
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -74,6 +79,13 @@ JOB_PERMISSIONS: dict[str, dict[str, str]] = {
     "refresh": {"contents": "read"},
     # Pushes the counts/refresh branch and opens one pull request; no keys.
     "publish": {"contents": "write", "pull-requests": "write"},
+    # Reads the pull request's labels and events and the workflow runs of its
+    # head commit (the approval is bound to the head); never writes (issue #619).
+    "history-guard": {
+        "contents": "read",
+        "pull-requests": "read",
+        "actions": "read",
+    },
 }
 
 
@@ -157,6 +169,11 @@ def test_the_template_files_exist() -> None:
         "scripts/unmerged-history.sh",
         ".github/workflows/check-hand-kept-freshness.yml",
         "scripts/check-freshness.py",
+        ".github/workflows/history-guard.yml",
+        ".github/history-approvers",
+        ".github/CODEOWNERS",  # example owners of the rewrite-deciding paths (#619)
+        "scripts/history-guard.py",
+        "scripts/verify-history-rewrite.sh",
     ):
         assert (TEMPLATE / rel).is_file(), rel
 
@@ -186,6 +203,7 @@ def test_all_workflows_are_collected() -> None:
     assert [p.name for p in workflow_files()] == [
         "check-hand-kept-freshness.yml",
         "deploy.yml",
+        "history-guard.yml",
         "preview.yml",
         "refresh-counts.yml",
     ]
@@ -523,6 +541,54 @@ def _git(*args: str, timeout: int = 120) -> subprocess.CompletedProcess[str]:
     )
 
 
+FETCH_ATTEMPTS = 3
+FETCH_BACKOFF_SECONDS = 1.0
+
+
+@contextlib.contextmanager
+def _fetch_lock() -> Iterator[None]:
+    """One fetch of the pinned commit at a time across the xdist workers (and
+    across test runs on this clone). Parallel shallow fetches into one clone
+    collide on git's shallow lock and one of them loses, which made the commit
+    look missing on a single job of a run (#937)."""
+    key = hashlib.sha256(str(ROOT).encode()).hexdigest()[:16]
+    path = Path(tempfile.gettempdir()) / f"ra-engine-fetch-{key}.lock"
+    with path.open("a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def fetch_pinned_commit(
+    ref: str,
+    git: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    attempts: int = FETCH_ATTEMPTS,
+) -> tuple[bool, str]:
+    """Fetch one commit into this clone, serialized across workers, with a
+    bounded retry and a short doubling backoff. Returns (present, the last git
+    message), so a failed fetch is told apart from a commit that was never asked
+    for. The commit may arrive from another worker while this one waits."""
+    run = git or _git
+    last_error = ""
+    with _fetch_lock():
+        for attempt in range(attempts):
+            if run("cat-file", "-e", f"{ref}^{{commit}}").returncode == 0:
+                return True, last_error
+            fetched = run("fetch", "--depth=1", "origin", ref)
+            if fetched.returncode == 0:
+                if run("cat-file", "-e", f"{ref}^{{commit}}").returncode == 0:
+                    return True, last_error
+                last_error = "the fetch succeeded but the commit is still absent"
+            else:
+                last_error = " ".join((fetched.stderr or "").split())[-300:]
+            if attempt + 1 < attempts:
+                sleep(FETCH_BACKOFF_SECONDS * 2**attempt)
+    return False, last_error
+
+
 def pinned_callee_text(
     ref: str | None = None,
     env: Mapping[str, str] | None = None,
@@ -536,17 +602,24 @@ def pinned_callee_text(
     env = os.environ if env is None else env
     ref = ref or lock_pin(lock_text())[0]
     present = _git("cat-file", "-e", f"{ref}^{{commit}}").returncode == 0
+    last_error = ""
     if not present and fetch:
-        _git("fetch", "--depth=1", "origin", ref)
-        present = _git("cat-file", "-e", f"{ref}^{{commit}}").returncode == 0
+        present, last_error = fetch_pinned_commit(ref)
     if present:
         shown = _git("show", f"{ref}:.github/workflows/deploy-worker.yml")
         assert shown.returncode == 0, shown.stderr
         return shown.stdout
+    if fetch:
+        why = (
+            f"`git fetch --depth=1 origin {ref}` did not get it after "
+            f"{FETCH_ATTEMPTS} tries (last git message: {last_error or 'none'})"
+        )
+    else:
+        why = "fetching was not tried"
     message = (
         f"the engine commit {ref} from engine.lock is not in this checkout and "
-        f"`git fetch --depth=1 origin {ref}` did not get it; fetch it (or use "
-        "fetch-depth: 0) so the callee's permissions can be read from it"
+        f"{why}; fetch it (or use fetch-depth: 0) so the callee's permissions "
+        "can be read from it"
     )
     if env.get("CI"):
         pytest.fail(message)
@@ -1138,6 +1211,85 @@ def test_a_missing_pinned_commit_fails_under_ci_and_skips_elsewhere() -> None:
     ref, _ = lock_pin(lock_text())
     text = pinned_callee_text(ref, {"CI": "true"}, fetch=False)
     assert yaml.safe_load(text)["name"] == "Deploy Worker"
+
+
+class _FakeGit:
+    """A git runner that answers cat-file and fetch from a script."""
+
+    def __init__(self, fetch_codes: list[int], present_after: int | None) -> None:
+        self.fetch_codes = list(fetch_codes)
+        self.present_after = present_after  # fetches done before the commit is there
+        self.fetches = 0
+        self.calls: list[tuple[str, ...]] = []
+
+    def __call__(self, *args: str) -> subprocess.CompletedProcess[str]:
+        self.calls.append(args)
+        if args[0] == "fetch":
+            self.fetches += 1
+            code = self.fetch_codes.pop(0) if self.fetch_codes else 1
+            err = "" if code == 0 else "fatal: Unable to create shallow.lock"
+            return subprocess.CompletedProcess(args, code, "", err)
+        here = self.present_after is not None and self.fetches >= self.present_after
+        return subprocess.CompletedProcess(args, 0 if here else 1, "", "")
+
+
+def test_the_pinned_commit_fetch_retries_a_failed_fetch_with_a_backoff() -> None:
+    git = _FakeGit([1, 1, 0], present_after=3)
+    sleeps: list[float] = []
+    present, _ = fetch_pinned_commit("a" * 40, git, sleeps.append)
+    assert present
+    assert git.fetches == 3
+    assert sleeps == [1.0, 2.0]  # a doubling backoff, no sleep after the last try
+
+
+def test_the_pinned_commit_fetch_is_bounded_and_reports_the_git_message() -> None:
+    git = _FakeGit([1] * 10, present_after=None)
+    sleeps: list[float] = []
+    present, last_error = fetch_pinned_commit("a" * 40, git, sleeps.append)
+    assert not present
+    assert git.fetches == FETCH_ATTEMPTS == 3
+    assert len(sleeps) == FETCH_ATTEMPTS - 1
+    assert "shallow.lock" in last_error
+
+
+def test_the_pinned_commit_fetch_skips_the_network_when_another_worker_got_it() -> None:
+    git = _FakeGit([], present_after=0)
+    present, _ = fetch_pinned_commit("a" * 40, git, lambda _s: None)
+    assert present
+    assert git.fetches == 0
+
+
+def test_the_pinned_commit_fetch_tells_a_fetch_that_lied_from_a_failed_one() -> None:
+    git = _FakeGit([0, 0, 0], present_after=None)
+    present, last_error = fetch_pinned_commit("a" * 40, git, lambda _s: None)
+    assert not present
+    assert "still absent" in last_error
+
+
+def test_the_pinned_commit_fetch_is_one_at_a_time() -> None:
+    with _fetch_lock():
+        # a second process must not get the lock while this one holds it
+        probe = subprocess.run(  # noqa: S603 - fixed argv, this interpreter
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                "import fcntl, hashlib, sys, tempfile\n"
+                "key = hashlib.sha256(sys.argv[1].encode()).hexdigest()[:16]\n"
+                "f = open(f'{tempfile.gettempdir()}/ra-engine-fetch-{key}.lock', 'a')\n"
+                "try:\n"
+                "    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+                "except BlockingIOError:\n"
+                "    sys.exit(7)\n",
+                str(ROOT),
+            ],
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+        assert probe.returncode == 7
+    with _fetch_lock():
+        pass  # released: it can be taken again
 
 
 def test_a_workflow_pin_comment_accepts_a_pre_release_and_refuses_a_bad_suffix() -> (
@@ -1880,7 +2032,7 @@ def test_the_preview_guard_bites() -> None:
             "needs: [shell, preview, comment]", "needs: [preview]"
         ),
         "unpinned shell call": good.replace(
-            "bash-ci.yml@ff658b7c11a55eea1394af5fd1a3a1b4b09d9cd0 # v1.36.0",
+            "bash-ci.yml@9e0d7b2e7e8530e2b1bb200ecb4fbf6de021881f # v1.38.0",
             "bash-ci.yml@main",
         ),
     }

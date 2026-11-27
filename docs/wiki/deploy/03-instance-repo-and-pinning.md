@@ -55,7 +55,7 @@ On GitHub, also turn on secret scanning and push protection, and protect `main`
 
 `engine.lock` is three lines that move together:
 
-```
+```text
 ENGINE_IMAGE=ghcr.io/chiefgyk3d/reach-around:<version>@sha256:<digest>
 ENGINE_REPO=ChiefGyk3D/Reach-Around
 ENGINE_REF=<commit of the release tag> # v<version>
@@ -101,7 +101,7 @@ no base copy of the renderer, so its comment job fails; add the template to
 
 ## Forks
 
-| | Instance repository | Fork |
+| Aspect | Instance repository | Fork |
 |---|---|---|
 | Contains | config, media, overrides, deploy workflow | the engine's code |
 | Visibility | private is normal | a fork of a public repository stays public |

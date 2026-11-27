@@ -12,7 +12,7 @@ import functools
 import os
 import threading
 from collections.abc import Iterator
-from datetime import date
+from datetime import date, timedelta
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Literal
@@ -40,6 +40,15 @@ class _Quiet(SimpleHTTPRequestHandler):
 
 def _config() -> SiteConfig:
     raw: dict[str, Any] = yaml.safe_load(EXAMPLE.read_text("utf-8"))
+    # The example's dates are fixed; counts older than the stale limit show no
+    # visible number. Re-date them against TODAY so these checks do not depend on
+    # how old the example file is.
+    fresh = (TODAY - timedelta(days=1)).isoformat()
+    for tab in raw["tabs"]:
+        for block in tab["blocks"]:
+            for item in block.get("items", []):
+                if "as_of" in item:
+                    item["as_of"] = fresh
     stress = [
         {
             "platform": "mastodon",

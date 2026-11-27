@@ -24,6 +24,7 @@ from reach_around.config.imported_history import (
     load_imported,
 )
 from reach_around.config.numbers import Numbers, load_numbers
+from reach_around.counts.fediverse_store import feed_kit
 from reach_around.counts.secret_sink import TokenHolder
 from reach_around.editor.server import MAX_IDLE_SECONDS, run_editor
 from reach_around.preview import PreviewError, serve
@@ -109,6 +110,12 @@ def _parser() -> argparse.ArgumentParser:
         type=_idle_minutes,
         default=30.0,
         help="stop after this many minutes without activity (default 30, at most 1440)",
+    )
+    editor.add_argument(
+        "--allow-remote-images",
+        action="store_true",
+        help="let the preview load https images (default: only the page's own "
+        "files and data: images, so the preview makes no network request)",
     )
     edit_cli.register(commands_parsers)
     for module in pkgutil.iter_modules(commands.__path__):
@@ -273,7 +280,13 @@ def _build(
         source = _numbers_source(out_dir, numbers_path, config_path)
         record = _gated_record(out_dir, target)
         _check_gated_record(record, gated_out)
-        config = load_site_config(config_path)
+        config = feed_kit(
+            load_site_config(config_path),
+            config_path,
+            numbers_path,
+            datetime.now(UTC).date(),
+            published=out_dir,
+        )
         numbers: Numbers | None = None
         if source is not None:
             numbers = load_numbers(source)
@@ -354,7 +367,11 @@ def _main(argv: list[str] | None, held_token: TokenHolder) -> int:
     if args.command == "serve":
         return _serve(args.config, args.host, args.port, args.overrides)
     if args.command == "edit":
-        return run_editor(args.config, idle_minutes=args.idle_minutes)
+        return run_editor(
+            args.config,
+            idle_minutes=args.idle_minutes,
+            allow_remote_images=args.allow_remote_images,
+        )
     if args.command in edit_cli.COMMANDS:
         return edit_cli.run(args)
     func = getattr(args, "func", None)

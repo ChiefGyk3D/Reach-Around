@@ -187,7 +187,7 @@ socials:
 | --- | --- | --- | --- |
 | `id` | Slug | required | unique across the site |
 | `title` | Title | required | the label in the navigation |
-| `intent` | `watch`, `videos`, `follow`, `community`, `support`, `work`, `shop`, `blog`, `gear`, `more`, `hire`, `free`, `paid`, `crypto` or `contact` | none | Required by `page.layout: stack`; the tab becomes an ordered group and its title becomes the group heading. Each intent appears once per screen. |
+| `intent` | `watch`, `videos`, `follow`, `community`, `support`, `work`, `shop`, `blog`, `gear`, `services`, `more`, `hire`, `free`, `paid`, `crypto` or `contact` | none | Required by `page.layout: stack`; the tab becomes an ordered group and its title becomes the group heading. Each intent appears once per screen. |
 | `screen` | `support` or `contact` | none (the home screen) | Only with `page.density: compact`: draw the group on its own screen at `/support/` or `/contact/` instead of the home screen; see [Screens](#screens). |
 | `note` | plain text, 1 to 160 characters | none | Only with `page.density: compact`: one line under the group heading (an affiliate line, or the sentence of a hire block). Escaped, never markup; no control characters, no leading or trailing space. |
 | `page_title` | page title text | none | Replaces the whole browser title of this tab's page; see [Page titles](#page-titles). It is not called `title` because that key is the navigation label. |
@@ -214,7 +214,8 @@ tabs:
 | `icon` | Slug | none | |
 | `image` | local image path | none | A round thumbnail; wins over `icon`. Same path rules as a local `avatar`, file at most 256 KiB. See [Link thumbnails](customizing.md#link-thumbnails). |
 | `image_alt` | text | empty | At most 120 characters; empty means decorative. Refused without `image`. |
-| `affiliate` | boolean | `false` | |
+| `affiliate` | `true` or `false` (a real boolean; `yes` or `"true"` is refused) | `false` | Marks a link you earn from. It gets `rel="sponsored noopener noreferrer"` and turns the page's disclosure line on. |
+| `internal` | `true` or `false` (a real boolean) | `false` | Marks a link to another site of yours that the same collector counts. The build writes `?h=<analytics.hop_label>` on it (or `&h=` after an existing query, before any `#fragment`, which stay as written) so the funnel's hop table can say which of your sites the visitor came from. Needs `analytics.hop_label`, a link host listed in `analytics.other_sites`, and a url with no `h` parameter of its own; refused with `affiliate` or a `tab:` url. Outside links never get it. The `h` is part of the address the build writes, so it works with scripts off. |
 | `show_from` | Date | none | first day the link shows |
 | `show_until` | Date | none | last day the link shows; must not be before `show_from` (the same day is fine) |
 
@@ -359,9 +360,14 @@ example is [`examples/instance/site-link-grid.yaml`](../examples/instance/site-l
   240 px wide screen (a group is then at least 48 px wide: one 44 px tile plus
   its 4 px of gap); a tile cannot be both 44 px wide and inside a narrower
   container, so below that width the guarantee does not apply.
-- The `gear`, `more` and `hire` intents exist for the groups the grid uses
-  (a gear section, Website, GitHub, Email and RSS, a hire-me group); each may
-  appear once per screen like every intent. A `hire` group is exactly one link
+- The `gear`, `services`, `more` and `hire` intents exist for the groups the grid
+  uses (a hardware section, a software and services section, Website, GitHub,
+  Email and RSS, a hire-me group); each may appear once per screen like every
+  intent. Keep each recommendation group to what you actually use, and mark every
+  link you earn from with `affiliate: true`: it then carries
+  `rel="sponsored noopener noreferrer"` and the page shows the
+  [`disclosure`](#disclosure) line. A page with no flagged link shows no
+  disclosure (unless `disclosure.always` is on). A `hire` group is exactly one link
   and sets no `columns`: it draws as one separate panel (see [Screens](#screens)). Name the gear group anything you like in its
   tab `title`.
 - Tile height follows the viewport height, from the tap size up to 4.5 rem, so
@@ -1443,6 +1449,8 @@ end. Text must be quoted if YAML would read it as a number.
 | `about` | text | required | at most 1000 characters |
 | `contact` | text | none | one plain-text line for brands, at most 200 characters; see the note below |
 | `consulting_url` | https URL | none | where the "Consulting instead?" line on both kit pages points, at most 2048 characters; public; without it no line is printed; see the note below |
+| `copy_link` | true or false | true | the "Copy link" control on the public kit page (page address as text plus a copy button); false leaves it off; see `docs/kit.md`, "Copy link" |
+| `public_url` | https URL | none | the address the copy-link control prints, at most 2048 characters, no query string and no fragment; without it the control uses `page.url` plus `/kit/` (set only for the stack layout) and prints nothing when neither is set; public |
 | `tags` | list of text | none | at most 8 content category tags, each 1 to 30 characters, none repeated (compared ignoring case and width, so `Tech` and `Ｔech` count as the same tag); public |
 | `metrics` | list of metric | none | at most 30; each `platform` and `label` pair once |
 | `engagement` | list of engagement row | none | at most 30; each platform and period once; gated; see below |
@@ -1821,6 +1829,122 @@ Limits worth knowing:
   review; app review is the fallback for production
   ([TikTok](tiktok-source.md)). Until then the number is hand-kept.
 
+### `numbers.fediverse`
+
+The fediverse collector (#940, design in `docs/design/fediverse-collector.md`) reads
+the public post counts of one Bluesky account and one Mastodon-API account: for each
+public post of the last 30 days its boosts (reposts), favorites (likes) and replies,
+nothing else. It runs once a day inside `counts refresh`, needs no token, and the
+account and the instance are config only: they are never written into a snapshot, the
+history file or the status file.
+
+```yaml
+numbers:
+  fediverse:
+    - {kind: bluesky, actor: example.bsky.social}
+    - {kind: mastodon, host: social.example, acct: example}
+    # optional: skip the lookup call with the numeric account id (a quoted string
+    # of digits); the follower count then comes from numbers.sources only
+    # - {kind: mastodon, host: social.example, acct: example, account_id: "109"}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `kind` | `bluesky` or `mastodon`; at most one source of each kind, so at most 2 entries |
+| `actor` | Bluesky: a handle such as `name.bsky.social`, or a `did:plc:` or `did:web:` DID. Checked by the provider; no `@`, no URL |
+| `host` | Mastodon: a public lower-case host name (no IP address in any notation, no `localhost`, no port or path); also checked again at run time |
+| `acct` | Mastodon: the local user name, without `@` and without the instance part |
+| `account_id` | Mastodon, optional: the numeric account id |
+
+Unknown keys are refused, so a token cannot be written here. The generated
+[`site.schema.json`](site.schema.json) carries what a schema can say: the `kind`
+discriminator, `minItems` 1, `maxItems` 2, `uniqueItems`, and length and character
+limits on `actor`, `host`, `acct` and `account_id` (a string of at most 20 digits, or
+a whole number from 0 to 99999999999999999999). These checks are runtime-only and
+an editor that validates against the schema does not see them: at most one source of
+each `kind` (two Bluesky entries with different actors pass the schema), and the full
+syntax of a Bluesky handle or DID and of a Mastodon host (no IP address, no
+`localhost`, label and DID rules). `reach-around` always applies the runtime checks.
+What a run does:
+
+- A source that is read in full writes its snapshot to `numbers.fediverse.json`
+  (beside the numbers file; `--out` renames it as `<name>.fediverse.json`) and one
+  history row per metric under the platform name (`posts_30d`, `boosts_30d`,
+  `favorites_30d`, `replies_30d`, source `api`): sums of whole numbers, no post id,
+  text, time or author. The snapshot passes the import guard before it is stored and
+  again when the build reads it.
+- A source that cannot be read in full (the status file says why in a fixed word such
+  as `timeout`, `partial_pages`, `page_cap`, `rate_limited` or `needs_token`, under
+  `fediverse-bluesky` or `fediverse-mastodon`) leaves its stored snapshot and the
+  history untouched. Nothing is ever written as zero, and the run exits 3 like any
+  failed source.
+- `--only` names numbers sources; it does not start the collector. `--dry-run` lists
+  the hosts. The collector reads at most 13 URLs per source per run.
+- The Mastodon host is not in a template's fixed egress list. `reach-around counts
+  egress-check --config site.yaml --allowed FILE` (no network) reads the workflow's
+  `allowed-endpoints` value from `FILE` and exits 3 naming any `host:443` the
+  configured sources need that is missing (exit 0 when all are listed).
+
+Recovery limits and the unit note. A refresh that reads a snapshot leaves a small
+transaction record, `.numbers.json.unit`, beside the numbers file until the numbers
+write landed. The design and crash table are in `src/reach_around/counts/
+fediverse_commit.py`. Three bounds apply:
+
+- Recovery reads files in fixed chunks and never past a limit (the snapshot limit
+  of 512 KiB, the numbers limit of 256 KiB). A snapshot, numbers file or staged
+  copy over its limit, and more than eight staged copies, leave the unit pending:
+  the status says `committed: false`, the run exits 1 and names `UnitFileTooLarge`.
+  Looking for staged copies is bounded as well: the folder walk stops at the ninth
+  staged copy or after 10,000 directory entries, keeps nothing more, and fails the
+  same way. The word is the same for every one of these causes, so read the folder to
+  tell them apart (see the next section).
+- A unit note that cannot be parsed is moved to `.numbers.json.unit.bad` (an older
+  `.bad` file is replaced). That run prints `unit_note_quarantined` and keeps the
+  status false; the next run proceeds normally. The `.bad` file is only evidence:
+  delete it whenever you like. A note that is a link or a folder is not moved; delete
+  it by hand.
+- What the note proves. It gives crash consistency against this program's own
+  crashes. It is not a defense against someone with write access to the output
+  folder, who could already replace the numbers and snapshot files; refresh assumes a
+  single writer holding its lock. The named residual: a settled note from an earlier
+  transaction that was kept aside and put back after a later transaction produced
+  byte-identical snapshot and numbers files and crashed before its numbers write is
+  accepted as that transaction's proof.
+
+Recovering from `UnitFileTooLarge`. The word means one fixed thing: recovery found
+more than it is allowed to examine, so it stopped and did not guess. The causes are
+a snapshot, numbers file or staged copy over its size limit; more than 8 staged
+copies; or more than 10,000 entries of any kind (files, folders, links) in the
+output folder. When it stops, every file is kept as evidence, nothing is deleted or
+rewritten, the status file says `committed: false` and the run exits 1. Nothing is
+lost: the stored snapshot, history and numbers file are as the last good run left
+them. Examples below use the default names (`numbers.json`,
+`numbers.fediverse.json`); with `--out NAME` the names follow it.
+
+1. Stop any other refresh of this output and `cd` to the output folder (the folder
+   that holds the numbers file).
+2. Count the entries: `ls -A | wc -l`. If it is over 10,000, move the unrelated
+   files and folders to another place until at most 10,000 remain (move them, do
+   not delete what you cannot name). The output folder should hold only the numbers
+   file, the status file and the dot files below.
+3. List the leftovers: `ls -A | grep -E '^\.{1,2}numbers\.fediverse\.json\.[0-9a-f]{16}\.(staged|tmp)'`.
+   If there are more than 8, or any is over 512 KiB, remove them. These are the only
+   files safe to delete by hand: dot files named `.numbers.fediverse.json.` plus 16
+   hex digits plus `.staged` or `.tmp` (a `.tmp` copy of a staged file adds a second
+   16 hex group before `.tmp`). They are copies of a run that never committed, and
+   the next run would remove them itself.
+4. Never delete or edit `numbers.json`, `numbers.fediverse.json` or the unit note
+   `.numbers.json.unit` to clear this word; the next run settles the note itself. If
+   the snapshot (over 512 KiB) or the numbers file (over 256 KiB) is the oversized
+   one, this program did not write it: restore it from your backup or version
+   control, then continue. The only other file you may remove is
+   `.numbers.json.unit.bad`.
+5. Run `reach-around counts refresh` again. Confirm recovery: the run exits 0 and
+   the status file says `committed: true`. If it still names `UnitFileTooLarge`,
+   repeat steps 2 to 4; the cause was not all gone.
+
+The build feeds [`kit.fediverse`](kit.md#the-fediverse-block) from the snapshots.
+
 ### The numbers file
 
 `reach-around counts refresh` writes `numbers.json` (default beside the config;
@@ -2017,6 +2141,7 @@ existed. Unknown keys are refused; there is deliberately nothing else to set.
 | `raw_keep_days` | integer 1 to 90 | `7` | What the privacy page says about how long individual view records are kept. It does not change the Worker: keep it equal to the Worker's `RAW_KEEP_DAYS`. |
 | `geo_level` | `country`, `region` or `city` | `region` | What the privacy page says about location. It does not change the Worker: keep it equal to the Worker's `GEO_LEVEL` (or the site's own `geo`). A stored view holds the country and at most the region, never the city. At `city` the Worker also counts the city in a daily total (no page, source or device kind with it), small counts are combined into the region, and the page says so. |
 | `other_sites` | list of host names | none | Other sites counted by the same collector (the Worker's `SITES`), named on the privacy page. Lower-case host names only, at most 7, no scheme, port, path or wildcard. |
+| `hop_label` | label | none | This site's name in the funnel's hop table (#593). One closed label: 1 to 30 characters of `a-z`, `0-9` and `-`, the rule `click.js` and the Worker apply when they read `h`; `other`, `none` and `direct` are reserved. Written as `h=<hop_label>` on every link marked `internal: true` (see [Link](#link-a-block-or-inside-a-section)). Required when any link is `internal`. List the same label in the Worker's `hops` for the site that receives the click. Platform rows and socials do not get it yet. |
 | `route` | path | `/e/v/` | The same-origin path the Worker serves the page-view route on. Plain segments (`A-Z a-z 0-9 . _ ~ -`, no segment starting with a dot), starting and ending with `/`, at most 64 characters. No scheme, host, query, fragment, `.` or `..` segment, escape or space. The tab id is appended to it. |
 | `turnstile_beacon` | boolean | `false` | The invisible bot check (#610). Must be a real boolean. When on, the build adds one hidden, unlinked, `noindex` helper page at `/e-frame/` that loads Cloudflare Turnstile, and a small script (`static/beacon.js`) on every tab page that opens the helper in a hidden frame after the page has loaded, never for a visitor who sends Global Privacy Control or Do Not Track. Needs `analytics.page_views` or `features.click_tracking`. Off, the build is byte-for-byte what it was. **Do not turn it on for a live site until the privacy page says what the check does**; see `docs/deploy.md` ("The invisible bot check") and `docs/turnstile-storage-check.md`. |
 | `turnstile_site_key` | string | none | The public Turnstile site key, 16 to 64 letters, digits, `-` or `_`. Required when `turnstile_beacon` is on and refused when it is off. Use Cloudflare's published test key `1x00000000000000000000AA` for tests. The secret key never goes in this file. |
