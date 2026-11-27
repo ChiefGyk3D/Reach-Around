@@ -28,7 +28,7 @@
 # 0.1.0; see README.md). Needs Docker or Podman. The engine runs with no network, a read-only root
 # filesystem, no capabilities and the caller's own user id. Nothing in the
 # build can see a secret: none is passed in. Only site.yaml, media/, and (when
-# they exist) overrides/ and numbers.json are mounted, each read-only; the
+# they exist) overrides/, numbers.json and numbers.fediverse.json are mounted, each read-only; the
 # rest of the checkout is not visible to the engine.
 set -euo pipefail
 
@@ -134,7 +134,7 @@ fi
 # Only these paths are mounted, each read-only. A symlink is refused: the
 # runtime would resolve it on the host and mount what it points at.
 mounts=()
-for item in site.yaml media overrides numbers.json; do
+for item in site.yaml media overrides numbers.json numbers.fediverse.json; do
   path="$data/$item"
   if [ -L "$path" ]; then
     echo "error: $item must not be a symbolic link" >&2

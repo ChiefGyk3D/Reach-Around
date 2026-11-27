@@ -20,13 +20,13 @@ engine repository for the reasoning.
 | `engine.release.json` | The image, repository, commit, tag and D1 schema of that one release. `scripts/read-lock.sh --release` fails when it disagrees with `engine.lock`; update both in the same pull request (Renovate moves only the lock, so a Renovate pull request fails this check until the manifest is updated). |
 | `.github/workflows/preview.yml` | On a pull request: check the config, build a preview artifact, and comment on the pull request with the result in plain language and the list of changed blocks. Also lints the scripts and workflows (GYST `bash-ci`). Deploys nothing. Its gate job is named `CI green`. |
 | `.github/workflows/deploy.yml` | On a push to `main` or a manual run: check and validate always; deploy staging only while `ALLOW_STAGING_DEPLOY` is exactly `true`; production only by a manual run with target `production` while `ALLOW_PRODUCTION_DEPLOY` is exactly `true`. Each deploy waits for its environment's reviewer. |
-| `.github/workflows/refresh-counts.yml` | Once a day (and by hand): refresh follower counts with the pinned engine and open a pull request with the new `numbers.json`. Optional; see "Daily follower counts". |
+| `.github/workflows/refresh-counts.yml` | Once a day (and by hand): refresh follower counts with the pinned engine and open a pull request with the new `numbers.json` (and `numbers.fediverse.json`, when `numbers.fediverse` sources are set). Optional; see "Daily follower counts". |
 | `.github/workflows/check-hand-kept-freshness.yml` | Once a week (and by hand): check `hand-kept.json` and keep one issue open while a number you keep by hand is past its limit. Optional; see "Hand-kept numbers". |
 | `.github/workflows/history-guard.yml` | On a pull request: fail any change to `history/social.jsonl` that is not an append, except a labeled tombstone-only rewrite. Optional; see "History rewrites". Its check is named `History guard`. |
 | `.github/history-approvers` | The GitHub logins allowed to authorize such a rewrite. Ships empty. |
 | `.github/CODEOWNERS` | Example owners of the paths that decide a rewrite (the primary boundary with code-owner review). Replace `OWNER-LOGIN`; see "History rewrites". |
 | `renovate.json` | Keeps `engine.lock` and the Actions pins current. |
-| `scripts/` | `check-freshness.py` (the stale check of the hand-kept file, standard library only), `validate-numbers.py` (the strict check on `numbers.json` the counts refresh runs twice), `refresh-counts.sh`, `verify-history.sh` (the engine's `counts history-verify` on the history file, offline), `verify-history-rewrite.sh` (the engine's `counts history-compare`: append-only or a valid tombstone-only rewrite), `history-guard.py` (the pull-request guard that decides whether a rewrite is authorized, standard library only), `check-config.sh` (the plain-language config check), `validate.sh` (the build CI runs), `write-result.py` (bundles the preview job's results into the one data file the comment job reads), `render-comment.py` (run by the comment job from the base commit: validates that file and writes the pull request comment from fixed text), `check-repo.sh`, `read-lock.sh`, `deploy-local.sh`. |
+| `scripts/` | `check-freshness.py` (the stale check of the hand-kept file, standard library only), `validate-numbers.py` (the strict check on `numbers.json`, and with `--fediverse` on `numbers.fediverse.json`, that the counts refresh runs twice), `refresh-counts.sh`, `verify-history.sh` (the engine's `counts history-verify` on the history file, offline), `verify-history-rewrite.sh` (the engine's `counts history-compare`: append-only or a valid tombstone-only rewrite), `history-guard.py` (the pull-request guard that decides whether a rewrite is authorized, standard library only), `check-config.sh` (the plain-language config check), `validate.sh` (the build CI runs), `write-result.py` (bundles the preview job's results into the one data file the comment job reads), `render-comment.py` (run by the comment job from the base commit: validates that file and writes the pull request comment from fixed text), `check-repo.sh`, `read-lock.sh`, `deploy-local.sh`. |
 | `docs/EDITING.md` | How to change the page without touching code. |
 
 ## Adopt it
@@ -251,7 +251,7 @@ want counts.
 
 **What happens to the result.** The workflow does not push to `main`. It
 pushes the branch `counts/refresh` and opens one pull request, "Refresh
-follower counts", that changes `numbers.json` (and `history/social.jsonl`, when `numbers.history_file` is set to that path). You merge it; that push runs
+follower counts", that changes `numbers.json` (and `numbers.fediverse.json`, when `numbers.fediverse` sources are set, and `history/social.jsonl`, when `numbers.history_file` is set to that path). You merge it; that push runs
 `Deploy` as usual, with its reviewer approval. Reasons: a push made with the
 run's own token does not start other workflows (so a direct commit would never
 deploy), and `main` should stay protected. Because of the same rule, the
@@ -319,10 +319,25 @@ in the engine repo); without it that source is reported as skipped
   it crosses as an artifact: the exact shape the engine writes, known id
   names, whole non-negative counts, real UTC stamps, at most 64 KiB. It writes
   a fresh copy through a temporary file and a rename, never the original bytes.
+- `numbers.fediverse.json` (the fediverse snapshots the engine writes beside
+  `numbers.json`) is checked the same way, twice, with
+  `scripts/validate-numbers.py --fediverse`: the engine's own size limit
+  (512 KiB) and key rules, anonymous aggregates only (no account, handle,
+  host, link or any person-level key), and the whole file is refused when any
+  part fails. Only that file crosses. The engine's unit note
+  (`.numbers.json.unit`), its `.bad` copy, the pending note and staged copies
+  stay in the scratch folder and are never carried or committed.
+- The egress check does not apply to this template. `reach-around counts
+  egress-check` compares the hosts the sources need (a Mastodon host is one)
+  with an `allowed-endpoints` list; the refresh job here has no such list (it
+  runs no egress-firewall step), so there is nothing to compare and the check is
+  not a step. If you add an egress-firewall step to the refresh job, run
+  `reach-around counts egress-check --config site.yaml --allowed FILE` against
+  that step's list first, so a configured host is never blocked.
 - The branch is replaced only if it is still the commit the run saw
   (`--force-with-lease`). If a pull request is already open on `counts/refresh`
   and it was not opened by the Actions bot, comes from a fork, or changes
-  anything besides `numbers.json` and `history/social.jsonl`, the run stops with a message and touches
+  anything besides `numbers.json`, `numbers.fediverse.json` and `history/social.jsonl`, the run stops with a message and touches
   nothing. Close that pull request or rename its branch, then run again.
 
 ## History rewrites

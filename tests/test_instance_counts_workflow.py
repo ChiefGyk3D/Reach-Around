@@ -172,7 +172,7 @@ def test_the_push_is_a_leased_force_and_the_existing_pr_is_vetted() -> None:
     # bot as author, and numbers.json as the only changed file.
     assert "isCrossRepository" in code
     assert "github-actions" in code
-    assert '"numbers.json", "history/social.jsonl"' in code
+    assert '"numbers.json", "numbers.fediverse.json", "history/social.jsonl"' in code
     assert "Refresh follower counts" in code
 
 

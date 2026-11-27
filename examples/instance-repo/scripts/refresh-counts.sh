@@ -10,6 +10,15 @@
 # engine, checked by scripts/verify-history.sh, then put in the repository
 # folder.
 #
+# The fediverse snapshot file numbers.fediverse.json (the engine writes it beside
+# numbers.json when site.yaml has numbers.fediverse sources) is carried the same
+# way as numbers.json: the committed copy goes in, the engine's copy comes out and
+# is checked by `validate-numbers.py --fediverse` (the engine's own size, key and
+# anonymity rules; the whole file is refused when any part fails), then it is put
+# in the repository folder. It is the only file of the collector that is carried:
+# the unit note (.numbers.json.unit), its .bad copy, the pending note and any
+# staged or temp copy stay in the scratch folder and are dropped with it.
+#
 # The new numbers.json is checked by scripts/validate-numbers.py before it is
 # copied into the repository folder (and the workflow's publish job checks it
 # again after it crosses to the job that may write).
@@ -128,6 +137,16 @@ if [ -L "$numbers" ]; then
   exit 2
 fi
 if [ -f "$numbers" ]; then cp "$numbers" "$workdir/numbers.json"; fi
+
+# The fediverse snapshot (beside numbers.json). The engine reads the committed
+# copy to keep a platform whose read fails, and writes its own copy next to the
+# numbers file in the scratch folder.
+fediverse="$here/numbers.fediverse.json"
+if [ -L "$fediverse" ]; then
+  echo "error: numbers.fediverse.json must not be a symbolic link" >&2
+  exit 2
+fi
+if [ -f "$fediverse" ]; then cp "$fediverse" "$workdir/numbers.fediverse.json"; fi
 
 # The history file (numbers.history_file in site.yaml must be
 # history/social.jsonl). The engine writes it in place, so the folder is a
@@ -293,10 +312,23 @@ if [ -f "$workdir/numbers.json" ] && [ ! -L "$workdir/numbers.json" ]; then
   }
 fi
 
+# The engine's snapshot file, checked the same way (into a scratch file; the
+# whole file is refused when any part fails, and then nothing is changed).
+checked_fediverse=""
+if [ -f "$workdir/numbers.fediverse.json" ] && [ ! -L "$workdir/numbers.fediverse.json" ]; then
+  checked_fediverse="$workdir/numbers.fediverse.checked.json"
+  python3 -I "$here/scripts/validate-numbers.py" --fediverse \
+    --in "$workdir/numbers.fediverse.json" --out "$checked_fediverse" || {
+    echo "refresh-counts: the engine's fediverse snapshot failed the check; nothing was changed." >&2
+    exit 1
+  }
+fi
+
 staged_history=""
 staged_numbers=""
+staged_fediverse=""
 # A staged file that was not moved into place is removed on any exit.
-trap 'rm -f "$staged_history" "$staged_numbers"; if [ -n "$cleanup" ]; then rm -rf "$cleanup"; fi' EXIT
+trap 'rm -f "$staged_history" "$staged_numbers" "$staged_fediverse"; if [ -n "$cleanup" ]; then rm -rf "$cleanup"; fi' EXIT
 
 if [ -n "$new_history" ]; then
   mkdir -p "$history_dir"
@@ -320,6 +352,11 @@ if [ -n "$new_history" ]; then
   staged_history="$(mktemp "$history_dir/.social.XXXXXX")"
   cp "$new_history" "$staged_history"
 fi
+if [ -n "$checked_fediverse" ]; then
+  staged_fediverse="$(mktemp "$here/.numbers.fediverse.XXXXXX")"
+  cp "$checked_fediverse" "$staged_fediverse"
+  chmod 644 "$staged_fediverse" # a public file; mktemp makes it 0600
+fi
 if [ -n "$checked_numbers" ]; then
   staged_numbers="$(mktemp "$here/.numbers.XXXXXX")"
   cp "$checked_numbers" "$staged_numbers"
@@ -335,6 +372,13 @@ if [ -n "$staged_history" ]; then
     exit 1
   }
   staged_history=""
+fi
+if [ -n "$staged_fediverse" ]; then
+  mv -f "$staged_fediverse" "$fediverse" || {
+    echo "refresh-counts: numbers.fediverse.json could not be installed; run the refresh again." >&2
+    exit 1
+  }
+  staged_fediverse=""
 fi
 if [ -n "$staged_numbers" ]; then
   mv -f "$staged_numbers" "$numbers" || {
