@@ -332,7 +332,7 @@ QUESTION 5).
 | `kit_events` (4 columns) | hour-rounded unlock, view and verify events by lead id | yes | `DELETE`, read-back counts the rows; the foreign key also cascades |
 | `alert_dedup` (3 columns) | keyed hash of a recent alert, which can include the address; a row stops counting as a repeat after 10 minutes but is deleted only when the next alert event is admitted, so on a quiet site it can stay stored (at most 500 rows) until then or until cleared by hand | yes (#905): `leads delete --yes --alerts-database NAME`, then `--finish` | the whole table is cleared and read back to 0 twice, after the lead read-back; exit 3 if not confirmed; the owner closes the kit gate during erasure (statements below); a keyed hash is not erased by being hard to match |
 | `visitor_seen`, `view_events`, `click_events` | coarse visitor rows with no address, no IP address, no lead id | no | not matchable to a person by design (Art. 11); removed by retention |
-| 26 other tables (counters, rollups, budgets, logs, cursors) | counts and bookkeeping | no | aggregate, no row per person; counts cannot be un-counted |
+| 27 other tables (counters, rollups, budgets, logs, cursors) | counts and bookkeeping | no | aggregate, no row per person; counts cannot be un-counted |
 | KV, edge cache | the gated page, live status state, the public status body | no | no lead data found in the listed call sites; a text scan, not a data-flow proof (verify the namespace's keys by hand); the Worker never writes the gated page key |
 | R2, Durable Objects, queues | not used | not applicable | the test fails if one is added without review |
 | Unlock cookie | a signed token, no server copy | not applicable | stops opening the kit once the `leads` row is gone |

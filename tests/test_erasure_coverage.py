@@ -1176,6 +1176,10 @@ def _exported_set(stores: dict[str, Any], extra: set[str]) -> set[str]:
     } | extra
 
 
+# The one fixed read the backup makes first (#772): which database this is.
+IDENTITY_SQL = "SELECT role FROM db_identity ORDER BY role"
+
+
 def backup_call_violations(
     calls: list[list[str]], registry: dict[str, Any]
 ) -> list[str]:
@@ -1186,7 +1190,11 @@ def backup_call_violations(
     for argv in calls:
         if argv[:2] == ["d1", "execute"]:
             sql = argv[argv.index("--command") + 1] if "--command" in argv else ""
-            if sql != LISTING_SQL and not _is_inventory_count(sql, stores, extra):
+            if (
+                sql != LISTING_SQL
+                and sql != IDENTITY_SQL
+                and not _is_inventory_count(sql, stores, extra)
+            ):
                 found.append(
                     "backup ran a query other than the table listing or the"
                     f" inventory row counts: {sql[:40]}"
