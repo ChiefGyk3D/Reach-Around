@@ -272,6 +272,16 @@ def collect(
         if deadline - clock() <= 0:
             ended.append("timeout")
             raise _BudgetEnded
+        # The terminal rate state of this fetch outranks the call cap, so the
+        # reported reason is the rate one, and no further request is made.
+        if rate["bad"]:
+            ended.append("bad_shape")
+            raise _BudgetEnded
+        if rate["low"]:
+            # A low count seen on the previous response of this fetch also stops
+            # the retry or redirect hop that would follow it (#938).
+            ended.append("rate_limited")
+            raise _BudgetEnded
         if calls >= MAX_CALLS:
             ended.append("page_cap")
             raise _BudgetEnded
@@ -282,7 +292,10 @@ def collect(
         # retry or a redirect hop, passes the rate header check here.
         seen = response.headers.get("x-ratelimit-remaining")
         if isinstance(seen, str) and len(seen) > _VALUE_MAX:
-            seen = None  # the fetch layer drops such a value, so it is absent
+            # An oversized value is malformed (more than ten characters): it
+            # fails closed as ``bad_shape`` and is never read as absent (#938).
+            rate["bad"] = True
+            seen = None
         try:
             left = _remaining(
                 {"x-ratelimit-remaining": seen} if seen is not None else {}
