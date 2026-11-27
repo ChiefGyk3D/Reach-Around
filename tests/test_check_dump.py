@@ -1146,3 +1146,38 @@ def test_the_checker_parses_the_raw_migration_tables_with_their_nested_checks() 
     )
     assert nesting_depth(leads) > 30
     assert [c.lower() for c in mod.parse_create(leads)[1]] == allow["leads"]
+
+
+@pytest.mark.parametrize(
+    "stmt",
+    [
+        "ATTACH DATABASE 'other.db' AS probe;",
+        "DETACH probe;",
+        "DROP TABLE view_events;",
+        "UPDATE view_events SET page = 'x';",
+        "ALTER TABLE view_events ADD COLUMN z TEXT;",
+        "VACUUM INTO 'copy.db';",
+        "CREATE VIEW v AS SELECT 1;",
+        "REINDEX;",
+        "PRAGMA writable_schema=ON;",
+        "PRAGMA foreign_keys=OFF;",
+        "PRAGMA defer_foreign_keys=TRUE; PRAGMA writable_schema=ON;",
+    ],
+)
+def test_standalone_non_insert_restore_sql_is_refused(
+    stmt: str, tmp_path: Path
+) -> None:
+    """The allowlist is the guard against restore SQL that is not an INSERT: each
+    of these, alone in an otherwise good dump, fails the check."""
+    assert run(SCHEMA_DUMP + GOOD_ROW, tmp_path=tmp_path).returncode == 0
+    r = run(SCHEMA_DUMP + GOOD_ROW + stmt + "\n", tmp_path=tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "unexpected statement" in r.stdout
+
+
+def test_the_defer_foreign_keys_pragma_of_a_real_export_still_passes(
+    tmp_path: Path,
+) -> None:
+    for line in ("PRAGMA defer_foreign_keys=TRUE;", "PRAGMA defer_foreign_keys=OFF;"):
+        r = run(line + "\n" + SCHEMA_DUMP + GOOD_ROW, tmp_path=tmp_path)
+        assert r.returncode == 0, r.stdout + r.stderr
