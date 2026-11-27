@@ -2741,6 +2741,7 @@ def test_no_row_value_reaches_a_command_line_in_any_mode(tmp_path: Path) -> None
     assert r.returncode == 0, r.stderr
     outs += [r.stdout, r.stderr]
     assert "DELETE FROM" in log.read_text()  # the spy saw the deletes
+    assert "length(" not in log.read_text()  # nor anything derived from a value
     assert_clean(log, *outs)
 
 
@@ -2796,6 +2797,18 @@ def test_a_changed_row_survives_in_a_private_file_when_keeping_it_fails(
     for out in (r.stdout, r.stderr, log.read_text()):
         assert "changed@example.test" not in out
     assert "partial purge" not in r.stderr
+
+
+def test_a_delete_statement_carries_nothing_derived_from_a_personal_column() -> None:
+    mod = load_script()
+    guard = mod.guard_sql({"leads", "kit_events"})
+    base = {c: None for c in mod.COLUMNS["leads"]} | {"id": "a" * 32, "created_ts": 5}
+    short = base | {"email": "a@b.test", "country": "US"}
+    long = base | {"email": "much.longer.address@example.test", "country": None}
+    (one,) = mod.delete_statements("leads", [short], guard)
+    (two,) = mod.delete_statements("leads", [long], guard)
+    assert one == two  # no value, length or null-ness of email or country is in it
+    assert "length(" not in one and "email" not in one and "country" not in one
 
 
 def frozen_names(env: dict[str, str]) -> set[str]:
