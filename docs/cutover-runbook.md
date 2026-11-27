@@ -116,6 +116,76 @@ The instance repository has two GitHub environments, `staging` and `production`.
 The Worker and the D1 migrations ship at the switch (#596), carrying the
 configuration that was proven on staging. See 2.3 for the order.
 
+### 1.5 Staging test deploy map (#860)
+
+State read 2026-11-27 from `origin/main` (ffc5d602), the open issues and the
+lead's queue. Goal: a test deploy with real data on the staging host, then the
+cutover rehearsal. Marks: **O** owner only (a credential, an account or his
+word), **A** agent doable. Anything not read from a named source is marked
+**inferred**; whether the staging host and its Pages custom domain exist today
+is **unverified** and is the first owner read in step 5.
+
+**No longer blockers (merged, so do not re-open them):**
+the Bluesky provider (#934) and the Mastodon provider (#936); the fediverse
+wiring, config, refresh, history and kit feed (#941); backups that treat a
+missing table as a failure (#935), so a backup taken before that merge must be
+taken again; the probe results for both providers (#943); the edge settings
+module and the read-only drift check (#734); the D1 rollback check as a manual
+procedure (#929); the counts history guard (#913). The private hardening series
+is parked and is not on this path. Open Low follow-ups (#938, #944, #945) are
+batched and do not block a test deploy.
+
+**Ordered blockers**
+
+| # | Blocker | Who | Exact next action | Issue | Unblocks |
+|---|---|---|---|---|---|
+| 1 | Leads database split awaits the owner's D1 step. | O, then A | Owner runs the step 0b script (it uses a temporary token) and pastes the output; the agent then finishes the D1 packet walk-through, and merges #850 head-pinned once both gates are green. | #850, #772 | The release candidate can include `LEADS_DB`; the kit with real data. Merge before the freeze in step 7, because a changed candidate restarts the soak. |
+| 2 | Template carry for the fediverse snapshot is prepared but not pushed. | O, then A | Owner pushes the prepared branch with the workflow scope. Then the agent opens the PR, runs both gates and the Daybreak round (it changes workflow allow-lists), and merges head-pinned. | #942 | The private instance repository can carry the fediverse numbers into its staging build. |
+| 3 | Edge rate rule on `/e/` is not written. The read gate is verified and answers NOT MET until the rule exists. | O | Owner runs the write pair (step 5 of the edge steps) in the morning, adding the rule to the existing phase and never replacing it. Then the agent re-runs the gate with `--live` and expects exit 0. Bot Fight Mode stays off until real beacon traffic is measured. | #613, #734 | Real beacon traffic can hit staging; the zone is shared, so this also protects production. |
+| 4 | Secrets for staging. | O | See the secrets plan below. Set `VIEW_HASH_SECRET` by name from the secret manager, never in chat; confirm with `npx wrangler secret list`. | #553, #602, #610 | Step 6 (Worker deploy). |
+| 5 | Staging host, Pages custom domain and `/e/*` route. | O, A reads | Owner reads whether `links-staging.example.com` is Active under the Pages project and whether the zone route covers `/e/*` (the agent can check both read-only with the edge token). If missing, the owner adds the record and the custom domain, on his explicit word. | #344, #366 | A place to deploy to; the click route counts only with the route. |
+| 6 | Staging D1 and Worker with migrations, in the quiet order. | O+A | Agent prepares the `deploy-worker.yml` call (a staging Worker name that is not the test Worker, per its `worker_name` input) and the checklist; owner takes a fresh Time Travel bookmark and a backup with the current `scripts/backup-d1.sh`, passes the restore drill, then runs the order in 2.3: quiet with all three switches, migrate, deploy, clear. Create the leads database too once #850 is merged. | #596, #366, #929 | A Worker and databases that can take real visits. |
+| 7 | Frozen release candidate, pinned in the instance. | O+A | Owner approves the SHA in chat. Agent opens the instance PR moving the three `engine.lock` lines; owner merges it, which deploys staging. | #595, #605 | The soak has a fixed subject; real site built from real config. |
+| 8 | Real data in the private instance. | O+A | Owner enables the fediverse collector in the private config (accounts stay private), exports from Beacons (links, analytics CSV, forms) and supplies the latest. Agent runs `counts history-import-beacons` (dry run, then real) and `history-verify`. | #941, #376 | Real numbers, real history and the media kit with real generated data. |
+| 9 | Smoke and the synthetic check. | A, O | Agent runs `bash scripts/smoke.sh https://links-staging.example.com` and `check-dump.py` on a fresh export. Owner opens the page once from a labeled source in a normal browser and clicks one outbound link; agent reads the report within the hour. | #366, #378 | B1, B2, B3 evidence. |
+| 10 | 48 hour analytics soak. | O supplies the CSV, A runs | After two full UTC days, owner exports Beacons daily views and clicks; agent runs `scripts/proof-export.sh` and `check-analytics.py` and records the result line. The soak restarts if the candidate changes. | #366, [analytics-acceptance.md](analytics-acceptance.md) | A3 and the go to rehearse. |
+| 11 | Cutover rehearsal. | O+A | Lower the TTL on the throwaway host 48 hours ahead, then run Part 5 (`rehearse.sh`) with the owner's word, and post times only. | #597 | Rollback proven; Part 3 can be scheduled. |
+
+Also needed before the real switch, not before the test deploy: the privacy page
+approved (#598), the security review rounds closed on the frozen candidate
+(#605), the hand checks in 2.2 and 2.3, the `--live` edge gate at exit 0, and
+the owner's separate word for production. Not blockers: #915 (wiki sync), #604
+(Free-plan limits revisit), and the kit PDF and Beacons CSV items that belong to
+the 30 day parity (Part 7).
+
+**Secrets plan per environment.** Staging uses the secret manager's `dev`
+environment, the same dev configuration 1.4 names (decision of #602: the test
+deploy reads dev, production reads a `prd` config created at go-live with its
+own identity). No separate `stg` config is needed, because staging and the test
+Worker are the same tier. `prd` is not touched until the owner says in his own
+words that the project is live in production; promotion is its own step with its
+own access plan. The edge read identity has its own config and its own token;
+the deploy identity is split from the counts job after cutover (#602). The
+Worker's `VIEW_HASH_SECRET` is a different value for staging and production, set
+by name and never in a file, a variable or chat.
+
+**Rehearsal checklist the owner can run** (each line is a command or a look; no
+values are posted):
+
+- [ ] `npx wrangler secret list` shows the secret names on the staging Worker.
+- [ ] `bash scripts/smoke.sh https://links-staging.example.com` exits 0.
+- [ ] A fresh export passes `python3 -I scripts/check-dump.py dump.sql`.
+- [ ] One labeled visit and one outbound click show in
+      `reach-around report --input export.json --days 1` within the hour.
+- [ ] `/socials?x=1` lands on `/` with the query kept (302 on staging).
+- [ ] `POST /e/c/unknown` answers 204; the edge gate `--live` exits 0.
+- [ ] The kit gate and `KIT_KILL` behave as 2.2 says, with no lead row written.
+- [ ] `reach-around counts stale --config site.yaml` exits 0 and the kit shows
+      the fediverse numbers.
+- [ ] A restore drill passed on a scratch database from the new backup.
+- [ ] The 48 hour reconciliation exits 0, then Part 5 is run once and its times
+      are posted.
+
 ## Part 2. Preconditions checklist
 
 Every box must be checked, with the evidence in the cutover record (private) and
