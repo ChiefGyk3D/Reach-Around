@@ -29,11 +29,16 @@ start of a run belongs to a run that is no longer there):
    the committed snapshot in history, no snapshot dated after today). If not, a
    status of ``true`` is set to false BEFORE any repair step. ``true`` is
    written only by the end of a run, after the same check passes again.
-5. The unit note (``unit_path``) is written before the commit point and holds
-   the digest of the numbers text of this run. A snapshot alone cannot prove that
-   the numbers landed, so the note stays until a numbers file has been written
-   after it (or the numbers on disk match its digest). While it stays the status
-   is false, even if every source fails on the retry.
+5. The unit note (``unit_path``) is a TRANSACTION RECORD written before the
+   commit point: the digest of the proposed snapshot, the digest of the expected
+   numbers text and a random generation id. After this run's numbers write the
+   same id is written back into the note. It settles only when the committed
+   snapshot is the proposed one AND the note carries its own id (identical
+   numbers bytes on two days prove nothing). While it stays the status is false,
+   even if every source fails on the retry. A rename that fails removes the note
+   at once; after a crash, recovery removes a note whose proposed snapshot is not
+   the committed one (or whose staged copy is still there): that transaction
+   never crossed the commit point.
 6. Rows are repaired whatever the age of the snapshot (a crash on day N is
    repaired by a run on day N+2). A snapshot dated after today (the clock went
    backward) cannot get rows yet: the run prints ``snapshot_in_future`` and the
@@ -74,8 +79,10 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import stat
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
@@ -96,50 +103,155 @@ _SUMS = {
     "mastodon": mastodon_feed.snapshot_aggregates,
 }
 
-_UNIT_DIGEST = re.compile(r"[0-9a-f]{64}")
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+_HEX16 = re.compile(r"[0-9a-f]{16}")
+_NOTE_KEYS = {"snapshot", "numbers", "generation", "landed"}
+
+
+def new_generation() -> str:
+    """A random id (16 hex) for one unit transaction."""
+    return secrets.token_hex(8)
+
+
+def file_digest(path: Path) -> str | None:
+    """sha256 of the file's bytes, ``None`` when it is absent or unreadable."""
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+@dataclass(frozen=True)
+class UnitNote:
+    """The transaction record of one unit: the digest of the snapshot proposed
+    for the commit point, the digest of the numbers text expected after it, the
+    random generation id of the transaction, and ``landed``: the same generation
+    id once THIS transaction's numbers write landed (``None`` before)."""
+
+    snapshot: str
+    numbers: str
+    generation: str
+    landed: str | None = None
+
+    def text(self) -> str:
+        return json.dumps(
+            {
+                "snapshot": self.snapshot,
+                "numbers": self.numbers,
+                "generation": self.generation,
+                "landed": self.landed,
+            },
+            sort_keys=True,
+        )
 
 
 def unit_path(numbers: Path) -> Path:
-    """The unit note: written before the commit point, it holds the digest of the
-    numbers text that belongs to the snapshot being committed, and is removed
-    once a numbers file has been written (a snapshot alone cannot prove that)."""
+    """The unit note: written before the commit point, a transaction record
+    (``UnitNote``). Identical numbers bytes on two days cannot be mistaken for
+    the committed transaction: only this transaction's own generation id, written
+    into the note after its numbers write, proves that write landed. (The
+    numbers file keeps its pinned schema; the record lives in this sibling.)"""
     return numbers.with_name(f".{numbers.name}.unit")
 
 
-def write_unit(numbers: Path, digest: str) -> None:
+def write_unit(numbers: Path, note: UnitNote) -> None:
     """Write the unit note beside ``numbers`` (atomic, mode 0600). Raises
     ``OSError`` on failure."""
-    write_atomic(unit_path(numbers), digest)
+    write_atomic(unit_path(numbers), note.text())
 
 
-def unit_pending(numbers: Path) -> bool:
-    """True while the unit note is there and its numbers have not landed.
+def mark_landed(numbers: Path, note: UnitNote) -> None:
+    """Record, atomically in the note itself, that this transaction's numbers
+    write landed (the generation id is written back). Raises ``OSError``."""
+    write_atomic(
+        unit_path(numbers),
+        UnitNote(note.snapshot, note.numbers, note.generation, note.generation).text(),
+    )
 
-    A note whose digest equals the numbers file on disk means the numbers write
-    landed and only the removal was lost: it is removed here and counts as
-    settled. A note that cannot be read, or differs, is unsettled (a later run
-    that writes the numbers file removes it)."""
+
+def discard_unit(numbers: Path) -> None:
+    """Remove the unit note of a transaction that never crossed the commit point
+    (never raises: recovery removes what is left)."""
+    try:
+        unit_path(numbers).unlink()
+    except OSError:
+        pass
+
+
+def read_unit(numbers: Path) -> UnitNote | None:
+    """The unit note, ``None`` when it cannot be read or is not a valid record."""
+    try:
+        raw = json.loads(_read(unit_path(numbers), 1024))
+    except (ConfigError, ValueError, RecursionError, OSError):
+        return None
+    if not isinstance(raw, dict) or set(raw) != _NOTE_KEYS:
+        return None
+    snapshot, digest, gen, landed = (
+        raw["snapshot"],
+        raw["numbers"],
+        raw["generation"],
+        raw["landed"],
+    )
+    if not (
+        type(snapshot) is str
+        and _HEX64.fullmatch(snapshot)
+        and type(digest) is str
+        and _HEX64.fullmatch(digest)
+        and type(gen) is str
+        and _HEX16.fullmatch(gen)
+        and (landed is None or landed == gen)
+    ):
+        return None
+    return UnitNote(snapshot, digest, gen, landed)
+
+
+def unit_pending(numbers: Path, snapshot: Path) -> bool:
+    """True while the unit note is there and its transaction has not settled.
+
+    It settles (and the note is removed) only when the COMMITTED snapshot is the
+    one the note proposed AND the note carries its own generation id (its numbers
+    write landed) AND the numbers file still has the expected digest. A note that
+    cannot be read, or whose snapshot is not the committed one, is unsettled (the
+    start of the next run removes the latter: ``abandon_unit``)."""
     note = unit_path(numbers)
     if not os.path.lexists(note):
         return False
-    try:
-        text = _read(note, 128).decode("ascii", errors="strict").strip()
-    except (ConfigError, ValueError, OSError):
+    record = read_unit(numbers)
+    if record is None:
         return True
-    if _UNIT_DIGEST.fullmatch(text) is None:
+    if file_digest(snapshot) != record.snapshot:
+        return True
+    if record.landed != record.generation or file_digest(numbers) != record.numbers:
         return True
     try:
-        landed = hashlib.sha256(numbers.read_bytes()).hexdigest() == text
+        note.unlink()
+    except FileNotFoundError:
+        pass
     except OSError:
         return True
-    if landed:
-        try:
-            note.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError:
-            return True
-    return not landed
+    return False
+
+
+def abandon_unit(numbers: Path, snapshot: Path, staged: Sequence[Path]) -> bool:
+    """Remove the note of a transaction that never crossed the commit point.
+
+    Called first in recovery (``staged`` is what ``find_stale`` listed, about to
+    be swept). The transaction did not commit when the committed snapshot is not
+    the proposed one, or when a staged copy of the proposed one is still there.
+    Returns True when a note was removed. Raises ``OSError`` if it cannot be."""
+    record = read_unit(numbers)
+    if record is None:
+        return False
+    never = file_digest(snapshot) != record.snapshot or any(
+        file_digest(path) == record.snapshot for path in staged
+    )
+    if not never:
+        return False
+    try:
+        unit_path(numbers).unlink()
+    except FileNotFoundError:
+        return False
+    return True
 
 
 def find_stale(snapshot: Path) -> list[Path]:

@@ -26,11 +26,15 @@ import reach_around.counts.files as files_mod
 import reach_around.counts.history as history_mod
 from fakenet import FakeTransport, reply
 from reach_around.counts.fediverse_commit import (
+    UnitNote,
     day_conflicts,
+    read_unit,
     snapshot_rows,
     status_committed,
     sweep_stale,
     unit_path,
+    unit_pending,
+    write_unit,
 )
 from reach_around.counts.fediverse_store import load_snapshots, snapshot_path
 from reach_around.counts.files import plan_paths, write_atomic
@@ -646,13 +650,234 @@ def test_a_recovery_that_fails_after_the_rename_never_leaves_true(
 
 
 def test_a_unit_note_whose_numbers_landed_is_settled(tmp_path: Path) -> None:
-    """A crash after the numbers write but before the note's removal: the digest
+    """A crash after the numbers write but before the note's removal: the note
+    proposes the committed snapshot, carries its own generation id and the digest
     matches the numbers file, so the note counts as done."""
     root = make(tmp_path / "root", CONFIG_NO_HISTORY)
     assert day_one(root) == 3
     numbers = root / "numbers.json"
-    digest = hashlib.sha256(numbers.read_bytes()).hexdigest()
-    unit_path(numbers).write_text(digest)
+    gen = "0123456789abcdef"
+    write_unit(
+        numbers,
+        UnitNote(
+            hashlib.sha256((root / "numbers.fediverse.json").read_bytes()).hexdigest(),
+            hashlib.sha256(numbers.read_bytes()).hexdigest(),
+            gen,
+            gen,
+        ),
+    )
     assert run_failing(root, 1) != 0
+    assert committed(root) is True
+    assert not unit_path(numbers).exists()
+
+
+# --- the unit note is a transaction record (Daybreak round 4) -----------------------
+
+# Fediverse only, no ordinary source and no history: the numbers file has the same
+# bytes every day, so only the transaction's own generation id can prove a write.
+CONFIG_FED_ONLY = CONFIG.replace("  history_file: history/social.jsonl\n", "")
+
+
+def note_of(root: Path) -> UnitNote | None:
+    return read_unit(root / "numbers.json")
+
+
+def test_identical_numbers_bytes_do_not_settle_a_lost_numbers_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Daybreak M4-1: the numbers bytes are the same on both days. The process
+    dies after the rename and before the numbers write; every source fails on the
+    retry. The digest alone would bless the unit; the generation id does not."""
+    root = make(tmp_path / "root", CONFIG_FED_ONLY)
+    assert day_one(root) == 3
+    numbers_before = (root / "numbers.json").read_bytes()
+    with monkeypatch.context() as m:
+        inject(m, "numbers_before")
+        with pytest.raises(Crash):
+            second_day(root, likes=77)
+    record = note_of(root)
+    assert record is not None and record.landed is None
+    assert record.numbers == hashlib.sha256(numbers_before).hexdigest()  # identical
+    assert run_failing(root, 1) != 0
+    assert (root / "numbers.json").read_bytes() == numbers_before
+    assert unit_path(root / "numbers.json").exists()
+    assert committed(root) is False  # the numbers write of that run never landed
+    assert second_day(root, likes=77) == 3  # a run that writes the numbers file
+    assert committed(root) is True
+    assert not unit_path(root / "numbers.json").exists()
+
+
+def test_a_note_from_another_transaction_cannot_prove_a_landing(
+    tmp_path: Path,
+) -> None:
+    """A note whose ``landed`` id differs from its own generation is not a record
+    this module wrote: it is unreadable, so it blocks and never settles."""
+    root = make(tmp_path / "root", CONFIG_FED_ONLY)
+    assert day_one(root) == 3
+    numbers = root / "numbers.json"
+    snap = root / "numbers.fediverse.json"
+    digest = hashlib.sha256(numbers.read_bytes()).hexdigest()
+    shot = hashlib.sha256(snap.read_bytes()).hexdigest()
+    forged = UnitNote(shot, digest, "0123456789abcdef", "fedcba9876543210")
+    unit_path(numbers).write_text(forged.text())
+    assert read_unit(numbers) is None
+    assert unit_pending(numbers, snap) is True
+    unit_path(numbers).write_text(UnitNote(shot, digest, "0123456789abcdef").text())
+    assert unit_pending(numbers, snap) is True  # landed is still None
+    assert run_failing(root, 1) != 0
+    assert committed(root) is False
+
+
+def test_a_failed_rename_leaves_no_unit_note_and_an_all_failing_retry_agrees(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Daybreak M4-2: the rename fails after the note was written. The note is
+    removed before the run returns, and a retry in which every source fails finds
+    the old snapshot, the old numbers and no note. (No history file, so no
+    pending note of the ordinary rows muddies the status.)"""
+    root = make(tmp_path / "root", CONFIG_NO_HISTORY)
+    assert day_one(root) == 3
+    snap, numbers = root / "numbers.fediverse.json", root / "numbers.json"
+    snap_before, numbers_before = snap.read_bytes(), numbers.read_bytes()
+    real_replace = os.replace
+
+    def replace(src: str, dst: str, **kwargs: Any) -> None:
+        if dst == snap.name and src.endswith(".staged"):
+            raise OSError(5, "I/O error")
+        real_replace(src, dst, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr("reach_around.counts.files.os.replace", replace)
+        assert second_day(root, likes=77) == 1
+    assert not unit_path(numbers).exists()  # removed before the run returned
+    assert run_failing(root, 1) != 0
+    assert snap.read_bytes() == snap_before
+    assert numbers.read_bytes() == numbers_before
+    assert not unit_path(numbers).exists()
+    assert committed(root) is True  # old snapshot, old numbers: all agree
+    assert second_day(root, likes=77) == 3
+    assert committed(root) is True
+
+
+def test_a_crash_between_the_note_and_the_rename_is_abandoned_by_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Daybreak M4-2: the process dies after the note and before the rename. The
+    next run (every source down) removes the staged copy AND the note: that
+    transaction never crossed the commit point."""
+    root = make(tmp_path / "root", CONFIG_NO_HISTORY)
+    assert day_one(root) == 3
+    snap, numbers = root / "numbers.fediverse.json", root / "numbers.json"
+    snap_before = snap.read_bytes()
+    with monkeypatch.context() as m:
+        inject(m, "rename_before")
+        with pytest.raises(Crash):
+            second_day(root, likes=77)
+    assert unit_path(numbers).exists()
+    assert [n for n in tree(root) if n.endswith(".staged")]
+    assert run_failing(root, 1) != 0
+    assert not unit_path(numbers).exists()
+    assert not [n for n in tree(root) if n.endswith((".staged", ".tmp"))]
+    assert snap.read_bytes() == snap_before
+    assert committed(root) is True  # old snapshot, old numbers, rows agree
+    assert second_day(root, likes=77) == 3
+    assert committed(root) is True
+
+
+def test_a_note_for_a_snapshot_that_was_never_committed_is_removed(
+    tmp_path: Path,
+) -> None:
+    """No staged copy is left either: the proposed snapshot is not the committed
+    one, so recovery removes the note on its own."""
+    root = make(tmp_path / "root", CONFIG_FED_ONLY)
+    assert day_one(root) == 3
+    numbers = root / "numbers.json"
+    digest = hashlib.sha256(numbers.read_bytes()).hexdigest()
+    write_unit(numbers, UnitNote("a" * 64, digest, "0123456789abcdef"))
+    assert run_failing(root, 1) != 0
+    assert not unit_path(numbers).exists()
+    assert committed(root) is True
+
+
+FED_ONLY_STEPS = ("rename_after", "numbers_before", "numbers_after", "status_true")
+
+
+def _agrees(root: Path, old: tuple[bytes, bytes], new: tuple[bytes, bytes]) -> None:
+    """A status of true must describe one whole generation: the snapshot and the
+    numbers of day one, or both of day two, no note, and a history row for every
+    row the snapshot implies."""
+    snap = root / "numbers.fediverse.json"
+    assert (snap.read_bytes(), (root / "numbers.json").read_bytes()) in (old, new)
+    leftovers = (".staged", ".tmp", ".unit")
+    assert not [n for n in tree(root) if n.endswith(leftovers)]
+    history = root / "history" / "social.jsonl"
+    if history.exists():
+        held = {r.day_key for r in read_history(history).records}
+        rows = snapshot_rows(
+            load_snapshots(snap), "r", (BASE + timedelta(days=5)).date()
+        )
+        assert {r.day_key for r in rows} <= held
+
+
+@pytest.mark.parametrize("step", STEPS)
+def test_a_crash_then_an_all_failing_retry_never_says_a_false_true(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str
+) -> None:
+    """Daybreak M4: after a crash at ``step`` a retry in which every source fails
+    ends either honestly false, with a note only for a snapshot that DID commit,
+    or true for one whole generation. A later good run always settles it."""
+    oracle, real = make(tmp_path / "oracle"), make(tmp_path / "real")
+    for root in (oracle, real):
+        assert day_one(root) == 3
+    old = (
+        (real / "numbers.fediverse.json").read_bytes(),
+        (real / "numbers.json").read_bytes(),
+    )
+    assert second_day(oracle, likes=77) == 3
+    new = (
+        (oracle / "numbers.fediverse.json").read_bytes(),
+        (oracle / "numbers.json").read_bytes(),
+    )
+    with monkeypatch.context() as m:
+        inject(m, step)
+        with pytest.raises(Crash):
+            second_day(real, likes=77)
+    assert run_failing(real, 1) != 0
+    snap, numbers = real / "numbers.fediverse.json", real / "numbers.json"
+    assert not [n for n in tree(real) if n.endswith((".staged", ".tmp"))]
+    if unit_path(numbers).exists():
+        # a note that stays belongs to a snapshot that really is the committed one
+        record = note_of(real)
+        assert record is not None
+        assert record.snapshot == hashlib.sha256(snap.read_bytes()).hexdigest()
+        assert committed(real) is False
+    if committed(real) is True:
+        _agrees(real, old, new)
+    assert second_day(real, likes=77) == 3
+    assert committed(real) is True
+    assert not unit_path(numbers).exists()
+
+
+@pytest.mark.parametrize("step", FED_ONLY_STEPS)
+def test_identical_numbers_never_say_true_after_a_lost_numbers_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str
+) -> None:
+    """The numbers bytes are the same every day (no ordinary source, no history):
+    after a crash at or past the commit point, an all-failing retry says true only
+    when the unit note is gone, which only a landed numbers write removes."""
+    root = make(tmp_path / "root", CONFIG_FED_ONLY)
+    assert day_one(root) == 3
+    with monkeypatch.context() as m:
+        inject(m, step)
+        with pytest.raises(Crash):
+            second_day(root, likes=77)
+    assert run_failing(root, 1) != 0
+    numbers = root / "numbers.json"
+    if step == "status_true":
+        assert not unit_path(numbers).exists()  # everything landed
+    else:
+        assert unit_path(numbers).exists()
+        assert committed(root) is False
+    assert second_day(root, likes=77) == 3
     assert committed(root) is True
     assert not unit_path(numbers).exists()

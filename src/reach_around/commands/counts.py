@@ -52,9 +52,14 @@ from reach_around.counts.beacons import (
 from reach_around.counts.fediverse_commit import (
     SAME_DAY_KEPT,
     SNAPSHOT_IN_FUTURE,
+    UnitNote,
+    abandon_unit,
     day_conflicts,
+    discard_unit,
     find_stale,
     future_snapshots,
+    mark_landed,
+    new_generation,
     remove_stale,
     rows_present,
     snapshot_rows,
@@ -510,12 +515,12 @@ def _discard(staged: StagedFile | None) -> None:
             pass  # a stray dot file is harmless; the snapshot itself is untouched
 
 
-def _pending_live(paths: Paths) -> bool:
+def _pending_live(paths: Paths, fediverse_file: Path) -> bool:
     """True when an earlier attempt's history rows may lack their numbers write
     (a note that cannot be read counts as live: it proves nothing). The unit note
     of a snapshot whose numbers write did not land counts as live too."""
     try:
-        if unit_pending(paths.target):
+        if unit_pending(paths.target, fediverse_file):
             return True
         return bool(live_ids(read_note(pending_path(paths.target)), paths.target))
     except (OSError, HistoryError):
@@ -545,7 +550,12 @@ def _unit_state(
     if history is not None and rows:
         held = read_history(history) if history.exists() else None
         missing = [row for row in rows if not rows_present(held, [row])]
-    agree = not (find_stale(fediverse_file) or _pending_live(paths) or missing or late)
+    agree = not (
+        find_stale(fediverse_file)
+        or _pending_live(paths, fediverse_file)
+        or missing
+        or late
+    )
     return missing, late, agree
 
 
@@ -595,6 +605,10 @@ def _recover(
                 paths.status,
                 render_status(load_status(paths.status), [], stamp, False),
             )
+        # After the demotion above: a note of a transaction that never crossed
+        # the commit point (its proposed snapshot is not the committed one, or its
+        # staged copy is still here) is removed, so it cannot block the status.
+        abandon_unit(paths.target, fediverse_file, stale)
         remove_stale(stale)
         for kind in late:
             print(
@@ -852,13 +866,14 @@ def _cycle(
     # whatever did not land is repaired by the next run. Design and crash table:
     # ``counts/fediverse_commit.py``.
     staged_snapshot: StagedFile | None = None
+    proposed_digest = ""
     if fediverse_file is not None and fed.snapshots:
         try:
-            staged_snapshot = stage_file(
-                fediverse_file,
-                dump_snapshots({**load_snapshots(fediverse_file), **fed.snapshots}),
-                write_atomic,
+            snapshot_text = dump_snapshots(
+                {**load_snapshots(fediverse_file), **fed.snapshots}
             )
+            proposed_digest = content_digest(snapshot_text)
+            staged_snapshot = stage_file(fediverse_file, snapshot_text, write_atomic)
         except (OSError, ConfigError) as exc:
             _write_failed(exc)
             return EXIT_WRITE
@@ -963,16 +978,19 @@ def _cycle(
         _discard(staged_snapshot)
         _write_failed(exc)
         return EXIT_WRITE
+    unit_note: UnitNote | None = None
     if changed:
         if staged_snapshot is not None:
             try:
-                # The unit note: the digest of the numbers this snapshot belongs
-                # to. It exists before the commit point, so a crash after the
+                # The unit note, a transaction record: the digest of the proposed
+                # snapshot, of the numbers it belongs to and a fresh generation
+                # id. It exists before the commit point, so a crash after the
                 # rename can never leave a snapshot with no trace of its numbers.
                 digest = _expected_digest(numbers)
                 if digest is None:
                     raise ConfigError(str(paths.target), None, "numbers not valid")
-                write_unit(paths.target, digest)
+                unit_note = UnitNote(proposed_digest, digest, new_generation())
+                write_unit(paths.target, unit_note)
             except (OSError, ConfigError) as exc:
                 _discard(staged_snapshot)
                 _write_failed(exc)
@@ -984,6 +1002,7 @@ def _cycle(
                 staged_snapshot.commit()
             except OSError as exc:
                 _discard(staged_snapshot)
+                discard_unit(paths.target)  # never crossed the commit point
                 _write_failed(exc)
                 return EXIT_WRITE
             if history is not None and fediverse_file is not None:
@@ -1016,6 +1035,11 @@ def _cycle(
             return EXIT_WRITE
         if fediverse_file is not None:
             # A numbers file was written after the snapshot: the unit note is done.
+            if unit_note is not None:
+                try:
+                    mark_landed(paths.target, unit_note)  # this generation's proof
+                except OSError:
+                    pass  # the note stays unsettled; a later run writes numbers
             try:
                 unit_path(paths.target).unlink()
             except FileNotFoundError:
