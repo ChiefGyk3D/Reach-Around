@@ -1859,7 +1859,8 @@ numbers:
 Unknown keys are refused, so a token cannot be written here. The generated
 [`site.schema.json`](site.schema.json) carries what a schema can say: the `kind`
 discriminator, `minItems` 1, `maxItems` 2, `uniqueItems`, and length and character
-limits on `actor`, `host`, `acct` and `account_id`. These checks are runtime-only and
+limits on `actor`, `host`, `acct` and `account_id` (a string of at most 20 digits, or
+a whole number from 0 to 99999999999999999999). These checks are runtime-only and
 an editor that validates against the schema does not see them: at most one source of
 each `kind` (two Bluesky entries with different actors pass the schema), and the full
 syntax of a Bluesky handle or DID and of a Mastodon host (no IP address, no

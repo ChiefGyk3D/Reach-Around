@@ -44,7 +44,7 @@ from reach_around.counts.fediverse_store import (
     snapshot_path,
 )
 from reach_around.counts.files import write_atomic
-from reach_around.counts.history import HistoryError, read_history
+from reach_around.counts.history import HistoryError, append_records, read_history
 
 NOW = datetime(2026, 11, 26, 12, 0, 0, tzinfo=UTC)
 TODAY = date(2026, 11, 26)
@@ -643,9 +643,12 @@ def tree(root: Path) -> dict[str, bytes]:
     }
 
 
-def second_day(root: Path, likes: int) -> int:
+def second_day(root: Path, likes: int, days: int = 1) -> int:
+    """A later run with ``likes`` as the post's count: the next UTC day by
+    default; ``days=0`` is the same UTC day (the same-day rule applies)."""
+    moment = NOW + timedelta(days=days)
     page = {"feed": [bsky_post(0, NOW - timedelta(days=1), likes)]}
-    date_next = DATE_OK  # the same day: history keeps the first value of a day
+    date_next = {"date": moment.strftime("%a, %d %b %Y %H:%M:%S GMT")}
     transport = FakeTransport(
         {
             PROFILE: reply(
@@ -663,7 +666,7 @@ def second_day(root: Path, likes: int) -> int:
         False,
         env={},
         transport=transport,
-        now=lambda: NOW,
+        now=lambda: moment,
     )
 
 
@@ -671,21 +674,24 @@ def committed(root: Path) -> object:
     return json.loads((root / "numbers.status.json").read_text())["committed"]
 
 
-def test_a_failed_numbers_write_leaves_the_prior_snapshot_byte_for_byte(
+def test_a_failed_numbers_write_after_the_commit_is_repaired_by_the_next_run(
     instance: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     assert refresh(instance, good_transport()) == 3
     snap = instance / "numbers.fediverse.json"
-    before = snap.read_bytes()
     numbers_before = (instance / "numbers.json").read_bytes()
     Writes(monkeypatch, lambda name, n: name == "numbers")
     assert second_day(instance, likes=77) == 1  # the write failed
-    assert snap.read_bytes() == before
+    # the commit point (the snapshot rename) was passed: the snapshot is the new
+    # one, its history row is there, the numbers file is the old one, no commit
+    assert load_snapshots(snap)["bluesky"]["interactions"] == [
+        {"boosts": 1, "favorites": 77, "replies": 2}
+    ]
     assert (instance / "numbers.json").read_bytes() == numbers_before
     assert not [p for p in tree(instance) if p.endswith((".staged", ".tmp"))]
     assert committed(instance) is False  # never claims the run
-    # a later run settles everything: the snapshot is the new one, history has one
-    # row per metric and day (the earlier attempt's rows are not doubled)
+    # a later run settles everything: history has one row per metric and day,
+    # each day with the value of the snapshot committed that day
     monkeypatch.undo()
     monkeypatch.setattr(counts_cmd, "default_sleep", lambda seconds: None)
     assert second_day(instance, likes=77) == 3
@@ -695,7 +701,7 @@ def test_a_failed_numbers_write_leaves_the_prior_snapshot_byte_for_byte(
     records = read_history(instance / "history" / "social.jsonl").records
     keys = [(r.platform, r.metric, r.as_of_utc[:10]) for r in records]
     assert len(keys) == len(set(keys))
-    assert {r.value for r in records if r.metric == "favorites_30d"} == {9}
+    assert {r.value for r in records if r.metric == "favorites_30d"} == {9, 77}
     assert committed(instance) is True
 
 
@@ -709,27 +715,31 @@ def test_a_failed_snapshot_stage_changes_nothing(
     assert tree(instance) == before  # snapshot, history, numbers and status alike
 
 
-def test_a_failed_history_append_changes_nothing(
+def test_a_failed_history_append_after_the_commit_is_repaired_by_the_next_run(
     instance: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     assert refresh(instance, good_transport()) == 3
-    before = tree(instance)
+    history = instance / "history" / "social.jsonl"
+    before = history.read_bytes()
+    real = append_records
 
-    def refuse(*args: Any, **kwargs: Any) -> int:
-        raise HistoryError("disk")
+    def refuse(path: Path, rows: Any, **kwargs: Any) -> int:
+        if rows[0].as_of_utc.startswith("2026-11-27"):
+            raise HistoryError("disk")
+        return real(path, rows, **kwargs)
 
     monkeypatch.setattr(counts_cmd, "append_records", refuse)
     assert second_day(instance, likes=77) == 1
-    after = tree(instance)
-    # the pending note may differ; the four files that matter do not
-    for name in (
-        "numbers.fediverse.json",
-        "numbers.json",
-        "numbers.status.json",
-        "history/social.jsonl",
-    ):
-        assert after[name] == before[name]
-    assert not [p for p in after if p.endswith(".staged")]
+    # committed, but no row for the new snapshot yet and the status says so
+    assert history.read_bytes() == before
+    assert committed(instance) is False
+    assert not [p for p in tree(instance) if p.endswith((".staged", ".tmp"))]
+    monkeypatch.undo()
+    monkeypatch.setattr(counts_cmd, "default_sleep", lambda seconds: None)
+    assert second_day(instance, likes=77) == 3
+    rows = read_history(history).records
+    assert sorted(r.value for r in rows if r.metric == "favorites_30d") == [9, 77]
+    assert committed(instance) is True
 
 
 def test_a_failed_snapshot_rename_keeps_the_old_snapshot_and_no_commit_claim(
@@ -750,6 +760,9 @@ def test_a_failed_snapshot_rename_keeps_the_old_snapshot_and_no_commit_claim(
     assert snap.read_bytes() == before
     assert not [p for p in tree(instance) if p.endswith((".staged", ".tmp"))]
     assert committed(instance) is False
+    # nothing else moved on: no row for the snapshot that did not land
+    rows = read_history(instance / "history" / "social.jsonl").records
+    assert {r.value for r in rows if r.metric == "favorites_30d"} == {9}
 
 
 def test_the_status_says_committed_only_after_every_write_landed(
@@ -825,6 +838,22 @@ def test_the_schema_carries_the_constraints_it_can_express() -> None:
         assert not (re.fullmatch(acct["pattern"], value) and len(value) <= 30)
     for value in ("01", "-1", "1" * 21, "1.5", ""):
         assert not re.fullmatch(ident["pattern"], value)
+    # the integer form is bounded the same way (the string keywords do not apply
+    # to a number): a whole number from 0 to the largest 20-digit id
+    assert {"type": "integer"} in ident["anyOf"]
+    assert ident["minimum"] == 0 and ident["maximum"] == 10**20 - 1
+    low, high = ident["minimum"], ident["maximum"]
+    for number in (0, 109, 10**20 - 1):
+        assert low <= number <= high
+        assert MastodonFediverseSource(
+            kind="mastodon", host="social.example", acct="a", account_id=number
+        )
+    for number in (-1, 10**20, 10**42):
+        assert not low <= number <= high
+        with pytest.raises(ValidationError):
+            MastodonFediverseSource(
+                kind="mastodon", host="social.example", acct="a", account_id=number
+            )
 
 
 # --- the full claims behind the security tests (Daybreak F4) -----------------------
@@ -881,15 +910,36 @@ def test_no_identifying_string_reaches_any_file_the_run_writes(
 HOSTILE_ROW = {"boosts": 1, "favorites": 2, "replies": 3}
 
 
+DEEP = 900  # above any sane depth, below the recursion limit of Python 3.11 (1000)
+
+
+def deep_text(good: dict[str, object]) -> str:
+    """A snapshot file whose ``interactions`` nest ``DEEP`` levels. The nesting is
+    built as text by repetition: nothing recursive ever meets the JSON encoder, so
+    it builds the same on every supported Python at collection time."""
+    marker = "@@DEEP@@"
+    text = json.dumps(
+        {"version": 1, "platforms": {"bluesky": {**good, "interactions": marker}}}
+    )
+    return text.replace(f'"{marker}"', "[" * DEEP + "1" + "]" * DEEP)
+
+
+def test_the_deep_hostile_fixture_builds_without_recursion() -> None:
+    text = deep_text(stored_snapshot())
+    assert text.count("[") >= DEEP and DEEP < 1000
+    # it is a JSON document (the decoder may refuse its depth, never the builder)
+    try:
+        json.loads(text)
+    except RecursionError:
+        pass
+
+
 def hostile_files() -> dict[str, str]:
     good = stored_snapshot()
 
     def doc(platforms: object, **root: object) -> str:
         return json.dumps({"version": 1, "platforms": platforms, **root})
 
-    deep: object = 1
-    for _ in range(2000):
-        deep = [deep]
     out = {
         "snapshot_identity": doc({"bluesky": {**good, "uri": "at://x/y/z"}}),
         "row_text": doc(
@@ -905,7 +955,7 @@ def hostile_files() -> dict[str, str]:
         ),
         "future_date": doc({"bluesky": {**good, "as_of": "2999-01-01"}}),
         "old_date": doc({"bluesky": {**good, "as_of": "1900-01-01"}}),
-        "deep_nesting": doc({"bluesky": {**good, "interactions": deep}}),
+        "deep_nesting": deep_text(good),
         "not_a_mapping": doc(["bluesky"]),
         "wrong_version": json.dumps({"version": 2, "platforms": {"bluesky": good}}),
         "padding": json.dumps({"version": 1, "platforms": {}, "pad": "x" * 600_000}),

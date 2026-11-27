@@ -76,7 +76,15 @@ class MastodonFediverseSource(_Base):
     )
     account_id: StrictStr | StrictInt | None = Field(
         default=None,
-        json_schema_extra={"maxLength": 20, "pattern": "^(?:0|[1-9][0-9]{0,19})$"},
+        # A string of digits (length and pattern) or a whole number in the same
+        # range: ``minimum`` and ``maximum`` bound the integer form, the string
+        # keywords bound the string form (each applies to its own type only).
+        json_schema_extra={
+            "maxLength": 20,
+            "pattern": "^(?:0|[1-9][0-9]{0,19})$",
+            "minimum": 0,
+            "maximum": 10**20 - 1,
+        },
     )
 
     @field_validator("host")
