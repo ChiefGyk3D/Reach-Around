@@ -35,6 +35,7 @@ from typing import TextIO
 
 from reach_around.config import ConfigError, SiteConfig, load_site_config
 from reach_around.config.cutover import utc_today
+from reach_around.config.fediverse_sources import FediverseSource
 from reach_around.config.imported_history import parse_imported
 from reach_around.config.loader import _read
 from reach_around.config.numbers import NumbersEntry, load_numbers
@@ -47,6 +48,15 @@ from reach_around.counts.beacons import (
     MAX_BEACONS_BYTES,
     BeaconsImportError,
     parse_beacons_csv,
+)
+from reach_around.counts.fediverse_refresh import FediverseResult, platform_key
+from reach_around.counts.fediverse_refresh import run as run_fediverse
+from reach_around.counts.fediverse_store import (
+    dump_snapshots,
+    load_snapshots,
+    missing_endpoints,
+    required_endpoints,
+    snapshot_path,
 )
 from reach_around.counts.files import (
     LOCK_WAIT_SECONDS,
@@ -262,9 +272,13 @@ def run_refresh(
 ) -> int:
     try:
         config = load_site_config(config_path)
-        if config.numbers is None or not config.numbers.sources:
+        if config.numbers is None or not (
+            config.numbers.sources or config.numbers.fediverse
+        ):
             raise ValueError("the config has no numbers.sources to refresh")
         sources = select(config.numbers, only)
+        # ``--only`` names numbers sources; it never starts the fediverse collector.
+        fediverse = [] if only else list(config.numbers.fediverse)
         known = {source.platform for source in config.numbers.sources}
         unknown = sorted(set(accept_drop or []) - known)
         if unknown:
@@ -273,6 +287,11 @@ def run_refresh(
             )
         paths = plan_paths(config_path, out)
         history = history_path(config, config_path, paths)
+        fediverse_file = snapshot_path(paths.target) if fediverse else None
+        if fediverse_file is not None and (
+            fediverse_file.is_symlink() or fediverse_file.is_dir()
+        ):
+            raise ValueError("the fediverse snapshot file is a symlink or a directory")
     except (ConfigError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
@@ -295,6 +314,11 @@ def run_refresh(
             print(
                 f"would fetch {source.platform}: {source.kind} from {host_of(source)}"
             )
+        for item in fediverse:
+            print(
+                f"would fetch {platform_key(item.kind)}: "
+                f"{', '.join(required_endpoints([item]))}"
+            )
         print("dry run: nothing fetched, nothing written")
         return EXIT_OK
 
@@ -314,6 +338,8 @@ def run_refresh(
                 history,
                 sinks,
                 _retention_policy(config),
+                fediverse,
+                fediverse_file,
             )
     except LockBusy:
         print(
@@ -571,6 +597,8 @@ def _cycle(
     history: Path | None = None,
     sinks: Sinks | None = None,
     retention: RetentionPolicy | None = None,
+    fediverse: list[FediverseSource] | None = None,
+    fediverse_file: Path | None = None,
 ) -> int:
     try:
         previous = (
@@ -593,6 +621,25 @@ def _cycle(
         meta_sink=sinks.meta if sinks is not None else None,
         tiktok_sink=sinks.pair if sinks is not None else None,
     )
+    fed = (
+        run_fediverse(
+            fediverse,
+            now=stamp,
+            transport=transport if transport is not None else default_transport(),
+            sleep=default_sleep,
+        )
+        if fediverse and fediverse_file is not None
+        else FediverseResult({}, {}, [])
+    )
+    for outcome in fed.outcomes:
+        if outcome.status == "ok":
+            print(f"{outcome.platform}: complete {outcome.count} posts")
+        else:
+            print(
+                f"{outcome.platform}: incomplete ({outcome.detail}), "
+                "the previous snapshot was kept",
+                file=sys.stderr,
+            )
     for outcome in outcomes:
         if outcome.status == "ok":
             print(f"{outcome.platform}: ok {outcome.count}")
@@ -610,7 +657,10 @@ def _cycle(
     # The status file goes first and the numbers file last, so a failure can never
     # leave new numbers with no record of the run. If the numbers write fails, the
     # status is rewritten with ``committed: false`` (best effort) and the exit is 1.
-    changed = any(outcome.status == "ok" for outcome in outcomes)
+    # A fediverse read that finished also counts as a change: the numbers file is
+    # then written again (as it was when no number changed), so the pending note
+    # of this run is settled the same way for both kinds of rows.
+    changed = any(outcome.status == "ok" for outcome in outcomes) or bool(fed.snapshots)
     staged: Staged | None = None
     figures, insight_failures = _insights(
         sources, outcomes, environment, transport, now(), history
@@ -624,34 +674,51 @@ def _cycle(
         # status file holds its result), never a zero. One value per platform,
         # metric and UTC day: a repeated run the same day keeps the first, so a
         # retry after a later failure is safe.
-        fetched = [
-            Record(
-                platform=outcome.platform,
-                metric=HISTORY_METRIC.get(outcome.kind, "followers"),
-                value=outcome.count,
-                as_of_utc=utc_stamp(stamp),
-                source="api",
-                run_id=run_id,
-                # by the kind of source, never by its display slug
-                api_provider=(
-                    "youtube_data_api" if outcome.kind == "youtube" else None
-                ),
-            )
-            for outcome in outcomes
-            if outcome.status == "ok" and outcome.count is not None
-        ] + [
-            Record(
-                platform=figure.platform,
-                metric=figure.metric,
-                value=figure.value,
-                as_of_utc=figure.as_of_utc or utc_stamp(stamp),
-                source="api",
-                run_id=run_id,
-                note=figure.note,
-                api_provider=figure.api_provider,
-            )
-            for figure in figures
-        ]
+        fetched = (
+            [
+                Record(
+                    platform=outcome.platform,
+                    metric=HISTORY_METRIC.get(outcome.kind, "followers"),
+                    value=outcome.count,
+                    as_of_utc=utc_stamp(stamp),
+                    source="api",
+                    run_id=run_id,
+                    # by the kind of source, never by its display slug
+                    api_provider=(
+                        "youtube_data_api" if outcome.kind == "youtube" else None
+                    ),
+                )
+                for outcome in outcomes
+                if outcome.status == "ok" and outcome.count is not None
+            ]
+            + [
+                Record(
+                    platform=figure.platform,
+                    metric=figure.metric,
+                    value=figure.value,
+                    as_of_utc=figure.as_of_utc or utc_stamp(stamp),
+                    source="api",
+                    run_id=run_id,
+                    note=figure.note,
+                    api_provider=figure.api_provider,
+                )
+                for figure in figures
+            ]
+            + [
+                # Aggregate counts only, written for a finished read of the window
+                # (a failed or partial read leaves a gap, never a zero).
+                Record(
+                    platform=kind,
+                    metric=metric,
+                    value=value,
+                    as_of_utc=utc_stamp(stamp),
+                    source="api",
+                    run_id=run_id,
+                )
+                for kind, sums in sorted(fed.aggregates.items())
+                for metric, value in sorted(sums.items())
+            ]
+        )
         # One append takes at most MAX_BATCH records. If the assembled batch is
         # over it, only the analytics figures of this run are left out (they are
         # reported as too_large); subscribers and other sources are never dropped.
@@ -687,21 +754,28 @@ def _cycle(
     if history is not None:
         _retention_checks(history, stamp, retention)
     previous_status = load_status(paths.status)
+    reported = outcomes + fed.outcomes
     try:
         write_atomic(
-            paths.status, render_status(previous_status, outcomes, stamp, True)
+            paths.status, render_status(previous_status, reported, stamp, True)
         )
     except (OSError, ConfigError) as exc:
         _write_failed(exc)
         return EXIT_WRITE
     if changed:
         try:
+            if fediverse_file is not None and fed.snapshots:
+                # The stored snapshots of platforms that failed this run stay.
+                write_atomic(
+                    fediverse_file,
+                    dump_snapshots({**load_snapshots(fediverse_file), **fed.snapshots}),
+                )
             write_atomic(paths.target, dump_numbers(numbers))
         except (OSError, ConfigError) as exc:
             try:
                 write_atomic(
                     paths.status,
-                    render_status(previous_status, outcomes, stamp, False),
+                    render_status(previous_status, reported, stamp, False),
                 )
             except (OSError, ConfigError):
                 pass  # the numbers file is untouched either way
@@ -709,7 +783,7 @@ def _cycle(
             return EXIT_WRITE
         if staged is not None:
             _settle_history(paths, staged.nonce)
-    failed = any(outcome.status == "error" for outcome in outcomes) or bool(
+    failed = any(outcome.status == "error" for outcome in reported) or bool(
         insight_failures
     )
     return EXIT_SOURCE_FAILED if failed else EXIT_OK
@@ -1261,6 +1335,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _run_import(args)
     if args.counts_command == "stale":
         return _run_stale(args)
+    if args.counts_command == "egress-check":
+        return _run_egress_check(args)
     if args.counts_command == "tokens":
         return _run_tokens(args)
     return _run(args)
@@ -1685,6 +1761,33 @@ def run_tokens(
     return token_exit_code(report, EXIT_SOURCE_FAILED, EXIT_TOKEN_WARNING)
 
 
+MAX_ALLOWED_BYTES = 64 * 1024
+
+
+def run_egress_check(config_path: Path, allowed_path: Path) -> int:
+    """Check that the egress allow-list names every host the fediverse collector
+    needs. No network. Exit 0 all listed (or nothing to check), 3 one or more are
+    missing (their host names are printed), 2 usage or config problem."""
+    try:
+        config = load_site_config(config_path)
+        text = _read(allowed_path, MAX_ALLOWED_BYTES).decode("utf-8", errors="strict")
+    except (ConfigError, ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    sources = config.numbers.fediverse if config.numbers is not None else []
+    missing = missing_endpoints(sources, text)
+    for endpoint in missing:
+        print(f"missing from the allow-list: {endpoint}", file=sys.stderr)
+    if missing:
+        return EXIT_SOURCE_FAILED
+    print(f"egress ok: {len(required_endpoints(sources))} fediverse endpoint(s) listed")
+    return EXIT_OK
+
+
+def _run_egress_check(args: argparse.Namespace) -> int:
+    return run_egress_check(args.config, args.allowed)
+
+
 def _run_tokens(args: argparse.Namespace) -> int:
     return run_tokens(args.config, args.status, args.format)
 
@@ -1793,6 +1896,18 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         help=f"remind when a number is this many days old (default {REMIND_DAYS})",
     )
     stale_parser.add_argument("--json", action="store_true", help="machine-readable")
+    egress_parser = actions.add_parser(
+        "egress-check",
+        help="check that an egress allow-list names every fediverse host",
+        description="Reads the config and a file holding the workflow's "
+        "allowed-endpoints value (host:443 entries separated by spaces, commas "
+        "or newlines). No network. Exit 0 every needed host is listed, 3 one is "
+        "missing (it is printed), 2 usage or config error.",
+    )
+    egress_parser.add_argument("--config", type=Path, required=True)
+    egress_parser.add_argument(
+        "--allowed", type=Path, required=True, help="file with the allowed endpoints"
+    )
     tokens_parser = actions.add_parser(
         "tokens",
         help="report platform token health (ok, expiring, expired, rejected)",

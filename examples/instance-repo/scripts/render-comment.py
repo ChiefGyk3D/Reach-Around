@@ -472,6 +472,7 @@ KNOWN_FIELDS: frozenset[str] = frozenset(
         "about",
         "access_token_env",
         "account",
+        "account_id",
         "acct",
         "active_users_month",
         "actor",

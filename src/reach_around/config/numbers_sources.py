@@ -22,6 +22,11 @@ from pydantic import (
     model_validator,
 )
 
+from reach_around.config.fediverse_sources import (
+    MAX_FEDIVERSE_SOURCES,
+    FediverseSource,
+    sources_problem,
+)
 from reach_around.net.egress import EgressBlocked, validate_hostname
 
 MAX_SOURCES = 50
@@ -341,6 +346,11 @@ class NumbersConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     sources: list[Source] = Field(default_factory=list, max_length=MAX_SOURCES)
+    # The fediverse collector (#940): public post counts of one Bluesky and one
+    # Mastodon-API account. Daily only; no token; the account is config only.
+    fediverse: list[FediverseSource] = Field(
+        default_factory=list, max_length=MAX_FEDIVERSE_SOURCES
+    )
     # Per-platform stale limit in days for hand-kept numbers (default 30). The
     # key is a platform slug; a number older than its limit is stale.
     stale_days: dict[Platform, Annotated[int, Field(strict=True, ge=1, le=365)]] = (
@@ -412,6 +422,15 @@ class NumbersConfig(BaseModel):
                     f"analytics: true is allowed on at most one {kind} source "
                     f"(found {count})"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _fediverse_is_sound(self) -> NumbersConfig:
+        if "fediverse" in self.model_fields_set and not self.fediverse:
+            raise ValueError("fediverse must list at least one source, or be left out")
+        problem = sources_problem(self.fediverse)
+        if problem is not None:
+            raise ValueError(problem)
         return self
 
     @model_validator(mode="after")

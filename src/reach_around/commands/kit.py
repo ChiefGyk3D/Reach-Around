@@ -17,6 +17,7 @@ from reach_around.config.imported_history import (
     load_imported,
 )
 from reach_around.config.numbers import Numbers, load_numbers
+from reach_around.counts.fediverse_store import feed_kit
 from reach_around.kit.measures_file import build_measures_file
 from reach_around.kit.pdf import (
     Isolation,
@@ -69,6 +70,17 @@ def _numbers(args: argparse.Namespace) -> Numbers | None:
     return None if path is None else load_numbers(path)
 
 
+def _config(args: argparse.Namespace) -> SiteConfig:
+    """The config the build used: the collected fediverse snapshots (beside the
+    numbers file) feed ``kit.fediverse``, exactly as in ``build``."""
+    return feed_kit(
+        load_site_config(args.config),
+        args.config,
+        args.numbers,
+        datetime.now(UTC).date(),
+    )
+
+
 def _imported(args: argparse.Namespace, config: SiteConfig) -> ImportedHistory | None:
     """The imported-history file the build used (``kit.imported_history``)."""
     path = imported_source(config, args.config)
@@ -85,7 +97,7 @@ def _run_public(args: argparse.Namespace) -> int:
             raise ValueError(
                 "--public requires --isolation netns for offline rendering"
             )
-        config = load_site_config(args.config)
+        config = _config(args)
         created = _creation_date(args.date, args.site_out, PUBLIC_FILE)
         isolation: Isolation = args.isolation or "netns"
         result = build_public_kit_pdf(
@@ -109,7 +121,7 @@ def _run_public(args: argparse.Namespace) -> int:
 
 def _run_private_measures(args: argparse.Namespace) -> int:
     try:
-        config = load_site_config(args.config)
+        config = _config(args)
         path = build_measures_file(
             config,
             site_dir=args.site_out,
@@ -135,7 +147,7 @@ def _run(args: argparse.Namespace) -> int:
     try:
         if args.gated_out is None:
             raise ValueError("--gated-out is required unless --public is given")
-        config = load_site_config(args.config)
+        config = _config(args)
         created = _creation_date(args.date, args.gated_out)
         isolation: Isolation = args.isolation or "off"
         result = build_kit_pdf(

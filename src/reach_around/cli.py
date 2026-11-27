@@ -24,6 +24,7 @@ from reach_around.config.imported_history import (
     load_imported,
 )
 from reach_around.config.numbers import Numbers, load_numbers
+from reach_around.counts.fediverse_store import feed_kit
 from reach_around.counts.secret_sink import TokenHolder
 from reach_around.editor.server import MAX_IDLE_SECONDS, run_editor
 from reach_around.preview import PreviewError, serve
@@ -279,7 +280,13 @@ def _build(
         source = _numbers_source(out_dir, numbers_path, config_path)
         record = _gated_record(out_dir, target)
         _check_gated_record(record, gated_out)
-        config = load_site_config(config_path)
+        config = feed_kit(
+            load_site_config(config_path),
+            config_path,
+            numbers_path,
+            datetime.now(UTC).date(),
+            published=out_dir,
+        )
         numbers: Numbers | None = None
         if source is not None:
             numbers = load_numbers(source)

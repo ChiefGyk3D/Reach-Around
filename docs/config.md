@@ -1829,6 +1829,55 @@ Limits worth knowing:
   review; app review is the fallback for production
   ([TikTok](tiktok-source.md)). Until then the number is hand-kept.
 
+### `numbers.fediverse`
+
+The fediverse collector (#940, design in `docs/design/fediverse-collector.md`) reads
+the public post counts of one Bluesky account and one Mastodon-API account: for each
+public post of the last 30 days its boosts (reposts), favorites (likes) and replies,
+nothing else. It runs once a day inside `counts refresh`, needs no token, and the
+account and the instance are config only: they are never written into a snapshot, the
+history file or the status file.
+
+```yaml
+numbers:
+  fediverse:
+    - {kind: bluesky, actor: example.bsky.social}
+    - {kind: mastodon, host: social.example, acct: example}
+    # optional: skip the lookup call with the numeric account id (a quoted string
+    # of digits); the follower count then comes from numbers.sources only
+    # - {kind: mastodon, host: social.example, acct: example, account_id: "109"}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `kind` | `bluesky` or `mastodon`; at most one source of each kind, so at most 2 entries |
+| `actor` | Bluesky: a handle such as `name.bsky.social`, or a `did:plc:` or `did:web:` DID. Checked by the provider; no `@`, no URL |
+| `host` | Mastodon: a public lower-case host name (no IP address in any notation, no `localhost`, no port or path); also checked again at run time |
+| `acct` | Mastodon: the local user name, without `@` and without the instance part |
+| `account_id` | Mastodon, optional: the numeric account id |
+
+Unknown keys are refused, so a token cannot be written here. What a run does:
+
+- A source that is read in full writes its snapshot to `numbers.fediverse.json`
+  (beside the numbers file; `--out` renames it as `<name>.fediverse.json`) and one
+  history row per metric under the platform name (`posts_30d`, `boosts_30d`,
+  `favorites_30d`, `replies_30d`, source `api`): sums of whole numbers, no post id,
+  text, time or author. The snapshot passes the import guard before it is stored and
+  again when the build reads it.
+- A source that cannot be read in full (the status file says why in a fixed word such
+  as `timeout`, `partial_pages`, `page_cap`, `rate_limited` or `needs_token`, under
+  `fediverse-bluesky` or `fediverse-mastodon`) leaves its stored snapshot and the
+  history untouched. Nothing is ever written as zero, and the run exits 3 like any
+  failed source.
+- `--only` names numbers sources; it does not start the collector. `--dry-run` lists
+  the hosts. The collector reads at most 13 URLs per source per run.
+- The Mastodon host is not in a template's fixed egress list. `reach-around counts
+  egress-check --config site.yaml --allowed FILE` (no network) reads the workflow's
+  `allowed-endpoints` value from `FILE` and exits 3 naming any `host:443` the
+  configured sources need that is missing (exit 0 when all are listed).
+
+The build feeds [`kit.fediverse`](kit.md#the-fediverse-block) from the snapshots.
+
 ### The numbers file
 
 `reach-around counts refresh` writes `numbers.json` (default beside the config;
