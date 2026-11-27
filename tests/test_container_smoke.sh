@@ -29,6 +29,8 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # fails after the last attempt, so nothing is skipped. Tunable for tests.
 attempts="${BUILD_ATTEMPTS:-3}"
 pause="${BUILD_RETRY_PAUSE:-10}"
+case "$attempts" in [1-5]) ;; *) echo "BUILD_ATTEMPTS must be an integer from 1 to 5" >&2; exit 2 ;; esac
+case "$pause" in [0-9] | [1-5][0-9] | 60) ;; *) echo "BUILD_RETRY_PAUSE must be an integer from 0 to 60" >&2; exit 2 ;; esac
 n=1
 until "$engine" build -f "$root/Containerfile" -t "$image" "$root"; do
     [ "$n" -lt "$attempts" ] || fail "image build failed after $n attempts"
