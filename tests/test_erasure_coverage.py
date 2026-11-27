@@ -1752,7 +1752,8 @@ def finish_flow_statements() -> list[str]:
     stops clearing, or clears before the lead read-back, changes this list and
     the guard tests below fail (#905 review round 1, Medium 4). The schema reads
     are left out (they are not part of the erasure). The lead read-back that runs
-    first is dropped from the list, since the printed read-back command (after the owner's SQL file) is the same read."""
+    first is dropped from the list, since the printed read-back command (after the
+    owner's SQL file) is the same read."""
     fake = FakeWrangler()
     fake.single_database()
     ids = (LEADS_UUID, LEADS_UUID)

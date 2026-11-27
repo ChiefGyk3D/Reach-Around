@@ -810,7 +810,8 @@ def test_the_run_makes_only_listing_and_count_queries(tmp_path: Path) -> None:
     # Order: listing, counts, every export, counts, listing.
     kinds = [ln.split(":")[0] for ln in lines]
     first, last = kinds.index("export"), len(kinds) - 1 - kinds[::-1].index("export")
-    assert kinds[:first] == ["execute", "execute", "execute"]  # identity, listing, counts
+    # identity, listing, counts
+    assert kinds[:first] == ["execute", "execute", "execute"]
     assert kinds[last + 1 :] == ["execute", "execute"]
     exports = [ln for ln in lines if ln.startswith("export:")]
     assert len(exports) == len(_script_array("tables"))
