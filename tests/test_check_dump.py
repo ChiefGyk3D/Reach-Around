@@ -92,11 +92,17 @@ def test_the_schema_loader_never_hands_sqlite_deeply_nested_sql() -> None:
     assert cols[:3] == ["id", "email", "created_ts"]
 
 
+def dump_lines(db: sqlite3.Connection) -> list[str]:
+    return [ln for ln in db.iterdump() if not ln.startswith("DELETE FROM")]
+
+
 def schema_dump() -> str:
     # The schema only: the one identity row a migration seeds (issue #772) is data,
     # and these tests build their own rows (a dump with no rows must still fail).
     seeded = 'INSERT INTO "db_identity"'
-    lines = [ln for ln in real_db().iterdump() if not ln.startswith(seeded)]
+    # iterdump writes `DELETE FROM "sqlite_sequence";` (a sqlite3 module habit); a
+    # wrangler export never does (#962), so the fixture leaves it out.
+    lines = [ln for ln in dump_lines(real_db()) if not ln.startswith(seeded)]
     return "\n".join(lines) + "\n"
 
 
@@ -558,11 +564,11 @@ def test_a_dump_filled_through_real_tables_is_clean(tmp_path: Path) -> None:
         "VALUES (1792000000000, 'a-b', 'US')"
     )
     db.commit()
-    dump = "\n".join(db.iterdump()) + "\n"
+    dump = "\n".join(dump_lines(db)) + "\n"
     r = run(dump, tmp_path=tmp_path)
     assert r.returncode == 0, r.stdout + r.stderr
     db.execute("UPDATE view_events SET src = '198.51.100.7'")
-    assert run("\n".join(db.iterdump()) + "\n", tmp_path=tmp_path).returncode == 1
+    assert run("\n".join(dump_lines(db)) + "\n", tmp_path=tmp_path).returncode == 1
 
 
 def test_a_click_source_label_passes_and_an_address_or_agent_in_it_fails(
@@ -574,10 +580,10 @@ def test_a_click_source_label_passes_and_an_address_or_agent_in_it_fails(
         "VALUES (1792000000000, 'a-b', 'US', 'links', 'instagram')"
     )
     db.commit()
-    assert run("\n".join(db.iterdump()) + "\n", tmp_path=tmp_path).returncode == 0
+    assert run("\n".join(dump_lines(db)) + "\n", tmp_path=tmp_path).returncode == 0
     for bad in ("198.51.100.7", "Mozilla/5.0", "2001:db8::1"):
         db.execute("UPDATE click_events SET src = ?", (bad,))
-        r = run("\n".join(db.iterdump()) + "\n", tmp_path=tmp_path)
+        r = run("\n".join(dump_lines(db)) + "\n", tmp_path=tmp_path)
         assert r.returncode == 1, bad
 
 
