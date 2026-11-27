@@ -2869,6 +2869,8 @@ class TestLegacyDatabase:
         # Run 1: the leads database (the normal run).
         code, out1, err1 = run(capsys, "--input", str(export), "--email", ADDR, "--yes")
         assert code == CHECKED
+        # The normal run names the legacy procedure, which it does not perform.
+        assert "--legacy-database NAME --confirm-legacy NAME" in err1
         apply1, read1 = _commands(err1)
         # Run 2: the legacy analytics database.
         code, out2, err2 = self._legacy(capsys, export)

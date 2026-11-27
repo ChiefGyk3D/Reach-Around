@@ -1967,7 +1967,12 @@ def run_delete(args: argparse.Namespace) -> int:
         "7). NOTHING HAS BEEN REMOVED YET. After the apply command below, run "
         "this same command again with --finish (the address on stdin again): it "
         "reads the lead tables back, clears the alert hashes and reads them back as 0. "
-        "Only that run exits 0. Close the kit gate (kill switch) while you erase.",
+        "Only that run exits 0. Close the kit gate (kill switch) while you erase. "
+        "LEGACY COPY: if this installation collected leads before the leads database "
+        "existed and the one-time move has not emptied the analytics database, that "
+        "database may still hold this lead, and this run does not touch it: run "
+        "this command again with --legacy-database NAME --confirm-legacy NAME "
+        "(docs/privacy.md, Honoring a deletion request).",
         file=sys.stderr,
     )
     print(
