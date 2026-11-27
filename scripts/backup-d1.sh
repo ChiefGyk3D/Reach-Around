@@ -487,7 +487,9 @@ fi
 # least its count before (rows decreased: rerun, exit 1). Growth is allowed. Then
 # each file's row count must be at least the before count and at most the after
 # count. The files are only READ, never executed: each
-# is opened once (no symbolic link followed), checked on that descriptor, and
+# is opened once (with O_NOFOLLOW where the platform has it, so a final symbolic
+# link is refused there; elsewhere only the regular-file check on the open
+# descriptor and the DEST_DIR link check apply), checked on that descriptor, and
 # read with a cumulative limit (BACKUP_MAX_BYTES, default 1 GiB, whatever the
 # size was at the start) and a 1 MiB line limit. A NUL byte or invalid UTF-8
 # fails. A small quote-aware scanner tracks single and double quotes ACROSS lines
