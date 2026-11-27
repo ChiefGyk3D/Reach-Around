@@ -1829,6 +1829,91 @@ Limits worth knowing:
   review; app review is the fallback for production
   ([TikTok](tiktok-source.md)). Until then the number is hand-kept.
 
+### `numbers.fediverse`
+
+The fediverse collector (#940, design in `docs/design/fediverse-collector.md`) reads
+the public post counts of one Bluesky account and one Mastodon-API account: for each
+public post of the last 30 days its boosts (reposts), favorites (likes) and replies,
+nothing else. It runs once a day inside `counts refresh`, needs no token, and the
+account and the instance are config only: they are never written into a snapshot, the
+history file or the status file.
+
+```yaml
+numbers:
+  fediverse:
+    - {kind: bluesky, actor: example.bsky.social}
+    - {kind: mastodon, host: social.example, acct: example}
+    # optional: skip the lookup call with the numeric account id (a quoted string
+    # of digits); the follower count then comes from numbers.sources only
+    # - {kind: mastodon, host: social.example, acct: example, account_id: "109"}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `kind` | `bluesky` or `mastodon`; at most one source of each kind, so at most 2 entries |
+| `actor` | Bluesky: a handle such as `name.bsky.social`, or a `did:plc:` or `did:web:` DID. Checked by the provider; no `@`, no URL |
+| `host` | Mastodon: a public lower-case host name (no IP address in any notation, no `localhost`, no port or path); also checked again at run time |
+| `acct` | Mastodon: the local user name, without `@` and without the instance part |
+| `account_id` | Mastodon, optional: the numeric account id |
+
+Unknown keys are refused, so a token cannot be written here. The generated
+[`site.schema.json`](site.schema.json) carries what a schema can say: the `kind`
+discriminator, `minItems` 1, `maxItems` 2, `uniqueItems`, and length and character
+limits on `actor`, `host`, `acct` and `account_id` (a string of at most 20 digits, or
+a whole number from 0 to 99999999999999999999). These checks are runtime-only and
+an editor that validates against the schema does not see them: at most one source of
+each `kind` (two Bluesky entries with different actors pass the schema), and the full
+syntax of a Bluesky handle or DID and of a Mastodon host (no IP address, no
+`localhost`, label and DID rules). `reach-around` always applies the runtime checks.
+What a run does:
+
+- A source that is read in full writes its snapshot to `numbers.fediverse.json`
+  (beside the numbers file; `--out` renames it as `<name>.fediverse.json`) and one
+  history row per metric under the platform name (`posts_30d`, `boosts_30d`,
+  `favorites_30d`, `replies_30d`, source `api`): sums of whole numbers, no post id,
+  text, time or author. The snapshot passes the import guard before it is stored and
+  again when the build reads it.
+- A source that cannot be read in full (the status file says why in a fixed word such
+  as `timeout`, `partial_pages`, `page_cap`, `rate_limited` or `needs_token`, under
+  `fediverse-bluesky` or `fediverse-mastodon`) leaves its stored snapshot and the
+  history untouched. Nothing is ever written as zero, and the run exits 3 like any
+  failed source.
+- `--only` names numbers sources; it does not start the collector. `--dry-run` lists
+  the hosts. The collector reads at most 13 URLs per source per run.
+- The Mastodon host is not in a template's fixed egress list. `reach-around counts
+  egress-check --config site.yaml --allowed FILE` (no network) reads the workflow's
+  `allowed-endpoints` value from `FILE` and exits 3 naming any `host:443` the
+  configured sources need that is missing (exit 0 when all are listed).
+
+Recovery limits and the unit note. A refresh that reads a snapshot leaves a small
+transaction record, `.numbers.json.unit`, beside the numbers file until the numbers
+write landed. The design and crash table are in `src/reach_around/counts/
+fediverse_commit.py`. Three bounds apply:
+
+- Recovery reads files in fixed chunks and never past a limit (the snapshot limit
+  of 512 KiB, the numbers limit of 256 KiB). A snapshot, numbers file or staged
+  copy over its limit, and more than eight staged copies, leave the unit pending:
+  the status says `committed: false`, the run exits 1 and names `UnitFileTooLarge`.
+  Remove the oversized or surplus file by hand (staged copies are the dot files
+  ending `.staged` or `.tmp` beside the snapshot), then run again. Looking for
+  staged copies is bounded as well: the folder walk stops at the ninth staged copy or
+  after 10,000 entries, keeps nothing more, and fails the same way (the files stay as
+  evidence).
+- A unit note that cannot be parsed is moved to `.numbers.json.unit.bad` (an older
+  `.bad` file is replaced). That run prints `unit_note_quarantined` and keeps the
+  status false; the next run proceeds normally. The `.bad` file is only evidence:
+  delete it whenever you like. A note that is a link or a folder is not moved; delete
+  it by hand.
+- What the note proves. It gives crash consistency against this program's own
+  crashes. It is not a defense against someone with write access to the output
+  folder, who could already replace the numbers and snapshot files; refresh assumes a
+  single writer holding its lock. The named residual: a settled note from an earlier
+  transaction that was kept aside and put back after a later transaction produced
+  byte-identical snapshot and numbers files and crashed before its numbers write is
+  accepted as that transaction's proof.
+
+The build feeds [`kit.fediverse`](kit.md#the-fediverse-block) from the snapshots.
+
 ### The numbers file
 
 `reach-around counts refresh` writes `numbers.json` (default beside the config;

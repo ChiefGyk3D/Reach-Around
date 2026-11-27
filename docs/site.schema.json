@@ -299,6 +299,30 @@
       "title": "AudienceSummary",
       "type": "object"
     },
+    "BlueskyFediverseSource": {
+      "additionalProperties": false,
+      "description": "One Bluesky account: a handle or a DID, checked by the provider itself.",
+      "properties": {
+        "actor": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9:._%~-]+$",
+          "title": "Actor",
+          "type": "string"
+        },
+        "kind": {
+          "const": "bluesky",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "actor",
+        "kind"
+      ],
+      "title": "BlueskyFediverseSource",
+      "type": "object"
+    },
     "BlueskySource": {
       "additionalProperties": false,
       "properties": {
@@ -2498,6 +2522,57 @@
       "title": "LiveVods",
       "type": "object"
     },
+    "MastodonFediverseSource": {
+      "additionalProperties": false,
+      "description": "One account on a server that speaks the Mastodon API.\n\n``acct`` is the local name (it builds the re-check link). ``account_id`` is\noptional: with it the collector skips the lookup call and so reads no\nfollower count from it (the numbers sources still do).",
+      "properties": {
+        "account_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "maxLength": 20,
+          "maximum": 99999999999999999999,
+          "minimum": 0,
+          "pattern": "^(?:0|[1-9][0-9]{0,19})$",
+          "title": "Account Id"
+        },
+        "acct": {
+          "maxLength": 30,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_](?:[A-Za-z0-9_.-]{0,28}[A-Za-z0-9_])?$",
+          "title": "Acct",
+          "type": "string"
+        },
+        "host": {
+          "maxLength": 253,
+          "minLength": 1,
+          "pattern": "^[a-z0-9_.-]+$",
+          "title": "Host",
+          "type": "string"
+        },
+        "kind": {
+          "const": "mastodon",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "acct",
+        "host",
+        "kind"
+      ],
+      "title": "MastodonFediverseSource",
+      "type": "object"
+    },
     "MastodonSource": {
       "additionalProperties": false,
       "description": "Any server with the Mastodon API (Pixelfed and others included).",
@@ -2569,6 +2644,30 @@
     "NumbersConfig": {
       "additionalProperties": false,
       "properties": {
+        "fediverse": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "bluesky": "#/$defs/BlueskyFediverseSource",
+                "mastodon": "#/$defs/MastodonFediverseSource"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/BlueskyFediverseSource"
+              },
+              {
+                "$ref": "#/$defs/MastodonFediverseSource"
+              }
+            ]
+          },
+          "maxItems": 2,
+          "minItems": 1,
+          "title": "Fediverse",
+          "type": "array",
+          "uniqueItems": true
+        },
         "history_file": {
           "anyOf": [
             {

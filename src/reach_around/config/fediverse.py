@@ -25,6 +25,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PrivateAttr,
     StrictBool,
     StrictInt,
     field_validator,
@@ -32,7 +33,7 @@ from pydantic import (
 
 from reach_around.config.blocks import MAX_COUNT, platform_name
 from reach_around.config.measures import Measure, narrow
-from reach_around.config.trust import HAND_KEPT, Trust
+from reach_around.config.trust import API, HAND_KEPT, Trust
 
 FEDIVERSE_PLATFORMS: tuple[str, ...] = ("mastodon", "bluesky", "pixelfed")
 MAX_POSTS = 200
@@ -128,6 +129,13 @@ class FediverseEntry(_Model):
         default_factory=list, max_length=MAX_POSTS
     )
     show_mean: StrictBool = False
+    # True only for an entry the collector fed (#940). A private attribute, so
+    # the config cannot set it: a typed entry is never labeled API.
+    _collected: bool = PrivateAttr(default=False)
+
+    @property
+    def collected(self) -> bool:
+        return self._collected
 
     @field_validator("profile_url")
     @classmethod
@@ -167,7 +175,13 @@ def label_of(platform: str, key: str) -> str:
     return REGISTRY[key].label
 
 
-def _trust(key: str) -> Trust:
+def _trust(key: str, collected: bool = False) -> Trust:
+    if collected:
+        if key in MEDIAN_KEYS + MEAN_KEYS:
+            return Trust(
+                API, "Worked out from per-post counts the collector read from the API"
+            )
+        return Trust(API, "Read from the platform's public API")
     if key in MEDIAN_KEYS + MEAN_KEYS:
         return Trust(HAND_KEPT, "Worked out from per-post counts typed by the owner")
     return Trust(HAND_KEPT, "Typed by the owner from the public profile")
@@ -200,7 +214,7 @@ def fediverse_measures(entries: Iterable[FediverseEntry]) -> list[Measure]:
                 as_of=item.as_of,
                 visibility=narrow(reg.visibility, source),
                 block="fediverse",
-                trust=_trust(key),
+                trust=_trust(key, item.collected),
                 period=period if windowed else None,
                 formula=reg.formula,
             )

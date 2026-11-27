@@ -35,6 +35,7 @@ from typing import TextIO
 
 from reach_around.config import ConfigError, SiteConfig, load_site_config
 from reach_around.config.cutover import utc_today
+from reach_around.config.fediverse_sources import FediverseSource
 from reach_around.config.imported_history import parse_imported
 from reach_around.config.loader import _read
 from reach_around.config.numbers import NumbersEntry, load_numbers
@@ -48,14 +49,47 @@ from reach_around.counts.beacons import (
     BeaconsImportError,
     parse_beacons_csv,
 )
+from reach_around.counts.fediverse_commit import (
+    SAME_DAY_KEPT,
+    SNAPSHOT_IN_FUTURE,
+    UNIT_NOTE_QUARANTINED,
+    UnitFileTooLarge,
+    UnitNote,
+    abandon_unit,
+    day_conflicts,
+    discard_unit,
+    find_stale,
+    future_snapshots,
+    mark_landed,
+    new_generation,
+    quarantine_unit,
+    remove_stale,
+    rows_present,
+    snapshot_rows,
+    status_committed,
+    unit_path,
+    unit_pending,
+    write_unit,
+)
+from reach_around.counts.fediverse_refresh import FediverseResult, platform_key
+from reach_around.counts.fediverse_refresh import run as run_fediverse
+from reach_around.counts.fediverse_store import (
+    dump_snapshots,
+    load_snapshots,
+    missing_endpoints,
+    required_endpoints,
+    snapshot_path,
+)
 from reach_around.counts.files import (
     LOCK_WAIT_SECONDS,
     FileLock,
     LockBusy,
     LockLost,
     Paths,
+    StagedFile,
     dump_numbers,
     plan_paths,
+    stage_file,
     utc_stamp,
     write_atomic,
     write_new_atomic,
@@ -262,9 +296,13 @@ def run_refresh(
 ) -> int:
     try:
         config = load_site_config(config_path)
-        if config.numbers is None or not config.numbers.sources:
+        if config.numbers is None or not (
+            config.numbers.sources or config.numbers.fediverse
+        ):
             raise ValueError("the config has no numbers.sources to refresh")
         sources = select(config.numbers, only)
+        # ``--only`` names numbers sources; it never starts the fediverse collector.
+        fediverse = [] if only else list(config.numbers.fediverse)
         known = {source.platform for source in config.numbers.sources}
         unknown = sorted(set(accept_drop or []) - known)
         if unknown:
@@ -273,6 +311,11 @@ def run_refresh(
             )
         paths = plan_paths(config_path, out)
         history = history_path(config, config_path, paths)
+        fediverse_file = snapshot_path(paths.target) if fediverse else None
+        if fediverse_file is not None and (
+            fediverse_file.is_symlink() or fediverse_file.is_dir()
+        ):
+            raise ValueError("the fediverse snapshot file is a symlink or a directory")
     except (ConfigError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
@@ -295,6 +338,11 @@ def run_refresh(
             print(
                 f"would fetch {source.platform}: {source.kind} from {host_of(source)}"
             )
+        for item in fediverse:
+            print(
+                f"would fetch {platform_key(item.kind)}: "
+                f"{', '.join(required_endpoints([item]))}"
+            )
         print("dry run: nothing fetched, nothing written")
         return EXIT_OK
 
@@ -314,6 +362,8 @@ def run_refresh(
                 history,
                 sinks,
                 _retention_policy(config),
+                fediverse,
+                fediverse_file,
             )
     except LockBusy:
         print(
@@ -459,6 +509,160 @@ def _settle_history(paths: Paths, nonce: str) -> None:
         pass  # a stale note only makes the next run compare its values
 
 
+def _discard(staged: StagedFile | None) -> None:
+    """Remove a staged snapshot that will not be committed (never raises)."""
+    if staged is not None:
+        try:
+            staged.discard()
+        except OSError:
+            pass  # a stray dot file is harmless; the snapshot itself is untouched
+
+
+def _pending_live(paths: Paths, fediverse_file: Path) -> bool:
+    """True when an earlier attempt's history rows may lack their numbers write
+    (a note that cannot be read counts as live: it proves nothing). The unit note
+    of a snapshot whose numbers write did not land counts as live too."""
+    try:
+        if unit_pending(paths.target, fediverse_file):
+            return True
+        return bool(live_ids(read_note(pending_path(paths.target)), paths.target))
+    except (OSError, HistoryError):
+        return True
+
+
+def _unit_state(
+    paths: Paths,
+    history: Path | None,
+    fediverse_file: Path,
+    stamp: datetime,
+    run_id: str,
+) -> tuple[list[Record], list[str], bool]:
+    """Recompute from the files on disk whether the committed unit is complete.
+
+    Returns the history rows the committed snapshot implies that history lacks,
+    the platforms whose snapshot is dated after today, and whether EVERY part
+    agrees: no staged or temp copy, no live pending note, no unsettled unit note
+    (the numbers of the snapshot's run landed), no missing row, no future
+    snapshot. The status ``committed: true`` is written only when this holds.
+    Raises ``OSError``, ``HistoryError`` or ``ConfigError`` when a part cannot
+    be read (the caller treats that as not complete)."""
+    snapshots = load_snapshots(fediverse_file)
+    rows = snapshot_rows(snapshots, run_id, stamp.date())
+    late = future_snapshots(snapshots, stamp.date())
+    missing: list[Record] = []
+    if history is not None and rows:
+        held = read_history(history) if history.exists() else None
+        missing = [row for row in rows if not rows_present(held, [row])]
+    agree = not (
+        find_stale(fediverse_file)
+        or _pending_live(paths, fediverse_file)
+        or missing
+        or late
+    )
+    return missing, late, agree
+
+
+def _unit_complete(
+    paths: Paths,
+    history: Path | None,
+    fediverse_file: Path,
+    stamp: datetime,
+    run_id: str,
+) -> bool:
+    """The final consistency check before ``committed: true`` (never raises)."""
+    try:
+        return _unit_state(paths, history, fediverse_file, stamp, run_id)[2]
+    except (OSError, HistoryError, ConfigError):
+        return False
+
+
+def _recover(
+    paths: Paths,
+    history: Path | None,
+    fediverse_file: Path,
+    stamp: datetime,
+    run_id: str,
+) -> int | None:
+    """Repair what an interrupted fediverse run left (table: ``fediverse_commit``).
+
+    Runs first, under the refresh lock. The status is RECOMPUTED from the files
+    (``_unit_state``), never trusted: when any part of the unit disagrees and the
+    status says ``committed: true``, it is set to false BEFORE any repair step
+    runs (so a crash during recovery cannot keep the stale true). Then it removes
+    staged and temp copies (a staged copy is a run that never reached its rename:
+    rolled back) and appends the history rows the committed snapshot implies and
+    history lacks, whatever the age of the snapshot (never twice). Recovery never
+    writes true; only the end of a complete run does. Returns an exit code on
+    failure, ``None`` otherwise.
+    """
+    try:
+        overflow: UnitFileTooLarge | None = None
+        try:
+            stale = find_stale(fediverse_file)
+        except UnitFileTooLarge as exc:
+            stale, overflow = [], exc  # too many to examine: fail closed below
+        try:
+            missing, late, agree = _unit_state(
+                paths, history, fediverse_file, stamp, run_id
+            )
+        except (OSError, HistoryError, ConfigError):
+            missing, late, agree = [], [], False  # an unreadable part is not complete
+        if (not agree or overflow is not None) and status_committed(
+            paths.status
+        ) is True:
+            write_atomic(
+                paths.status,
+                render_status(load_status(paths.status), [], stamp, False),
+            )
+        if overflow is not None:
+            raise overflow  # status is false; every file stays as evidence
+        # After the demotion above: a note of a transaction that never crossed
+        # the commit point (its proposed snapshot is not the committed one, or its
+        # staged copy is still here) is removed, so it cannot block the status.
+        abandon_unit(paths.target, fediverse_file, stale)
+        remove_stale(stale)
+        for kind in late:
+            print(
+                f"{platform_key(kind)}: {SNAPSHOT_IN_FUTURE}, its history rows wait",
+                file=sys.stderr,
+            )
+        if history is not None and missing:
+            append_records(history, missing, now=stamp, skip_days=True)
+    except (OSError, HistoryError, ConfigError) as exc:
+        print(
+            f"error: the previous run could not be repaired: {type(exc).__name__}",
+            file=sys.stderr,
+        )
+        return EXIT_WRITE
+    return None
+
+
+def _same_day(
+    fed: FediverseResult, history: Path, stamp: datetime, run_id: str
+) -> FediverseResult | None:
+    """Keep the stored snapshot of a platform whose day already has history rows
+    with other values (the rule in ``fediverse_commit``); ``None`` when history
+    cannot be read."""
+    rows = snapshot_rows(fed.snapshots, run_id, stamp.date())
+    try:
+        held = read_history(history) if history.exists() else None
+    except (OSError, HistoryError):
+        return None
+    kept = day_conflicts(held, rows) if held is not None else set()
+    if not kept:
+        return fed
+    return FediverseResult(
+        {k: v for k, v in fed.snapshots.items() if k not in kept},
+        {k: v for k, v in fed.aggregates.items() if k not in kept},
+        [
+            Outcome(item.platform, item.kind, "skipped", None, SAME_DAY_KEPT)
+            if item.platform in {platform_key(k) for k in kept}
+            else item
+            for item in fed.outcomes
+        ],
+    )
+
+
 def _write_failed(exc: Exception) -> None:
     reason = exc.strerror if isinstance(exc, OSError) else str(exc)
     print(f"error: cannot write the result files: {reason}", file=sys.stderr)
@@ -571,6 +775,8 @@ def _cycle(
     history: Path | None = None,
     sinks: Sinks | None = None,
     retention: RetentionPolicy | None = None,
+    fediverse: list[FediverseSource] | None = None,
+    fediverse_file: Path | None = None,
 ) -> int:
     try:
         previous = (
@@ -581,6 +787,24 @@ def _cycle(
         return EXIT_USAGE
     stamp = now()
     run_id = new_run_id(stamp)
+    quarantined = False
+    if fediverse_file is not None:
+        # First, before any read: repair what an interrupted run left.
+        repaired = _recover(paths, history, fediverse_file, stamp, run_id)
+        if repaired is not None:
+            return repaired
+        # After the demotion in ``_recover``: a note that cannot be parsed moves
+        # aside, and this run keeps the status false (the next good run settles).
+        try:
+            quarantined = quarantine_unit(paths.target)
+        except OSError as exc:
+            print(
+                f"error: the previous run could not be repaired: {type(exc).__name__}",
+                file=sys.stderr,
+            )
+            return EXIT_WRITE
+        if quarantined:
+            print(f"fediverse: {UNIT_NOTE_QUARANTINED}", file=sys.stderr)
     numbers, outcomes = refresh(
         sources,
         previous,
@@ -593,6 +817,40 @@ def _cycle(
         meta_sink=sinks.meta if sinks is not None else None,
         tiktok_sink=sinks.pair if sinks is not None else None,
     )
+    fed = (
+        run_fediverse(
+            fediverse,
+            now=stamp,
+            transport=transport if transport is not None else default_transport(),
+            sleep=default_sleep,
+        )
+        if fediverse and fediverse_file is not None
+        else FediverseResult({}, {}, [])
+    )
+    if history is not None and fed.snapshots:
+        # The same-day rule: one row set per platform and day, never rewritten.
+        ruled = _same_day(fed, history, stamp, run_id)
+        if ruled is None:
+            print(
+                "error: history not read, nothing was changed",
+                file=sys.stderr,
+            )
+            return EXIT_WRITE
+        fed = ruled
+    for outcome in fed.outcomes:
+        if outcome.status == "ok":
+            print(f"{outcome.platform}: complete {outcome.count} posts")
+        elif outcome.status == "skipped":
+            print(
+                f"{outcome.platform}: skipped ({outcome.detail}), "
+                "history holds another value for today, the stored snapshot was kept"
+            )
+        else:
+            print(
+                f"{outcome.platform}: incomplete ({outcome.detail}), "
+                "the previous snapshot was kept",
+                file=sys.stderr,
+            )
     for outcome in outcomes:
         if outcome.status == "ok":
             print(f"{outcome.platform}: ok {outcome.count}")
@@ -610,13 +868,39 @@ def _cycle(
     # The status file goes first and the numbers file last, so a failure can never
     # leave new numbers with no record of the run. If the numbers write fails, the
     # status is rewritten with ``committed: false`` (best effort) and the exit is 1.
-    changed = any(outcome.status == "ok" for outcome in outcomes)
+    # A fediverse read that finished also counts as a change: the numbers file is
+    # then written again (as it was when no number changed), so the pending note
+    # of this run is settled the same way for both kinds of rows.
+    changed = any(outcome.status == "ok" for outcome in outcomes) or bool(fed.snapshots)
     staged: Staged | None = None
     figures, insight_failures = _insights(
         sources, outcomes, environment, transport, now(), history
     )
     for failure in insight_failures:
         print(f"{failure.platform}: insights error ({failure.word})", file=sys.stderr)
+    # A run that read a fediverse snapshot is ONE unit (#940) with ONE commit
+    # point, the rename of the staged snapshot. The order is: recover what the last
+    # run left (start of the cycle), stage the snapshot beside its file, append
+    # the ordinary history rows (the pending note covers a later failure), write
+    # the status as ``committed: false``, RENAME the snapshot into place, append
+    # the fediverse rows derived from it, write the numbers file, settle the
+    # pending note, and only then write the status as ``committed: true``. A
+    # failure before the rename leaves the old snapshot byte for byte and a
+    # status that never claims the commit. After it the snapshot is the truth and
+    # whatever did not land is repaired by the next run. Design and crash table:
+    # ``counts/fediverse_commit.py``.
+    staged_snapshot: StagedFile | None = None
+    proposed_digest = ""
+    if fediverse_file is not None and fed.snapshots:
+        try:
+            snapshot_text = dump_snapshots(
+                {**load_snapshots(fediverse_file), **fed.snapshots}
+            )
+            proposed_digest = content_digest(snapshot_text)
+            staged_snapshot = stage_file(fediverse_file, snapshot_text, write_atomic)
+        except (OSError, ConfigError) as exc:
+            _write_failed(exc)
+            return EXIT_WRITE
     if history is not None and changed:
         # History goes first: if it cannot be written, the status and numbers
         # files are left exactly as they were. Only values that were fetched and
@@ -652,6 +936,9 @@ def _cycle(
             )
             for figure in figures
         ]
+        # The fediverse aggregates are not here: their rows are derived from the
+        # committed snapshot and appended after the commit point (see
+        # ``fediverse_commit``), so a run that never commits leaves no row.
         # One append takes at most MAX_BATCH records. If the assembled batch is
         # over it, only the analytics figures of this run are left out (they are
         # reported as too_large); subscribers and other sources are never dropped.
@@ -659,57 +946,149 @@ def _cycle(
         for platform in too_big:
             print(f"{platform}: insights error (too_large)", file=sys.stderr)
             insight_failures.append(InsightFailure(platform, "too_large"))
-        try:
-            staged = _stage_history(
-                history, paths, fetched, run_id, _expected_digest(numbers)
-            )
-            fetched = staged.records
-        except OSError as exc:
-            _write_failed(exc)
-            return EXIT_WRITE
-        except HistoryError as exc:
-            print(
-                f"error: history not written, nothing else was changed: {exc}",
-                file=sys.stderr,
-            )
-            return EXIT_WRITE
-        try:
-            kept = append_records(history, fetched, now=stamp, skip_days=True)
-        except HistoryError as exc:
-            _withdraw(paths, history, staged, exc)
-            print(
-                f"error: history not written, nothing else was changed: {exc}",
-                file=sys.stderr,
-            )
-            return EXIT_WRITE
-        if kept < len(fetched):
-            print("history: today's value was already recorded; kept as it is")
+        if fetched:
+            try:
+                staged = _stage_history(
+                    history, paths, fetched, run_id, _expected_digest(numbers)
+                )
+                fetched = staged.records
+            except OSError as exc:
+                _discard(staged_snapshot)
+                _write_failed(exc)
+                return EXIT_WRITE
+            except HistoryError as exc:
+                _discard(staged_snapshot)
+                print(
+                    f"error: history not written, nothing else was changed: {exc}",
+                    file=sys.stderr,
+                )
+                return EXIT_WRITE
+            try:
+                kept = append_records(history, fetched, now=stamp, skip_days=True)
+            except HistoryError as exc:
+                _discard(staged_snapshot)
+                _withdraw(paths, history, staged, exc)
+                print(
+                    f"error: history not written, nothing else was changed: {exc}",
+                    file=sys.stderr,
+                )
+                return EXIT_WRITE
+            if kept < len(fetched):
+                print("history: today's value was already recorded; kept as it is")
     if history is not None:
         _retention_checks(history, stamp, retention)
     previous_status = load_status(paths.status)
+    reported = outcomes + fed.outcomes
+    # Legacy order (no snapshot in this run): status first as ``committed: true``,
+    # rewritten as false if the numbers write fails. A run with a snapshot follows
+    # the unit order described above: false first, true last.
+    # A fediverse run that changed nothing must not say ``true`` while an earlier
+    # attempt's note is still live: that status would hide the unfinished attempt.
+    # A unit run (a snapshot in this run, or any state in which the unit is not
+    # complete: a live note, an unsettled unit note, a missing row, a snapshot
+    # dated after today) follows the unit order: ``false`` first, and ``true``
+    # only after a final consistency check in this very run. An unfinished
+    # attempt is never hidden by a later run that found nothing new to write.
+    unit = fediverse_file is not None and (
+        staged_snapshot is not None
+        or quarantined
+        or not _unit_complete(paths, history, fediverse_file, stamp, run_id)
+    )
     try:
         write_atomic(
-            paths.status, render_status(previous_status, outcomes, stamp, True)
+            paths.status,
+            render_status(previous_status, reported, stamp, not unit),
         )
     except (OSError, ConfigError) as exc:
+        _discard(staged_snapshot)
         _write_failed(exc)
         return EXIT_WRITE
+    unit_note: UnitNote | None = None
     if changed:
+        if staged_snapshot is not None:
+            try:
+                # The unit note, a transaction record: the digest of the proposed
+                # snapshot, of the numbers it belongs to and a fresh generation
+                # id. It exists before the commit point, so a crash after the
+                # rename can never leave a snapshot with no trace of its numbers.
+                digest = _expected_digest(numbers)
+                if digest is None:
+                    raise ConfigError(str(paths.target), None, "numbers not valid")
+                unit_note = UnitNote(proposed_digest, digest, new_generation())
+                write_unit(paths.target, unit_note)
+            except (OSError, ConfigError) as exc:
+                _discard(staged_snapshot)
+                _write_failed(exc)
+                return EXIT_WRITE
+            try:
+                # THE commit point: one rename. The stored snapshots of platforms
+                # that failed this run stay (they were merged when staging). A
+                # failure leaves the old snapshot and everything else untouched.
+                staged_snapshot.commit()
+            except OSError as exc:
+                _discard(staged_snapshot)
+                discard_unit(paths.target)  # never crossed the commit point
+                _write_failed(exc)
+                return EXIT_WRITE
+            if history is not None and fediverse_file is not None:
+                # Rows derived from the snapshot now on disk (never twice).
+                rows = snapshot_rows(
+                    load_snapshots(fediverse_file), run_id, stamp.date()
+                )
+                try:
+                    if rows:
+                        append_records(history, rows, now=stamp, skip_days=True)
+                except (OSError, HistoryError) as exc:
+                    # Committed, status still false: the next run appends them.
+                    print(
+                        f"error: history rows not written: {type(exc).__name__}",
+                        file=sys.stderr,
+                    )
+                    return EXIT_WRITE
         try:
             write_atomic(paths.target, dump_numbers(numbers))
         except (OSError, ConfigError) as exc:
-            try:
-                write_atomic(
-                    paths.status,
-                    render_status(previous_status, outcomes, stamp, False),
-                )
-            except (OSError, ConfigError):
-                pass  # the numbers file is untouched either way
-            _write_failed(exc)
+            if not unit:
+                try:
+                    write_atomic(
+                        paths.status,
+                        render_status(previous_status, reported, stamp, False),
+                    )
+                except (OSError, ConfigError):
+                    pass  # the numbers file is untouched either way
+            _write_failed(exc)  # a unit's status already says ``committed: false``
             return EXIT_WRITE
+        if fediverse_file is not None:
+            # A numbers file was written after the snapshot: the unit note is done.
+            if unit_note is not None:
+                try:
+                    mark_landed(paths.target, unit_note)  # this generation's proof
+                except OSError:
+                    pass  # the note stays unsettled; a later run writes numbers
+            try:
+                unit_path(paths.target).unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass  # still there: unit_pending() judges it by its digest
         if staged is not None:
             _settle_history(paths, staged.nonce)
-    failed = any(outcome.status == "error" for outcome in outcomes) or bool(
+    if (
+        unit
+        and not quarantined
+        and fediverse_file is not None
+        and _unit_complete(paths, history, fediverse_file, stamp, run_id)
+    ):
+        # The final consistency check passed in this very run: every part of the
+        # unit (snapshot, history rows, numbers, notes) agrees. Only now: true.
+        try:
+            write_atomic(
+                paths.status, render_status(previous_status, reported, stamp, True)
+            )
+        except (OSError, ConfigError) as exc:
+            _write_failed(exc)  # the status keeps saying ``committed: false``
+            return EXIT_WRITE
+    failed = any(outcome.status == "error" for outcome in reported) or bool(
         insight_failures
     )
     return EXIT_SOURCE_FAILED if failed else EXIT_OK
@@ -1261,6 +1640,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _run_import(args)
     if args.counts_command == "stale":
         return _run_stale(args)
+    if args.counts_command == "egress-check":
+        return _run_egress_check(args)
     if args.counts_command == "tokens":
         return _run_tokens(args)
     return _run(args)
@@ -1685,6 +2066,33 @@ def run_tokens(
     return token_exit_code(report, EXIT_SOURCE_FAILED, EXIT_TOKEN_WARNING)
 
 
+MAX_ALLOWED_BYTES = 64 * 1024
+
+
+def run_egress_check(config_path: Path, allowed_path: Path) -> int:
+    """Check that the egress allow-list names every host the fediverse collector
+    needs. No network. Exit 0 all listed (or nothing to check), 3 one or more are
+    missing (their host names are printed), 2 usage or config problem."""
+    try:
+        config = load_site_config(config_path)
+        text = _read(allowed_path, MAX_ALLOWED_BYTES).decode("utf-8", errors="strict")
+    except (ConfigError, ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    sources = config.numbers.fediverse if config.numbers is not None else []
+    missing = missing_endpoints(sources, text)
+    for endpoint in missing:
+        print(f"missing from the allow-list: {endpoint}", file=sys.stderr)
+    if missing:
+        return EXIT_SOURCE_FAILED
+    print(f"egress ok: {len(required_endpoints(sources))} fediverse endpoint(s) listed")
+    return EXIT_OK
+
+
+def _run_egress_check(args: argparse.Namespace) -> int:
+    return run_egress_check(args.config, args.allowed)
+
+
 def _run_tokens(args: argparse.Namespace) -> int:
     return run_tokens(args.config, args.status, args.format)
 
@@ -1793,6 +2201,18 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         help=f"remind when a number is this many days old (default {REMIND_DAYS})",
     )
     stale_parser.add_argument("--json", action="store_true", help="machine-readable")
+    egress_parser = actions.add_parser(
+        "egress-check",
+        help="check that an egress allow-list names every fediverse host",
+        description="Reads the config and a file holding the workflow's "
+        "allowed-endpoints value (host:443 entries separated by spaces, commas "
+        "or newlines). No network. Exit 0 every needed host is listed, 3 one is "
+        "missing (it is printed), 2 usage or config error.",
+    )
+    egress_parser.add_argument("--config", type=Path, required=True)
+    egress_parser.add_argument(
+        "--allowed", type=Path, required=True, help="file with the allowed endpoints"
+    )
     tokens_parser = actions.add_parser(
         "tokens",
         help="report platform token health (ok, expiring, expired, rejected)",

@@ -413,15 +413,25 @@ kit:
 
 Mastodon, Bluesky and Pixelfed publish their follower and post counts and the
 interaction counts of each public post. `kit.fediverse` holds what the public
-profile shows, typed by you on a date, one entry per platform (#630). It is hand-kept;
-nothing is fetched into it yet. A Bluesky provider that reads the same counts from the
-public API exists in the engine (`reach_around.counts.bluesky_feed`, #922) and produces
-the same entry shape; it is not wired into the build until the collector's wiring slice, so
-the typed entry stays the way to fill this block. The provider reads at most 600 feed
-entries (12 pages of 50): an account with more than about 600 entries in its 30-day window
-reports an incomplete read (`page_cap`) by design and keeps the prior or hand-kept values,
-so the typed entry remains the way to fill the block for such an account. A later slice
-can make the page cap a config value.
+profile shows, typed by you on a date, one entry per platform (#630). Typing it stays
+the way to fill the block, and it is the only way unless you also configure the
+collector.
+
+**Collected counts (#940).** With `numbers.fediverse` set (see
+[`numbers.fediverse`](config.md#numbersfediverse)), the daily `counts refresh` reads the
+same counts from the public API of a Bluesky account and a Mastodon-API account and
+stores them in `numbers.fediverse.json`, beside the numbers file. The build, `kit pdf` and
+`kit private-measures` read that file: a platform with a source and a fresh, complete
+snapshot (dated at most 30 days before the build, not in the future) gets the collected
+entry in place of the typed one, labeled `API` with the day it was read; `show_mean` is
+kept from your typed entry. Medians are still worked out by the build. A platform with no
+source, no file, a damaged file, an old snapshot or an incomplete read keeps its typed
+entry exactly as before, so the hand-kept path always works. An incomplete read (a
+network failure, a page cap, a rate limit) leaves the stored snapshot and the history
+untouched and never writes a zero; the status file names the fixed reason word. The
+provider reads at most 600 feed entries (12 pages of 50): an account with more than about
+600 entries in its 30-day window reports `page_cap` by design, so the typed entry remains
+the way to fill the block for such an account.
 
 ```yaml
 kit:
