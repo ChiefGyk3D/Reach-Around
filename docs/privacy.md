@@ -555,7 +555,8 @@ the same lead can also be in its `leads` and `kit_events` tables. Erase that cop
 after the run below for the leads database (two runs, in this order: first the leads database, then the
 legacy analytics database). `leads delete` has an explicit legacy mode for it: you name the legacy
 database and type the same name again, and the run deletes from the `leads` and `kit_events` tables
-only. It takes no `--database`, `--alerts-database`, database id or `--finish`: the alert hashes are
+only. It takes no `--database`, `--alerts-database` or `--finish` (it needs `--legacy-database-id` and
+`--leads-database-id`, both from the Worker's configuration): the alert hashes are
 cleared by the first run's `--finish`.
 
 ```
@@ -566,24 +567,57 @@ cleared by the first run's `--finish`.
   cleanup() { rm -rf -- "$WORK"; }
   trap cleanup EXIT
   trap 'exit 130' HUP INT TERM
-  LEGACY=your-analytics-database-name   # the legacy analytics database, never reach-around-leads
-  npx wrangler d1 execute "$LEGACY" --remote --json \
+  WR=worker/node_modules/.bin/wrangler   # the pinned install; run from the repository root
+  LEGACY=your-analytics-database-name    # the legacy analytics database, never reach-around-leads
+  LEGACY_ID=the-legacy-database-id       # from the Worker's configuration (the analytics binding)
+  LEADS_ID=the-leads-database-id         # from the Worker's configuration (the LEADS_DB binding)
+  "$WR" d1 execute "$LEGACY" --remote --json \
     --command "SELECT id, email FROM leads" > "$WORK/legacy-export.json"
   printf 'Address to delete: ' >&2
   read -r ADDR
-  printf '%s\n' "$ADDR" | reach-around leads delete --input "$WORK/legacy-export.json" --email - --legacy-database "$LEGACY" --confirm-legacy "$LEGACY" --yes --sql-out "$WORK/delete-lead-legacy.sql"
-  # The tool prints two commands: the apply command and the read-back command. Apply the file,
-  # wait a minute, apply it again, then run the read-back command twice; both must show 0 and 0.
+  # Exit 10 is the success of this step (checks passed, SQL written, NOTHING erased yet), so it
+  # is accepted explicitly; any other status stops the block before anything is applied.
+  set +e
+  printf '%s\n' "$ADDR" | reach-around leads delete --input "$WORK/legacy-export.json" --email - \
+    --legacy-database "$LEGACY" --confirm-legacy "$LEGACY" \
+    --legacy-database-id "$LEGACY_ID" --leads-database-id "$LEADS_ID" \
+    --yes --sql-out "$WORK/delete-lead-legacy.sql"
+  status=$?
+  set -e
+  if [ "$status" -ne 10 ]; then
+    echo "the legacy run ended with exit $status (not 10): nothing was applied" >&2
+    exit 1
+  fi
+  # The id the SQL file names (a random id, not the address).
+  LEAD_ID="$(grep -o "id = '[0-9a-f]\{32\}'" "$WORK/delete-lead-legacy.sql" | head -n 1 | cut -d"'" -f2)"
+  READ_BACK="SELECT (SELECT COUNT(*) FROM leads WHERE id = '$LEAD_ID') AS leads_remaining, (SELECT COUNT(*) FROM kit_events WHERE lead_id = '$LEAD_ID') AS events_remaining;"
+  # Apply the file in this block, before the cleanup removes it; wait; apply again.
+  "$WR" d1 execute "$LEGACY" --remote --file "$WORK/delete-lead-legacy.sql"
+  sleep 60
+  "$WR" d1 execute "$LEGACY" --remote --file "$WORK/delete-lead-legacy.sql"
+  # Two read-backs a minute apart; the erasure of this copy is done only when both read 0 and 0.
+  "$WR" d1 execute "$LEGACY" --remote --json --command "$READ_BACK" > "$WORK/read-1.json"
+  sleep 60
+  "$WR" d1 execute "$LEGACY" --remote --json --command "$READ_BACK" > "$WORK/read-2.json"
+  for f in "$WORK/read-1.json" "$WORK/read-2.json"; do
+    grep -q '"leads_remaining": 0' "$f" && grep -q '"events_remaining": 0' "$f" || {
+      echo "a read-back did not show 0 and 0: the legacy copy is NOT confirmed erased" >&2
+      exit 1
+    }
+  done
+  echo "legacy copy: both read-backs show 0 and 0 (a point-in-time check)" >&2
 )
 ```
 
-Exit 10 from the legacy run means the checks passed and NOTHING was erased yet (as in the normal
-run); exit 1 means no lead has that address in the legacy copy; exit 2 means a refused request (an
-unconfirmed or mistyped name, the leads database name, a mixed option). Run the printed read-back
-twice, a minute apart and each after a file run; erasure of the legacy copy is done only when both
-read `0` and `0` (a point-in-time check, as for the leads database). The block above removes its
-work directory on exit, so copy the printed read-back command from the terminal before it ends,
-and apply the file while the block is still running (put the printed apply command inside it).
+Exit 10 from the legacy run means the checks passed (the database proved it is the analytics database
+and not the leads one) and NOTHING was erased yet; exit 1 means no lead has that address in the legacy
+copy; exit 2 means a refused request (an unconfirmed or mistyped name, equal ids, an identity that does
+not check out, a mixed option). The block accepts exit 10 only, applies the SQL file itself before it
+removes its work directory, runs both read-backs, and removes the directory last. The tool also prints
+the same commands (the identity read first); a name that differs from the leads name is only a typo
+guard, so the tool proves identity with read-only single-statement calls (the name resolves to the id
+you gave, that id is not the leads database's, and the database says `analytics`) before it prints
+anything to apply.
 
 The export holds every address, so the procedure below keeps it in a private
 temporary directory and removes it however the run ends: on success, on a

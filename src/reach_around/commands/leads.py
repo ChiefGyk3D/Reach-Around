@@ -1663,6 +1663,9 @@ Your reply to the person is due within one month of the request.
 # It deletes from exactly these two tables (the table list is explicit, never read
 # from the database) and nothing else.
 LEGACY_TABLES = ("leads", "kit_events")
+# The read-only identity statement: the analytics database says 'analytics' (migration
+# 0020); the leads database says 'leads'.
+_IDENTITY_READ = "SELECT role FROM db_identity ORDER BY role"
 
 
 def _legacy_database(name: str, confirm: str | None) -> str:
@@ -1699,13 +1702,12 @@ def _run_delete_legacy(args: argparse.Namespace) -> int:
         args.database is not None
         or args.alerts_database is not None
         or args.alerts_database_id is not None
-        or args.leads_database_id is not None
         or args.finish
     ):
         print(
             "error: --legacy-database is its own run: it takes no --database, "
-            "--alerts-database, database id or --finish (run the normal erasure "
-            "for the leads database separately)",
+            "--alerts-database, --alerts-database-id or --finish (run the normal "
+            "erasure for the leads database separately)",
             file=sys.stderr,
         )
         return EXIT_USAGE
@@ -1719,11 +1721,27 @@ def _run_delete_legacy(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return EXIT_USAGE
-    if args.wrangler is not None and not args.yes:
-        print("error: --wrangler needs --yes", file=sys.stderr)
+    if (
+        args.wrangler is not None
+        or args.legacy_database_id is not None
+        or args.leads_database_id is not None
+    ) and not args.yes:
+        print(
+            "error: --wrangler and the database ids need --yes", file=sys.stderr
+        )
         return EXIT_USAGE
     try:
         database = _legacy_database(args.legacy_database, args.confirm_legacy)
+        legacy_id = leads_id = ""
+        if args.yes:
+            legacy_id = _checked_uuid(args.legacy_database_id, "--legacy-database-id")
+            leads_id = _checked_uuid(args.leads_database_id, "--leads-database-id")
+            if legacy_id == leads_id:
+                raise LeadsError(
+                    "the legacy database id is the leads database id: that is the "
+                    "same database (a name that points at the leads database). "
+                    "Nothing was printed or changed"
+                )
         email = _address(args.email)
         leads = load_leads(args.input)
     except LeadsError as exc:
@@ -1760,8 +1778,20 @@ def _run_delete_legacy(args: argparse.Namespace) -> int:
             raise LeadsError("internal: the matched id is not in the export")
         statements = _sql(ids[0], email)
         wrangler = _resolve_wrangler(args.wrangler)
-    except LeadsError as exc:  # pragma: no cover - guarded by load_leads
-        print(f"error: {exc}", file=sys.stderr)
+        # A name that differs from the leads name proves nothing (an alias, a
+        # rename, a second binding to the same database): prove the identity with
+        # read-only single-statement calls BEFORE any actionable command is printed.
+        verify_identity(wrangler, LEADS_DATABASE, leads_id)
+        verify_identity(wrangler, database, legacy_id)
+        role = _wrangler_rows(wrangler, database, _IDENTITY_READ)
+        if role != [{"role": "analytics"}]:
+            raise LeadsError(
+                "the legacy database did not say it is the analytics database (its "
+                "db_identity row is missing or not 'analytics'): apply the analytics "
+                "migrations first, and never use the leads database here"
+            )
+    except LeadsError as exc:
+        print(f"error: {exc}; nothing was printed or changed", file=sys.stderr)
         return EXIT_USAGE
     text = "\n".join(statements) + "\n"
     target = args.sql_out if args.sql_out is not None else "delete-lead-legacy.sql"
@@ -1782,12 +1812,17 @@ def _run_delete_legacy(args: argparse.Namespace) -> int:
         f"checks passed (exit {EXIT_CHECKED}) for the LEGACY copy: NOTHING HAS BEEN "
         f"REMOVED YET. {where}It holds the address, so delete it afterward. It "
         "deletes only a row that still pairs that id with that address. Apply it "
-        f"to the legacy database {database} only, then read it back with the second "
-        "command (the id only, no address): 0 and 0 means no remaining rows at "
+        f"to the legacy database {database} only. Its identity was just proven (the "
+        "name resolves to the id you gave, which is not the leads database's, and "
+        "the database says it is the analytics database); the first command repeats "
+        "that read. Then read the lead back with the last command "
+        "(the id only, no address): 0 and 0 means no remaining rows at "
         "this moment, not proof of completed erasure (no transaction in a file; an "
         "event can arrive after the read); run the file again after a wait until two "
         "consecutive reads show 0 and 0. The alert hashes are cleared by the normal "
         "run's --finish, not here:\n"
+        f"{shlex.quote(shown)} d1 execute {database} --remote --json --command "
+        f"{shlex.quote(_IDENTITY_READ)}\n"
         f"{shlex.quote(shown)} d1 execute {database} --remote --file {quoted}\n"
         f"{shlex.quote(shown)} d1 execute {database} --remote --json --command "
         f"{shlex.quote(_read_back(ids[0]))}",
@@ -1813,6 +1848,7 @@ def run_delete(args: argparse.Namespace) -> int:
             or args.wrangler is not None
             or args.finish
             or args.legacy_database is not None
+            or args.legacy_database_id is not None
             or args.confirm_legacy is not None
         ):
             print(
@@ -1834,7 +1870,11 @@ def run_delete(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return EXIT_USAGE
-    if args.legacy_database is not None or args.confirm_legacy is not None:
+    if (
+        args.legacy_database is not None
+        or args.legacy_database_id is not None
+        or args.confirm_legacy is not None
+    ):
         return _run_delete_legacy(args)
     if args.sql_out is not None and not args.yes:
         print("error: --sql-out needs --yes", file=sys.stderr)
@@ -2112,6 +2152,15 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         help="erase the legacy copy of a lead from this analytics database (its "
         "leads and kit_events tables only); its own run, with --confirm-legacy and "
         "--yes, never together with --database or --finish",
+    )
+    delete.add_argument(
+        "--legacy-database-id",
+        default=None,
+        metavar="UUID",
+        help="with --legacy-database and --yes: the legacy database's id from the "
+        "Worker's configuration (the analytics binding); checked against the name "
+        "and against the leads database id, and the database must say it is the "
+        "analytics database",
     )
     delete.add_argument(
         "--confirm-legacy",

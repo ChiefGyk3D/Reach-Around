@@ -116,7 +116,10 @@ def run(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, str, str]:
     omit = "--omit-alerts-database" in args
     omit_ids = "--omit-ids" in args
     args = [a for a in args if a not in ("--omit-alerts-database", "--omit-ids")]
-    legacy = "--legacy-database" in args or "--confirm-legacy" in args
+    legacy = any(
+        a in args
+        for a in ("--legacy-database", "--confirm-legacy", "--legacy-database-id")
+    )
     if "--yes" in args and not legacy:
         if "--alerts-database" not in args and not omit:
             args += ["--alerts-database", ALERTS_DB]
@@ -2804,6 +2807,7 @@ class TestInstallationMode:
 # ---- the legacy copy of a lead in the analytics database (#772) ---------------------
 
 LEGACY_DB = "reach-around-clicks"
+LEGACY_UUID = "0000000a-0000-4000-8000-00000000000a"
 
 
 def _two_databases() -> dict[str, sqlite3.Connection]:
@@ -2844,10 +2848,24 @@ def _read(conn: sqlite3.Connection, read_back: str) -> tuple[int, int]:
     return row[0], row[1]
 
 
+def _legacy_fake(role: str | None = "analytics") -> None:
+    """The legacy analytics database in the fake wrangler, with its identity row."""
+    fake = _FAKE["w"]
+    fake.add_database(LEGACY_DB, ["leads", "kit_events"], LEGACY_UUID)
+    if role is not None:
+        fake.dbs[LEGACY_DB].execute("CREATE TABLE db_identity (role TEXT)")
+        fake.dbs[LEGACY_DB].execute("INSERT INTO db_identity VALUES (?)", (role,))
+
+
 class TestLegacyDatabase:
+    @pytest.fixture(autouse=True)
+    def _fake_legacy_database(self) -> None:
+        _legacy_fake()
+
     def _legacy(
         self, capsys: pytest.CaptureFixture[str], export: Path, *extra: str
     ) -> tuple[int, str, str]:
+        ids = ["--legacy-database-id", LEGACY_UUID, "--leads-database-id", LEADS_UUID]
         return run(
             capsys,
             "--input",
@@ -2859,6 +2877,7 @@ class TestLegacyDatabase:
             "--confirm-legacy",
             LEGACY_DB,
             "--yes",
+            *[a for a in ids if a not in extra],
             *extra,
         )
 
@@ -2879,6 +2898,10 @@ class TestLegacyDatabase:
         # Each printed command names its own database; the two never cross.
         assert apply1[1:5] == ["d1", "execute", LEADS_DB, "--remote"]
         assert apply2[1:5] == ["d1", "execute", LEGACY_DB, "--remote"]
+        # The identity read comes first in the printed sequence, for the legacy db.
+        identity = shlex.split(err2.rstrip("\n").split("\n")[-3])
+        assert identity[1:5] == ["d1", "execute", LEGACY_DB, "--remote"]
+        assert identity[-1] == "SELECT role FROM db_identity ORDER BY role"
         assert "--file" in apply1 and "--file" in apply2
         # Before anything is applied, the read-backs see the lead in both copies.
         assert _read(dbs[LEADS_DB], read1) == (1, 2)
@@ -2908,6 +2931,42 @@ class TestLegacyDatabase:
         assert deletes
         assert {ln.split()[2] for ln in deletes} == set(leads_cmd.LEGACY_TABLES)
         assert "DROP" not in out and "UPDATE" not in out
+
+    def test_the_legacy_run_proves_the_identity_before_printing_a_command(
+        self, capsys: pytest.CaptureFixture[str], export: Path
+    ) -> None:
+        fake = _FAKE["w"]
+        # (a) the "legacy" name is an alias of the leads database
+        fake.points[LEGACY_DB] = LEADS_DB
+        code, out, err = self._legacy(capsys, export)
+        assert code == 2 and out == "" and "--file" not in err
+        fake.points.pop(LEGACY_DB)
+        # (b) the ids are equal: the same database under two names
+        code, out, err = self._legacy(
+            capsys, export, "--legacy-database-id", LEADS_UUID
+        )
+        assert code == 2 and out == "" and "--file" not in err
+        # (c) the database says it is the leads database, or says nothing
+        for role in ("leads", None):
+            _legacy_fake(role)
+            code, out, err = self._legacy(capsys, export)
+            assert code == 2 and out == "" and "--file" not in err, role
+        # (d) ids are required with --yes
+        code, out, err = run(
+            capsys,
+            "--input",
+            str(export),
+            "--email",
+            ADDR,
+            "--legacy-database",
+            LEGACY_DB,
+            "--confirm-legacy",
+            LEGACY_DB,
+            "--yes",
+        )
+        assert code == 2 and out == ""
+        for text in (err, out):
+            assert ADDR not in text
 
     @pytest.mark.parametrize(
         "extra",
