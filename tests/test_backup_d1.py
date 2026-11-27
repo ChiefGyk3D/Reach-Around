@@ -1106,6 +1106,30 @@ def test_exported_sql_is_never_executed(tmp_path: Path) -> None:
     assert list(d.iterdir()) == []
 
 
+def test_a_passing_export_is_read_never_executed(tmp_path: Path) -> None:
+    """Isolates the property: the export passes verification (a comment line is
+    outside the INSERT grammar's reach), so the run succeeds, yet a SQL engine
+    on PATH is never started and the ATTACH in the file never runs."""
+    env = make(tmp_path)
+    marker = tmp_path / "probe.db"
+    spy_dir = tmp_path / "spy"
+    spy_dir.mkdir()
+    spied = tmp_path / "spy.log"
+    for name in ("sqlite3", "sqlite"):
+        spy = spy_dir / name
+        spy.write_text(f'#!/usr/bin/bash\necho "{name}" >> "{spied}"\nexit 1\n')
+        spy.chmod(0o755)
+    env["PATH"] = f"{spy_dir}:{env['PATH']}"
+    env["STUB_APPEND"] = f"-- ATTACH DATABASE '{marker}' AS probe;"
+    d = dest(tmp_path)
+    r = run(env, "reach-db", str(d), "--apply")
+    assert r.returncode == 0, r.stdout + r.stderr
+    kept = [f for f in d.rglob("*.sql") if "ATTACH DATABASE" in f.read_text()]
+    assert kept, "the line must be in the kept backup, or the test proves nothing"
+    assert not marker.exists()
+    assert not spied.exists()
+
+
 @pytest.mark.parametrize("mode", ["duplicate", "extra", "missing"])
 def test_a_count_answer_that_is_not_the_exact_table_set_is_not_trusted(
     tmp_path: Path, mode: str
