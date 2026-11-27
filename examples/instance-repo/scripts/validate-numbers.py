@@ -2,7 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Check a numbers.json strictly and write a clean copy of it.
 
-Usage: validate-numbers.py --in FILE --out FILE
+Usage: validate-numbers.py [--fediverse] --in FILE --out FILE
+
+With --fediverse the file is the fediverse snapshot file the engine writes beside
+the numbers file (numbers.fediverse.json), checked with the engine's own limits
+and key rules (see "The fediverse snapshot file" at the end of this text).
 
 The counts refresh runs this twice: in the job that holds the API keys, before
 the engine's result is copied into the repository, and again in the job that
@@ -27,6 +31,31 @@ not a link.
 An entry whose stamp is more than 30 days old prints a `::warning::` line naming
 the id and the age (never the count) and does not fail the check.
 
+The fediverse snapshot file (--fediverse). The same rules as the engine's own
+guard over what it stores, and stricter in one way: the engine DROPS an entry
+that fails, this script REFUSES the whole file (fail closed). The shape is
+{"version": 1, "platforms": {"bluesky": S, "mastodon": S}} with S one anonymous,
+complete snapshot: the keys platform, as_of, interactions (rows of exactly
+boosts, favorites, replies) and complete (true) are REQUIRED; followers and
+posts (the profile's own counts) are OPTIONAL, as in the engine (a read that
+could not get them leaves them out); no other key, and no reason (that belongs
+to an incomplete snapshot, which is never stored); platform equals its key;
+as_of is a real day; counts are whole numbers within the engine's bounds; at
+most 200 rows; at most 512 KiB; no duplicate keys, no NaN, no float, no null.
+Freshness is the kit's own rule (apply_collected): an entry whose as_of is more
+than 30 days before today or after today is not used by the kit, so it is
+DROPPED here, not carried; a file left with no entry is still written (an empty
+platforms object), so the committed copy of a removed or long-failing source
+ages out instead of staying for ever. The kit also ignores a platform that has
+no configured source, whatever the file holds. Every key and every string at any
+depth (at most 8 levels) is checked: a person-level key name (handle, email,
+user id, ...) or a string that has an identifying shape (a URL, an address, a
+DID, a handle or host with dots, an email, an IP address, a channel id, any
+space, over 40 characters) is refused. No account, handle, host or link is ever
+part of the file; the config names the account. Only this file crosses; the
+engine's unit note, its .bad copy and staged files stay behind (the refresh
+script does not copy them).
+
 The output is not a copy of the input. It is written fresh in the engine's own
 format (sorted ids, two-space indent) to a new temporary file next to --out and
 moved over --out in one rename, so --out is either the old file or the whole
@@ -41,7 +70,7 @@ import os
 import re
 import stat
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 MAX_BYTES = 64 * 1024
@@ -54,11 +83,65 @@ STAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 EARLIEST = datetime(2000, 1, 1, tzinfo=UTC)
 
 
+# The fediverse snapshot file. These values are the engine's own (a test compares
+# each one with the engine's constant, so a change there fails here).
+FEDIVERSE_WINDOW_DAYS = 30
+FEDIVERSE_MAX_BYTES = 512 * 1024
+FEDIVERSE_MAX_POSTS = 200
+FEDIVERSE_MAX_INTERACTIONS = 10**9
+FEDIVERSE_MAX_PROFILE = 10**12
+FEDIVERSE_MAX_WORD = 40
+FEDIVERSE_MAX_DEPTH = 8
+FEDIVERSE_KINDS = ("bluesky", "mastodon")
+FEDIVERSE_TOP_KEYS = frozenset(
+    {"platform", "as_of", "followers", "posts", "interactions", "complete", "reason"}
+)
+FEDIVERSE_ROW_KEYS = frozenset({"boosts", "favorites", "replies"})
+FEDIVERSE_REQUIRED_KEYS = frozenset({"platform", "as_of", "complete", "interactions"})
+FEDIVERSE_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+NAME_PARTS = (
+    "username",
+    "displayname",
+    "handle",
+    "email",
+    "mail",
+    "userid",
+    "channelid",
+    "authorid",
+    "commenter",
+    "commentauthor",
+    "viewerid",
+    "ipaddress",
+    "ipaddr",
+    "latitude",
+    "longitude",
+    "postalcode",
+    "zipcode",
+    "street",
+    "phone",
+    "fullname",
+    "firstname",
+    "lastname",
+    "realname",
+)
+NAME_WHOLE = frozenset(
+    {"name", "user", "users", "ip", "ua", "lat", "lng", "lon", "city", "zip", "who"}
+)
+DOTTED = re.compile(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
+VALUE_SHAPES = (
+    re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+"),
+    re.compile(r"(^|\s)@[A-Za-z0-9_.]{2,}"),
+    re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
+    re.compile(r"\b(?:[0-9A-Fa-f]{1,4}:){3,7}[0-9A-Fa-f]{1,4}\b"),
+    re.compile(r"\bUC[0-9A-Za-z_-]{22}\b"),
+)
+
+
 class Bad(Exception):
     pass
 
 
-def read_regular(path: str) -> bytes:
+def read_regular(path: str, limit: int = MAX_BYTES) -> bytes:
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as exc:
@@ -67,15 +150,15 @@ def read_regular(path: str) -> bytes:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
             raise Bad("the input is not a regular file")
-        if info.st_size > MAX_BYTES:
-            raise Bad(f"the input is larger than {MAX_BYTES} bytes")
-        data = os.read(fd, MAX_BYTES + 1)
+        if info.st_size > limit:
+            raise Bad(f"the input is larger than {limit} bytes")
+        data = os.read(fd, limit + 1)
     except OSError as exc:
         raise Bad(f"cannot read the input: {exc.strerror}") from None
     finally:
         os.close(fd)
-    if len(data) > MAX_BYTES:
-        raise Bad(f"the input is larger than {MAX_BYTES} bytes")
+    if len(data) > limit:
+        raise Bad(f"the input is larger than {limit} bytes")
     return data
 
 
@@ -92,9 +175,9 @@ def refuse_constant(_name: str) -> Any:
     raise Bad("NaN and Infinity are not allowed")
 
 
-def parse(data: bytes, now: datetime) -> dict[str, tuple[int, str, str | None]]:
+def load_json(data: bytes) -> Any:
     try:
-        doc = json.loads(
+        return json.loads(
             data.decode("utf-8"),
             object_pairs_hook=pairs,
             parse_constant=refuse_constant,
@@ -109,6 +192,10 @@ def parse(data: bytes, now: datetime) -> dict[str, tuple[int, str, str | None]]:
         if isinstance(exc, Bad):
             raise
         raise Bad("not valid JSON") from None
+
+
+def parse(data: bytes, now: datetime) -> dict[str, tuple[int, str, str | None]]:
+    doc = load_json(data)
     if not isinstance(doc, dict) or set(doc) != {"version", "platforms"}:
         raise Bad("must be an object with exactly version and platforms")
     if type(doc["version"]) is not int or doc["version"] != 1:
@@ -144,6 +231,99 @@ def parse(data: bytes, now: datetime) -> dict[str, tuple[int, str, str | None]]:
             raise Bad("an as_of is outside the allowed range")
         out[key] = (count, stamp, source)
     return out
+
+
+def person_name(name: str) -> bool:
+    flat = re.sub(r"[^a-z0-9]", "", name.lower())
+    return flat in NAME_WHOLE or any(part in flat for part in NAME_PARTS)
+
+
+def walk(value: Any, depth: int) -> None:
+    """Every key and every leaf, however deep: only person-free ints, bools and
+    short plain words pass."""
+    if depth > FEDIVERSE_MAX_DEPTH:
+        raise Bad("a snapshot is nested too deep")
+    if isinstance(value, dict):
+        for key, inner in value.items():
+            if person_name(key):
+                raise Bad("a snapshot has a person-level key")
+            walk(inner, depth + 1)
+    elif isinstance(value, list):
+        for inner in value:
+            walk(inner, depth + 1)
+    elif isinstance(value, str):
+        if (
+            len(value) > FEDIVERSE_MAX_WORD
+            or any(ch.isspace() for ch in value)
+            or "://" in value
+            or "did:" in value.lower()
+            or "@" in value
+            or "/" in value
+            or DOTTED.search(value)
+            or any(shape.search(value) for shape in VALUE_SHAPES)
+        ):
+            raise Bad("a snapshot holds a value that is not an anonymous aggregate")
+    elif type(value) is not int and type(value) is not bool:
+        raise Bad("a snapshot holds a value that is not an anonymous aggregate")
+
+
+def count_ok(value: Any, limit: int) -> bool:
+    return type(value) is int and 0 <= value <= limit
+
+
+def check_snapshot(kind: str, snap: Any) -> None:
+    """One complete, anonymous snapshot (the engine's stored form)."""
+    if not isinstance(snap, dict):
+        raise Bad("a snapshot must be an object")
+    walk(snap, 0)
+    if (
+        set(snap) - FEDIVERSE_TOP_KEYS
+        or not FEDIVERSE_REQUIRED_KEYS <= set(snap)
+        or snap.get("platform") != kind
+    ):
+        raise Bad("a snapshot has an unknown or missing key or the wrong platform")
+    if snap.get("complete") is not True or "reason" in snap:
+        raise Bad("only a complete snapshot is carried")
+    day = snap.get("as_of")
+    if type(day) is not str or FEDIVERSE_DAY.fullmatch(day) is None:
+        raise Bad("a snapshot as_of is not a day like 2026-10-24")
+    try:
+        datetime.fromisoformat(day)
+    except ValueError:
+        raise Bad("a snapshot as_of is not a real day") from None
+    for key in ("followers", "posts"):
+        if key in snap and not count_ok(snap[key], FEDIVERSE_MAX_PROFILE):
+            raise Bad("a snapshot profile count is out of range")
+    rows = snap.get("interactions")
+    if not isinstance(rows, list) or len(rows) > FEDIVERSE_MAX_POSTS:
+        raise Bad("a snapshot must hold at most 200 interaction rows")
+    for row in rows:
+        if (
+            not isinstance(row, dict)
+            or set(row) != FEDIVERSE_ROW_KEYS
+            or not all(count_ok(v, FEDIVERSE_MAX_INTERACTIONS) for v in row.values())
+        ):
+            raise Bad("an interaction row is not exactly three bounded counts")
+
+
+def fresh(snap: dict[str, Any], today: date) -> bool:
+    """The kit's own rule: as_of from today back to 30 days before it."""
+    age = (today - date.fromisoformat(snap["as_of"])).days
+    return 0 <= age <= FEDIVERSE_WINDOW_DAYS
+
+
+def parse_fediverse(data: bytes, today: date) -> dict[str, dict[str, Any]]:
+    doc = load_json(data)
+    if not isinstance(doc, dict) or set(doc) != {"version", "platforms"}:
+        raise Bad("must be an object with exactly version and platforms")
+    if type(doc["version"]) is not int or doc["version"] != 1:
+        raise Bad("version must be 1")
+    platforms = doc["platforms"]
+    if not isinstance(platforms, dict) or set(platforms) - set(FEDIVERSE_KINDS):
+        raise Bad("platforms must be an object of bluesky and mastodon only")
+    for kind, snap in platforms.items():
+        check_snapshot(kind, snap)
+    return {k: v for k, v in platforms.items() if fresh(v, today)}
 
 
 def stale_warnings(
@@ -186,10 +366,26 @@ def write_atomic(path: str, text: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--fediverse",
+        action="store_true",
+        help="the input is a numbers.fediverse.json (the engine's snapshot file)",
+    )
     parser.add_argument("--in", dest="source", required=True)
     parser.add_argument("--out", dest="dest", required=True)
     args = parser.parse_args()
     try:
+        if args.fediverse:
+            snaps = parse_fediverse(
+                read_regular(args.source, FEDIVERSE_MAX_BYTES), datetime.now(UTC).date()
+            )
+            body = {
+                "version": 1,
+                "platforms": {kind: snaps[kind] for kind in sorted(snaps)},
+            }
+            write_atomic(args.dest, json.dumps(body, indent=2) + "\n")
+            print(f"validate-numbers: {len(snaps)} fediverse snapshot(s) are valid.")
+            return 0
         now = datetime.now(UTC)
         entries = parse(read_regular(args.source), now)
         platforms: dict[str, dict[str, object]] = {}
