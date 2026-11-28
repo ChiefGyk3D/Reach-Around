@@ -213,6 +213,30 @@ def test_an_older_tag_is_refused_when_a_newer_one_exists(tmp_path: Path) -> None
     assert "not the highest" in done.stderr
 
 
+def test_the_highest_release_candidate_may_publish(tmp_path: Path) -> None:
+    done = _run(tmp_path, "v0.3.0-rc.7", ["v0.3.0-rc.6", "v0.3.0-rc.7"])
+    assert done.returncode == 0, done.stderr
+
+
+@pytest.mark.parametrize("newer", ["v0.3.0-rc.8", "v0.3.0"])
+def test_a_release_candidate_is_refused_when_the_same_version_has_a_newer_tag(
+    tmp_path: Path, newer: str
+) -> None:
+    done = _run(tmp_path, "v0.3.0-rc.7", ["v0.3.0-rc.7", newer])
+    assert done.returncode == 1
+    assert "not the highest" in done.stderr
+
+
+def test_release_candidate_numbers_compare_numerically(tmp_path: Path) -> None:
+    done = _run(tmp_path, "v0.3.0-rc.10", ["v0.3.0-rc.9", "v0.3.0-rc.10"])
+    assert done.returncode == 0, done.stderr
+
+
+def test_a_plain_release_outranks_its_release_candidates(tmp_path: Path) -> None:
+    done = _run(tmp_path, "v0.3.0", ["v0.3.0-rc.10", "v0.3.0"])
+    assert done.returncode == 0, done.stderr
+
+
 @pytest.mark.parametrize(
     "tag",
     [
@@ -220,10 +244,19 @@ def test_an_older_tag_is_refused_when_a_newer_one_exists(tmp_path: Path) -> None
         "v1.0.0-beta.2",
         "v1.0.0+build5",
         "v1.0.0-rc1+build5",
+        "v1.0.0-rc.0",
+        "v1.0.0-rc.01",
+        "v1.0.0-rc.1000000",
+        "v1.0.0-rc.",
         "v1.0",
+        "v1.0.0.",
+        "v1.0.0.1",
         "v01.0.0",
         "v1.00.0",
         "v1.0.007",
+        "v1000000.0.0",
+        "v0.1000000.0",
+        "v0.0.1000000",
         "V1.0.0",
         "v1.0.0é",
         "v１.0.0",  # fullwidth digit one
@@ -235,9 +268,15 @@ def test_a_tag_outside_the_accepted_grammar_is_refused(
     tmp_path: Path, tag: str
 ) -> None:
     # Fails closed even when the tag would be the highest one.
-    done = _run(tmp_path, tag, [tag.splitlines()[0]])
+    done = _run(tmp_path, tag, tag.splitlines()[:1])
     assert done.returncode == 1, done.stdout + done.stderr
-    assert "is not a plain vMAJOR.MINOR.PATCH tag" in done.stderr
+    assert "is not an accepted release tag" in done.stderr
+
+
+def test_an_empty_tag_is_refused(tmp_path: Path) -> None:
+    done = _run(tmp_path, "", [])
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert "TAG is required" in done.stderr
 
 
 def test_a_refused_tag_value_is_never_echoed(tmp_path: Path) -> None:
@@ -257,6 +296,18 @@ def test_a_refused_tag_is_refused_even_with_a_newer_stable_release(
 
 @pytest.mark.parametrize("tag", ["v0.0.0", "v1.2.3", "v10.20.30"])
 def test_a_plain_tag_inside_the_grammar_is_accepted(tmp_path: Path, tag: str) -> None:
+    assert _run(tmp_path, tag, [tag]).returncode == 0
+
+
+def test_six_digit_version_components_are_accepted_when_highest(
+    tmp_path: Path,
+) -> None:
+    tag = "v999999.999999.999999"
+    assert _run(tmp_path, tag, ["v999999.999999.999998", tag]).returncode == 0
+
+
+def test_a_six_digit_release_candidate_number_is_accepted(tmp_path: Path) -> None:
+    tag = "v0.0.1-rc.999999"
     assert _run(tmp_path, tag, [tag]).returncode == 0
 
 
@@ -363,6 +414,13 @@ def test_promotion_retags_the_digest_after_a_passing_check(tmp_path: Path) -> No
     reg = tmp_path / "registry"
     assert (reg / "latest").read_text() == DIGEST
     assert (reg / "1.2").read_text() == DIGEST
+
+
+def test_a_release_candidate_does_not_move_stable_tags(tmp_path: Path) -> None:
+    done = _promote(tmp_path, "v1.2.3-rc.4", ["v1.2.3-rc.4"])
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert _docker_calls(tmp_path) == []
+    assert "did not promote stable moving tags" in done.stdout
 
 
 def _seed(tmp_path: Path, **tags: str) -> None:
