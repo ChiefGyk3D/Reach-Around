@@ -505,6 +505,32 @@ describe("the click route", () => {
   });
 });
 
+describe("the per-site share through the click route (end to end)", () => {
+  it("a site that spends its whole share is refused, while the other site is still counted", async () => {
+    await handleClick(click(), env()); // the first click of the link, so the general budget now binds
+    await seed("cw-links", clickLimits(SHARE2).general - FULL);
+    const before = await events();
+    await handleClick(click(), env()); // exactly fills the general budget of "links"
+    await handleClick(click(), env()); // refused: past its share
+    expect(await events() - before).toBe(1);
+    expect(await count("cw-links")).toBe(clickLimits(SHARE2).general);
+    const plain = await handleClick(click("plain.example.test"), env());
+    expect(plain.status).toBe(204);
+    expect(await count("cw-plain")).toBe(clickWriteCost({}));
+    expect(await count("cd-plain")).toBe(0);
+  });
+  it("a refused click of one site never charges the other, and no site passes its half of the ceiling", async () => {
+    await handleClick(click(), env());
+    await handleClick(click("plain.example.test"), env());
+    await seed("cw-links", clickLimits(SHARE2).general);
+    for (let i = 0; i < 5; i++) await handleClick(click(), env());
+    expect(await count("cw-links")).toBe(clickLimits(SHARE2).general);
+    expect(await count("cw-plain")).toBe(clickWriteCost({}));
+    expect(await count("cw-links")).toBeLessThanOrEqual(SHARE2);
+    expect(SHARE2 * 2).toBeLessThanOrEqual(CLICK_ADMIT_CEILING);
+  });
+});
+
 describe("the click route and the lane switch", () => {
   const laneFull = async () => {
     await handleClick(click(), env()); // makes the link's marker, so the next click is judged against the lane
