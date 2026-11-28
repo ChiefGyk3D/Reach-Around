@@ -77,7 +77,7 @@ HEX8 = re.compile(
     r"(?<![0-9a-z])(?=[0-9a-f]*[a-f])[0-9a-f]{8}(?![0-9a-z])", re.IGNORECASE
 )
 SKIP_CREATE = ("CREATE INDEX", "CREATE UNIQUE INDEX")
-# No DELETE: a D1 export never holds one (#962), and a restore of it would erase rows.
+# No DELETE: a D1 export never holds one (#962), and a restore of it would drop rows.
 SKIP_OTHER = (
     "BEGIN",
     "COMMIT",
