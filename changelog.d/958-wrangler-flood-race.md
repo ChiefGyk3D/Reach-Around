@@ -1,1 +1,0 @@
-- Flaky test fix (#958): the cleanup in `tests/test_wrangler_runner_group.py` checked that the grandchild was alive and then killed it, so a grandchild that exited in between raised `ProcessLookupError`. The cleanup now tolerates a process that is already gone. No product code changed.

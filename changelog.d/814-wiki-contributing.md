@@ -1,1 +1,0 @@
-- Wiki page on how work happens in this repository: issue and board card first, draft pull requests, agent briefs, the `CI green` gate, changelog fragments, trailers, security review in general terms, and how to run the checks locally (#814, epic #795). Documentation only.

@@ -1,1 +1,0 @@
-- Backup (#930): the table-existence check in the D1 export script no longer pipes the table list into `grep -q` under `pipefail`. That pattern could occasionally report a table that exists as missing and skip it with a "skipped" line and exit code 0; the check is now plain string matching, with a regression test that uses a table list larger than a pipe buffer.

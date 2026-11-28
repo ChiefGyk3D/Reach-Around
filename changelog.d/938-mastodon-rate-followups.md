@@ -1,1 +1,0 @@
-- Mastodon provider follow-ups (#938): a low `X-RateLimit-Remaining` count seen on a response now also stops the retry or redirect hop of that same request, not only the next page, and ends the read as `rate_limited`. An oversized rate-limit header value (over 512 characters) is no longer read as absent: it ends the read as `bad_shape`, like any other malformed value.

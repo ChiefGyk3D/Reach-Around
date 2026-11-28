@@ -1,1 +1,0 @@
-- Docs: new root `SECURITY.md` (#838, epic #757): supported versions, how to report a vulnerability privately through the repository Security tab (Report a vulnerability), what stays out of public issues, and what to expect. No response time is promised yet.
