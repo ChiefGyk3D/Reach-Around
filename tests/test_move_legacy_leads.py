@@ -1498,13 +1498,22 @@ def dump_check(env: dict[str, str], tmp_path: Path) -> subprocess.CompletedProce
     # The backup never exports the lead tables, so their rows are left out; the schema
     # (and so every trigger the tool added) is checked as it stands.
     with closing(sqlite3.connect(env["STUB_SRC"])) as db:
-        keep = [
-            ln
-            for ln in db.iterdump()
-            if not ln.startswith(('INSERT INTO "leads"', 'INSERT INTO "kit_events"'))
-            # iterdump adds this line; a wrangler export never has it (#962).
-            and ln != 'DELETE FROM "sqlite_sequence";'
-        ]
+        expected = db.execute(
+            "SELECT count(*) FROM sqlite_master WHERE name = 'sqlite_sequence'"
+        ).fetchone()[0]
+        lines = list(db.iterdump())
+    # iterdump writes the sequence DELETE once when sqlite_sequence exists (an
+    # AUTOINCREMENT table, as in worker/migrations); a wrangler export never has
+    # it (#962). Drop exactly that line; a second copy or any other DELETE fails.
+    assert lines.count('DELETE FROM "sqlite_sequence";') == expected
+    if expected:
+        lines.remove('DELETE FROM "sqlite_sequence";')
+    assert not [ln for ln in lines if ln.lstrip().upper().startswith("DELETE")]
+    keep = [
+        ln
+        for ln in lines
+        if not ln.startswith(('INSERT INTO "leads"', 'INSERT INTO "kit_events"'))
+    ]
     f = tmp_path / "analytics-dump.sql"
     f.write_text("\n".join(keep) + "\n")
     return subprocess.run(  # noqa: S603 - fixed argv, synthetic input
