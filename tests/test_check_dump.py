@@ -13,7 +13,9 @@ import re
 import sqlite3
 import subprocess
 import sys
+from collections.abc import Generator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -96,10 +98,39 @@ SQLITE_SEQUENCE_DELETE = 'DELETE FROM "sqlite_sequence";'
 
 
 def dump_lines(db: sqlite3.Connection) -> list[str]:
-    # Drop only the one line iterdump adds; any other DELETE stays and fails.
-    lines = [ln for ln in db.iterdump() if ln != SQLITE_SEQUENCE_DELETE]
-    assert not [ln for ln in lines if ln.upper().startswith("DELETE")]
+    # iterdump writes the sequence DELETE once when sqlite_sequence exists (an
+    # AUTOINCREMENT table), and never otherwise. Drop exactly that line; a second
+    # copy, or any other DELETE (after leading whitespace, any case), fails.
+    expected = db.execute(
+        "SELECT count(*) FROM sqlite_master WHERE name = 'sqlite_sequence'"
+    ).fetchone()[0]
+    lines = list(db.iterdump())
+    assert lines.count(SQLITE_SEQUENCE_DELETE) == expected
+    if expected:
+        lines.remove(SQLITE_SEQUENCE_DELETE)
+    assert not [ln for ln in lines if ln.lstrip().upper().startswith("DELETE")]
     return lines
+
+
+class _DumpWithASecondSequenceLine(sqlite3.Connection):
+    # Test double: iterdump writes the sequence DELETE once, then once more.
+    def iterdump(self, *args: Any, **kwargs: Any) -> Generator[str, None, None]:
+        yield from super().iterdump(*args, **kwargs)
+        yield SQLITE_SEQUENCE_DELETE
+
+
+def test_the_dump_helper_fails_when_a_second_sequence_delete_is_injected() -> None:
+    # Negative case: the old filter dropped every copy of the line, so an extra one
+    # passed. The count check must catch it; the same schema without the extra line
+    # is the control and passes.
+    plain = sqlite3.connect(":memory:")
+    extra = sqlite3.connect(":memory:", factory=_DumpWithASecondSequenceLine)
+    for db in (plain, extra):
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, x TEXT)")
+        db.execute("INSERT INTO t (x) VALUES ('a')")
+    assert SQLITE_SEQUENCE_DELETE not in dump_lines(plain)
+    with pytest.raises(AssertionError):
+        dump_lines(extra)
 
 
 def schema_dump() -> str:
