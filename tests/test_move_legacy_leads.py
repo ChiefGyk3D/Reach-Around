@@ -1502,6 +1502,8 @@ def dump_check(env: dict[str, str], tmp_path: Path) -> subprocess.CompletedProce
             ln
             for ln in db.iterdump()
             if not ln.startswith(('INSERT INTO "leads"', 'INSERT INTO "kit_events"'))
+            # iterdump adds this line; a wrangler export never has it (#962).
+            and ln != 'DELETE FROM "sqlite_sequence";'
         ]
     f = tmp_path / "analytics-dump.sql"
     f.write_text("\n".join(keep) + "\n")

@@ -92,11 +92,23 @@ def test_the_schema_loader_never_hands_sqlite_deeply_nested_sql() -> None:
     assert cols[:3] == ["id", "email", "created_ts"]
 
 
+SQLITE_SEQUENCE_DELETE = 'DELETE FROM "sqlite_sequence";'
+
+
+def dump_lines(db: sqlite3.Connection) -> list[str]:
+    # Drop only the one line iterdump adds; any other DELETE stays and fails.
+    lines = [ln for ln in db.iterdump() if ln != SQLITE_SEQUENCE_DELETE]
+    assert not [ln for ln in lines if ln.upper().startswith("DELETE")]
+    return lines
+
+
 def schema_dump() -> str:
     # The schema only: the one identity row a migration seeds (issue #772) is data,
     # and these tests build their own rows (a dump with no rows must still fail).
     seeded = 'INSERT INTO "db_identity"'
-    lines = [ln for ln in real_db().iterdump() if not ln.startswith(seeded)]
+    # iterdump writes `DELETE FROM "sqlite_sequence";` (a sqlite3 module habit); a
+    # wrangler export never does (#962), so the fixture leaves it out.
+    lines = [ln for ln in dump_lines(real_db()) if not ln.startswith(seeded)]
     return "\n".join(lines) + "\n"
 
 
@@ -558,11 +570,11 @@ def test_a_dump_filled_through_real_tables_is_clean(tmp_path: Path) -> None:
         "VALUES (1792000000000, 'a-b', 'US')"
     )
     db.commit()
-    dump = "\n".join(db.iterdump()) + "\n"
+    dump = "\n".join(dump_lines(db)) + "\n"
     r = run(dump, tmp_path=tmp_path)
     assert r.returncode == 0, r.stdout + r.stderr
     db.execute("UPDATE view_events SET src = '198.51.100.7'")
-    assert run("\n".join(db.iterdump()) + "\n", tmp_path=tmp_path).returncode == 1
+    assert run("\n".join(dump_lines(db)) + "\n", tmp_path=tmp_path).returncode == 1
 
 
 def test_a_click_source_label_passes_and_an_address_or_agent_in_it_fails(
@@ -574,10 +586,10 @@ def test_a_click_source_label_passes_and_an_address_or_agent_in_it_fails(
         "VALUES (1792000000000, 'a-b', 'US', 'links', 'instagram')"
     )
     db.commit()
-    assert run("\n".join(db.iterdump()) + "\n", tmp_path=tmp_path).returncode == 0
+    assert run("\n".join(dump_lines(db)) + "\n", tmp_path=tmp_path).returncode == 0
     for bad in ("198.51.100.7", "Mozilla/5.0", "2001:db8::1"):
         db.execute("UPDATE click_events SET src = ?", (bad,))
-        r = run("\n".join(db.iterdump()) + "\n", tmp_path=tmp_path)
+        r = run("\n".join(dump_lines(db)) + "\n", tmp_path=tmp_path)
         assert r.returncode == 1, bad
 
 
@@ -1229,3 +1241,52 @@ def test_lookalike_and_adjacent_pragma_forms_are_refused(
 ) -> None:
     r = run(SCHEMA_DUMP + GOOD_ROW + line + "\n", tmp_path=tmp_path)
     assert r.returncode == 1, r.stdout + r.stderr
+
+
+# #962: a `wrangler d1 export` holds a PRAGMA line, CREATE TABLE, CREATE INDEX and
+# one INSERT per row (verified 2026-11-27 in scripts/backup-d1.sh). It never holds
+# a DELETE, so no DELETE form is accepted: a restore of it would erase rows.
+# The cases below are general malformed-SQL coverage; the focused test after them
+# holds the one canonical form the old prefix rule accepted.
+@pytest.mark.parametrize(
+    "line",
+    [
+        'DELETE FROM "view_events";',
+        "DELETE FROM view_events WHERE 1=1;",
+        "delete from view_events;",
+        "Delete From view_events;",
+        "DELETE\tFROM view_events;",
+        "DELETE\nFROM view_events;",
+        "DELETE   FROM   view_events;",
+        "DELETE FROM sqlite_sequence;",
+        "-- harmless\nDELETE FROM view_events;",
+        "/* harmless */ DELETE FROM view_events;",
+        "DELETE/**/FROM view_events;",
+        "DELETE FROM view_events",
+        "\N{FULLWIDTH LATIN CAPITAL LETTER D}ELETE FROM view_events;",
+        "DELETE\N{NO-BREAK SPACE}FROM view_events;",
+        "DELETE\N{IDEOGRAPHIC SPACE}FROM view_events;",
+        "DELETE FROM\N{NO-BREAK SPACE}view_events;",
+        "DELETE FR\N{GREEK CAPITAL LETTER OMICRON}M view_events;",
+        "DELETE FROM view_events;\nDELETE FROM view_events;",
+    ],
+)
+def test_no_delete_statement_is_accepted(line: str, tmp_path: Path) -> None:
+    r = run(SCHEMA_DUMP + GOOD_ROW + line + "\n", tmp_path=tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "unexpected statement" in r.stdout
+
+
+def test_the_formerly_accepted_canonical_delete_is_refused(tmp_path: Path) -> None:
+    # The old SKIP_OTHER prefix "DELETE FROM" accepted exactly this shape.
+    dump = SCHEMA_DUMP + GOOD_ROW + "DELETE FROM view_events;\n"  # noqa: S608 - synthetic
+    r = run(dump, tmp_path=tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "unexpected statement" in r.stdout
+
+
+def test_a_cte_prefixed_delete_is_refused(tmp_path: Path) -> None:
+    stmt = "WITH x AS (SELECT 1) DELETE FROM view_events;\n"
+    r = run(SCHEMA_DUMP + GOOD_ROW + stmt, tmp_path=tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "unexpected statement" in r.stdout
