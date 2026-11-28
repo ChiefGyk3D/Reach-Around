@@ -3,8 +3,9 @@
 #
 # Release tag eligibility. Exits 0 only when all of this holds right now:
 #   1. TAG is exactly vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N: ASCII,
-#      no leading zeros, no build metadata, lowercase v. Anything else fails
-#      closed.
+#      no leading zeros, no build metadata, lowercase v. Each numeric component
+#      is at most six digits, and release candidate numbers start at 1. Anything
+#      else fails closed.
 #   2. The remote tag TAG exists and resolves (annotated tags peeled) to
 #      GITHUB_SHA, the commit this run was triggered for. A tag deleted and
 #      recreated elsewhere is refused.
@@ -21,7 +22,7 @@ export LC_ALL=C
 : "${REPO_URL:?REPO_URL is required}"
 : "${GITHUB_SHA:?GITHUB_SHA is required}"
 
-semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.(0|[1-9][0-9]*))?$'
+semver='^v(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})(-rc\.([1-9][0-9]{0,5}))?$'
 if ! [[ "$TAG" =~ $semver ]]; then
   echo "the tag is not an accepted release tag (expected vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N, with no build metadata or leading zeros); refusing to publish it" >&2
   exit 1
@@ -53,6 +54,7 @@ tags="$(git ls-remote --tags --refs "$REPO_URL" 'refs/tags/v*')" || exit 1
 highest="$(printf '%s\n' "$tags" | sed 's#.*refs/tags/##' |
   grep -E "$semver" |
   awk '
+    BEGIN { width = 6 }
     function pad(value, width, out) {
       out = sprintf("%*s", width, value)
       gsub(/ /, "0", out)
@@ -73,9 +75,6 @@ highest="$(printf '%s\n' "$tags" | sed 's#.*refs/tags/##' |
       major[count] = part[1]
       minor[count] = part[2]
       patch[count] = part[3]
-      for (i = 1; i <= 3; i++)
-        if (length(part[i]) > width) width = length(part[i])
-      if (length(rc[count]) > width) width = length(rc[count])
     }
     END {
       for (i = 1; i <= count; i++)

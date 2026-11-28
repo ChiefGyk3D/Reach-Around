@@ -244,7 +244,9 @@ def test_a_plain_release_outranks_its_release_candidates(tmp_path: Path) -> None
         "v1.0.0-beta.2",
         "v1.0.0+build5",
         "v1.0.0-rc1+build5",
+        "v1.0.0-rc.0",
         "v1.0.0-rc.01",
+        "v1.0.0-rc.1000000",
         "v1.0.0-rc.",
         "v1.0",
         "v1.0.0.",
@@ -252,6 +254,9 @@ def test_a_plain_release_outranks_its_release_candidates(tmp_path: Path) -> None
         "v01.0.0",
         "v1.00.0",
         "v1.0.007",
+        "v1000000.0.0",
+        "v0.1000000.0",
+        "v0.0.1000000",
         "V1.0.0",
         "v1.0.0é",
         "v１.0.0",  # fullwidth digit one
@@ -291,6 +296,18 @@ def test_a_refused_tag_is_refused_even_with_a_newer_stable_release(
 
 @pytest.mark.parametrize("tag", ["v0.0.0", "v1.2.3", "v10.20.30"])
 def test_a_plain_tag_inside_the_grammar_is_accepted(tmp_path: Path, tag: str) -> None:
+    assert _run(tmp_path, tag, [tag]).returncode == 0
+
+
+def test_six_digit_version_components_are_accepted_when_highest(
+    tmp_path: Path,
+) -> None:
+    tag = "v999999.999999.999999"
+    assert _run(tmp_path, tag, ["v999999.999999.999998", tag]).returncode == 0
+
+
+def test_a_six_digit_release_candidate_number_is_accepted(tmp_path: Path) -> None:
+    tag = "v0.0.1-rc.999999"
     assert _run(tmp_path, tag, [tag]).returncode == 0
 
 
