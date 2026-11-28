@@ -8,6 +8,10 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 
 <!-- Entries live in changelog.d/ (one fragment per PR, named <issue>-<slug>.md); scripts/changelog-assemble.py folds them in at release. -->
 
+## [0.3.0-rc.9] - 2026-11-27
+
+- Refresh the pinned base image digest. (#974, epic #595)
+
 ## [0.3.0-rc.8] - 2026-11-27
 
 - Allow release-candidate tags through the release check without moving stable image tags. (#970, epic #595)
