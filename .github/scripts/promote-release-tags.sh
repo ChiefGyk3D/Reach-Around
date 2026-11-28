@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# Point the moving image tags (MAJOR.MINOR and latest) at the image this run
-# published and verified.
+# For a stable release, point the moving image tags (MAJOR.MINOR and latest) at
+# the image this run published and verified. Release candidates never move them.
 #
 # Environment: TAG, REPO_URL, GITHUB_SHA (see check-release-tag.sh), REPOSITORY
 # (owner/name of this repository, from the workflow context), IMAGE (the
@@ -60,6 +60,11 @@ if [ "$repo" != "$expected" ]; then
 fi
 
 bash "$here/check-release-tag.sh"
+
+if [[ "$TAG" == *-rc.* ]]; then
+  echo "release candidate '${TAG}' did not promote stable moving tags"
+  exit 0
+fi
 
 version="${TAG#v}"
 minor="${version%.*}"
