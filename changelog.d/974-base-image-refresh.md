@@ -1,0 +1,1 @@
+- Refresh the pinned base image digest. (#974, epic #595)
