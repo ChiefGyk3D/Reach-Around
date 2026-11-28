@@ -8,6 +8,10 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 
 <!-- Entries live in changelog.d/ (one fragment per PR, named <issue>-<slug>.md); scripts/changelog-assemble.py folds them in at release. -->
 
+## [0.3.0-rc.11] - 2026-11-28
+
+- Take Debian's fixed passwd and login.defs in the image until the base image has them. (#595)
+
 ## [0.3.0-rc.10] - 2026-11-28
 
 - Take Debian's fixed libzstd1 in the image until the base image has it. (#595)

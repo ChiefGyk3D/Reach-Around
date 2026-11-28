@@ -46,12 +46,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
 # 1.5.7+dfsg-1, which the image scanner flags; Debian fixed it in
 # 1.5.7+dfsg-1+deb13u1. Take that build until the base image has it, then remove
 # libzstd1 from this step.
+# The base image (checked 2026-11-28, index digest above) still ships passwd and
+# login.defs 1:4.17.4-2, which the image scanner flags; Debian fixed both in
+# 1:4.17.4-2+deb13u1. Take those builds until the base image has them, then remove
+# passwd and login.defs from this step.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends --only-upgrade \
         zlib1g=1:1.3.dfsg+really1.3.1-1+deb13u1 \
         libc6=2.41-12+deb13u5 \
         libc-bin=2.41-12+deb13u5 \
         libzstd1=1.5.7+dfsg-1+deb13u1 \
+        passwd=1:4.17.4-2+deb13u1 \
+        login.defs=1:4.17.4-2+deb13u1 \
  && rm -rf /var/lib/apt/lists/*
 RUN groupadd --gid 10001 reach \
  && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent \
