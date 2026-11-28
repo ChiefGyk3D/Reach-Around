@@ -9,7 +9,7 @@
 #
 # Base: python:3.13-slim, pinned by the multi-architecture index digest.
 # To bump it, pull the new tag, copy the index digest here, and rebuild.
-ARG PYTHON_IMAGE=docker.io/library/python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90
+ARG PYTHON_IMAGE=docker.io/library/python:3.13-slim@sha256:168d3a5d10f2152f8e8d77b6843ac82c22a846cfefeef7afdf9aa630404e82a7
 
 # ---- builder: hashed installs into a virtualenv ----
 FROM ${PYTHON_IMAGE} AS builder
