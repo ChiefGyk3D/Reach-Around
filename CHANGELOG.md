@@ -10,7 +10,7 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 
 ## [0.3.0-rc.11] - 2026-11-28
 
-- Take Debian's fixed passwd in the image until the base image has it. (#595)
+- Take Debian's fixed passwd and login.defs in the image until the base image has them. (#595)
 
 ## [0.3.0-rc.10] - 2026-11-28
 
