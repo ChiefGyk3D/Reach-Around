@@ -8,6 +8,10 @@ while the project is alpha, every release is `0.x` and anything can change betwe
 
 <!-- Entries live in changelog.d/ (one fragment per PR, named <issue>-<slug>.md); scripts/changelog-assemble.py folds them in at release. -->
 
+## [0.3.0-rc.8] - 2026-11-27
+
+- Allow release-candidate tags through the release check without moving stable image tags. (#970, epic #595)
+
 ## [0.3.0-rc.7] - 2026-11-27
 
 - Backup verifier (#962): `scripts/check-dump.py` no longer accepts a statement that starts with `DELETE FROM`. A D1 export holds a PRAGMA line, CREATE TABLE, CREATE INDEX and INSERT rows only, never a DELETE, so any DELETE now fails as an unexpected statement.

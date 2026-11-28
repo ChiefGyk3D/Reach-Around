@@ -1,1 +1,0 @@
-- Allow release-candidate tags through the release check without moving stable image tags. (#970, epic #595)
