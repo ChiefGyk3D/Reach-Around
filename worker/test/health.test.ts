@@ -289,6 +289,31 @@ describe("click ceiling (hardening, Refs #566)", () => {
     expect(r?.count).toBeLessThanOrEqual(CEILING_RESERVE);
   });
 
+  it("consecutive ticks whose channel send fails spend only the reserve, never the general budget, and record no state", async () => {
+    await healthy();
+    await DB.prepare("DELETE FROM alert_quota").run();
+    await spendGeneral(50); // other conditions (a stale heartbeat in later hours) cannot spend anything
+    await counter("cd-links", day, 5);
+    const e = env();
+    const d = createDispatcher();
+    const f = mockFetch(500); // the channel refuses every send
+    let attempts = 0;
+    for (let i = 0; i < 5; i++) {
+      const t = await tick(e, d, f, NOW + i * HOUR_MS);
+      attempts = f.bodies.filter((b) => b.includes("click ceiling")).length;
+      // Nobody took it: nothing is recorded as sent, so the next hour retries.
+      expect(t.res.notified).toBe(0);
+      expect(await stateOf("click_ceiling_reached")).toBeNull();
+    }
+    // The reserve is the whole bound: no more than CEILING_RESERVE sends however many ticks fail.
+    expect(attempts).toBeLessThanOrEqual(CEILING_RESERVE);
+    expect(attempts).toBeGreaterThan(0);
+    const r = await DB.prepare("SELECT count FROM alert_quota WHERE channel = 'ceiling' AND scope = 'day'").first<{ count: number }>();
+    expect(r?.count).toBe(CEILING_RESERVE);
+    const g = await DB.prepare("SELECT count FROM alert_quota WHERE channel = 'all' AND scope = 'day'").first<{ count: number }>();
+    expect(g?.count).toBe(50);
+  });
+
   it("the reserve does not exist when the owner set the alert budget to 0", async () => {
     await healthy();
     await counter("cd-links", day, 5);
