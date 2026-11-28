@@ -1,1 +1,0 @@
-- Kit PDF: page 1 is no longer mostly empty (#866). The audience section was held whole by the print stylesheet, but it is taller than what is left of page 1, so Chromium moved all of it to page 2. The section now flows across the page break while its parts (the summary plate, each table row, the trust legend) stay whole.

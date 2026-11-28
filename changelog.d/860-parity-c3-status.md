@@ -1,1 +1,0 @@
-- Beacons parity checklist, row C3: status now reads that the code is done (kit block delivered by #658, which closed #377) and only the owner-only steps remain. Docs only, refs #860.

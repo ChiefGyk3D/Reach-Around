@@ -1,1 +1,0 @@
-- Wiki pages stay current (#818, epic #795): `scripts/check-wiki-freshness.py` reads `docs/wiki/FRESHNESS.json`, which maps each wiki page to the source files it describes and the date it was last verified, and fails when a source changed after that date. It is a manual command, not a required CI check. The pull request template gains a docs line.

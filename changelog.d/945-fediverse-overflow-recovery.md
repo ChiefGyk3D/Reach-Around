@@ -1,1 +1,0 @@
-- Docs: the manual recovery steps for a fediverse refresh that stops with `UnitFileTooLarge` (more than 10,000 directory entries, more than 8 staged copies, or an oversized file) are in `docs/config.md`, with a test that pins them to the code constants (#945).

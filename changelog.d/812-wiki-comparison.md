@@ -1,1 +1,0 @@
-- Wiki: a sourced, calm comparison with Beacons.AI (draft, owner opinion lines marked for review) (#812).

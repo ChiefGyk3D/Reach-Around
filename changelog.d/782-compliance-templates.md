@@ -1,1 +1,0 @@
-- Owner compliance templates (#782, epic #776): new `docs/compliance/` with a records-of-processing template, a DPIA screening checklist, a breach procedure and a README. Each is pre-filled from what the code does today, marks privacy baseline items that are not built as PLANNED, and says it is engineering documentation, not legal advice. Docs only; no code or config changed.

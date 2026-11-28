@@ -1,1 +1,0 @@
-- Fediverse collector design, live probe results (#940): the 2026-11-26 owner-run probe of the Mastodon and Bluesky public endpoints is recorded in `docs/design/fediverse-collector.md` section 14 as verified; everything the probe did not check stays marked as inferred. Documentation only.

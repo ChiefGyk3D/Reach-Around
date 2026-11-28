@@ -1,1 +1,0 @@
-- Wiki costs page, a plain cost worksheet and an offline calculator, `scripts/cost_estimate.py`, whose test reproduces the three worked examples (#807, epic #795). The page lists the Cloudflare services the project uses with prices read on 2026-11-24, the repo's own budgets, cost controls and caveats. Documentation and a stdlib script only; nothing is deployed.

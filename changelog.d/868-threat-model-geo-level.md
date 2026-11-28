@@ -1,1 +1,0 @@
-- Threat model geography rows corrected (#868, epic #244): `docs/security/threat-model.md` now says the default `GEO_LEVEL` is `region`, that a city name is never stored in a raw `view_events` row, and that at `GEO_LEVEL=city` the city goes only to the `view_city_daily` counter, which is purged with the raw window (#793). Docs only; named tests updated to the current ones.
